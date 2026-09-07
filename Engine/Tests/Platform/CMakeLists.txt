@@ -1,5 +1,6 @@
 add_executable(
     CuePlatformPublicHeaderTest
+    FileDialogHeaderCompile.cpp
     PublicHeaderCompile.cpp
     SystemCapabilitiesHeaderCompile.cpp
     WindowEventHeaderCompile.cpp
@@ -10,9 +11,14 @@ add_executable(
 target_link_libraries(CuePlatformPublicHeaderTest PRIVATE Cue.Platform)
 target_compile_features(CuePlatformPublicHeaderTest PRIVATE cxx_std_20)
 
+add_executable(CuePlatformFileDialogTests FileDialogTests.cpp)
+target_link_libraries(CuePlatformFileDialogTests PRIVATE Cue.Platform)
+target_compile_features(CuePlatformFileDialogTests PRIVATE cxx_std_20)
+
 add_executable(
     CuePlatformWindowsPublicHeaderTest
     PublicHeaderCompile.cpp
+    WindowsFileDialogHeaderCompile.cpp
     WindowsPlatformHeaderCompile.cpp
     WindowsMessageSinkHeaderCompile.cpp
     WindowsSystemCapabilityProbeHeaderCompile.cpp
@@ -22,6 +28,10 @@ add_executable(
 
 target_link_libraries(CuePlatformWindowsPublicHeaderTest PRIVATE Cue.Platform.Windows)
 target_compile_features(CuePlatformWindowsPublicHeaderTest PRIVATE cxx_std_20)
+
+add_executable(CuePlatformWindowsFileDialogTests WindowsFileDialogTests.cpp)
+target_link_libraries(CuePlatformWindowsFileDialogTests PRIVATE Cue.Platform.Windows)
+target_compile_features(CuePlatformWindowsFileDialogTests PRIVATE cxx_std_20)
 
 add_executable(
     CuePlatformWindowsLifecycleTests
@@ -65,7 +75,9 @@ foreach(
     testTarget
     IN ITEMS
         CuePlatformPublicHeaderTest
+        CuePlatformFileDialogTests
         CuePlatformWindowsPublicHeaderTest
+        CuePlatformWindowsFileDialogTests
         CuePlatformWindowsLifecycleTests
         CuePlatformWindowsMessageSinkTests
         CuePlatformWindowsSystemCapabilityTests
@@ -465,8 +477,8 @@ if(NOT "${cuePlatformInterfaceLinks}" STREQUAL "Cue.Foundation")
     )
 endif()
 
-set(cuePlatformWindowsAllowedLinks Cue.Platform Cue.Foundation.Windows User32)
-set(cuePlatformWindowsAllowedLinkOnlyLibraries Cue.Foundation.Windows User32)
+set(cuePlatformWindowsAllowedLinks Cue.Platform Cue.Foundation.Windows Ole32 Shell32 User32)
+set(cuePlatformWindowsAllowedLinkOnlyLibraries Cue.Foundation.Windows Ole32 Shell32 User32)
 
 foreach(cuePlatformWindowsInterfaceLink IN LISTS cuePlatformWindowsInterfaceLinks)
     if(cuePlatformWindowsInterfaceLink STREQUAL "Cue.Platform")
@@ -682,14 +694,18 @@ add_custom_target(
     Cue.Platform.Tests
     DEPENDS
         CuePlatformPublicHeaderTest
+        CuePlatformFileDialogTests
         CuePlatformWindowsPublicHeaderTest
+        CuePlatformWindowsFileDialogTests
         CuePlatformWindowsLifecycleTests
         CuePlatformWindowsMessageSinkTests
         CuePlatformWindowsSystemCapabilityTests
 )
 
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformPublicHeaderTest)
+add_test(NAME Cue.Platform.FileDialog COMMAND CuePlatformFileDialogTests)
 add_test(NAME Cue.Platform.Windows.PublicHeaders COMMAND CuePlatformWindowsPublicHeaderTest)
+add_test(NAME Cue.Platform.Windows.FileDialog COMMAND CuePlatformWindowsFileDialogTests)
 add_test(NAME Cue.Platform.Windows.SystemCapabilities COMMAND CuePlatformWindowsSystemCapabilityTests)
 add_test(NAME Cue.Platform.Windows.MessageSink COMMAND CuePlatformWindowsMessageSinkTests)
 add_test(
@@ -746,7 +762,9 @@ add_test(
 
 set_tests_properties(
     Cue.Platform.PublicHeaders
+    Cue.Platform.FileDialog
     Cue.Platform.Windows.PublicHeaders
+    Cue.Platform.Windows.FileDialog
     Cue.Platform.Windows.SystemCapabilities
     Cue.Platform.Windows.MessageSink
     Cue.Platform.Windows.Lifecycle

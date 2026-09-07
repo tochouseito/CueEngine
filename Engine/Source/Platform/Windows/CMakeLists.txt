@@ -8,6 +8,7 @@ target_sources(
         Private/SystemCapabilityMapper.cpp
         Private/SystemCapabilityMapper.h
         Private/WindowsMessageSink.cpp
+        Private/WindowsFileDialog.cpp
         Private/WindowsWindowInterop.cpp
         Private/WindowsWindow.cpp
         Private/WindowsWindow.h
@@ -20,6 +21,7 @@ target_sources(
         BASE_DIRS Public
         FILES
             Public/Cue/Platform/Windows/WindowsPlatform.h
+            Public/Cue/Platform/Windows/WindowsFileDialog.h
             Public/Cue/Platform/Windows/WindowsMessageSink.h
             Public/Cue/Platform/Windows/WindowsWindowInterop.h
 )
@@ -30,6 +32,8 @@ target_link_libraries(
         Cue.Platform
     PRIVATE
         Cue.Foundation.Windows
+        Ole32
+        Shell32
         User32
 )
 target_compile_features(Cue.Platform.Windows PUBLIC cxx_std_20)

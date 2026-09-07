@@ -93,6 +93,14 @@ class FakeWorkspaceFilesystem final : public cue::WorkspaceFilesystem
         return cue::ContentVerificationLimits{1024U, 4096U};
     }
 
+    /// @brief Portable Test DoubleではAbsolute Path取込みを未対応として返す
+    [[nodiscard]] cue::Result<cue::BoundWorkspacePath> bind_external_path(std::string_view) noexcept override
+    {
+        return cue::Result<cue::BoundWorkspacePath>::failure(
+            cue::make_io_error(*m_assertContext, cue::IoError::UnsupportedEntry,
+                               "Workspace core test double does not support external path binding"));
+    }
+
     /// @brief Locatorに対応する決定的Snapshotまたは診断Snapshotを返す
     [[nodiscard]] cue::Result<cue::DirectorySnapshot> list_directory(const cue::WorkspaceDirectory &a_directory,
                                                                      cue::TraversalLimits) noexcept override

@@ -12,7 +12,10 @@
 
 namespace cue
 {
+inline constexpr wchar_t k_windowsDialogOwnerGenerationProperty[] = L"CueEngine.DialogOwnerGeneration";
+
 class AssertContext;
+class FileDialogOwnerToken;
 class WindowsMessageSink;
 class WindowsWindow;
 
@@ -84,6 +87,8 @@ class WindowsWindow final : public Window
     [[nodiscard]] bool try_pop_event(WindowEvent &a_event) noexcept override;
     /// @brief Platform 非依存 Handle 表現から Win32 Window Handle 値を復元する
     [[nodiscard]] const void *native_view_value() const noexcept;
+    /// @brief Native Dialog Owner Tokenと照合するWindow Object非依存Generationを返す
+    [[nodiscard]] std::uint64_t dialog_owner_generation() const noexcept;
 
     /// @brief 共有 Win32 Window Class の参照 Count を増やし、利用可能な登録状態を確保する
     void acquire_class_reference() noexcept;
@@ -97,6 +102,8 @@ class WindowsWindow final : public Window
                                                            LPARAM a_lParam) noexcept;
 
   private:
+    friend Result<FileDialogOwnerToken> create_windows_file_dialog_owner(Window &a_window,
+                                                                         const AssertContext &a_assertContext) noexcept;
     friend Result<void> attach_windows_message_sink(Window &a_window, WindowsMessageSink &a_sink,
                                                     const AssertContext &a_assertContext) noexcept;
     friend Result<void> detach_windows_message_sink(Window &a_window, WindowsMessageSink &a_sink,
@@ -122,6 +129,8 @@ class WindowsWindow final : public Window
     std::size_t m_eventReadIndex = 0;
     // HWND は WM_NCDESTROY まで有効であり、WindowsWindow 自身だけが破棄を管理する
     HWND m_window = nullptr;
+    // HWND値とObject Addressが再利用されてもTokenを別Windowへ転用させない単調Generation
+    std::uint64_t m_dialogOwnerGeneration = 0U;
     WindowSize m_clientSize = {};
     WindowState m_state = WindowState::Destroyed;
     // Native 生成失敗時にも Window Class の参照を一度だけ解放するため個別に追跡する

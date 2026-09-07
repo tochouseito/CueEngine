@@ -76,8 +76,8 @@ Result<std::wstring> utf8_to_utf16(std::string_view a_text, const AssertContext 
     return Result<std::wstring>::success(std::move(result));
 }
 
-Result<std::string> convert_windows_argument_to_utf8(std::wstring_view a_text,
-                                                     const AssertContext &a_assertContext) noexcept
+/// @brief Win32 W APIが返したUTF-16をEngine内部のUTF-8文字列へ変換する
+Result<std::string> utf16_to_utf8(std::wstring_view a_text, const AssertContext &a_assertContext) noexcept
 {
     std::string result;
     const WindowsUtfConversionResult conversion =
@@ -90,5 +90,11 @@ Result<std::string> convert_windows_argument_to_utf8(std::wstring_view a_text,
     }
 
     return Result<std::string>::success(std::move(result));
+}
+
+Result<std::string> convert_windows_argument_to_utf8(std::wstring_view a_text,
+                                                     const AssertContext &a_assertContext) noexcept
+{
+    return utf16_to_utf8(a_text, a_assertContext);
 }
 } // namespace cue

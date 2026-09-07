@@ -3,12 +3,14 @@ add_library(Cue.Platform STATIC)
 target_sources(
     Cue.Platform
     PRIVATE
+        Private/FileDialog.cpp
         Private/Window.cpp
         Private/WindowSystem.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
+            Public/Cue/Platform/FileDialog.h
             Public/Cue/Platform/SystemCapabilities.h
             Public/Cue/Platform/Window.h
             Public/Cue/Platform/WindowEvent.h

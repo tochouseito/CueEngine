@@ -250,6 +250,12 @@ class WorkspaceFilesystem
     /// @brief Adapter固有Content Verification Hard Limitを返す
     [[nodiscard]] virtual ContentVerificationLimits hard_content_limits() const noexcept = 0;
 
+    /// @brief 未検証Absolute PathをRoot境界内のPortable Capabilityへ変換する
+    ///
+    /// 成功は存在、Entry種別、Reparse Point不在を保証しない。利用直前に列挙またはMutationで再検証する。
+    [[nodiscard]] virtual Result<BoundWorkspacePath> bind_external_path(
+        std::string_view a_unverifiedAbsolutePath) noexcept = 0;
+
     /// @brief 検証済みUser LocatorをこのWorkspace固有のDirectory CapabilityへBindingする
     [[nodiscard]] Result<WorkspaceDirectory> bind_directory(RelativePath a_locator,
                                                             const AssertContext &a_assertContext) const noexcept;

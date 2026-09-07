@@ -8,6 +8,15 @@ if(WIN32)
     add_executable(CueProjectFilesTests ProjectFileTests.cpp)
     target_link_libraries(CueProjectFilesTests PRIVATE Cue.ProjectFiles Cue.IO.Windows)
     target_compile_features(CueProjectFilesTests PRIVATE cxx_std_20)
+    add_executable(CueProjectFilesFileDialogRevalidationTests FileDialogRevalidationTests.cpp)
+    target_link_libraries(
+        CueProjectFilesFileDialogRevalidationTests
+        PRIVATE
+            Cue.ProjectFiles
+            Cue.IO.Windows
+            Cue.Platform
+    )
+    target_compile_features(CueProjectFilesFileDialogRevalidationTests PRIVATE cxx_std_20)
     add_executable(CueProjectFilesRecoveryTests RecoveryTests.cpp)
     target_link_libraries(CueProjectFilesRecoveryTests PRIVATE Cue.ProjectFiles Cue.IO.Windows)
     target_compile_features(CueProjectFilesRecoveryTests PRIVATE cxx_std_20)
@@ -19,7 +28,14 @@ if(WIN32)
     )
     target_link_libraries(CueProjectFilesTrashRecordTests PRIVATE Cue.ProjectFiles)
     target_compile_features(CueProjectFilesTrashRecordTests PRIVATE cxx_std_20)
-    list(APPEND cueProjectFilesTestTargets CueProjectFilesTests CueProjectFilesRecoveryTests CueProjectFilesTrashRecordTests)
+    list(
+        APPEND
+        cueProjectFilesTestTargets
+        CueProjectFilesTests
+        CueProjectFilesFileDialogRevalidationTests
+        CueProjectFilesRecoveryTests
+        CueProjectFilesTrashRecordTests
+    )
 endif()
 
 foreach(testTarget IN LISTS cueProjectFilesTestTargets)
@@ -53,6 +69,13 @@ set_tests_properties(Cue.ProjectFiles.PublicHeaders PROPERTIES LABELS ProjectFil
 if(WIN32)
     add_test(NAME Cue.ProjectFiles.Create COMMAND CueProjectFilesTests)
     set_tests_properties(Cue.ProjectFiles.Create PROPERTIES LABELS "ProjectFiles;Windows" TIMEOUT 30)
+    add_test(NAME Cue.ProjectFiles.FileDialogRevalidation COMMAND CueProjectFilesFileDialogRevalidationTests)
+    set_tests_properties(
+        Cue.ProjectFiles.FileDialogRevalidation
+        PROPERTIES
+            LABELS "ProjectFiles;Platform;Windows"
+            TIMEOUT 30
+    )
     add_test(NAME Cue.ProjectFiles.Recovery COMMAND CueProjectFilesRecoveryTests)
     set_tests_properties(Cue.ProjectFiles.Recovery PROPERTIES LABELS "ProjectFiles;Windows" TIMEOUT 30)
     add_test(NAME Cue.ProjectFiles.TrashRecord COMMAND CueProjectFilesTrashRecordTests)

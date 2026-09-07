@@ -26,6 +26,14 @@ enum class ProjectFileArea : std::uint8_t
     Saved
 };
 
+/// @brief Native Dialog選択を再検証するときに要求するEntry意味
+enum class ProjectFileSelectionPurpose : std::uint8_t
+{
+    OpenExistingFile,
+    SaveFileDestination,
+    SelectExistingDirectory
+};
+
 /// @brief Project File操作の意味分類
 enum class ProjectFileOperationKind : std::uint8_t
 {
@@ -207,6 +215,13 @@ class ProjectFileService final
     [[nodiscard]] const ProjectRoots &roots() const noexcept;
     /// @brief Serviceが適用するArea Access Policyを返す
     [[nodiscard]] const ProjectFileAccessPolicy &access_policy() const noexcept;
+
+    /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する
+    ///
+    /// 返されたLocatorは観測時点の値であり、実際の読取りまたはMutationは利用直前に再検証する。
+    [[nodiscard]] Result<RelativePath> revalidate_external_selection(ProjectFileArea a_area,
+                                                                     std::string_view a_unverifiedAbsolutePath,
+                                                                     ProjectFileSelectionPurpose a_purpose) noexcept;
 
     /// @brief 指定AreaへCreate-new FolderをAtomic公開する
     [[nodiscard]] Result<ProjectFileOperationResult> create_directory(ProjectFileArea a_area,
