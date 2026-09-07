@@ -857,118 +857,8 @@ class WindowsWorkspaceWatcher final : public cue::WorkspaceWatcher
 
 /// @brief Pin済みDirectoryと同じIdentityを持つ再帰Watcherを生成する
 [[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_windows_workspace_watcher(
-    std::span<const HANDLE> a_expectedChain, cue::WorkspaceWatchLimits a_limits,
-    const cue::AssertContext &a_assertContext) noexcept
-{
-    if (!a_limits.is_valid() || a_expectedChain.empty())
-    {
-        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-            cue::make_io_error(a_assertContext, cue::IoError::InvalidPath, "Workspace watcher limits are invalid"));
-    }
-    std::vector<UniqueHandle> locationLocks;
-    std::wstring path;
-    try
-    {
-        locationLocks.reserve(a_expectedChain.size() - 1U);
-    }
-    catch (...)
-    {
-        terminate_allocation(a_assertContext);
-    }
-    UniqueHandle directory;
-    for (std::size_t index = 0U; index < a_expectedChain.size(); ++index)
-    {
-        const HANDLE expectedHandle = a_expectedChain[index];
-        const DWORD pathLength =
-            GetFinalPathNameByHandleW(expectedHandle, nullptr, 0U, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (pathLength == 0U)
-        {
-            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher path query failed"));
-        }
-        std::wstring componentPath;
-        try
-        {
-            componentPath.resize(pathLength);
-        }
-        catch (...)
-        {
-            terminate_allocation(a_assertContext);
-        }
-        const DWORD pathWritten = GetFinalPathNameByHandleW(expectedHandle, componentPath.data(), pathLength,
-                                                            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (pathWritten == 0U || pathWritten >= pathLength)
-        {
-            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher path query failed"));
-        }
-        componentPath.resize(pathWritten);
-
-        const bool watchedDirectory = index + 1U == a_expectedChain.size();
-        const DWORD desiredAccess =
-            watchedDirectory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : FILE_READ_ATTRIBUTES;
-        const DWORD flags =
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | (watchedDirectory ? FILE_FLAG_OVERLAPPED : 0U);
-        UniqueHandle locked(CreateFileW(componentPath.c_str(), desiredAccess, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                        nullptr, OPEN_EXISTING, flags, nullptr));
-        if (!locked.is_valid())
-        {
-            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher directory lock failed"));
-        }
-        BY_HANDLE_FILE_INFORMATION expected{};
-        BY_HANDLE_FILE_INFORMATION actual{};
-        if (GetFileInformationByHandle(expectedHandle, &expected) == FALSE ||
-            GetFileInformationByHandle(locked.get(), &actual) == FALSE)
-        {
-            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher identity query failed"));
-        }
-        if (expected.dwVolumeSerialNumber != actual.dwVolumeSerialNumber ||
-            expected.nFileIndexHigh != actual.nFileIndexHigh || expected.nFileIndexLow != actual.nFileIndexLow ||
-            (actual.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
-            (actual.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
-        {
-            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-                cue::make_io_error(a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher identity changed"));
-        }
-        if (watchedDirectory)
-        {
-            path = std::move(componentPath);
-            directory = std::move(locked);
-        }
-        else
-        {
-            locationLocks.push_back(std::move(locked));
-        }
-    }
-
-    UniqueHandle changeEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    UniqueHandle stopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    if (!changeEvent.is_valid() || !stopEvent.is_valid())
-    {
-        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
-            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher event creation failed"));
-    }
-    std::unique_ptr<WindowsWorkspaceWatcher> watcher;
-    try
-    {
-        watcher = std::make_unique<WindowsWorkspaceWatcher>(std::move(directory), std::move(locationLocks),
-                                                            std::move(path), std::move(changeEvent),
-                                                            std::move(stopEvent), a_limits, a_assertContext);
-    }
-    catch (...)
-    {
-        terminate_allocation(a_assertContext);
-    }
-    cue::Result<void> started = watcher->start();
-    if (!started)
-    {
-        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*started.try_error()));
-    }
-    std::unique_ptr<cue::WorkspaceWatcher> result(std::move(watcher));
-    return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::success(std::move(result));
-}
+    std::span<const HANDLE> a_expectedChain, std::wstring_view a_rootPath, std::string_view a_relativeDirectory,
+    cue::WorkspaceWatchLimits a_limits, const cue::AssertContext &a_assertContext) noexcept;
 
 /// @brief Absolute Windows PathをExtended Path表現へ変換する
 [[nodiscard]] cue::Result<std::wstring> make_extended_path(std::wstring a_path,
@@ -1487,6 +1377,255 @@ void reject_stale_entry(cue::WorkspaceEntry &a_entry, cue::WorkspaceDiagnosticCo
     {
         terminate_allocation(a_assertContext);
     }
+}
+
+/// @brief Windows Handle Metadataが同じDirectory Objectを示すか判定する
+[[nodiscard]] bool same_directory_information(const BY_HANDLE_FILE_INFORMATION &a_left,
+                                              const BY_HANDLE_FILE_INFORMATION &a_right) noexcept
+{
+    constexpr DWORD k_typeMask = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+    return a_left.dwVolumeSerialNumber == a_right.dwVolumeSerialNumber &&
+           a_left.nFileIndexHigh == a_right.nFileIndexHigh && a_left.nFileIndexLow == a_right.nFileIndexLow &&
+           (a_left.dwFileAttributes & k_typeMask) == (a_right.dwFileAttributes & k_typeMask);
+}
+
+/// @brief 元Root Pathと親Handle列挙を再照合しながらDirectory Chainを移動不可で固定する
+[[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_windows_workspace_watcher(
+    std::span<const HANDLE> a_expectedChain, std::wstring_view a_rootPath, std::string_view a_relativeDirectory,
+    cue::WorkspaceWatchLimits a_limits, const cue::AssertContext &a_assertContext) noexcept
+{
+    if (!a_limits.is_valid() || a_expectedChain.empty() || a_rootPath.empty())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            cue::make_io_error(a_assertContext, cue::IoError::InvalidPath, "Workspace watcher limits are invalid"));
+    }
+
+    std::vector<UniqueHandle> locationLocks;
+    std::wstring path;
+    UniqueHandle directory;
+    try
+    {
+        locationLocks.reserve(a_expectedChain.size() - 1U);
+        path.assign(a_rootPath);
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
+
+    const bool watchesRoot = a_expectedChain.size() == 1U;
+    const DWORD rootFlags =
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | (watchesRoot ? FILE_FLAG_OVERLAPPED : 0U);
+    UniqueHandle rootLock(CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, rootFlags, nullptr));
+    if (!rootLock.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher root lock failed"));
+    }
+    BY_HANDLE_FILE_INFORMATION expectedRoot{};
+    BY_HANDLE_FILE_INFORMATION actualRoot{};
+    if (GetFileInformationByHandle(a_expectedChain.front(), &expectedRoot) == FALSE ||
+        GetFileInformationByHandle(rootLock.get(), &actualRoot) == FALSE)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher root identity query failed"));
+    }
+    if (!same_directory_information(expectedRoot, actualRoot) ||
+        (actualRoot.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+        (actualRoot.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            cue::make_io_error(a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher root identity changed"));
+    }
+    if (watchesRoot)
+    {
+        directory = std::move(rootLock);
+    }
+    else
+    {
+        locationLocks.push_back(std::move(rootLock));
+    }
+
+    std::string_view remaining = a_relativeDirectory;
+    for (std::size_t index = 1U; index < a_expectedChain.size(); ++index)
+    {
+        if (remaining.empty())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::InvalidPath, "Workspace watcher directory chain is incomplete"));
+        }
+        const std::size_t separator = remaining.find('/');
+        const std::string_view component = remaining.substr(0U, separator);
+        cue::Result<std::wstring> nativeComponent = to_utf16(component, a_assertContext);
+        if (!nativeComponent)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                std::move(*nativeComponent.try_error()));
+        }
+
+        const HANDLE parentHandle = locationLocks.back().get();
+        cue::Result<NativeDirectoryEnumeration> before = enumerate_directory_handle_stable(
+            parentHandle, k_windowsHardLimits.maxVisitedEntries, k_windowsHardLimits.maxMetadataBytes, a_assertContext);
+        if (!before)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*before.try_error()));
+        }
+        if (before.try_value()->interruptedCode.has_value())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, *before.try_value()->interruptedCode,
+                                   "Workspace watcher parent enumeration was interrupted"));
+        }
+
+        /// @brief 現在の親直下で要求Spellingが一意なDirectory Entryだけを返す
+        const auto findComponent =
+            [&](const NativeDirectoryEnumeration &a_enumeration) noexcept -> const NativeDirectoryEntry *
+        {
+            const NativeDirectoryEntry *match = nullptr;
+            std::size_t matchingNames = 0U;
+            for (const NativeDirectoryEntry &entry : a_enumeration.entries)
+            {
+                if (CompareStringOrdinal(entry.name.data(), static_cast<int>(entry.name.size()),
+                                         nativeComponent.try_value()->data(),
+                                         static_cast<int>(nativeComponent.try_value()->size()), TRUE) == CSTR_EQUAL)
+                {
+                    ++matchingNames;
+                    if (entry.name == *nativeComponent.try_value())
+                    {
+                        match = &entry;
+                    }
+                }
+            }
+            return matchingNames == 1U ? match : nullptr;
+        };
+
+        BY_HANDLE_FILE_INFORMATION expected{};
+        if (GetFileInformationByHandle(a_expectedChain[index], &expected) == FALSE)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher identity query failed"));
+        }
+        LARGE_INTEGER expectedId{};
+        expectedId.HighPart = static_cast<LONG>(expected.nFileIndexHigh);
+        expectedId.LowPart = expected.nFileIndexLow;
+        const NativeDirectoryEntry *beforeEntry = findComponent(*before.try_value());
+        constexpr DWORD k_typeMask = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        if (beforeEntry == nullptr || !same_file_id(beforeEntry->fileId, expectedId) ||
+            (beforeEntry->attributes & k_typeMask) != (expected.dwFileAttributes & k_typeMask) ||
+            (beforeEntry->attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (beforeEntry->attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher directory left its parent"));
+        }
+
+        std::wstring componentPath;
+        try
+        {
+            componentPath = path;
+            if (!componentPath.empty() && componentPath.back() != L'\\')
+            {
+                componentPath.push_back(L'\\');
+            }
+            componentPath.append(*nativeComponent.try_value());
+        }
+        catch (...)
+        {
+            terminate_allocation(a_assertContext);
+        }
+        if (componentPath.size() >= k_maxWindowsPathLength)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::CapacityExceeded, "Workspace watcher path exceeds the host limit"));
+        }
+
+        const bool watchedDirectory = index + 1U == a_expectedChain.size();
+        const DWORD flags =
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | (watchedDirectory ? FILE_FLAG_OVERLAPPED : 0U);
+        UniqueHandle locked(CreateFileW(componentPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, flags, nullptr));
+        if (!locked.is_valid())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher directory lock failed"));
+        }
+        BY_HANDLE_FILE_INFORMATION actual{};
+        if (GetFileInformationByHandle(locked.get(), &actual) == FALSE)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher identity query failed"));
+        }
+        if (!same_directory_information(expected, actual) ||
+            (actual.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (actual.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                cue::make_io_error(a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher identity changed"));
+        }
+
+        cue::Result<NativeDirectoryEnumeration> after = enumerate_directory_handle_stable(
+            parentHandle, k_windowsHardLimits.maxVisitedEntries, k_windowsHardLimits.maxMetadataBytes, a_assertContext);
+        if (!after)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*after.try_error()));
+        }
+        if (after.try_value()->interruptedCode.has_value())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, *after.try_value()->interruptedCode,
+                                   "Workspace watcher parent verification was interrupted"));
+        }
+        const NativeDirectoryEntry *afterEntry = findComponent(*after.try_value());
+        if (afterEntry == nullptr || !same_file_id(afterEntry->fileId, expectedId) ||
+            (afterEntry->attributes & k_typeMask) != (expected.dwFileAttributes & k_typeMask))
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher directory left its parent"));
+        }
+
+        path = std::move(componentPath);
+        if (watchedDirectory)
+        {
+            directory = std::move(locked);
+        }
+        else
+        {
+            locationLocks.push_back(std::move(locked));
+        }
+        remaining = separator == std::string_view::npos ? std::string_view{} : remaining.substr(separator + 1U);
+    }
+    if (!remaining.empty() || !directory.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+            a_assertContext, cue::IoError::InvalidPath, "Workspace watcher directory chain is inconsistent"));
+    }
+
+    UniqueHandle changeEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    UniqueHandle stopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!changeEvent.is_valid() || !stopEvent.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher event creation failed"));
+    }
+    std::unique_ptr<WindowsWorkspaceWatcher> watcher;
+    try
+    {
+        watcher = std::make_unique<WindowsWorkspaceWatcher>(std::move(directory), std::move(locationLocks),
+                                                            std::move(path), std::move(changeEvent),
+                                                            std::move(stopEvent), a_limits, a_assertContext);
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
+    cue::Result<void> started = watcher->start();
+    if (!started)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*started.try_error()));
+    }
+    std::unique_ptr<cue::WorkspaceWatcher> result(std::move(watcher));
+    return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::success(std::move(result));
 }
 
 /// @brief Primary Error付きNotCommitted結果を構築する
@@ -2978,7 +3117,9 @@ cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> WindowsWorkspaceFilesystem::
     {
         terminate_allocation(m_assertContext);
     }
-    return create_windows_workspace_watcher(expectedChain, a_limits, m_assertContext);
+    const cue::BoundWorkspacePath *locator = a_directory.locator();
+    const std::string_view relativeDirectory = locator == nullptr ? std::string_view{} : locator->text();
+    return create_windows_workspace_watcher(expectedChain, m_rootPath, relativeDirectory, a_limits, m_assertContext);
 }
 
 /// @brief 未検証Absolute Windows PathをRoot相対Portable Capabilityへ正規化する

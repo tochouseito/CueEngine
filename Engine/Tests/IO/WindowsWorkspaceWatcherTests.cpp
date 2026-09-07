@@ -95,6 +95,9 @@ class TestDirectory final
             CreateDirectoryW(m_outside.c_str(), nullptr) != FALSE &&
             CreateDirectoryW(child(L"Watch").c_str(), nullptr) != FALSE &&
             CreateDirectoryW(child(L"Movable").c_str(), nullptr) != FALSE &&
+            CreateDirectoryW(child(L"Chain").c_str(), nullptr) != FALSE &&
+            CreateDirectoryW(child(L"Chain\\Middle").c_str(), nullptr) != FALSE &&
+            CreateDirectoryW(child(L"Chain\\Middle\\Watch").c_str(), nullptr) != FALSE &&
             write_file(child(L"Watch\\Modify.txt"), "before") && write_file(child(L"Watch\\RenameOld.txt"), "rename") &&
             write_file(child(L"Watch\\RenameDelete.txt"), "rename-delete") &&
             write_file(child(L"Watch\\Delete.txt"), "delete") && write_file(child(L"Watch\\Burst.txt"), "burst");
@@ -335,6 +338,47 @@ class TestDirectory final
            FALSE;
 }
 
+/// @brief 監視対象までの中間Directoryも親子関係を保ったまま移動不可で固定するか検証する
+[[nodiscard]] bool test_intermediate_directory_move(cue::WorkspaceFilesystem &a_workspace,
+                                                    const TestDirectory &a_directory,
+                                                    const cue::AssertContext &a_assertContext) noexcept
+{
+    cue::Result<cue::RelativePath> locator = cue::RelativePath::parse("Chain/Middle/Watch", a_assertContext);
+    if (!locator)
+    {
+        return false;
+    }
+    cue::Result<cue::WorkspaceDirectory> directory =
+        a_workspace.bind_directory(std::move(*locator.try_value()), a_assertContext);
+    if (!directory)
+    {
+        return false;
+    }
+    constexpr cue::WorkspaceWatchLimits k_limits{64U, 16U * 1024U, 32U, 25U, 250U};
+    cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> watcher =
+        a_workspace.create_watcher(*directory.try_value(), k_limits);
+    if (!watcher)
+    {
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    if (MoveFileExW(a_directory.child(L"Chain\\Middle").c_str(), a_directory.outside_child(L"MiddleEscaped").c_str(),
+                    0U) != FALSE ||
+        GetLastError() != ERROR_SHARING_VIOLATION ||
+        !write_file(a_directory.child(L"Chain\\Middle\\Watch\\Inside.txt"), "inside"))
+    {
+        return false;
+    }
+    std::optional<cue::WorkspaceChangeBatch> batch = wait_for_batch(**watcher.try_value());
+    if (!batch || batch->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
+        !has_change(*batch, cue::WorkspaceChangeHintKind::Created, "Inside.txt") || !(*watcher.try_value())->stop())
+    {
+        return false;
+    }
+    return MoveFileExW(a_directory.child(L"Chain\\Middle").c_str(), a_directory.outside_child(L"MiddleEscaped").c_str(),
+                       0U) != FALSE;
+}
+
 /// @brief Bounded Queue OverflowをRescanRequiredへ昇格し停止後通知を残さないか検証する
 [[nodiscard]] bool test_overflow_and_shutdown(cue::WorkspaceFilesystem &a_workspace, const TestDirectory &a_directory,
                                               const cue::AssertContext &a_assertContext) noexcept
@@ -406,5 +450,9 @@ int main()
     {
         return 4;
     }
-    return test_overflow_and_shutdown(**workspace.try_value(), directory, assertContext) ? 0 : 5;
+    if (!test_intermediate_directory_move(**workspace.try_value(), directory, assertContext))
+    {
+        return 5;
+    }
+    return test_overflow_and_shutdown(**workspace.try_value(), directory, assertContext) ? 0 : 6;
 }
