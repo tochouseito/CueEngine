@@ -353,8 +353,9 @@ FIFOの`StructuralCommandReport`へ記録した後、成功／失敗を問わず
 この「一度」は非空Batchに含まれる各Commandの評価と消費を指し、`World::flush_commands`のAPI呼出回数を
 Cleanup Sequence全体で一回へ制限するものではない。既存`RuntimeWorld::tick`はWorld Shutdown前の最終Tickでも
 空のCommand Bufferに対してFlushを呼ぶため、この空Flushは許可する。最終Tickを省略せず、空Flushを理由に
-消費済みBatchを再構築、再登録、再評価しない。実装Testは生のFlush呼出回数ではなく、非空BatchのCommand ID、
-Report、適用されたMutationがそれぞれ一度だけ観測されることを検証する。
+消費済みBatchを再構築、再登録、再評価しない。実装Testは生のFlush呼出回数ではなく、既存
+`StructuralCommandReport`のFIFO位置とCommand Kind、および適用されたMutationがそれぞれ一度だけ観測されることを
+検証する。Command登録IDを新設せず、同じKindを複数登録する場合は登録順ごとに結果または対象Entityを変えて識別する。
 
 SessionはCommand単位の失敗を順序付きCleanup Diagnosticへ変換し、未適用Commandを保持または再登録しない。
 SceneInstance Endが残る所有Entityを最終的に終了するため、Command単位の失敗だけでは生存Ownerを示す
@@ -428,7 +429,7 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
 - Stop再試行が完了するまで非空BatchのCommand消費が0回であり、全System停止後に各Commandを一度だけ評価・消費する
-- World Shutdown前の最終Tickによる空Flushを許可し、非空BatchのCommand ID、Report、Mutationが再観測されない
+- World Shutdown前の最終Tickによる空Flushを許可し、非空BatchのFIFO位置、Kind、結果、Mutationが再観測されない
 - Structural Commandの一部が失敗しても全Reportを順序付き診断へ変換し、Batchを再実行せずScene Endを継続する
 - Stop要求がSafe Pointで適用され、Stop後にFrame Updateを拒否する
 - Update ErrorをFatalとせず、診断を保持して停止へ移る
