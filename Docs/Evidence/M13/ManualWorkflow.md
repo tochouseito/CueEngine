@@ -21,7 +21,7 @@ CodexのWindows app controlは利用できなかったため、本記録はUser�
 | F5／DeleteのFiles focus限定 | Pass | 問題なし |
 | Delete PreviewとEscape Cancel | Pass | 問題なし |
 | Project-local TrashへのDeleteとRestore | Pass | 問題なし |
-| Restore競合時の既存Data／Recovery Data保持 | Pass | 問題なし |
+| Restore競合検出時の既存Data／Recovery Data保持と手動照合表示 | Pass | 問題なし |
 | Root外Move拒否と日本語Error | Pass | 問題なし |
 | Editor外変更の再列挙とSelection解除 | Pass | 問題なし |
 | Editor再起動後のRecovery CatalogとRestore | Pass | 問題なし |
@@ -40,4 +40,4 @@ CodexのWindows app controlは利用できなかったため、本記録はUser�
 
 ## Result
 
-発見事項はなく、M13の手動Files UI WorkflowとNative Dialog GateをPassとする。
+実Windowの機能動作に発見事項はなく、M13の手動Files UI WorkflowとNative Dialog GateをPassとする。

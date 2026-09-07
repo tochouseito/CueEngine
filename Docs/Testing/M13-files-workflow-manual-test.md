@@ -32,9 +32,10 @@ Project-local Trashを実Windowで確認する。Asset Import／Cook、Asset Dat
 4. 再度`Delete`を押して確定し、FileがSource Asset一覧から消え、Recovery一覧へ現れることを確認する。
 5. Recovery一覧からRestoreし、元Pathへ内容を保持して戻ることを確認する。
 6. 復元した`Copied.txt`をもう一度Recoverable Deleteし、Recovery一覧へ戻ることを確認する。
-7. 元と同じPathへ別内容の`Copied.txt`を作成する。
-8. Recovery一覧から元の`Copied.txt`をRestoreし、既存FileとRecovery Dataの双方を保持して日本語Errorになることを確認する。
-9. 競合用に作成したFileを`CopiedConflict.txt`へRenameし、元のRecovery Entryを残したまま再起動確認へ進める状態にする。
+7. Files UIから元と同じPathへ空File `Copied.txt`を作成する。
+8. Recovery Entryに`手動照合が必要です`と表示されてRestoreが無効になり、既存FileとRecovery Dataの双方が保持されることを確認する。
+9. 競合用に作成したFileを`CopiedConflict.txt`へRenameし、再取得後に元のRecovery Entryが復元可能へ戻ることを確認する。
+10. Recovery EntryはRestoreせず、そのまま再起動確認へ進む。
 
 ## Root Boundary and External Change
 
