@@ -2117,7 +2117,7 @@ Result<std::unique_ptr<FilesystemRoot>> create_windows_filesystem_root(std::stri
         return Result<std::unique_ptr<FilesystemRoot>>::failure(std::move(*extended.try_error()));
     }
     UniqueHandle root(CreateFileW(extended.try_value()->c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!root.is_valid())
     {

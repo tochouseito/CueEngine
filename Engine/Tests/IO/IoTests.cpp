@@ -115,6 +115,23 @@ class TestDirectory final
         return m_outsidePath;
     }
 
+    /// @brief Root寿命中のRenameがRoot HandleのShare契約で拒否されるか確認する
+    [[nodiscard]] bool is_replacement_blocked() noexcept
+    {
+        const std::wstring movedPath = m_path + L".Moved";
+        SetLastError(ERROR_SUCCESS);
+        if (MoveFileExW(m_path.c_str(), movedPath.c_str(), 0U) == FALSE)
+        {
+            const DWORD nativeCode = GetLastError();
+            return nativeCode == ERROR_SHARING_VIOLATION || nativeCode == ERROR_ACCESS_DENIED;
+        }
+        if (MoveFileExW(movedPath.c_str(), m_path.c_str(), 0U) == FALSE)
+        {
+            m_path = movedPath;
+        }
+        return false;
+    }
+
   private:
     std::wstring m_path;
     std::wstring m_outsidePath;
@@ -1088,6 +1105,10 @@ int main()
     if (!filesystem)
     {
         return 2;
+    }
+    if (!directory.is_replacement_blocked())
+    {
+        return 8;
     }
 
     if (!test_windows_file_operations(**filesystem.try_value(), directory, assertContext))
