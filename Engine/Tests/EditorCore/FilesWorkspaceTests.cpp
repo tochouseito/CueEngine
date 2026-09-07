@@ -500,6 +500,21 @@ class TestProject final
     {
         return fail_stage("copy");
     }
+    cue::Result<cue::project_files::ProjectFileDeletePreview> folderPreview = service.preview_delete("Folder");
+    if (!folderPreview || folderPreview.try_value()->entryType != cue::WorkspaceEntryType::Directory ||
+        folderPreview.try_value()->descendantCount != 3U || folderPreview.try_value()->byteSize != 18U)
+    {
+        return fail_stage("delete-preview-directory");
+    }
+    cue::Result<cue::project_files::ProjectFileDeletePreview> invalidPreview =
+        service.preview_delete("../Outside");
+    if (invalidPreview || service.view_model().try_error() == nullptr ||
+        service.view_model().try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidWorkspaceRequest) ||
+        !service.refresh())
+    {
+        return fail_stage("delete-preview-invalid");
+    }
 
     const std::uint64_t beforeConflictGeneration = service.view_model().generation();
     cue::Result<cue::project_files::ProjectFileOperationOutcome> conflict =
@@ -526,7 +541,8 @@ class TestProject final
         return fail_stage("open-document");
     }
     cue::Result<cue::project_files::ProjectFileOperationOutcome> blocked = service.delete_entry("Folder");
-    if (blocked || service.view_model().try_error() == nullptr ||
+    cue::Result<cue::project_files::ProjectFileDeletePreview> blockedPreview = service.preview_delete("Folder");
+    if (blockedPreview || blocked || service.view_model().try_error() == nullptr ||
         service.view_model().operation_state() != cue::editor_core::FilesOperationState::Failed ||
         service.view_model().try_last_operation() != nullptr ||
         service.view_model().try_error()->code().value() !=

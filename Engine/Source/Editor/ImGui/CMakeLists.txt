@@ -4,11 +4,13 @@ target_sources(
     Cue.Editor.ImGui
     PRIVATE
         Private/EditorPresenter.cpp
+        Private/FilesPresenter.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
             Public/Cue/Editor/ImGui/EditorPresenter.h
+            Public/Cue/Editor/ImGui/FilesPresenter.h
 )
 
 target_link_libraries(

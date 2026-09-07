@@ -47,6 +47,7 @@ enum class WindowsEditorSessionError : std::int64_t
     SceneOpenFailed = 9,
     InvalidSessionState = 10,
     SceneSaveFailed = 11,
+    ProjectFilesInitializationFailed = 12,
 };
 
 /// @brief Project Hubから値だけで受け取るEditor Process起動入力
@@ -125,6 +126,8 @@ class WindowsEditorSession final
 
     /// @brief Sessionが所有するEditor Controllerを返す
     [[nodiscard]] editor_core::EditorController &controller() noexcept;
+    /// @brief Project Session全寿命で所有するFiles Workspace Serviceを返す
+    [[nodiscard]] editor_core::FilesWorkspaceService &files_workspace() noexcept;
     /// @brief Sessionが所有するSchema Registryを返す
     [[nodiscard]] const schema::SchemaRegistry &schema_registry() const noexcept;
     /// @brief SceneとObjectのUUID生成に使用するSession-local Sourceを返す
@@ -168,6 +171,7 @@ class WindowsEditorSession final
     std::unique_ptr<scene::ComponentMigrationRegistry> m_componentMigrations;
     std::unique_ptr<scene::SceneIdentitySource> m_sceneIdentitySource;
     std::unique_ptr<editor_core::EditorController> m_controller;
+    std::unique_ptr<editor_core::FilesWorkspaceService> m_filesWorkspace;
     std::optional<editor_core::EditorDocumentId> m_activeDocumentId;
     std::optional<editor_core::EditorDocumentId> m_preparedDocumentId;
     const AssertContext *m_assertContext;

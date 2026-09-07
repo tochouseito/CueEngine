@@ -1,11 +1,15 @@
 #include <Cue/Editor/Windows/EditorSession.h>
 
+#include <Cue/EditorCore/FilesWorkspace.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
+#include <Cue/Foundation/Log.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/Filesystem.h>
 #include <Cue/IO/Windows/WindowsFilesystem.h>
+#include <Cue/IO/Windows/WindowsWorkspaceFilesystem.h>
 #include <Cue/Project/Descriptor.h>
+#include <Cue/ProjectFiles/Service.h>
 #include <Cue/Scene/ComponentData.h>
 #include <Cue/Scene/Identity.h>
 #include <Cue/Scene/SceneDocument.h>
@@ -25,6 +29,11 @@
 
 namespace
 {
+constexpr cue::editor_core::FilesWorkspaceLimits k_filesLimits{
+    cue::TraversalLimits{32U, 4096U, 1024U, 1024U * 1024U},
+    cue::ContentVerificationLimits{1024U * 1024U, 16U * 1024U * 1024U},
+    cue::WorkspaceWatchLimits{256U, 64U * 1024U, 128U, 25U, 250U}};
+
 /// @brief Editor Session失敗を安定Domainへ分類する
 [[nodiscard]] cue::Error make_session_error(const cue::AssertContext &a_context,
                                             cue::editor::WindowsEditorSessionError a_code,
@@ -170,6 +179,60 @@ class WindowsSceneIdentitySource final : public cue::scene::SceneIdentitySource
   private:
     const cue::AssertContext *m_assertContext;
 };
+
+/// @brief BCryptのSystem RNGからProject File操作用UUID Version 4を発行する
+class WindowsProjectFileOperationIdSource final : public cue::project_files::ProjectFileOperationIdSource
+{
+  public:
+    /// @brief RNG失敗時の終端先をOperation ID Source全寿命へ保持する
+    explicit WindowsProjectFileOperationIdSource(const cue::AssertContext &a_context) noexcept
+        : m_assertContext(&a_context)
+    {
+    }
+
+    /// @brief 非所有診断Contextだけを破棄する
+    ~WindowsProjectFileOperationIdSource() override = default;
+
+    /// @brief System RNGからlowercase UUID Version 4を生成して返す
+    [[nodiscard]] cue::Result<std::string> next_operation_id() noexcept override
+    {
+        std::array<std::uint8_t, 16U> bytes{};
+        const NTSTATUS status =
+            BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (status < 0)
+        {
+            m_assertContext->fatal_handler().terminate("Windows project file operation identity generation failed");
+            std::abort();
+        }
+        bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fU) | 0x40U);
+        bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fU) | 0x80U);
+
+        constexpr std::string_view k_digits = "0123456789abcdef";
+        std::array<char, 36U> text{};
+        std::size_t output = 0U;
+        for (std::size_t index = 0U; index < bytes.size(); ++index)
+        {
+            if (index == 4U || index == 6U || index == 8U || index == 10U)
+            {
+                text[output++] = '-';
+            }
+            text[output++] = k_digits[bytes[index] >> 4U];
+            text[output++] = k_digits[bytes[index] & 0x0fU];
+        }
+        try
+        {
+            return cue::Result<std::string>::success(std::string(text.data(), text.size()));
+        }
+        catch (...)
+        {
+            m_assertContext->fatal_handler().terminate("Windows project file operation identity allocation failed");
+            std::abort();
+        }
+    }
+
+  private:
+    const cue::AssertContext *m_assertContext;
+};
 } // namespace
 
 namespace cue::editor
@@ -184,7 +247,19 @@ WindowsEditorSession::WindowsEditorSession(std::string a_projectLocator, std::un
 {
 }
 
-WindowsEditorSession::~WindowsEditorSession() noexcept = default;
+WindowsEditorSession::~WindowsEditorSession() noexcept
+{
+    if (m_filesWorkspace != nullptr)
+    {
+        Result<void> stopped = m_filesWorkspace->stop();
+        if (!stopped)
+        {
+            static_cast<void>(m_assertContext->logger().log(LogLevel::Error,
+                                                            "Files workspace watcher could not be stopped",
+                                                            std::move(*stopped.try_error())));
+        }
+    }
+}
 
 Result<std::unique_ptr<WindowsEditorSession>> WindowsEditorSession::create(
     WindowsEditorLaunchParameters a_parameters, WindowsEditorEngineConfiguration a_configuration,
@@ -354,6 +429,36 @@ Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
                                                           *m_valueSchemaRegistry, *m_sceneMigrations,
                                                           *m_componentMigrations);
         m_controller = editor_core::EditorController::create(std::move(a_descriptor), persistence, *m_assertContext);
+
+        Result<std::unique_ptr<WorkspaceFilesystem>> workspace =
+            create_windows_workspace_filesystem(m_projectLocator, *m_assertContext);
+        if (!workspace)
+        {
+            return Result<void>::failure(reclassify_session_error(
+                *m_assertContext, WindowsEditorSessionError::ProjectFilesInitializationFailed,
+                "Project files workspace could not be opened", std::move(*workspace.try_error())));
+        }
+        std::unique_ptr<project_files::ProjectFileOperationIdSource> operationIds =
+            std::make_unique<WindowsProjectFileOperationIdSource>(*m_assertContext);
+        Result<project_files::ProjectFileService> projectFiles = project_files::ProjectFileService::create(
+            m_controller->session().project_descriptor(), std::move(*workspace.try_value()), std::move(operationIds),
+            *m_assertContext);
+        if (!projectFiles)
+        {
+            return Result<void>::failure(reclassify_session_error(
+                *m_assertContext, WindowsEditorSessionError::ProjectFilesInitializationFailed,
+                "Project file service could not be initialized", std::move(*projectFiles.try_error())));
+        }
+        Result<std::unique_ptr<editor_core::FilesWorkspaceService>> filesWorkspace =
+            editor_core::FilesWorkspaceService::create(std::move(*projectFiles.try_value()), *m_controller,
+                                                       k_filesLimits, *m_assertContext);
+        if (!filesWorkspace)
+        {
+            return Result<void>::failure(reclassify_session_error(
+                *m_assertContext, WindowsEditorSessionError::ProjectFilesInitializationFailed,
+                "Files workspace service could not be initialized", std::move(*filesWorkspace.try_error())));
+        }
+        m_filesWorkspace = std::move(*filesWorkspace.try_value());
 
         if (a_initialSceneLocator.has_value())
         {
@@ -742,6 +847,11 @@ Result<editor_core::DocumentCloseState> WindowsEditorSession::respond_to_close(
 editor_core::EditorController &WindowsEditorSession::controller() noexcept
 {
     return *m_controller;
+}
+
+editor_core::FilesWorkspaceService &WindowsEditorSession::files_workspace() noexcept
+{
+    return *m_filesWorkspace;
 }
 
 const schema::SchemaRegistry &WindowsEditorSession::schema_registry() const noexcept
