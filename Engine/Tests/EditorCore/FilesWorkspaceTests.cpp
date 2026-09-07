@@ -576,12 +576,23 @@ class TestProject final
         return fail_stage("stop");
     }
     cue::Result<bool> pollAfterStop = service.poll_external_changes();
-    return !pollAfterStop && service.view_model().is_stale() && service.view_model().try_error() != nullptr &&
-           service.view_model().try_error()->code().value() ==
-               static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable) &&
-           pollAfterStop.try_error() != nullptr &&
-           pollAfterStop.try_error()->code().value() ==
-               static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable);
+    if (pollAfterStop || !service.view_model().is_stale() || service.view_model().try_error() == nullptr ||
+        service.view_model().try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable) ||
+        pollAfterStop.try_error() == nullptr || pollAfterStop.try_error()->code().value() !=
+                                                  static_cast<std::int64_t>(
+                                                      cue::editor_core::EditorCoreError::WorkspaceUnavailable))
+    {
+        return fail_stage("poll-after-stop");
+    }
+    cue::Result<cue::project_files::ProjectFileOperationOutcome> createdAfterStop =
+        service.create_file("AfterStop.txt", std::as_bytes(std::span(content.data(), content.size())));
+    return service.refresh() && service.select("Folder/Nested.txt") && service.set_search_filter("nested") &&
+           createdAfterStop && is_published(*createdAfterStop.try_value()) &&
+           contains_entry(service.view_model(), "AfterStop.txt") && service.view_model().is_stale() &&
+           service.view_model().try_error() != nullptr && service.view_model().try_error()->code().value() ==
+                                                             static_cast<std::int64_t>(
+                                                                 cue::editor_core::EditorCoreError::WorkspaceUnavailable);
 }
 } // namespace
 

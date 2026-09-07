@@ -202,6 +202,8 @@ class FilesWorkspaceService final
                                         std::string_view a_documentLocator) const noexcept;
     /// @brief ErrorをViewModelへ保持し、Callerへ返す別Errorを生成する
     [[nodiscard]] Error retain_error(Error a_error, EditorCoreError a_code, std::string_view a_summary) noexcept;
+    /// @brief 停止したWatcherを永続的なstale状態として保持し、Caller用Errorを返す
+    [[nodiscard]] Error mark_watcher_unavailable(std::string_view a_summary) noexcept;
     /// @brief Transient Errorを消し、対応Operation結果がないFailed状態をIdleへ戻す
     void dismiss_error() noexcept;
     /// @brief Owner Thread違反を回復可能Errorとして返す
@@ -217,5 +219,6 @@ class FilesWorkspaceService final
     std::unique_ptr<WorkspaceWatcher> m_watcher;
     std::optional<WorkspaceChangeBatch> m_pendingExternalChanges;
     FilesViewModel m_view;
+    bool m_isWatcherUnavailable = false;
 };
 } // namespace cue::editor_core

@@ -712,11 +712,7 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
     }
     if (m_watcher == nullptr)
     {
-        m_view.m_isStale = true;
-        return Result<bool>::failure(retain_error(
-            make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
-                                   "Files workspace watcher is stopped"),
-            EditorCoreError::WorkspaceUnavailable, "Files workspace watcher is stopped"));
+        return Result<bool>::failure(mark_watcher_unavailable("Files workspace watcher is stopped"));
     }
 
     if (!m_pendingExternalChanges.has_value())
@@ -725,6 +721,10 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
         if (!drained)
         {
             m_view.m_isStale = true;
+            if (!m_watcher->is_running())
+            {
+                m_isWatcherUnavailable = true;
+            }
             return Result<bool>::failure(retain_error(std::move(*drained.try_error()),
                                                       EditorCoreError::WorkspaceUnavailable,
                                                       "Files workspace watcher drain failed"));
@@ -733,11 +733,7 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
         {
             if (!m_watcher->is_running())
             {
-                m_view.m_isStale = true;
-                return Result<bool>::failure(retain_error(
-                    make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
-                                           "Files workspace watcher terminated"),
-                    EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
+                return Result<bool>::failure(mark_watcher_unavailable("Files workspace watcher terminated"));
             }
             return Result<bool>::success(false);
         }
@@ -768,11 +764,7 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
     m_pendingExternalChanges.reset();
     if (!m_watcher->is_running())
     {
-        m_view.m_isStale = true;
-        return Result<bool>::failure(retain_error(
-            make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
-                                   "Files workspace watcher terminated"),
-            EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
+        return Result<bool>::failure(mark_watcher_unavailable("Files workspace watcher terminated"));
     }
     return Result<bool>::success(true);
 }
@@ -797,6 +789,7 @@ Result<void> FilesWorkspaceService::stop() noexcept
     }
     m_watcher.reset();
     m_pendingExternalChanges.reset();
+    static_cast<void>(mark_watcher_unavailable("Files workspace watcher is stopped"));
     return Result<void>::success();
 }
 
@@ -958,8 +951,27 @@ Error FilesWorkspaceService::retain_error(Error a_error, EditorCoreError a_code,
     return make_editor_core_error(m_assertContext, a_code, a_summary);
 }
 
+Error FilesWorkspaceService::mark_watcher_unavailable(std::string_view a_summary) noexcept
+{
+    m_isWatcherUnavailable = true;
+    m_view.m_isStale = true;
+    return retain_error(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable, a_summary),
+                        EditorCoreError::WorkspaceUnavailable, a_summary);
+}
+
 void FilesWorkspaceService::dismiss_error() noexcept
 {
+    if (m_isWatcherUnavailable)
+    {
+        m_view.m_isStale = true;
+        m_view.m_error.emplace(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
+                                                      "Files workspace watcher is unavailable"));
+        if (m_view.m_operationState == FilesOperationState::Failed && !m_view.m_lastOperation.has_value())
+        {
+            m_view.m_operationState = FilesOperationState::Idle;
+        }
+        return;
+    }
     m_view.m_error.reset();
     if (m_view.m_operationState == FilesOperationState::Failed && !m_view.m_lastOperation.has_value())
     {
