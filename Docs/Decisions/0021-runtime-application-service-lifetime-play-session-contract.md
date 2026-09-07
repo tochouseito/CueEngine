@@ -279,9 +279,10 @@ SystemはFallibleな準備を非公開Candidateへ行い、必要なRAII Token�
 失敗時は開始済み要素だけを次の逆順でRollbackする。
 
 1. Start済みSystemを逆順にStopする
-2. `SceneInstance::end`で所有Entityを終了する
-3. `RuntimeWorld::request_stop`後に最終`tick`を行い、`shutdown`を確認する
-4. System Registry、Clock、InputのSession-local所有物を解放する
+2. System Stopが生成したStructural Commandを、Stop呼出し中の記録順を保って最後のSafe Pointで適用する
+3. `SceneInstance::end`で所有Entityを終了する
+4. `RuntimeWorld::request_stop`後に最終`tick`を行い、`shutdown`を確認する
+5. System Registry、Clock、InputのSession-local所有物を解放する
 
 Snapshot検証またはInstantiation Plan作成中はWorldを変更しない。
 Scene実体化失敗はADR-0017に従い、そのOperation由来の生存Entityを残さない。
@@ -331,6 +332,18 @@ M14は汎用Thread-safe QueueまたはParallel Systemを導入しない。
 System StopまたはSceneInstance Endが一部失敗しても、依存関係から独立している後続Cleanupだけを継続して全Errorを収集する。
 失敗したOwnerより下位の依存を先に破棄しない。終了済みであっても、未終了Ownerが再Cleanupで参照し得るObjectは保持する。
 
+`Runtime System::stop`は再試行可能なCleanup契約を持つ。RegistryはSystemごとに`Started`、`StopPending`、`Stopped`を保持し、
+`Stopped`へ到達したSystemへ`stop`を再度呼ばない。`stop`がErrorを返す場合、Systemは`StopPending`に留まり、
+購読解除、Callback失効、Resource解放、Structural Command登録等の完了済みSubstepを内部Progressとして保持する。
+同じOwner Threadから再度`stop`を呼ぶと未完了Substepだけを続行し、完了済み解除を二重実行せず、
+同じStructural Commandを再登録しない。Error後も未完了Substepの再実行に必要なTokenと依存参照を保持し、
+DestructorへCleanupを委ねない。このPostconditionを満たせないSystemはM14のRegistryへ登録できない。
+
+System Stopが登録したStructural CommandのFlushはSessionが所有する独立Cleanup Stepとして一度だけ実行する。
+Flush完了前はSystem Registry、SceneInstance、RuntimeWorldを保持し、通常停止と開始Rollbackのどちらでも
+`SceneInstance::end`より先にFlushを完了する。Flushが失敗した場合は未適用CommandとProgressを保持して
+`CleanupFailed`へ移り、SceneInstance EndとWorld Shutdownを開始しない。
+
 `CleanupFailed`では次の依存閉包を最低限保持する。
 
 - Stop未完了Systemがある場合は、そのSystem、System Registry、Clock、Input State、Runtime Scene Session、
@@ -340,7 +353,8 @@ System StopまたはSceneInstance Endが一部失敗しても、依存関係か�
 - 終了を確認できたOwnerでも、上記未終了Ownerの再Cleanupに必要なら解放しない
 
 すべての未終了Ownerが成功状態へ到達し、依存閉包が不要になった後だけ通常の逆順解放を再開する。
-再Cleanupは終了済みStepを再実行せず、未終了Ownerとその依存閉包だけを対象にする。
+再CleanupはSystemごとのStop ProgressとSessionのFlush Progressを参照し、終了済みStepを再実行せず、
+未終了Owner、未完了Flushとその依存閉包だけを対象にする。
 
 RuntimeWorldのShutdown完了後にRuntime Entity Handle、World Pointer、Component View、Command Buffer Pointerを
 Controller、UI、Log Entryへ残さない。診断にはStable Session ID、Scene Asset ID、System ID、Error Categoryを値として保存する。
@@ -390,9 +404,12 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - Start各StepへのFailure Injectionで、成功済み要素だけが逆順Cleanupされる
 - 各SystemのStart失敗で購読、Resource、World Mutation等の副作用が残らない
 - System Start途中失敗で開始済みSystemだけが一度ずつ逆順Stopされる
+- System Start途中Rollbackで、Stopが登録したStructural CommandをSceneInstance End前に一度だけFlushする
 - Scene実体化失敗でOperation由来の生存Entityを残さない
 - SceneInstance End部分失敗で生存所有集合とWorldを保持し、再Cleanupできる
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
+- System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
+- Structural Command Flush失敗でSceneInstanceとWorldを保持し、再Flush後にだけScene Endへ進む
 - Stop要求がSafe Pointで適用され、Stop後にFrame Updateを拒否する
 - Update ErrorをFatalとせず、診断を保持して停止へ移る
 - 10回以上のPlay／StopでSession、World、SceneInstance、System Instanceが残留しない
