@@ -219,6 +219,7 @@ Result<void> FilesWorkspaceService::refresh() noexcept
     Result<void> recovery = refresh_recovery_catalog();
     if (!recovery)
     {
+        m_view.m_isStale = true;
         return recovery;
     }
 
