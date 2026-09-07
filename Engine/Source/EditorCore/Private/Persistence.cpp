@@ -542,11 +542,6 @@ Result<EditorDocumentId> EditorController::open_document_from_storage(RelativePa
 Result<ExternalChangeState> EditorController::poll_external_change(EditorDocumentId a_documentId) noexcept
 {
     assert_owner_thread();
-    auto services = require_persistence_services();
-    if (!services)
-    {
-        return Result<ExternalChangeState>::failure(std::move(*services.try_error()));
-    }
     EditorDocument *document = find_document(a_documentId);
     if (document == nullptr)
     {
@@ -558,6 +553,11 @@ Result<ExternalChangeState> EditorController::poll_external_change(EditorDocumen
     {
         document->m_externalChangeState = ExternalChangeState::None;
         return Result<ExternalChangeState>::success(ExternalChangeState::None);
+    }
+    auto services = require_persistence_services();
+    if (!services)
+    {
+        return Result<ExternalChangeState>::failure(std::move(*services.try_error()));
     }
 
     auto current = fingerprint_scene_file(*m_sourceAssetsRoot, document->m_locator, *m_assertContext);

@@ -31,7 +31,11 @@ enum class EditorCoreError : std::int64_t
     PersistenceUnavailable = 14,
     ExternalConflict = 15,
     InvalidRecovery = 16,
-    UnsupportedRecovery = 17
+    UnsupportedRecovery = 17,
+    InvalidWorkspaceRequest = 18,
+    WorkspaceEntryInUse = 19,
+    WorkspaceUnavailable = 20,
+    WorkspaceGenerationExhausted = 21
 };
 
 /// @brief Editor Core Error を診断 Summary と共に生成する

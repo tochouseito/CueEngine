@@ -602,6 +602,40 @@ struct MountPointReparseBuffer final
     cue::AssertContext temporaryContext(a_logger, a_fatalHandler);
     return cue::create_windows_workspace_filesystem(a_rootPath, temporaryContext);
 }
+
+/// @brief Root直下から子DirectoryへのRenameが自己変更を親Chain競合と誤認しないことを検証する
+[[nodiscard]] bool test_rename_into_descendant_parent(cue::WorkspaceFilesystem &a_filesystem,
+                                                      const TestDirectory &a_directory,
+                                                      const cue::AssertContext &a_assertContext) noexcept
+{
+    if (CreateDirectoryW(a_directory.child(L"MoveArea").c_str(), nullptr) == FALSE ||
+        CreateDirectoryW(a_directory.child(L"MoveArea\\Child").c_str(), nullptr) == FALSE ||
+        !write_file(a_directory.child(L"MoveArea\\MoveSource.txt"), "move"))
+    {
+        return false;
+    }
+    auto sourceLocator = cue::RelativePath::parse("MoveArea/MoveSource.txt", a_assertContext);
+    auto destinationLocator = cue::RelativePath::parse("MoveArea/Child/MoveDestination.txt", a_assertContext);
+    if (!sourceLocator || !destinationLocator)
+    {
+        return false;
+    }
+    auto source = a_filesystem.bind_root_path(std::move(*sourceLocator.try_value()), a_assertContext);
+    auto destination = a_filesystem.bind_root_path(std::move(*destinationLocator.try_value()), a_assertContext);
+    if (!source || !destination)
+    {
+        return false;
+    }
+
+    cue::WorkspaceMutationResult renamed = a_filesystem.rename_entry(*source.try_value(), *destination.try_value(),
+                                                                     cue::TraversalLimits{8U, 64U, 64U, 16U * 1024U});
+    const bool published = renamed.outcome == cue::WorkspaceMutationOutcome::Committed ||
+                           renamed.outcome == cue::WorkspaceMutationOutcome::CommittedButDurabilityUnknown;
+    return published &&
+           GetFileAttributesW(a_directory.child(L"MoveArea\\MoveSource.txt").c_str()) == INVALID_FILE_ATTRIBUTES &&
+           GetFileAttributesW(a_directory.child(L"MoveArea\\Child\\MoveDestination.txt").c_str()) !=
+               INVALID_FILE_ATTRIBUTES;
+}
 } // namespace
 
 /// @brief Windows Workspace列挙、Reparse拒否、競合診断、Root Pinを統合検証する
@@ -678,18 +712,23 @@ int main()
         return 13;
     }
 
+    if (!test_rename_into_descendant_parent(**filesystem.try_value(), directory, assertContext))
+    {
+        return 14;
+    }
+
     auto limited = (**filesystem.try_value())
                        .list_directory(cue::WorkspaceDirectory::root(), cue::TraversalLimits{2U, 64U, 1U, 16U * 1024U});
     if (!has_io_error(limited, cue::IoError::CapacityExceeded))
     {
-        return 14;
+        return 15;
     }
 
     if (MoveFileExW(directory.path().c_str(), directory.moved_path().c_str(), 0U) != FALSE)
     {
         MoveFileExW(directory.moved_path().c_str(), directory.path().c_str(), 0U);
-        return 15;
+        return 16;
     }
     const DWORD replacementCode = GetLastError();
-    return replacementCode == ERROR_SHARING_VIOLATION || replacementCode == ERROR_ACCESS_DENIED ? 0 : 16;
+    return replacementCode == ERROR_SHARING_VIOLATION || replacementCode == ERROR_ACCESS_DENIED ? 0 : 17;
 }
