@@ -385,12 +385,14 @@ SceneInstanceをliveのまま通常Destructorへ到達させず、World Shutdown
 Retryable分類または所有状態を安全に終了するAPIを提供する場合だけ、別Research Issueで回復経路を追加する。
 
 #212ではこの分岐を64-bit Structural Epochの実消費へ依存せず検証するため、`Cue.Runtime`の非公開Scene Cleanup層に
-一つの注入可能なEnd Operationを置く。Production Operationは`SceneInstance::end`を一度呼び、外側のResult失敗と
-`SceneInstanceEndReport`のFIFO FailureをSession内部の`SceneCleanupOutcome`へ正規化する。Test Operationは
-`Cue.Runtime.TestSupport`からだけ差し替え、指定順の診断と`hasLiveOwnership`を返せる。一般のRuntime Public Header、
+一つの注入可能なEnd Operationを置く。Operationの返却型はProductionの`SceneInstance::end`と同じ
+`Result<SceneInstanceEndReport>`とし、その下流にある共通Normalizerが外側のResult失敗とReportのFIFO Failureを
+Session内部の`SceneCleanupOutcome`へ変換する。Production Operationは`SceneInstance::end`を一度呼ぶ。
+Test Operationは`Cue.Runtime.TestSupport`からだけ差し替え、公開Constructorで組み立てた複数Failure Reportまたは
+外側のResult失敗を返す。これによりTestもProductionと同じNormalizerを必ず通る。一般のRuntime Public Header、
 Game System、Editor ControllerへこのOperationまたは注入Hookを公開しない。Testは実際のScene／ECS Storageを改変せず、
-System Stopと非空Batch Flushの後に注入Outcomeを返し、Fatal記録のCategoryとCause順、World Shutdown未実行、
-後続Cleanup未実行を子Processで検証する。Production Operationが成功Reportを正しく正規化するTestも別に行う。
+System Stopと非空Batch Flushの後にRaw End Resultを注入し、Fatal記録のCategory、Primary Cause、Secondary Diagnostic順、
+World Shutdown未実行、後続Cleanup未実行を子Processで検証する。Production Operationの成功Reportも別に検証する。
 
 RuntimeWorldのShutdown完了後にRuntime Entity Handle、World Pointer、Component View、Command Buffer Pointerを
 Controller、UI、Log Entryへ残さない。診断にはStable Session ID、Scene Asset ID、System ID、Error Categoryを値として保存する。
@@ -426,7 +428,9 @@ Runtime Session内部にWindow Message LoopまたはEditor Main Loopを埋め込
 公開Lifecycle操作は回復可能な結果を`Result`で返し、Invalid State、Identity不一致、Snapshot／Instantiation失敗、
 System Seal／Start／Update／Stop失敗、Cleanup未完了、Resource Limit超過を区別する。
 Terminal Scene Cleanup失敗は返却されない。`Cue.Runtime`の安定したFatal Categoryを持つErrorへScene Endの
-Resultまたは順序付きReport FailureをCauseとして格納し、Fatal記録Sinkから観測した後に`FatalHandler`で終了する。
+外側Result失敗または先頭Report Failureを同一失敗の再分類Causeとして一件だけ格納する。二件目以降の独立した
+Report FailureはADR-0010の共通APIでFIFO順にPrimary Fatal ErrorのSecondary Diagnostic Contextへ転記し、
+Cause Chainへ追加しない。Fatal記録SinkからPrimary、Cause、Secondary Diagnosticを観測した後に`FatalHandler`で終了する。
 Primary ErrorとCleanup Errorの合成はADR-0010の順序付きSecondary Diagnostic規則に従う。
 日本語UI文言をRuntime Errorの正本にせず、安定CategoryとContextからPresentationが生成する。
 
@@ -444,7 +448,7 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - System Start途中失敗で開始済みSystemだけが一度ずつ逆順Stopされる
 - System Start途中Rollbackで、Stopが登録した非空Structural Command BatchをSceneInstance End前に一度だけ消費する
 - Scene実体化失敗でOperation由来の生存Entityを残さない
-- TestSupportのScene End Failure Injectionで順序付きFatal Causeを記録し、World Shutdownや後続Cleanupへ進まず子Processを終了する
+- Raw Scene End Failure Injectionを共通Normalizerへ通し、先頭CauseとFIFO Secondary Diagnosticを記録して子Processを終了する
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
 - Stop再試行が完了するまで非空BatchのCommand消費が0回であり、全System停止後に各Commandを一度だけ評価・消費する
