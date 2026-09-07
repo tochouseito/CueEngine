@@ -273,6 +273,42 @@ class TestDirectory final
     return quietPolls == 30U;
 }
 
+/// @brief Overflow後の遅延BatchをDrainし、終端診断なしで監視がQuietへ戻るまで待つ
+[[nodiscard]] bool wait_for_recovery_quiet(cue::WorkspaceWatcher &a_watcher) noexcept
+{
+    std::size_t quietPolls = 0U;
+    for (std::size_t attempt = 0U; attempt < 300U && quietPolls < 30U; ++attempt)
+    {
+        if (!a_watcher.is_running())
+        {
+            return false;
+        }
+        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
+        if (!drained)
+        {
+            return false;
+        }
+        if (drained.try_value()->has_value())
+        {
+            quietPolls = 0U;
+            for (const cue::WorkspaceWatchDiagnostic &diagnostic : (**drained.try_value()).diagnostics)
+            {
+                if (diagnostic.code == cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged ||
+                    diagnostic.code == cue::WorkspaceWatchDiagnosticCode::NativeFailure)
+                {
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            ++quietPolls;
+        }
+        Sleep(10U);
+    }
+    return quietPolls == 30U;
+}
+
 /// @brief Create、Modify、Rename、Delete、Coalesce、Root境界を検証する
 [[nodiscard]] bool test_change_batches(cue::WorkspaceFilesystem &a_workspace, const TestDirectory &a_directory,
                                        const cue::AssertContext &a_assertContext) noexcept
@@ -550,6 +586,20 @@ class TestDirectory final
     if (!overflow || overflow->state != cue::WorkspaceChangeBatchState::RescanRequired || overflow->diagnostics.empty())
     {
         return fail_stage("overflow:observe");
+    }
+    if (!wait_for_recovery_quiet(**watcher.try_value()))
+    {
+        return fail_stage("overflow:recovery-quiet");
+    }
+    if (CreateDirectoryW(a_directory.child(L"Watch\\AfterOverflow").c_str(), nullptr) == FALSE)
+    {
+        return fail_stage("overflow:resume-write");
+    }
+    std::optional<cue::WorkspaceChangeBatch> resumed =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Created, "AfterOverflow");
+    if (!resumed)
+    {
+        return fail_stage("overflow:resume-observe");
     }
     if (!(*watcher.try_value())->stop() || !write_file(a_directory.child(L"Watch\\AfterStop.txt"), "stopped"))
     {
