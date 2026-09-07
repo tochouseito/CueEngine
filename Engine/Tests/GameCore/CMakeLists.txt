@@ -10,7 +10,11 @@ add_executable(CueGameCoreProcessTests GameCoreProcessTests.cpp)
 target_link_libraries(CueGameCoreProcessTests PRIVATE Cue.GameCore)
 target_compile_features(CueGameCoreProcessTests PRIVATE cxx_std_20)
 
-set(cueGameCoreTestTargets CueGameCoreTests CueGameCorePublicHeaderTest CueGameCoreProcessTests)
+add_executable(CueGameCoreClockTests ClockTests.cpp)
+target_link_libraries(CueGameCoreClockTests PRIVATE Cue.GameCore)
+target_compile_features(CueGameCoreClockTests PRIVATE cxx_std_20)
+
+set(cueGameCoreTestTargets CueGameCoreTests CueGameCorePublicHeaderTest CueGameCoreProcessTests CueGameCoreClockTests)
 
 foreach(testTarget IN LISTS cueGameCoreTestTargets)
     set_target_properties(
@@ -40,6 +44,7 @@ add_custom_target(Cue.GameCore.Tests DEPENDS ${cueGameCoreTestTargets})
 
 add_test(NAME Cue.GameCore.Storage COMMAND CueGameCoreTests)
 add_test(NAME Cue.GameCore.PublicHeaders COMMAND CueGameCorePublicHeaderTest)
+add_test(NAME Cue.GameCore.Clock COMMAND CueGameCoreClockTests)
 foreach(processMode IN ITEMS
         StructuralReentry
         QueryMutation
@@ -83,6 +88,7 @@ add_test(
 set_tests_properties(
     Cue.GameCore.Storage
     Cue.GameCore.PublicHeaders
+    Cue.GameCore.Clock
     Cue.GameCore.Process.StructuralReentry
     Cue.GameCore.Process.QueryMutation
     Cue.GameCore.Process.NestedQuery
