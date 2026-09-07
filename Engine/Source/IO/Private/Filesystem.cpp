@@ -6,8 +6,10 @@
 
 namespace cue
 {
-FilesystemIdentity::FilesystemIdentity(std::uint64_t a_providerScope, std::uint64_t a_entry) noexcept
-    : m_providerScope(a_providerScope), m_entry(a_entry)
+FilesystemIdentity::FilesystemIdentity(std::uint64_t a_provider, std::uint64_t a_volumeHigh, std::uint64_t a_volumeLow,
+                                       std::uint64_t a_entryHigh, std::uint64_t a_entryLow) noexcept
+    : m_provider(a_provider), m_volumeHigh(a_volumeHigh), m_volumeLow(a_volumeLow), m_entryHigh(a_entryHigh),
+      m_entryLow(a_entryLow)
 {
 }
 
@@ -55,7 +57,14 @@ StagingArea FilesystemRoot::make_staging_area(RelativePath &&a_path, std::uint64
 FilesystemIdentity FilesystemRoot::make_filesystem_identity(std::uint64_t a_providerScope,
                                                             std::uint64_t a_entry) noexcept
 {
-    return FilesystemIdentity(a_providerScope, a_entry);
+    return FilesystemIdentity(a_providerScope, 0U, 0U, 0U, a_entry);
+}
+
+FilesystemIdentity FilesystemRoot::make_filesystem_identity(std::uint64_t a_provider, std::uint64_t a_volumeHigh,
+                                                            std::uint64_t a_volumeLow, std::uint64_t a_entryHigh,
+                                                            std::uint64_t a_entryLow) noexcept
+{
+    return FilesystemIdentity(a_provider, a_volumeHigh, a_volumeLow, a_entryHigh, a_entryLow);
 }
 
 FileWriteLease FilesystemRoot::make_file_write_lease(std::unique_ptr<FileWriteLeaseState> a_state) noexcept

@@ -18,10 +18,14 @@ class FilesystemIdentity final
     friend class FilesystemRoot;
     friend class WorkspaceFilesystem;
 
-    /// @brief Platform AdapterだけがProvider固有の二つのOpaque値から構築する
-    FilesystemIdentity(std::uint64_t a_providerScope, std::uint64_t a_entry) noexcept;
+    /// @brief Platform AdapterだけがProvider、Volume Object、EntryのOpaque値から構築する
+    FilesystemIdentity(std::uint64_t a_provider, std::uint64_t a_volumeHigh, std::uint64_t a_volumeLow,
+                       std::uint64_t a_entryHigh, std::uint64_t a_entryLow) noexcept;
 
-    std::uint64_t m_providerScope;
-    std::uint64_t m_entry;
+    std::uint64_t m_provider;
+    std::uint64_t m_volumeHigh;
+    std::uint64_t m_volumeLow;
+    std::uint64_t m_entryHigh;
+    std::uint64_t m_entryLow;
 };
 } // namespace cue

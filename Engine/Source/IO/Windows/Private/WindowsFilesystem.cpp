@@ -1,5 +1,7 @@
 #include <Cue/IO/Windows/WindowsFilesystem.h>
 
+#include "WindowsFilesystemIdentity.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/Error.h>
@@ -984,11 +986,17 @@ cue::Result<cue::FilesystemIdentity> WindowsFilesystemRoot::root_identity() cons
         return cue::Result<cue::FilesystemIdentity>::failure(std::move(*verified.try_error()));
     }
 
-    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3100000000ULL;
-    const std::uint64_t providerScope = k_windowsIdentityProvider | static_cast<std::uint64_t>(m_rootVolumeSerial);
-    const std::uint64_t entry = (static_cast<std::uint64_t>(m_rootFileIndexHigh) << 32U) |
-                                static_cast<std::uint64_t>(m_rootFileIndexLow);
-    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(providerScope, entry));
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> identity =
+        cue::windows_io::inspect_native_filesystem_identity(m_rootHandle.get(), *m_assertContext);
+    if (!identity)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*identity.try_error()));
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3200000000ULL;
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+        k_windowsIdentityProvider, identity.try_value()->volumeHigh, identity.try_value()->volumeLow,
+        identity.try_value()->entryHigh, identity.try_value()->entryLow));
 }
 
 cue::Result<void> WindowsFilesystemRoot::verify_root_identity() const noexcept

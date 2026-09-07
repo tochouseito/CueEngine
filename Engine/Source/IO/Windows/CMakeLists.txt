@@ -4,6 +4,7 @@ target_sources(
     Cue.IO.Windows
     PRIVATE
         Private/WindowsFilesystem.cpp
+        Private/WindowsFilesystemIdentity.cpp
         Private/WindowsWorkspaceFilesystem.cpp
     PUBLIC
         FILE_SET HEADERS

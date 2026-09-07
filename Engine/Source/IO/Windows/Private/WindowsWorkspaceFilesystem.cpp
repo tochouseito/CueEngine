@@ -1,5 +1,7 @@
 #include <Cue/IO/Windows/WindowsWorkspaceFilesystem.h>
 
+#include "WindowsFilesystemIdentity.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/Error.h>
@@ -3701,7 +3703,6 @@ cue::Result<cue::FilesystemIdentity> WindowsWorkspaceFilesystem::directory_ident
         return cue::Result<cue::FilesystemIdentity>::failure(std::move(*pinned.try_error()));
     }
 
-    RootIdentity identity = m_identity;
     if (a_directory.locator() != nullptr)
     {
         if (pinned.try_value()->empty())
@@ -3710,19 +3711,24 @@ cue::Result<cue::FilesystemIdentity> WindowsWorkspaceFilesystem::directory_ident
                 cue::make_io_error(m_assertContext, cue::IoError::PreconditionFailed,
                                    "Workspace directory identity inspection was incomplete"));
         }
-        cue::Result<RootIdentity> inspected = read_entry_identity(pinned.try_value()->back().get(), m_assertContext);
-        if (!inspected)
-        {
-            return cue::Result<cue::FilesystemIdentity>::failure(std::move(*inspected.try_error()));
-        }
-        identity = *inspected.try_value();
     }
 
-    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3100000000ULL;
-    const std::uint64_t providerScope = k_windowsIdentityProvider | static_cast<std::uint64_t>(identity.volumeSerial);
-    const std::uint64_t entry =
-        (static_cast<std::uint64_t>(identity.fileIndexHigh) << 32U) | static_cast<std::uint64_t>(identity.fileIndexLow);
-    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(providerScope, entry));
+    HANDLE identityHandle = m_rootHandle.get();
+    if (a_directory.locator() != nullptr)
+    {
+        identityHandle = pinned.try_value()->back().get();
+    }
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> nativeIdentity =
+        cue::windows_io::inspect_native_filesystem_identity(identityHandle, m_assertContext);
+    if (!nativeIdentity)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*nativeIdentity.try_error()));
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3200000000ULL;
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+        k_windowsIdentityProvider, nativeIdentity.try_value()->volumeHigh, nativeIdentity.try_value()->volumeLow,
+        nativeIdentity.try_value()->entryHigh, nativeIdentity.try_value()->entryLow));
 }
 
 cue::Result<std::vector<std::byte>> WindowsWorkspaceFilesystem::read_file_bounded(

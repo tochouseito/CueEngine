@@ -157,6 +157,12 @@ class FilesystemRoot
     /// @brief Platform Provider ScopeとEntry値から比較専用Identityを構築する
     [[nodiscard]] static FilesystemIdentity make_filesystem_identity(std::uint64_t a_providerScope,
                                                                      std::uint64_t a_entry) noexcept;
+    /// @brief Platform Provider、Volume Object、Entryの完全な値から比較専用Identityを構築する
+    [[nodiscard]] static FilesystemIdentity make_filesystem_identity(std::uint64_t a_provider,
+                                                                     std::uint64_t a_volumeHigh,
+                                                                     std::uint64_t a_volumeLow,
+                                                                     std::uint64_t a_entryHigh,
+                                                                     std::uint64_t a_entryLow) noexcept;
     /// @brief Derived 実装だけが Staging 所有値を発行できるよう Path と Token を束ねる
     [[nodiscard]] static StagingArea make_staging_area(RelativePath &&a_path, std::uint64_t a_token) noexcept;
     /// @brief Platform実装が所有するStateからWrite Leaseを構築する

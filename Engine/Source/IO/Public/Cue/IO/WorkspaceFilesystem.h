@@ -356,6 +356,12 @@ class WorkspaceFilesystem
     /// @brief Platform Provider ScopeとEntry値から比較専用Identityを構築する
     [[nodiscard]] static FilesystemIdentity make_filesystem_identity(std::uint64_t a_providerScope,
                                                                      std::uint64_t a_entry) noexcept;
+    /// @brief Platform Provider、Volume Object、Entryの完全な値から比較専用Identityを構築する
+    [[nodiscard]] static FilesystemIdentity make_filesystem_identity(std::uint64_t a_provider,
+                                                                     std::uint64_t a_volumeHigh,
+                                                                     std::uint64_t a_volumeLow,
+                                                                     std::uint64_t a_entryHigh,
+                                                                     std::uint64_t a_entryLow) noexcept;
     /// @brief 発行可能なRoot相対Path長を固定してCapabilityを初期化する
     explicit WorkspaceFilesystem(std::size_t a_maxBoundPathCharacters) noexcept;
 
