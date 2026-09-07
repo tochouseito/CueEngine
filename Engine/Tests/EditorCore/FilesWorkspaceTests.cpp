@@ -468,7 +468,10 @@ class TestProject final
     if (!service.set_expanded("Folder", false) || !service.set_search_filter({}) ||
         service.view_model().try_search_result() != nullptr || service.view_model().selection().has_value() ||
         !service.set_expanded("Folder", true) || !service.select("Folder/Nested.txt") ||
-        !service.set_search_filter("nested"))
+        !service.set_search_filter("nested") || !service.set_expanded("Folder", false) ||
+        !service.set_search_filter("root") || service.view_model().selection().has_value() ||
+        !service.set_search_filter("nested") || !service.set_expanded("Folder", true) ||
+        !service.select("Folder/Nested.txt"))
     {
         return fail_stage("search-selection");
     }

@@ -549,6 +549,10 @@ Result<void> FilesWorkspaceService::set_search_filter(std::string_view a_filter)
         terminate_allocation();
     }
     m_view.m_searchResult.emplace(std::move(*searched.try_value()));
+    if (m_view.m_selection.has_value() && !contains_operable_entry(*m_view.m_selection))
+    {
+        m_view.m_selection.reset();
+    }
     dismiss_error();
     return Result<void>::success();
 }
