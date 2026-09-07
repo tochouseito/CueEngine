@@ -24,28 +24,6 @@ constexpr std::size_t k_maximumTrashRecordBytes = 16U * 1024U * 1024U;
     std::abort();
 }
 
-/// @brief 検証済みPortable Pathを合成後の長さ制限なしでASCII lowercase比較Keyへ変換する
-[[nodiscard]] std::string portable_path_key(std::string_view a_path, const cue::AssertContext &a_assertContext) noexcept
-{
-    std::string key;
-    try
-    {
-        key.assign(a_path);
-    }
-    catch (...)
-    {
-        terminate_allocation(a_assertContext);
-    }
-    for (char &character : key)
-    {
-        if (character >= 'A' && character <= 'Z')
-        {
-            character = static_cast<char>(character + ('a' - 'A'));
-        }
-    }
-    return key;
-}
-
 /// @brief Workspace列挙診断を保持可能なPortable IO Errorへ分類する
 [[nodiscard]] cue::IoError classify_workspace_diagnostic(cue::WorkspaceDiagnosticCode a_code) noexcept
 {
@@ -440,10 +418,9 @@ Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFi
     }
 
     const RelativePath &areaRoot = area_root(a_area);
-    const std::string rootRelativeKey = portable_path_key(bound.try_value()->text(), m_assertContext);
-    const std::string areaRootKey = areaRoot.comparison_key(m_assertContext);
-    if (rootRelativeKey.size() <= areaRootKey.size() + 1U || !rootRelativeKey.starts_with(areaRootKey) ||
-        rootRelativeKey[areaRootKey.size()] != '/')
+    const std::string_view rootRelativeTextView = bound.try_value()->text();
+    if (rootRelativeTextView.size() <= areaRoot.text().size() + 1U ||
+        !rootRelativeTextView.starts_with(areaRoot.text()) || rootRelativeTextView[areaRoot.text().size()] != '/')
     {
         return Result<RelativePath>::failure(
             make_project_file_error(m_assertContext, ProjectFileError::InvalidRequest,

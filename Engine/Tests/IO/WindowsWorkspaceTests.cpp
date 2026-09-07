@@ -235,6 +235,25 @@ template <typename T> [[nodiscard]] bool has_io_error(cue::Result<T> &a_result, 
     return succeeded != FALSE && written == static_cast<DWORD>(a_bytes.size());
 }
 
+/// @brief Directory Namespaceで大文字小文字だけ異なるEntryを個別作成できるようにする
+[[nodiscard]] bool enable_case_sensitive_directory(std::wstring_view a_path) noexcept
+{
+    const std::wstring path(a_path);
+    HANDLE directory = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_WRITE_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (directory == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    FILE_CASE_SENSITIVE_INFO information{};
+    information.Flags = FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+    const bool succeeded =
+        SetFileInformationByHandle(directory, FileCaseSensitiveInfo, &information, sizeof(information)) != FALSE;
+    CloseHandle(directory);
+    return succeeded;
+}
+
 /// @brief Junction用Mount Point Reparse BufferのNative Layoutを表す
 struct MountPointReparseBuffer final
 {
@@ -530,6 +549,31 @@ struct MountPointReparseBuffer final
     return bound && bound.try_value()->text() == std::string(k_deepLocator) + "/Tail.bin";
 }
 
+/// @brief Case-sensitive親配下の大小文字Alias Rootを別Workspaceとして拒否するか検証する
+[[nodiscard]] bool test_case_sensitive_root_alias(const TestDirectory &a_directory,
+                                                  const cue::AssertContext &a_assertContext)
+{
+    const std::wstring parent = a_directory.child(L"CaseParent");
+    const std::wstring canonicalRoot = parent + L"\\Project";
+    const std::wstring aliasRoot = parent + L"\\project";
+    if (CreateDirectoryW(parent.c_str(), nullptr) == FALSE || !enable_case_sensitive_directory(parent) ||
+        CreateDirectoryW(canonicalRoot.c_str(), nullptr) == FALSE ||
+        CreateDirectoryW(aliasRoot.c_str(), nullptr) == FALSE ||
+        !write_file(canonicalRoot + L"\\Tail.bin", "canonical") || !write_file(aliasRoot + L"\\Tail.bin", "alias"))
+    {
+        return false;
+    }
+    auto filesystem =
+        cue::create_windows_workspace_filesystem(std::filesystem::path(canonicalRoot).string(), a_assertContext);
+    if (!filesystem)
+    {
+        return false;
+    }
+    auto selected =
+        (**filesystem.try_value()).bind_external_path(std::filesystem::path(aliasRoot + L"\\Tail.bin").string());
+    return has_io_error(selected, cue::IoError::OutsideRoot);
+}
+
 /// @brief 別Rootから発行されたDirectory Capabilityを拒否するか検証する
 [[nodiscard]] bool test_binding_origin(cue::WorkspaceFilesystem &a_filesystem, const TestDirectory &a_directory,
                                        const cue::AssertContext &a_assertContext)
@@ -616,32 +660,36 @@ int main()
     {
         return 10;
     }
+    if (!test_case_sensitive_root_alias(directory, assertContext))
+    {
+        return 11;
+    }
 
     auto temporaryContextFilesystem = create_with_temporary_context(directory.utf8_path(), logger, fatalHandler);
     if (!temporaryContextFilesystem)
     {
-        return 11;
+        return 12;
     }
     auto temporaryContextSnapshot =
         (**temporaryContextFilesystem.try_value())
             .list_directory(cue::WorkspaceDirectory::root(), cue::TraversalLimits{2U, 64U, 64U, 32U * 1024U});
     if (!temporaryContextSnapshot)
     {
-        return 12;
+        return 13;
     }
 
     auto limited = (**filesystem.try_value())
                        .list_directory(cue::WorkspaceDirectory::root(), cue::TraversalLimits{2U, 64U, 1U, 16U * 1024U});
     if (!has_io_error(limited, cue::IoError::CapacityExceeded))
     {
-        return 13;
+        return 14;
     }
 
     if (MoveFileExW(directory.path().c_str(), directory.moved_path().c_str(), 0U) != FALSE)
     {
         MoveFileExW(directory.moved_path().c_str(), directory.path().c_str(), 0U);
-        return 14;
+        return 15;
     }
     const DWORD replacementCode = GetLastError();
-    return replacementCode == ERROR_SHARING_VIOLATION || replacementCode == ERROR_ACCESS_DENIED ? 0 : 15;
+    return replacementCode == ERROR_SHARING_VIOLATION || replacementCode == ERROR_ACCESS_DENIED ? 0 : 16;
 }

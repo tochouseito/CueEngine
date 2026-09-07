@@ -1986,11 +1986,12 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
 {
   public:
     /// @brief 検証済みRoot Path、Handle、Identityを所有する
-    WindowsWorkspaceFilesystem(const cue::AssertContext &a_assertContext, std::wstring a_rootPath,
-                               UniqueHandle a_rootHandle, RootIdentity a_identity,
+    WindowsWorkspaceFilesystem(const cue::AssertContext &a_assertContext, std::wstring a_requestedRootPath,
+                               std::wstring a_rootPath, UniqueHandle a_rootHandle, RootIdentity a_identity,
                                std::size_t a_maxBoundPathCharacters) noexcept
         : cue::WorkspaceFilesystem(a_maxBoundPathCharacters), m_assertContext(a_assertContext),
-          m_rootPath(std::move(a_rootPath)), m_rootHandle(std::move(a_rootHandle)), m_identity(a_identity)
+          m_requestedRootPath(std::move(a_requestedRootPath)), m_rootPath(std::move(a_rootPath)),
+          m_rootHandle(std::move(a_rootHandle)), m_identity(a_identity)
     {
     }
     /// @brief Native Rootの一意所有を保つためCopy構築を禁止する
@@ -2088,6 +2089,9 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
   private:
     /// @brief Root PathがBinding時と同じNative Directory Objectか再検証する
     [[nodiscard]] cue::Result<void> verify_root_identity() const noexcept;
+    /// @brief 未検証PathがBinding済みRootをNative Identityで指すPrefix長を返す
+    [[nodiscard]] cue::Result<std::size_t> external_root_prefix_length(
+        std::wstring_view a_normalizedPath) const noexcept;
 
     /// @brief 対象Directoryまでの全Componentを非Reparse DirectoryとしてPinする
     [[nodiscard]] cue::Result<std::vector<UniqueHandle>> pin_directory_chain(
@@ -2127,6 +2131,7 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
         cue::ContentVerificationLimits a_contentLimits) noexcept;
 
     cue::AssertContext m_assertContext;
+    std::wstring m_requestedRootPath;
     std::wstring m_rootPath;
     UniqueHandle m_rootHandle;
     RootIdentity m_identity;
@@ -2155,6 +2160,58 @@ cue::Result<void> WindowsWorkspaceFilesystem::verify_root_identity() const noexc
             cue::make_io_error(m_assertContext, cue::IoError::OutsideRoot, "Workspace root identity changed"));
     }
     return cue::Result<void>::success();
+}
+
+cue::Result<std::size_t> WindowsWorkspaceFilesystem::external_root_prefix_length(
+    std::wstring_view a_normalizedPath) const noexcept
+{
+    cue::Result<void> rootIdentity = verify_root_identity();
+    if (!rootIdentity)
+    {
+        return cue::Result<std::size_t>::failure(std::move(*rootIdentity.try_error()));
+    }
+
+    const std::array<std::wstring_view, 2U> candidates{m_requestedRootPath, m_rootPath};
+    for (std::wstring_view expectedRoot : candidates)
+    {
+        const bool hasSeparator =
+            !expectedRoot.empty() && (expectedRoot.back() == L'\\' || expectedRoot.back() == L'/');
+        const bool hasBoundary = a_normalizedPath.size() > expectedRoot.size() &&
+                                 (hasSeparator || a_normalizedPath[expectedRoot.size()] == L'\\' ||
+                                  a_normalizedPath[expectedRoot.size()] == L'/');
+        if (!hasBoundary || !starts_with_ordinal_ignore_case(a_normalizedPath, expectedRoot))
+        {
+            continue;
+        }
+
+        std::wstring candidateRoot;
+        try
+        {
+            candidateRoot.assign(a_normalizedPath.substr(0U, expectedRoot.size()));
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+        UniqueHandle candidate(CreateFileW(candidateRoot.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                           nullptr));
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (!candidate.is_valid() || GetFileInformationByHandle(candidate.get(), &information) == FALSE ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+            information.dwVolumeSerialNumber != m_identity.volumeSerial ||
+            information.nFileIndexHigh != m_identity.fileIndexHigh ||
+            information.nFileIndexLow != m_identity.fileIndexLow)
+        {
+            continue;
+        }
+        return cue::Result<std::size_t>::success(expectedRoot.size());
+    }
+
+    return cue::Result<std::size_t>::failure(cue::make_io_error(m_assertContext, cue::IoError::OutsideRoot,
+                                                                "External workspace path is outside the bound root"));
 }
 
 /// @brief 未検証Absolute Windows PathをRoot相対Portable Capabilityへ正規化する
@@ -2219,14 +2276,15 @@ cue::Result<cue::BoundWorkspacePath> WindowsWorkspaceFilesystem::bind_external_p
         return cue::Result<cue::BoundWorkspacePath>::failure(std::move(*extended.try_error()));
     }
     const std::wstring_view normalized(*extended.try_value());
-    if (!starts_with_ordinal_ignore_case(normalized, m_rootPath) || normalized.size() <= m_rootPath.size())
+    cue::Result<std::size_t> rootPrefixLength = external_root_prefix_length(normalized);
+    if (!rootPrefixLength)
     {
-        return cue::Result<cue::BoundWorkspacePath>::failure(cue::make_io_error(
-            m_assertContext, cue::IoError::OutsideRoot, "External workspace path is outside the bound root"));
+        return cue::Result<cue::BoundWorkspacePath>::failure(std::move(*rootPrefixLength.try_error()));
     }
 
-    std::size_t relativeOffset = m_rootPath.size();
-    const bool rootEndsWithSeparator = m_rootPath.back() == L'\\' || m_rootPath.back() == L'/';
+    std::size_t relativeOffset = *rootPrefixLength.try_value();
+    const bool rootEndsWithSeparator =
+        normalized[relativeOffset - 1U] == L'\\' || normalized[relativeOffset - 1U] == L'/';
     if (!rootEndsWithSeparator)
     {
         if (normalized[relativeOffset] != L'\\' && normalized[relativeOffset] != L'/')
@@ -5975,6 +6033,15 @@ Result<std::unique_ptr<WorkspaceFilesystem>> create_windows_workspace_filesystem
     {
         return Result<std::unique_ptr<WorkspaceFilesystem>>::failure(std::move(*extended.try_error()));
     }
+    std::wstring requestedRootPath;
+    try
+    {
+        requestedRootPath = *extended.try_value();
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
     UniqueHandle root(CreateFileW(extended.try_value()->c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                                   FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
@@ -6076,7 +6143,8 @@ Result<std::unique_ptr<WorkspaceFilesystem>> create_windows_workspace_filesystem
     try
     {
         std::unique_ptr<WorkspaceFilesystem> filesystem = std::make_unique<WindowsWorkspaceFilesystem>(
-            a_assertContext, std::move(finalPath), std::move(root), identity, maxBoundPathCharacters);
+            a_assertContext, std::move(requestedRootPath), std::move(finalPath), std::move(root), identity,
+            maxBoundPathCharacters);
         return Result<std::unique_ptr<WorkspaceFilesystem>>::success(std::move(filesystem));
     }
     catch (...)

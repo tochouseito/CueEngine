@@ -66,6 +66,24 @@ class EmptyOperationIdSource final : public cue::project_files::ProjectFileOpera
     const cue::AssertContext *m_assertContext;
 };
 
+/// @brief Area親Directoryで大文字小文字だけ異なるEntryを個別作成できるようにする
+[[nodiscard]] bool enable_case_sensitive_directory(std::wstring_view a_path) noexcept
+{
+    HANDLE directory = CreateFileW(a_path.data(), FILE_LIST_DIRECTORY | FILE_WRITE_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (directory == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    FILE_CASE_SENSITIVE_INFO information{};
+    information.Flags = FILE_CS_FLAG_CASE_SENSITIVE_DIR;
+    const bool succeeded =
+        SetFileInformationByHandle(directory, FileCaseSensitiveInfo, &information, sizeof(information)) != FALSE;
+    CloseHandle(directory);
+    return succeeded;
+}
+
 class TestDirectory final
 {
   public:
@@ -85,6 +103,7 @@ class TestDirectory final
                   std::to_wstring(sequence.fetch_add(1U, std::memory_order_relaxed));
         m_created = CreateDirectoryW(m_path.c_str(), nullptr) != FALSE &&
                     CreateDirectoryW(child(L"Assets").c_str(), nullptr) != FALSE &&
+                    enable_case_sensitive_directory(child(L"Assets")) &&
                     CreateDirectoryW(child(L"Assets\\Source").c_str(), nullptr) != FALSE &&
                     CreateDirectoryW(child(L"Assets\\Runtime").c_str(), nullptr) != FALSE &&
                     CreateDirectoryW(child(L"Generated").c_str(), nullptr) != FALSE &&
@@ -449,13 +468,40 @@ struct MountPointReparseBuffer final
     cue::Result<cue::RelativePath> deletedBeforeUse =
         revalidate_selected(*service.try_value(), directory.child_utf8(L"Assets\\Source\\Temporary.txt"),
                             ProjectFileSelectionPurpose::OpenExistingFile);
+    if (CreateDirectoryW(directory.child(L"Assets\\source").c_str(), nullptr) == FALSE ||
+        !write_file(directory.child(L"Assets\\source\\Existing.txt"), bytes))
+    {
+        return false;
+    }
+    cue::Result<cue::RelativePath> areaAlias =
+        revalidate_selected(*service.try_value(), directory.child_utf8(L"Assets\\source\\Existing.txt"),
+                            ProjectFileSelectionPurpose::OpenExistingFile);
 
-    return existing && existing.try_value()->text() == "Existing.txt" && folder &&
-           folder.try_value()->text() == "Folder" && saveExisting &&
-           saveExisting.try_value()->text() == "Existing.txt" && saveNew &&
-           saveNew.try_value()->text() == "NewScene.cuescene" && !wrongOpenType && !wrongFolderType && !alias &&
-           !outside && !otherArea && !finalReparse && !parentReparse && temporary && rejectedWrongThread &&
-           !deletedBeforeUse;
+    if (!existing || existing.try_value()->text() != "Existing.txt")
+    {
+        return false;
+    }
+    if (!folder || folder.try_value()->text() != "Folder")
+    {
+        return false;
+    }
+    if (!saveExisting || saveExisting.try_value()->text() != "Existing.txt")
+    {
+        return false;
+    }
+    if (!saveNew || saveNew.try_value()->text() != "NewScene.cuescene")
+    {
+        return false;
+    }
+    if (wrongOpenType || wrongFolderType || alias || areaAlias || outside || otherArea || finalReparse || parentReparse)
+    {
+        return false;
+    }
+    if (!temporary || !rejectedWrongThread || deletedBeforeUse)
+    {
+        return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -466,5 +512,9 @@ int main()
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
-    return run_revalidation_tests(assertContext) && run_deep_root_revalidation_test(assertContext) ? 0 : 1;
+    if (!run_revalidation_tests(assertContext))
+    {
+        return 1;
+    }
+    return run_deep_root_revalidation_test(assertContext) ? 0 : 2;
 }
