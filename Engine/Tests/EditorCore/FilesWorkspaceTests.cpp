@@ -2,12 +2,17 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
+#include <Cue/IO/Filesystem.h>
+#include <Cue/IO/Windows/WindowsFilesystem.h>
 #include <Cue/IO/Windows/WindowsWorkspaceFilesystem.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/ProjectFiles/Error.h>
 #include <Cue/ProjectFiles/Service.h>
+#include <Cue/Scene/ComponentData.h>
 #include <Cue/Scene/Identity.h>
 #include <Cue/Scene/SceneDocument.h>
+#include <Cue/Scene/Serialization.h>
+#include <Cue/Schema/Registry.h>
 
 #include <Windows.h>
 
@@ -207,6 +212,25 @@ class TestProject final
         return result;
     }
 
+    /// @brief Project Root配下のNative Child PathをUTF-8で返す
+    [[nodiscard]] std::string child_utf8(std::wstring_view a_relative) const
+    {
+        const std::wstring path = child(a_relative);
+        const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
+                                              nullptr, 0, nullptr, nullptr);
+        if (count <= 0)
+        {
+            return {};
+        }
+        std::string result(static_cast<std::size_t>(count), '\0');
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
+                                result.data(), count, nullptr, nullptr) != count)
+        {
+            return {};
+        }
+        return result;
+    }
+
     /// @brief Project Root配下のNative Child Pathを返す
     [[nodiscard]] std::wstring child(std::wstring_view a_relative) const
     {
@@ -218,6 +242,21 @@ class TestProject final
     std::optional<cue::ProjectDescriptor> m_descriptor;
     bool m_created = false;
 };
+
+/// @brief Test Project Rootへ拘束された新しいProjectFileServiceを生成する
+[[nodiscard]] cue::Result<cue::project_files::ProjectFileService> create_project_file_service(
+    const TestProject &a_project, const cue::AssertContext &a_assertContext) noexcept
+{
+    cue::Result<std::unique_ptr<cue::WorkspaceFilesystem>> workspace =
+        cue::create_windows_workspace_filesystem(a_project.root_utf8(), a_assertContext);
+    if (!workspace)
+    {
+        return cue::Result<cue::project_files::ProjectFileService>::failure(std::move(*workspace.try_error()));
+    }
+    return cue::project_files::ProjectFileService::create(a_project.descriptor(), std::move(*workspace.try_value()),
+                                                          std::make_unique<SequenceOperationIdSource>(a_assertContext),
+                                                          a_assertContext);
+}
 
 /// @brief Snapshot群に指定Area相対Locatorが存在するか判定する
 [[nodiscard]] bool contains_entry(const cue::editor_core::FilesViewModel &a_view, std::string_view a_locator) noexcept
@@ -270,26 +309,86 @@ class TestProject final
     {
         return fail_stage("project");
     }
-    cue::Result<std::unique_ptr<cue::WorkspaceFilesystem>> workspace =
-        cue::create_windows_workspace_filesystem(project.root_utf8(), a_assertContext);
-    if (!workspace)
-    {
-        return fail_stage("workspace");
-    }
-    cue::Result<cue::project_files::ProjectFileService> projectFiles = cue::project_files::ProjectFileService::create(
-        project.descriptor(), std::move(*workspace.try_value()),
-        std::make_unique<SequenceOperationIdSource>(a_assertContext), a_assertContext);
+    cue::Result<cue::project_files::ProjectFileService> projectFiles =
+        create_project_file_service(project, a_assertContext);
     cue::Result<cue::ProjectDescriptor> editorDescriptor = project.clone_descriptor(a_assertContext);
-    if (!projectFiles || !editorDescriptor)
+    cue::Result<std::unique_ptr<cue::FilesystemRoot>> sourceAssets =
+        cue::create_windows_filesystem_root(project.child_utf8(L"Assets\\Source"), a_assertContext);
+    cue::Result<std::unique_ptr<cue::FilesystemRoot>> savedRoot =
+        cue::create_windows_filesystem_root(project.child_utf8(L"Saved"), a_assertContext);
+    cue::schema::SchemaRegistryIdentitySource schemaIdentitySource;
+    cue::schema::SchemaRegistryBuilder schemaBuilder(schemaIdentitySource, a_assertContext);
+    cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>> schemaRegistry = schemaBuilder.seal();
+    if (!projectFiles || !editorDescriptor || !sourceAssets || !savedRoot || !schemaRegistry)
     {
         return fail_stage("services");
     }
-    std::unique_ptr<cue::editor_core::EditorController> editor =
-        cue::editor_core::EditorController::create(std::move(*editorDescriptor.try_value()), a_assertContext);
+    cue::Result<cue::scene::ComponentValueSchemaRegistry> valueRegistry =
+        cue::scene::ComponentValueSchemaRegistry::create({}, **schemaRegistry.try_value(), a_assertContext);
+    cue::scene::SceneMigrationRegistry sceneMigrations;
+    cue::scene::ComponentMigrationRegistry componentMigrations;
+    if (!valueRegistry)
+    {
+        return fail_stage("value-registry");
+    }
+    cue::editor_core::ScenePersistenceServices persistence(**sourceAssets.try_value(), **savedRoot.try_value(),
+                                                           **schemaRegistry.try_value(), *valueRegistry.try_value(),
+                                                           sceneMigrations, componentMigrations);
+    std::unique_ptr<cue::editor_core::EditorController> editor = cue::editor_core::EditorController::create(
+        std::move(*editorDescriptor.try_value()), persistence, a_assertContext);
     constexpr cue::editor_core::FilesWorkspaceLimits k_limits{
         cue::TraversalLimits{32U, 4096U, 1024U, 1024U * 1024U},
         cue::ContentVerificationLimits{1024U * 1024U, 16U * 1024U * 1024U},
         cue::WorkspaceWatchLimits{256U, 64U * 1024U, 128U, 25U, 250U}};
+
+    cue::Result<cue::ProjectDescriptor> noPersistenceDescriptor = project.clone_descriptor(a_assertContext);
+    cue::Result<cue::project_files::ProjectFileService> noPersistenceFiles =
+        create_project_file_service(project, a_assertContext);
+    if (!noPersistenceDescriptor || !noPersistenceFiles)
+    {
+        return fail_stage("factory-persistence-input");
+    }
+    std::unique_ptr<cue::editor_core::EditorController> noPersistenceController =
+        cue::editor_core::EditorController::create(std::move(*noPersistenceDescriptor.try_value()), a_assertContext);
+    cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> noPersistenceService =
+        cue::editor_core::FilesWorkspaceService::create(std::move(*noPersistenceFiles.try_value()),
+                                                        *noPersistenceController, k_limits, a_assertContext);
+    if (noPersistenceService || noPersistenceService.try_error() == nullptr ||
+        noPersistenceService.try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::PersistenceUnavailable))
+    {
+        return fail_stage("factory-persistence");
+    }
+
+    cue::Result<cue::ProjectId> mismatchedId =
+        cue::ProjectId::parse("12345678-1234-4234-8234-123456789abd", a_assertContext);
+    cue::Result<cue::ProjectDescriptor> mismatchedDescriptor =
+        mismatchedId ? cue::create_blank_project_descriptor(
+                           *mismatchedId.try_value(), "Mismatched Files Workspace Test",
+                           cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+                           a_assertContext)
+                     : cue::Result<cue::ProjectDescriptor>::failure(cue::editor_core::make_editor_core_error(
+                           a_assertContext, cue::editor_core::EditorCoreError::InvalidWorkspaceRequest,
+                           "Files workspace test mismatched ProjectId is unavailable"));
+    cue::Result<cue::project_files::ProjectFileService> mismatchedFiles =
+        create_project_file_service(project, a_assertContext);
+    if (!mismatchedDescriptor || !mismatchedFiles)
+    {
+        return fail_stage("factory-project-input");
+    }
+    std::unique_ptr<cue::editor_core::EditorController> mismatchedController =
+        cue::editor_core::EditorController::create(std::move(*mismatchedDescriptor.try_value()), persistence,
+                                                   a_assertContext);
+    cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> mismatchedService =
+        cue::editor_core::FilesWorkspaceService::create(std::move(*mismatchedFiles.try_value()), *mismatchedController,
+                                                        k_limits, a_assertContext);
+    if (mismatchedService || mismatchedService.try_error() == nullptr ||
+        mismatchedService.try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidWorkspaceRequest))
+    {
+        return fail_stage("factory-project");
+    }
+
     cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> files =
         cue::editor_core::FilesWorkspaceService::create(std::move(*projectFiles.try_value()), *editor, k_limits,
                                                         a_assertContext);
@@ -309,6 +408,13 @@ class TestProject final
         service.view_model().try_search_result()->entries.front().locator != "Folder/Nested.txt")
     {
         return fail_stage("initial-view");
+    }
+    if (!service.set_expanded("Folder", false) || !service.set_search_filter({}) ||
+        service.view_model().try_search_result() != nullptr || service.view_model().selection().has_value() ||
+        !service.set_expanded("Folder", true) || !service.select("Folder/Nested.txt") ||
+        !service.set_search_filter("nested"))
+    {
+        return fail_stage("search-selection");
     }
 
     constexpr std::string_view content = "created";

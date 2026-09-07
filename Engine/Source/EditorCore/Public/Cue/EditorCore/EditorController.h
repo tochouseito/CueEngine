@@ -23,6 +23,8 @@ class AssertContext;
 
 namespace cue::editor_core
 {
+class FilesWorkspaceService;
+
 /// @brief 一つの Project Descriptor と開いた EditorDocument 群の一意 Owner
 class ProjectWorkspaceSession final
 {
@@ -61,6 +63,8 @@ class ProjectWorkspaceSession final
 class EditorController final
 {
   private:
+    friend class FilesWorkspaceService;
+
     /// @brief make_unique 経由の Factory 構築だけを許可する非公開 Key
     struct ConstructionKey final
     {

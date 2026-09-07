@@ -25,6 +25,19 @@ namespace
     return a_candidate == a_ancestor || (a_candidate.size() > a_ancestor.size() &&
                                          a_candidate.starts_with(a_ancestor) && a_candidate[a_ancestor.size()] == '/');
 }
+
+/// @brief ProjectFileServiceとEditorControllerが同じProject Root契約を表すか判定する
+[[nodiscard]] bool project_binding_matches(const cue::project_files::ProjectFileService &a_projectFiles,
+                                           const cue::ProjectDescriptor &a_descriptor) noexcept
+{
+    const cue::ProjectRoots &filesRoots = a_projectFiles.roots();
+    const cue::ProjectRoots &editorRoots = a_descriptor.roots();
+    return a_projectFiles.project_id().text() == a_descriptor.project_id().text() &&
+           filesRoots.source_assets().text() == editorRoots.source_assets().text() &&
+           filesRoots.runtime_assets().text() == editorRoots.runtime_assets().text() &&
+           filesRoots.generated().text() == editorRoots.generated().text() &&
+           filesRoots.saved().text() == editorRoots.saved().text();
+}
 } // namespace
 
 namespace cue::editor_core
@@ -117,6 +130,17 @@ Result<std::unique_ptr<FilesWorkspaceService>> FilesWorkspaceService::create(
     {
         return Result<std::unique_ptr<FilesWorkspaceService>>::failure(make_editor_core_error(
             a_assertContext, EditorCoreError::InvalidWorkspaceRequest, "Files workspace limits are invalid"));
+    }
+    if (!project_binding_matches(a_projectFiles, a_editorController.session().project_descriptor()))
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(
+            make_editor_core_error(a_assertContext, EditorCoreError::InvalidWorkspaceRequest,
+                                   "Project file service and editor controller describe different projects"));
+    }
+    Result<void> persistence = a_editorController.require_persistence_services();
+    if (!persistence)
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*persistence.try_error()));
     }
 
     std::unique_ptr<FilesWorkspaceService> service;
@@ -462,6 +486,10 @@ Result<void> FilesWorkspaceService::set_search_filter(std::string_view a_filter)
     {
         m_view.m_searchFilter.clear();
         m_view.m_searchResult.reset();
+        if (m_view.m_selection.has_value() && !contains_operable_entry(*m_view.m_selection))
+        {
+            m_view.m_selection.reset();
+        }
         dismiss_error();
         return Result<void>::success();
     }
