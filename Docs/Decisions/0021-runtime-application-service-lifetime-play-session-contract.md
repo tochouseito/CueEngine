@@ -340,9 +340,15 @@ System StopまたはSceneInstance Endが一部失敗しても、依存関係か�
 DestructorへCleanupを委ねない。このPostconditionを満たせないSystemはM14のRegistryへ登録できない。
 
 System Stopが登録したStructural CommandのFlushはSessionが所有する独立Cleanup Stepとして一度だけ実行する。
-Flush完了前はSystem Registry、SceneInstance、RuntimeWorldを保持し、通常停止と開始Rollbackのどちらでも
-`SceneInstance::end`より先にFlushを完了する。Flushが失敗した場合は未適用CommandとProgressを保持して
-`CleanupFailed`へ移り、SceneInstance EndとWorld Shutdownを開始しない。
+Flush開始前はSystem Registry、SceneInstance、RuntimeWorldを保持し、通常停止と開始Rollbackのどちらでも
+`SceneInstance::end`より先にFlushする。既存ADR-0016に従い、`World::flush_commands`はCommand単位の成功／失敗を
+FIFOの`StructuralCommandReport`へ記録した後、成功／失敗を問わずBatch全体を消費し、暗黙Retryしない。
+
+SessionはCommand単位の失敗を順序付きCleanup Diagnosticへ変換し、未適用Commandを保持または再登録しない。
+SceneInstance Endが残る所有Entityを最終的に終了するため、Command単位の失敗だけでは生存Ownerを示す
+`CleanupFailed`へ移さず、Scene EndとWorld Shutdownを継続する。全Ownerの終了後にSessionは`Stopped`へ移るが、
+Stop結果は収集したCleanup Diagnosticを呼出し元へ返す。Wrong Thread、Active Query中のFlush、予期しない例外、
+Allocation失敗等、既存APIがProgrammer ErrorまたはFatalとするFlush前提違反を回復可能な再Flush経路へ変換しない。
 
 `CleanupFailed`では次の依存閉包を最低限保持する。
 
@@ -353,8 +359,8 @@ Flush完了前はSystem Registry、SceneInstance、RuntimeWorldを保持し、�
 - 終了を確認できたOwnerでも、上記未終了Ownerの再Cleanupに必要なら解放しない
 
 すべての未終了Ownerが成功状態へ到達し、依存閉包が不要になった後だけ通常の逆順解放を再開する。
-再CleanupはSystemごとのStop ProgressとSessionのFlush Progressを参照し、終了済みStepを再実行せず、
-未終了Owner、未完了Flushとその依存閉包だけを対象にする。
+再CleanupはSystemごとのStop ProgressとSessionのFlush実行済み状態を参照し、終了済みStepを再実行せず、
+未終了Ownerとその依存閉包だけを対象にする。消費済みStructural Command Batchは再Cleanup対象にしない。
 
 RuntimeWorldのShutdown完了後にRuntime Entity Handle、World Pointer、Component View、Command Buffer Pointerを
 Controller、UI、Log Entryへ残さない。診断にはStable Session ID、Scene Asset ID、System ID、Error Categoryを値として保存する。
@@ -409,7 +415,7 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - SceneInstance End部分失敗で生存所有集合とWorldを保持し、再Cleanupできる
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
-- Structural Command Flush失敗でSceneInstanceとWorldを保持し、再Flush後にだけScene Endへ進む
+- Structural Commandの一部が失敗しても全Reportを順序付き診断へ変換し、Batchを再実行せずScene Endを継続する
 - Stop要求がSafe Pointで適用され、Stop後にFrame Updateを拒否する
 - Update ErrorをFatalとせず、診断を保持して停止へ移る
 - 10回以上のPlay／StopでSession、World、SceneInstance、System Instanceが残留しない
