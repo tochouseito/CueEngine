@@ -645,6 +645,64 @@ Result<ProjectFileSearchResult> ProjectFileService::search(ProjectFileArea a_are
     return Result<ProjectFileSearchResult>::success(std::move(result));
 }
 
+Result<ProjectFileDeletePreview> ProjectFileService::preview_delete(
+    ProjectFileArea a_area, RelativePath a_source, TraversalLimits a_traversalLimits,
+    ContentVerificationLimits a_contentLimits) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread)
+    {
+        return Result<ProjectFileDeletePreview>::failure(make_project_file_error(
+            m_assertContext, ProjectFileError::InvalidRequest, "Project file service was called from another thread"));
+    }
+    if (m_isBusy)
+    {
+        return Result<ProjectFileDeletePreview>::failure(make_project_file_error(
+            m_assertContext, ProjectFileError::Busy, "Project file mutation is already active"));
+    }
+    if (!m_policy.can_mutate(a_area) || !a_traversalLimits.is_valid() || !a_contentLimits.is_valid())
+    {
+        return Result<ProjectFileDeletePreview>::failure(make_project_file_error(
+            m_assertContext,
+            !m_policy.can_mutate(a_area) ? ProjectFileError::ProtectedEntry : ProjectFileError::InvalidRequest,
+            !m_policy.can_mutate(a_area) ? "Project file area is protected from deletion"
+                                         : "Project file delete preview limits are invalid"));
+    }
+    BusyReset busy(m_isBusy);
+    Result<BoundWorkspacePath> boundSource = m_workspace->bind_path(area_root(a_area), a_source, m_assertContext);
+    if (!boundSource)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*boundSource.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<ProjectFileDeletePreview>::failure(reclassify_project_file_error(
+            m_assertContext, classification, "Project file delete preview source binding failed",
+            std::move(*boundSource.try_error())));
+    }
+    Result<GuardedWorkspaceEntry> guardedSource =
+        m_workspace->guard_entry(*boundSource.try_value(), a_traversalLimits, a_contentLimits);
+    if (!guardedSource)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*guardedSource.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<ProjectFileDeletePreview>::failure(reclassify_project_file_error(
+            m_assertContext, classification, "Project file delete preview inspection failed",
+            std::move(*guardedSource.try_error())));
+    }
+
+    ProjectFileDeletePreview preview;
+    preview.entryType = guardedSource.try_value()->fingerprint.type;
+    preview.byteSize = fingerprint_byte_size(guardedSource.try_value()->fingerprint);
+    preview.descendantCount = guardedSource.try_value()->fingerprint.manifest.size();
+    Result<void> finished =
+        m_workspace->finish_entry_mutation_guard(std::move(guardedSource.try_value()->guard));
+    if (!finished)
+    {
+        return Result<ProjectFileDeletePreview>::failure(reclassify_project_file_error(
+            m_assertContext, ProjectFileError::StorageFailure, "Project file delete preview changed during inspection",
+            std::move(*finished.try_error())));
+    }
+    return Result<ProjectFileDeletePreview>::success(std::move(preview));
+}
+
 /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する
 Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFileArea a_area,
                                                                        std::string_view a_unverifiedAbsolutePath,

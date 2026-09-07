@@ -1,4 +1,5 @@
 #include <Cue/Editor/ImGui/EditorPresenter.h>
+#include <Cue/Editor/ImGui/FilesPresenter.h>
 #include <Cue/Editor/Windows/EditorSession.h>
 #include <Cue/EditorCore/Error.h>
 #include <Cue/EditorCore/EditorIntent.h>
@@ -19,6 +20,7 @@
 #include <cstdlib>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -223,7 +225,8 @@ enum class PendingTransition : std::uint8_t
             (!options.hasInitialScene || !options.hasMaximumFrameCount ||
              (*options.processTestAction != "autosave-recovery" &&
               *options.processTestAction != "autosave-new-scene" &&
-              *options.processTestAction != "edit-close-save")))
+              *options.processTestAction != "edit-close-save" &&
+              *options.processTestAction != "files-workflow")))
         {
             return cue::Result<EditorToolOptions>::failure(make_tool_error(
                 a_context, k_invalidArguments,
@@ -263,8 +266,17 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     EditorToolClient(cue::editor::WindowsEditorSession &a_session, const cue::AssertContext &a_assertContext) noexcept
         : m_session(&a_session), m_assertContext(&a_assertContext)
     {
-        refresh_recovery_candidates();
-        rebuild_presenter();
+        try
+        {
+            m_filesPresenter =
+                std::make_unique<cue::editor::FilesPresenter>(a_session.files_workspace(), a_assertContext);
+            refresh_recovery_candidates();
+            rebuild_presenter();
+        }
+        catch (...)
+        {
+            terminate_tool_exception(a_assertContext);
+        }
     }
 
     EditorToolClient(const EditorToolClient &) = delete;
@@ -290,6 +302,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             {
                 draw_project_shell();
             }
+            m_filesPresenter->draw();
             draw_locator_dialog();
             draw_close_dialog();
             draw_overwrite_dialog();
@@ -1114,6 +1127,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     cue::editor::WindowsEditorSession *m_session;
     const cue::AssertContext *m_assertContext;
     std::unique_ptr<cue::editor::EditorPresenter> m_presenter;
+    std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;
     std::array<char, 512> m_sceneLocator{};
     std::string m_message;
@@ -1151,6 +1165,40 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     {
         return cue::Result<void>::failure(
             make_tool_error(a_assertContext, k_processTestFailed, "Process test action requires an active scene"));
+    }
+    if (*a_action == "files-workflow")
+    {
+        cue::editor::FilesPresenter presenter(a_session.files_workspace(), a_assertContext);
+        /// @brief 一つのFiles操作をPresentation Adapter経由で同期実行する
+        const auto submit = [&presenter](cue::editor::FilesIntentKind a_kind, std::string a_source,
+                                         std::string a_destination) noexcept
+        {
+            return presenter.submit({a_kind, std::move(a_source), std::move(a_destination)}).has_value();
+        };
+        if (!submit(cue::editor::FilesIntentKind::CreateFolder, {}, "FilesWorkflow") ||
+            !submit(cue::editor::FilesIntentKind::CreateEmptyFile, {}, "Draft.txt") ||
+            !submit(cue::editor::FilesIntentKind::Rename, "Draft.txt", "Renamed.txt") ||
+            !submit(cue::editor::FilesIntentKind::Move, "Renamed.txt", "FilesWorkflow/Moved.txt") ||
+            !submit(cue::editor::FilesIntentKind::Copy, "FilesWorkflow/Moved.txt", "Copy.txt") ||
+            !submit(cue::editor::FilesIntentKind::Delete, "Copy.txt", {}))
+        {
+            return cue::Result<void>::failure(
+                make_tool_error(a_assertContext, k_processTestFailed, "Files process workflow operation failed"));
+        }
+        const std::span<const cue::project_files::RecoveryEntry> recovery =
+            a_session.files_workspace().view_model().recovery_entries();
+        if (recovery.empty())
+        {
+            return cue::Result<void>::failure(make_tool_error(
+                a_assertContext, k_processTestFailed, "Files process workflow did not publish a recovery entry"));
+        }
+        const std::string operationId = recovery.front().operationId;
+        if (!submit(cue::editor::FilesIntentKind::Restore, operationId, {}))
+        {
+            return cue::Result<void>::failure(
+                make_tool_error(a_assertContext, k_processTestFailed, "Files process workflow restore failed"));
+        }
+        return cue::Result<void>::success();
     }
     if (*a_action == "autosave-new-scene")
     {

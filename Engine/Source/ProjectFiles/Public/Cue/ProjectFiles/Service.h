@@ -120,6 +120,14 @@ struct ProjectFileSearchResult final
     std::size_t visitedEntries = 0U;
 };
 
+/// @brief 復元可能Deleteの確認画面へ渡すBounded Entry Metadata
+struct ProjectFileDeletePreview final
+{
+    WorkspaceEntryType entryType = WorkspaceEntryType::UnsupportedEntry;
+    std::uint64_t byteSize = 0U;
+    std::size_t descendantCount = 0U;
+};
+
 /// @brief Operation ID発行をPlatformまたは決定的Test Doubleへ分離する境界
 class ProjectFileOperationIdSource
 {
@@ -271,6 +279,11 @@ class ProjectFileService final
     /// @brief Area RootまたはArea相対Directory以下を上限付きで再帰検索する
     [[nodiscard]] Result<ProjectFileSearchResult> search(ProjectFileArea a_area, std::string_view a_directory,
                                                          std::string_view a_filter, TraversalLimits a_limits) noexcept;
+
+    /// @brief Delete対象を内容上限付きで検証して件数とLogical Byte数を返す
+    [[nodiscard]] Result<ProjectFileDeletePreview> preview_delete(
+        ProjectFileArea a_area, RelativePath a_source, TraversalLimits a_traversalLimits,
+        ContentVerificationLimits a_contentLimits) noexcept;
 
     /// @brief 指定AreaへCreate-new FolderをAtomic公開する
     [[nodiscard]] Result<ProjectFileOperationResult> create_directory(ProjectFileArea a_area,

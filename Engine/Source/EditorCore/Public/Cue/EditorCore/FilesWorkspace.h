@@ -157,6 +157,10 @@ class FilesWorkspaceService final
     /// @brief Search Filterを更新し、空でなければProjectFileServiceへBounded Searchを要求する
     [[nodiscard]] Result<void> set_search_filter(std::string_view a_filter) noexcept;
 
+    /// @brief 操作可能なDelete対象を再検証して確認画面用Metadataを返す
+    [[nodiscard]] Result<project_files::ProjectFileDeletePreview> preview_delete(
+        std::string_view a_source) noexcept;
+
     /// @brief ProjectFileService経由でDirectoryをCreate-newする
     [[nodiscard]] Result<project_files::ProjectFileOperationOutcome> create_directory(
         std::string_view a_destination) noexcept;

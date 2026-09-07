@@ -139,6 +139,10 @@ class TestDirectory final
         {
             commandLine.append(L" --process-test-action autosave-new-scene");
         }
+        else if (*a_processTestAction == "files-workflow")
+        {
+            commandLine.append(L" --process-test-action files-workflow");
+        }
         else
         {
             commandLine.append(L" --process-test-action edit-close-save");
@@ -224,7 +228,8 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     {
         std::_Exit(11);
     }
-    const std::filesystem::path savedScenePath = projectPath / L"SourceAssets" / L"Scenes" / L"Main.cuescene";
+    const std::filesystem::path sourceAssetsPath = projectPath / L"Assets" / L"Source";
+    const std::filesystem::path savedScenePath = sourceAssetsPath / L"Scenes" / L"Main.cuescene";
     const std::string savedSceneBytes = read_file(savedScenePath);
     auto existingLocator = cue::RelativePath::parse("Scenes/Main.cuescene", a_context);
     auto existingCreate = (*session.try_value())->prepare_new_scene(std::move(*existingLocator.try_value()));
@@ -389,6 +394,13 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     if (!run_editor_process(a_editorExecutable, projectPath, "edit-close-save"))
     {
         std::_Exit(33);
+    }
+    if (!run_editor_process(a_editorExecutable, projectPath, "files-workflow") ||
+        !std::filesystem::is_directory(sourceAssetsPath / L"FilesWorkflow") ||
+        !std::filesystem::is_regular_file(sourceAssetsPath / L"FilesWorkflow" / L"Moved.txt") ||
+        !std::filesystem::is_regular_file(sourceAssetsPath / L"Copy.txt"))
+    {
+        std::_Exit(49);
     }
     const std::string childSavedSceneBytes = read_file(savedScenePath);
     if (!run_editor_process(a_editorExecutable, projectPath))

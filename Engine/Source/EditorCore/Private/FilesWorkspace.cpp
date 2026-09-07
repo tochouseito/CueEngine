@@ -563,6 +563,48 @@ Result<void> FilesWorkspaceService::set_search_filter(std::string_view a_filter)
     return Result<void>::success();
 }
 
+Result<project_files::ProjectFileDeletePreview> FilesWorkspaceService::preview_delete(
+    std::string_view a_source) noexcept
+{
+    Result<void> owner = require_owner_thread();
+    if (!owner)
+    {
+        return Result<project_files::ProjectFileDeletePreview>::failure(std::move(*owner.try_error()));
+    }
+    if (!contains_operable_entry(a_source))
+    {
+        return Result<project_files::ProjectFileDeletePreview>::failure(retain_error(
+            make_editor_core_error(m_assertContext, EditorCoreError::InvalidWorkspaceRequest,
+                                   "Delete preview source is not an operable workspace entry"),
+            EditorCoreError::InvalidWorkspaceRequest, "Delete preview source is not available"));
+    }
+    Result<RelativePath> source = parse_locator(a_source);
+    if (!source)
+    {
+        return Result<project_files::ProjectFileDeletePreview>::failure(retain_error(
+            std::move(*source.try_error()), EditorCoreError::InvalidWorkspaceRequest,
+            "Delete preview source is invalid"));
+    }
+    Result<void> guarded = guard_open_documents(*source.try_value());
+    if (!guarded)
+    {
+        return Result<project_files::ProjectFileDeletePreview>::failure(retain_error(
+            std::move(*guarded.try_error()), EditorCoreError::WorkspaceEntryInUse,
+            "Delete preview was blocked by an open document"));
+    }
+    Result<project_files::ProjectFileDeletePreview> preview = m_projectFiles.preview_delete(
+        project_files::ProjectFileArea::SourceAssets, std::move(*source.try_value()), m_limits.traversal,
+        m_limits.contentVerification);
+    if (!preview)
+    {
+        return Result<project_files::ProjectFileDeletePreview>::failure(retain_error(
+            std::move(*preview.try_error()), EditorCoreError::WorkspaceUnavailable,
+            "Delete preview could not inspect the workspace entry"));
+    }
+    dismiss_error();
+    return preview;
+}
+
 Result<project_files::ProjectFileOperationOutcome> FilesWorkspaceService::create_directory(
     std::string_view a_destination) noexcept
 {
