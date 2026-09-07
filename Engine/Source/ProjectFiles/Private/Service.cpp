@@ -379,6 +379,37 @@ const ProjectFileAccessPolicy &ProjectFileService::access_policy() const noexcep
     return m_policy;
 }
 
+/// @brief Project Area Directoryを再帰監視する独立Watcherを生成する
+Result<std::unique_ptr<WorkspaceWatcher>> ProjectFileService::create_watcher(ProjectFileArea a_area,
+                                                                             WorkspaceWatchLimits a_limits) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread || m_isBusy || !m_policy.can_list(a_area) || !a_limits.is_valid())
+    {
+        return Result<std::unique_ptr<WorkspaceWatcher>>::failure(make_project_file_error(
+            m_assertContext, m_isBusy ? ProjectFileError::Busy : ProjectFileError::InvalidRequest,
+            m_isBusy ? "Project file mutation is already active" : "Project file watcher request is invalid"));
+    }
+    Result<WorkspaceDirectory> directory = m_workspace->bind_directory(area_root(a_area), m_assertContext);
+    if (!directory)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*directory.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<std::unique_ptr<WorkspaceWatcher>>::failure(reclassify_project_file_error(
+            m_assertContext, classification, "Project file watcher area could not be bound",
+            std::move(*directory.try_error())));
+    }
+    Result<std::unique_ptr<WorkspaceWatcher>> watcher = m_workspace->create_watcher(*directory.try_value(), a_limits);
+    if (!watcher)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*watcher.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<std::unique_ptr<WorkspaceWatcher>>::failure(
+            reclassify_project_file_error(m_assertContext, classification, "Project file watcher could not be created",
+                                          std::move(*watcher.try_error())));
+    }
+    return watcher;
+}
+
 /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する
 Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFileArea a_area,
                                                                        std::string_view a_unverifiedAbsolutePath,

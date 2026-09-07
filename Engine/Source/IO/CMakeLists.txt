@@ -7,6 +7,7 @@ target_sources(
         Private/Filesystem.cpp
         Private/RelativePath.cpp
         Private/WorkspaceFilesystem.cpp
+        Private/WorkspaceWatcher.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
@@ -15,6 +16,7 @@ target_sources(
             Public/Cue/IO/Filesystem.h
             Public/Cue/IO/RelativePath.h
             Public/Cue/IO/WorkspaceFilesystem.h
+            Public/Cue/IO/WorkspaceWatcher.h
 )
 
 target_link_libraries(Cue.IO PUBLIC Cue.Foundation)

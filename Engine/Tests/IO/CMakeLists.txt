@@ -31,7 +31,17 @@ add_executable(CueWindowsWorkspaceTests WindowsWorkspaceTests.cpp)
 target_link_libraries(CueWindowsWorkspaceTests PRIVATE Cue.IO.Windows Advapi32)
 target_compile_features(CueWindowsWorkspaceTests PRIVATE cxx_std_20)
 
-set(cueIoTestTargets CueIoTests CueIoPublicHeaderTest CueWorkspaceCoreTests CueWindowsWorkspaceTests)
+add_executable(CueWindowsWorkspaceWatcherTests WindowsWorkspaceWatcherTests.cpp)
+target_link_libraries(CueWindowsWorkspaceWatcherTests PRIVATE Cue.IO.Windows)
+target_compile_features(CueWindowsWorkspaceWatcherTests PRIVATE cxx_std_20)
+
+set(cueIoTestTargets
+    CueIoTests
+    CueIoPublicHeaderTest
+    CueWorkspaceCoreTests
+    CueWindowsWorkspaceTests
+    CueWindowsWorkspaceWatcherTests
+)
 
 foreach(testTarget IN LISTS cueIoTestTargets)
     set_target_properties(
@@ -70,3 +80,6 @@ set_tests_properties(Cue.IO.WorkspaceCore PROPERTIES LABELS IO TIMEOUT 10)
 
 add_test(NAME Cue.IO.WindowsWorkspace COMMAND CueWindowsWorkspaceTests)
 set_tests_properties(Cue.IO.WindowsWorkspace PROPERTIES LABELS "IO;Windows" TIMEOUT 30)
+
+add_test(NAME Cue.IO.WindowsWorkspaceWatcher COMMAND CueWindowsWorkspaceWatcherTests)
+set_tests_properties(Cue.IO.WindowsWorkspaceWatcher PROPERTIES LABELS "IO;Windows" TIMEOUT 30)

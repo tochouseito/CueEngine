@@ -101,6 +101,15 @@ class FakeWorkspaceFilesystem final : public cue::WorkspaceFilesystem
                                "Workspace core test double does not support external path binding"));
     }
 
+    /// @brief Portable Test DoubleではNative Watcherを未対応として返す
+    [[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_watcher(
+        const cue::WorkspaceDirectory &, cue::WorkspaceWatchLimits) noexcept override
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            cue::make_io_error(*m_assertContext, cue::IoError::UnsupportedEntry,
+                               "Workspace core test double does not support file watching"));
+    }
+
     /// @brief Locatorに対応する決定的Snapshotまたは診断Snapshotを返す
     [[nodiscard]] cue::Result<cue::DirectorySnapshot> list_directory(const cue::WorkspaceDirectory &a_directory,
                                                                      cue::TraversalLimits) noexcept override
