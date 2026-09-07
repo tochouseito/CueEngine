@@ -1,5 +1,7 @@
 #include <Cue/IO/Windows/WindowsWorkspaceFilesystem.h>
 
+#include "WindowsFilesystemIdentity.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/Error.h>
@@ -1056,6 +1058,13 @@ struct RootIdentity final
     DWORD fileIndexHigh = 0U;
     DWORD fileIndexLow = 0U;
 };
+
+/// @brief 二つのNative File Identityが同じObjectを表すか判定する
+[[nodiscard]] bool same_identity(const RootIdentity &a_left, const RootIdentity &a_right) noexcept
+{
+    return a_left.volumeSerial == a_right.volumeSerial && a_left.fileIndexHigh == a_right.fileIndexHigh &&
+           a_left.fileIndexLow == a_right.fileIndexLow;
+}
 
 /// @brief Pin済みDirectory Handleから取得したEntry MetadataとFile Identity
 struct NativeDirectoryEntry final
@@ -2915,6 +2924,10 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
     /// @brief CapabilityのDirectory ChainをIdentity固定して実在検証する
     [[nodiscard]] cue::Result<void> verify_directory(const cue::WorkspaceDirectory &a_directory) noexcept override;
 
+    /// @brief DirectoryのWindows VolumeとFile IDをOpaque比較値として返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> directory_identity(
+        const cue::WorkspaceDirectory &a_directory) noexcept override;
+
     /// @brief Identity固定したRegular Fileを排他的に上限付き読取りする
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file_bounded(const cue::BoundWorkspacePath &a_source,
                                                                         std::size_t a_maxBytes) noexcept override;
@@ -2996,7 +3009,8 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
         const cue::BoundWorkspacePath &a_destination) const noexcept;
     /// @brief 親Locator全ComponentのNamespace変更Guardを同時に開始する
     [[nodiscard]] cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>> begin_mutation_parent_guards(
-        const std::vector<UniqueHandle> &a_pinned) const noexcept;
+        const std::vector<UniqueHandle> &a_pinned,
+        std::span<const RootIdentity> a_excludedDirectories = {}) const noexcept;
     /// @brief 親Locator全Componentの変更監視がPublish直前まで未発火か確認する
     [[nodiscard]] cue::Result<void> verify_mutation_parent_guards_pending(
         std::vector<std::unique_ptr<DirectoryChangeGuard>> &a_guards) const noexcept;
@@ -3513,7 +3527,8 @@ cue::Result<void> WindowsWorkspaceFilesystem::verify_mutation_parent_chain(
 }
 
 cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>> WindowsWorkspaceFilesystem::
-    begin_mutation_parent_guards(const std::vector<UniqueHandle> &a_pinned) const noexcept
+    begin_mutation_parent_guards(const std::vector<UniqueHandle> &a_pinned,
+                                 std::span<const RootIdentity> a_excludedDirectories) const noexcept
 {
     if (a_pinned.empty())
     {
@@ -3534,6 +3549,19 @@ cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>> WindowsWorkspace
     for (std::size_t index = 0U; index < a_pinned.size(); ++index)
     {
         const HANDLE directory = index == 0U ? m_rootHandle.get() : a_pinned[index - 1U].get();
+        cue::Result<RootIdentity> identity = read_entry_identity(directory, m_assertContext);
+        if (!identity)
+        {
+            return cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>>::failure(
+                std::move(*identity.try_error()));
+        }
+        if (std::ranges::any_of(a_excludedDirectories,
+                                /// @brief 現在DirectoryがMutation対象の直接親か判定する
+                                [&](const RootIdentity &a_excluded) noexcept
+                                { return same_identity(*identity.try_value(), a_excluded); }))
+        {
+            continue;
+        }
         cue::Result<std::unique_ptr<DirectoryChangeGuard>> guard =
             begin_directory_change_guard(directory, m_assertContext);
         if (!guard)
@@ -3658,6 +3686,49 @@ cue::Result<void> WindowsWorkspaceFilesystem::verify_directory(const cue::Worksp
         return cue::Result<void>::failure(std::move(*guardsFinished.try_error()));
     }
     return cue::Result<void>::success();
+}
+
+cue::Result<cue::FilesystemIdentity> WindowsWorkspaceFilesystem::directory_identity(
+    const cue::WorkspaceDirectory &a_directory) noexcept
+{
+    if (!owns_directory(a_directory))
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(cue::make_io_error(
+            m_assertContext, cue::IoError::OutsideRoot, "Workspace directory belongs to another root binding"));
+    }
+
+    cue::Result<std::vector<UniqueHandle>> pinned = pin_directory_chain(a_directory);
+    if (!pinned)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*pinned.try_error()));
+    }
+
+    if (a_directory.locator() != nullptr)
+    {
+        if (pinned.try_value()->empty())
+        {
+            return cue::Result<cue::FilesystemIdentity>::failure(
+                cue::make_io_error(m_assertContext, cue::IoError::PreconditionFailed,
+                                   "Workspace directory identity inspection was incomplete"));
+        }
+    }
+
+    HANDLE identityHandle = m_rootHandle.get();
+    if (a_directory.locator() != nullptr)
+    {
+        identityHandle = pinned.try_value()->back().get();
+    }
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> nativeIdentity =
+        cue::windows_io::inspect_native_filesystem_identity(identityHandle, m_assertContext);
+    if (!nativeIdentity)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*nativeIdentity.try_error()));
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3200000000ULL;
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+        k_windowsIdentityProvider, nativeIdentity.try_value()->volumeHigh, nativeIdentity.try_value()->volumeLow,
+        nativeIdentity.try_value()->entryHigh, nativeIdentity.try_value()->entryLow));
 }
 
 cue::Result<std::vector<std::byte>> WindowsWorkspaceFilesystem::read_file_bounded(
@@ -5594,8 +5665,23 @@ cue::WorkspaceMutationResult WindowsWorkspaceFilesystem::rename_entry_internal(
         }
     }
 
+    cue::Result<RootIdentity> sourceParentIdentity =
+        read_entry_identity(sourcePinned.try_value()->back().get(), m_assertContext);
+    cue::Result<RootIdentity> destinationParentIdentity =
+        read_entry_identity(destinationPinned.try_value()->back().get(), m_assertContext);
+    if (!sourceParentIdentity || !destinationParentIdentity)
+    {
+        if (sourceTreeGuard)
+        {
+            cue::Result<void> ignored = finish_directory_change_guard(*sourceTreeGuard, m_assertContext);
+            (void)ignored;
+        }
+        return not_committed(!sourceParentIdentity ? std::move(*sourceParentIdentity.try_error())
+                                                   : std::move(*destinationParentIdentity.try_error()));
+    }
+    const std::array excludedParents{*sourceParentIdentity.try_value(), *destinationParentIdentity.try_value()};
     cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>> sourceParentGuards =
-        begin_mutation_parent_guards(*sourcePinned.try_value());
+        begin_mutation_parent_guards(*sourcePinned.try_value(), excludedParents);
     if (!sourceParentGuards)
     {
         if (sourceTreeGuard)
@@ -5606,7 +5692,7 @@ cue::WorkspaceMutationResult WindowsWorkspaceFilesystem::rename_entry_internal(
         return not_committed(std::move(*sourceParentGuards.try_error()));
     }
     cue::Result<std::vector<std::unique_ptr<DirectoryChangeGuard>>> destinationParentGuards =
-        begin_mutation_parent_guards(*destinationPinned.try_value());
+        begin_mutation_parent_guards(*destinationPinned.try_value(), excludedParents);
     if (!destinationParentGuards)
     {
         cue::Result<void> ignoredSourceParents = finish_mutation_parent_guards(*sourceParentGuards.try_value());

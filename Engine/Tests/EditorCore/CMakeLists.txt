@@ -6,7 +6,11 @@ add_executable(CueEditorCorePublicHeaderTest PublicHeaderCompile.cpp)
 target_link_libraries(CueEditorCorePublicHeaderTest PRIVATE Cue.EditorCore)
 target_compile_features(CueEditorCorePublicHeaderTest PRIVATE cxx_std_20)
 
-set(cueEditorCoreTestTargets CueEditorCoreTests CueEditorCorePublicHeaderTest)
+add_executable(CueEditorCoreFilesWorkspaceTests FilesWorkspaceTests.cpp)
+target_link_libraries(CueEditorCoreFilesWorkspaceTests PRIVATE Cue.EditorCore Cue.IO.Windows)
+target_compile_features(CueEditorCoreFilesWorkspaceTests PRIVATE cxx_std_20)
+
+set(cueEditorCoreTestTargets CueEditorCoreTests CueEditorCorePublicHeaderTest CueEditorCoreFilesWorkspaceTests)
 
 foreach(testTarget IN LISTS cueEditorCoreTestTargets)
     set_target_properties(
@@ -36,10 +40,12 @@ add_custom_target(Cue.EditorCore.Tests DEPENDS ${cueEditorCoreTestTargets})
 
 add_test(NAME Cue.EditorCore.DocumentState COMMAND CueEditorCoreTests)
 add_test(NAME Cue.EditorCore.PublicHeaders COMMAND CueEditorCorePublicHeaderTest)
+add_test(NAME Cue.EditorCore.FilesWorkspace COMMAND CueEditorCoreFilesWorkspaceTests)
 
 set_tests_properties(
     Cue.EditorCore.DocumentState
     Cue.EditorCore.PublicHeaders
+    Cue.EditorCore.FilesWorkspace
     PROPERTIES
         LABELS EditorCore
         TIMEOUT 10

@@ -170,6 +170,47 @@ class BusyReset final
     }
     return total;
 }
+
+/// @brief Workspace Root相対EntryをProject Area相対の所有値へ変換する
+[[nodiscard]] cue::Result<cue::project_files::ProjectFileEntry> make_project_file_entry(
+    const cue::WorkspaceEntry &a_entry, std::string_view a_areaRoot, const cue::AssertContext &a_assertContext) noexcept
+{
+    cue::project_files::ProjectFileEntry converted;
+    converted.parentGeneration = a_entry.parentGeneration;
+    converted.type = a_entry.type;
+    converted.byteSize = a_entry.byteSize;
+    converted.rejection = a_entry.rejection;
+    try
+    {
+        converted.displayName = a_entry.displayName;
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
+
+    if (a_entry.locator.has_value())
+    {
+        const std::string_view rootRelative = a_entry.locator->text();
+        if (rootRelative.size() <= a_areaRoot.size() || !rootRelative.starts_with(a_areaRoot) ||
+            rootRelative[a_areaRoot.size()] != '/')
+        {
+            return cue::Result<cue::project_files::ProjectFileEntry>::failure(
+                cue::project_files::make_project_file_error(
+                    a_assertContext, cue::project_files::ProjectFileError::StorageFailure,
+                    "Workspace listing returned an entry outside the requested project area"));
+        }
+        try
+        {
+            converted.locator.assign(rootRelative.substr(a_areaRoot.size() + 1U));
+        }
+        catch (...)
+        {
+            terminate_allocation(a_assertContext);
+        }
+    }
+    return cue::Result<cue::project_files::ProjectFileEntry>::success(std::move(converted));
+}
 } // namespace
 
 namespace cue::project_files
@@ -187,6 +228,12 @@ bool ProjectFileAccessPolicy::can_list(ProjectFileArea a_area) const noexcept
 bool ProjectFileAccessPolicy::can_mutate(ProjectFileArea a_area) const noexcept
 {
     return a_area == ProjectFileArea::SourceAssets;
+}
+
+bool ProjectFileEntry::is_operable() const noexcept
+{
+    return !locator.empty() && !rejection.has_value() &&
+           (type == WorkspaceEntryType::Directory || type == WorkspaceEntryType::RegularFile);
 }
 
 ProjectFileOperationResult::ProjectFileOperationResult(std::string a_operationId, ProjectFileOperationKind a_kind,
@@ -379,6 +426,34 @@ const ProjectFileAccessPolicy &ProjectFileService::access_policy() const noexcep
     return m_policy;
 }
 
+Result<FilesystemIdentity> ProjectFileService::area_root_identity(ProjectFileArea a_area) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread || m_isBusy)
+    {
+        return Result<FilesystemIdentity>::failure(make_project_file_error(
+            m_assertContext, m_isBusy ? ProjectFileError::Busy : ProjectFileError::InvalidRequest,
+            m_isBusy ? "Project file mutation is already active" : "Project file identity request is invalid"));
+    }
+
+    Result<WorkspaceDirectory> directory = m_workspace->bind_directory(area_root(a_area), m_assertContext);
+    if (!directory)
+    {
+        Error cause = std::move(*directory.try_error());
+        return Result<FilesystemIdentity>::failure(reclassify_project_file_error(
+            m_assertContext, classify_project_file_error(cause, WorkspaceMutationOutcome::NotCommitted),
+            "Project area root identity could not be bound", std::move(cause)));
+    }
+    Result<FilesystemIdentity> identity = m_workspace->directory_identity(*directory.try_value());
+    if (!identity)
+    {
+        Error cause = std::move(*identity.try_error());
+        return Result<FilesystemIdentity>::failure(reclassify_project_file_error(
+            m_assertContext, classify_project_file_error(cause, WorkspaceMutationOutcome::NotCommitted),
+            "Project area root identity could not be verified", std::move(cause)));
+    }
+    return identity;
+}
+
 /// @brief Project Area Directoryを再帰監視する独立Watcherを生成する
 Result<std::unique_ptr<WorkspaceWatcher>> ProjectFileService::create_watcher(ProjectFileArea a_area,
                                                                              WorkspaceWatchLimits a_limits) noexcept
@@ -408,6 +483,166 @@ Result<std::unique_ptr<WorkspaceWatcher>> ProjectFileService::create_watcher(Pro
                                           std::move(*watcher.try_error())));
     }
     return watcher;
+}
+
+Result<ProjectFileDirectorySnapshot> ProjectFileService::list_directory(ProjectFileArea a_area,
+                                                                        std::string_view a_directory,
+                                                                        TraversalLimits a_limits) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread || m_isBusy || !m_policy.can_list(a_area) || !a_limits.is_valid())
+    {
+        return Result<ProjectFileDirectorySnapshot>::failure(make_project_file_error(
+            m_assertContext, m_isBusy ? ProjectFileError::Busy : ProjectFileError::InvalidRequest,
+            m_isBusy ? "Project file mutation is already active" : "Project file listing request is invalid"));
+    }
+
+    Result<WorkspaceDirectory> directory = m_workspace->bind_directory(area_root(a_area), m_assertContext);
+    if (!a_directory.empty())
+    {
+        Result<RelativePath> relative = RelativePath::parse(a_directory, m_assertContext);
+        if (!relative)
+        {
+            return Result<ProjectFileDirectorySnapshot>::failure(reclassify_project_file_error(
+                m_assertContext, ProjectFileError::InvalidRequest, "Project file directory locator is invalid",
+                std::move(*relative.try_error())));
+        }
+        Result<BoundWorkspacePath> bound =
+            m_workspace->bind_path(area_root(a_area), std::move(*relative.try_value()), m_assertContext);
+        if (!bound)
+        {
+            return Result<ProjectFileDirectorySnapshot>::failure(reclassify_project_file_error(
+                m_assertContext, ProjectFileError::InvalidRequest, "Project file directory could not be bound",
+                std::move(*bound.try_error())));
+        }
+        directory =
+            Result<WorkspaceDirectory>::success(WorkspaceDirectory::from_bound_path(std::move(*bound.try_value())));
+    }
+    if (!directory)
+    {
+        return Result<ProjectFileDirectorySnapshot>::failure(
+            reclassify_project_file_error(m_assertContext, ProjectFileError::InvalidRequest,
+                                          "Project file area could not be bound", std::move(*directory.try_error())));
+    }
+
+    Result<DirectorySnapshot> listed = m_workspace->list_directory(*directory.try_value(), a_limits);
+    if (!listed)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*listed.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<ProjectFileDirectorySnapshot>::failure(reclassify_project_file_error(
+            m_assertContext, classification, "Project file directory listing failed", std::move(*listed.try_error())));
+    }
+
+    ProjectFileDirectorySnapshot snapshot;
+    snapshot.generation = listed.try_value()->generation;
+    snapshot.state = listed.try_value()->state;
+    try
+    {
+        snapshot.directory.assign(a_directory);
+        snapshot.diagnostics = std::move(listed.try_value()->diagnostics);
+        snapshot.entries.reserve(listed.try_value()->entries.size());
+    }
+    catch (...)
+    {
+        terminate_allocation(m_assertContext);
+    }
+    for (const WorkspaceEntry &entry : listed.try_value()->entries)
+    {
+        Result<ProjectFileEntry> converted = make_project_file_entry(entry, area_root(a_area).text(), m_assertContext);
+        if (!converted)
+        {
+            return Result<ProjectFileDirectorySnapshot>::failure(std::move(*converted.try_error()));
+        }
+        try
+        {
+            snapshot.entries.push_back(std::move(*converted.try_value()));
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+    }
+    return Result<ProjectFileDirectorySnapshot>::success(std::move(snapshot));
+}
+
+Result<ProjectFileSearchResult> ProjectFileService::search(ProjectFileArea a_area, std::string_view a_directory,
+                                                           std::string_view a_filter, TraversalLimits a_limits) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread || m_isBusy || !m_policy.can_list(a_area) || !a_limits.is_valid() ||
+        a_filter.empty())
+    {
+        return Result<ProjectFileSearchResult>::failure(make_project_file_error(
+            m_assertContext, m_isBusy ? ProjectFileError::Busy : ProjectFileError::InvalidRequest,
+            m_isBusy ? "Project file mutation is already active" : "Project file search request is invalid"));
+    }
+
+    Result<WorkspaceDirectory> directory = m_workspace->bind_directory(area_root(a_area), m_assertContext);
+    if (!a_directory.empty())
+    {
+        Result<RelativePath> relative = RelativePath::parse(a_directory, m_assertContext);
+        if (!relative)
+        {
+            return Result<ProjectFileSearchResult>::failure(reclassify_project_file_error(
+                m_assertContext, ProjectFileError::InvalidRequest, "Project file search directory is invalid",
+                std::move(*relative.try_error())));
+        }
+        Result<BoundWorkspacePath> bound =
+            m_workspace->bind_path(area_root(a_area), std::move(*relative.try_value()), m_assertContext);
+        if (!bound)
+        {
+            return Result<ProjectFileSearchResult>::failure(reclassify_project_file_error(
+                m_assertContext, ProjectFileError::InvalidRequest, "Project file search directory could not be bound",
+                std::move(*bound.try_error())));
+        }
+        directory =
+            Result<WorkspaceDirectory>::success(WorkspaceDirectory::from_bound_path(std::move(*bound.try_value())));
+    }
+    if (!directory)
+    {
+        return Result<ProjectFileSearchResult>::failure(reclassify_project_file_error(
+            m_assertContext, ProjectFileError::InvalidRequest, "Project file search area could not be bound",
+            std::move(*directory.try_error())));
+    }
+
+    Result<WorkspaceSearchResult> searched =
+        search_workspace(*m_workspace, *directory.try_value(), a_filter, a_limits, m_assertContext);
+    if (!searched)
+    {
+        const ProjectFileError classification =
+            classify_project_file_error(*searched.try_error(), WorkspaceMutationOutcome::NotCommitted);
+        return Result<ProjectFileSearchResult>::failure(reclassify_project_file_error(
+            m_assertContext, classification, "Project file search failed", std::move(*searched.try_error())));
+    }
+
+    ProjectFileSearchResult result;
+    result.state = searched.try_value()->state;
+    result.visitedEntries = searched.try_value()->visitedEntries;
+    try
+    {
+        result.diagnostics = std::move(searched.try_value()->diagnostics);
+        result.entries.reserve(searched.try_value()->entries.size());
+    }
+    catch (...)
+    {
+        terminate_allocation(m_assertContext);
+    }
+    for (const WorkspaceEntry &entry : searched.try_value()->entries)
+    {
+        Result<ProjectFileEntry> converted = make_project_file_entry(entry, area_root(a_area).text(), m_assertContext);
+        if (!converted)
+        {
+            return Result<ProjectFileSearchResult>::failure(std::move(*converted.try_error()));
+        }
+        try
+        {
+            result.entries.push_back(std::move(*converted.try_value()));
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+    }
+    return Result<ProjectFileSearchResult>::success(std::move(result));
 }
 
 /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する

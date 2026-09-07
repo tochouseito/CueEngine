@@ -1,5 +1,7 @@
 #include <Cue/IO/Windows/WindowsFilesystem.h>
 
+#include "WindowsFilesystemIdentity.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/Error.h>
@@ -877,6 +879,9 @@ class WindowsFilesystemRoot final : public cue::FilesystemRoot
     /// @brief Root Handle と Staging 追跡 Storage を解放する
     ~WindowsFilesystemRoot() override;
 
+    /// @brief Binding時のWindows VolumeとFile IDをOpaque比較値として返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override;
+
     /// @brief Known Folder Factoryが取得した親Chain PinをRoot寿命へ移管する
     void adopt_pinned_directories(std::vector<UniqueHandle> &&a_directories) noexcept
     {
@@ -971,6 +976,27 @@ WindowsFilesystemRoot::~WindowsFilesystemRoot()
             }
         }
     }
+}
+
+cue::Result<cue::FilesystemIdentity> WindowsFilesystemRoot::root_identity() const noexcept
+{
+    cue::Result<void> verified = verify_root_identity();
+    if (!verified)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*verified.try_error()));
+    }
+
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> identity =
+        cue::windows_io::inspect_native_filesystem_identity(m_rootHandle.get(), *m_assertContext);
+    if (!identity)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*identity.try_error()));
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3200000000ULL;
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+        k_windowsIdentityProvider, identity.try_value()->volumeHigh, identity.try_value()->volumeLow,
+        identity.try_value()->entryHigh, identity.try_value()->entryLow));
 }
 
 cue::Result<void> WindowsFilesystemRoot::verify_root_identity() const noexcept
@@ -2091,7 +2117,7 @@ Result<std::unique_ptr<FilesystemRoot>> create_windows_filesystem_root(std::stri
         return Result<std::unique_ptr<FilesystemRoot>>::failure(std::move(*extended.try_error()));
     }
     UniqueHandle root(CreateFileW(extended.try_value()->c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!root.is_valid())
     {

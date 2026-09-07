@@ -139,6 +139,13 @@ Scene保存用`FilesystemRoot`とProject File用`WorkspaceFilesystem`は同じ�
 M13のEditor Compositionは`ProjectFileService`と`ProjectWorkspaceSession`を同じProject Sessionが所有し、どちらか一方だけが
 先に破棄された状態でUI Intentを受理しない。
 
+`FilesWorkspaceService`の構築時はDescriptorの`ProjectId`とRoot Locatorだけで同一性を判断しない。Project File側と
+Scene Persistence側が拘束した`roots.sourceAssets`および`roots.saved`のNative Entry Identityを比較し、両方が一致する場合だけ
+Serviceを公開する。比較にはPlatform Adapterが発行する`FilesystemIdentity`を使用し、絶対Path、Native Handle、Volume名を
+上位Moduleへ公開しない。Windows AdapterはProcess内で同時に認識されているVolume Objectを区別するMount ManagerのVolume GUIDと、
+`FILE_ID_INFO`の128-bit File IDを省略せず比較する。Filesystem Format時のVolume Serialだけでは複製Volumeを区別できないため、
+Provider Scopeに使用しない。Identity取得中にRootまたはDirectoryの再Bindingが検出された場合も構築を失敗させる。
+
 ### Area Access Policy
 
 `ProjectFileAccessPolicy`は、読取り可能Area、Mutation可能Area、内部操作専用Area、保護Entryを検証済み
@@ -610,8 +617,8 @@ Windows AdapterがBindingするProject RootはM13ではLocal Drive上のAbsolute
 `DRIVE_REMOTE`へMapされたDrive Letter Rootは`IoError::UnsupportedEntry`としてFactory時点で拒否する。
 `\\?\\C:\\...`形式のExtended Local Pathは受理する。SMBではRoot境界に使用する`OpenFileById`が利用できないため、
 「Transactionを保証しない」状態で列挙だけを暗黙許可せず、Network Share対応時に別の安全なNative経路を設計する。
-同じ理由で、M13のWindows Adapterは64-bit File IDを一意に扱えるNTFSだけを受理する。
-`FILE_SUPPORTS_OPEN_BY_FILE_ID`を公開しないFilesystemと、128-bit File ID経路が必要なReFSを含む非NTFS Volumeは
+同じ理由で、M13のWindows AdapterはFile IDを一意に扱えるNTFSだけを受理する。
+`FILE_SUPPORTS_OPEN_BY_FILE_ID`を公開しないFilesystemと、既存Mutation GuardのFile ID経路が未対応であるReFSを含む非NTFS Volumeは
 Factory時点で`IoError::UnsupportedEntry`として拒否する。
 
 ### Headless Test Boundary

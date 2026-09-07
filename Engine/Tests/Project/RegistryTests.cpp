@@ -55,6 +55,13 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     /// @brief Memory Workspace Byte 列を解放する
     ~WorkspaceFilesystem() override = default;
 
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D35ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
+
     /// @brief CueWorkspace.json の可視状態だけを返す
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &a_path) noexcept override
     {

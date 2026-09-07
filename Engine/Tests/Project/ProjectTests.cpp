@@ -7,6 +7,7 @@
 #include <Cue/Project/Error.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <span>
@@ -73,6 +74,13 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     MemoryFilesystemRoot &operator=(MemoryFilesystemRoot &&) = delete;
     /// @brief 所有 Byte 列を解放する
     ~MemoryFilesystemRoot() override = default;
+
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D34ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
 
     /// @brief CueProject.json の存在だけを Memory 状態から返す
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &a_path) noexcept override

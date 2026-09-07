@@ -87,6 +87,39 @@ struct RecoveryEntry final
     RecoveryEntryState state = RecoveryEntryState::ReconciliationRequired;
 };
 
+/// @brief Area相対Locatorだけを保持するFiles UI向けEntry Snapshot
+struct ProjectFileEntry final
+{
+    std::uint64_t parentGeneration = 0U;
+    std::string locator;
+    std::string displayName;
+    WorkspaceEntryType type = WorkspaceEntryType::UnsupportedEntry;
+    std::uint64_t byteSize = 0U;
+    std::optional<WorkspaceDiagnosticCode> rejection;
+
+    /// @brief Mutation要求へ使用できる検証済みPortable Entryか判定する
+    [[nodiscard]] bool is_operable() const noexcept;
+};
+
+/// @brief 一つのProject Area DirectoryをArea相対値で所有するSnapshot
+struct ProjectFileDirectorySnapshot final
+{
+    std::string directory;
+    std::uint64_t generation = 0U;
+    WorkspaceSnapshotState state = WorkspaceSnapshotState::Complete;
+    std::vector<ProjectFileEntry> entries;
+    std::vector<WorkspaceDiagnostic> diagnostics;
+};
+
+/// @brief Project Area内のBounded Search結果をArea相対値で所有する
+struct ProjectFileSearchResult final
+{
+    WorkspaceSnapshotState state = WorkspaceSnapshotState::Complete;
+    std::vector<ProjectFileEntry> entries;
+    std::vector<WorkspaceDiagnostic> diagnostics;
+    std::size_t visitedEntries = 0U;
+};
+
 /// @brief Operation ID発行をPlatformまたは決定的Test Doubleへ分離する境界
 class ProjectFileOperationIdSource
 {
@@ -216,6 +249,9 @@ class ProjectFileService final
     /// @brief Serviceが適用するArea Access Policyを返す
     [[nodiscard]] const ProjectFileAccessPolicy &access_policy() const noexcept;
 
+    /// @brief Area RootのNative PathやHandleを公開せず比較専用Identityを返す
+    [[nodiscard]] Result<FilesystemIdentity> area_root_identity(ProjectFileArea a_area) noexcept;
+
     /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する
     ///
     /// 返されたLocatorは観測時点の値であり、実際の読取りまたはMutationは利用直前に再検証する。
@@ -226,6 +262,15 @@ class ProjectFileService final
     /// @brief 指定Project Areaの外部変更を再Query Hintとして受け取るWatcherを生成する
     [[nodiscard]] Result<std::unique_ptr<WorkspaceWatcher>> create_watcher(ProjectFileArea a_area,
                                                                            WorkspaceWatchLimits a_limits) noexcept;
+
+    /// @brief Area RootまたはArea相対Directory直下をPortable Snapshotとして列挙する
+    [[nodiscard]] Result<ProjectFileDirectorySnapshot> list_directory(ProjectFileArea a_area,
+                                                                      std::string_view a_directory,
+                                                                      TraversalLimits a_limits) noexcept;
+
+    /// @brief Area RootまたはArea相対Directory以下を上限付きで再帰検索する
+    [[nodiscard]] Result<ProjectFileSearchResult> search(ProjectFileArea a_area, std::string_view a_directory,
+                                                         std::string_view a_filter, TraversalLimits a_limits) noexcept;
 
     /// @brief 指定AreaへCreate-new FolderをAtomic公開する
     [[nodiscard]] Result<ProjectFileOperationResult> create_directory(ProjectFileArea a_area,

@@ -113,6 +113,12 @@ class FailingWorkspaceFilesystem final : public cue::FilesystemRoot
         return m_writeCount;
     }
 
+    /// @brief Wrapped Rootの比較専用Identityを転送する
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return m_inner->root_identity();
+    }
+
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &a_path) noexcept override
     {
         return m_inner->query_entry(a_path);

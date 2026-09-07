@@ -2,6 +2,7 @@
 #include <Cue/EditorCore/EditorDocument.h>
 #include <Cue/EditorCore/EditorIntent.h>
 #include <Cue/EditorCore/Error.h>
+#include <Cue/EditorCore/FilesWorkspace.h>
 #include <Cue/EditorCore/Persistence.h>
 #include <Cue/EditorCore/SceneCommand.h>
 

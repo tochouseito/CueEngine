@@ -14,6 +14,7 @@ target_sources(
         FILES
             Public/Cue/IO/Error.h
             Public/Cue/IO/Filesystem.h
+            Public/Cue/IO/FilesystemIdentity.h
             Public/Cue/IO/RelativePath.h
             Public/Cue/IO/WorkspaceFilesystem.h
             Public/Cue/IO/WorkspaceWatcher.h

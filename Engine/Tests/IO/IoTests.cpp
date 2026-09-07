@@ -115,6 +115,23 @@ class TestDirectory final
         return m_outsidePath;
     }
 
+    /// @brief Root寿命中のRenameがRoot HandleのShare契約で拒否されるか確認する
+    [[nodiscard]] bool is_replacement_blocked() noexcept
+    {
+        const std::wstring movedPath = m_path + L".Moved";
+        SetLastError(ERROR_SUCCESS);
+        if (MoveFileExW(m_path.c_str(), movedPath.c_str(), 0U) == FALSE)
+        {
+            const DWORD nativeCode = GetLastError();
+            return nativeCode == ERROR_SHARING_VIOLATION || nativeCode == ERROR_ACCESS_DENIED;
+        }
+        if (MoveFileExW(movedPath.c_str(), m_path.c_str(), 0U) == FALSE)
+        {
+            m_path = movedPath;
+        }
+        return false;
+    }
+
   private:
     std::wstring m_path;
     std::wstring m_outsidePath;
@@ -291,6 +308,13 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     FailingFilesystemRoot &operator=(FailingFilesystemRoot &&) = delete;
     /// @brief Native Resource を持たない Test Double を破棄する
     ~FailingFilesystemRoot() override = default;
+
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D32ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
 
     /// @brief Query Failure Point を一度だけ再現する
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &) noexcept override
@@ -1081,6 +1105,10 @@ int main()
     if (!filesystem)
     {
         return 2;
+    }
+    if (!directory.is_replacement_blocked())
+    {
+        return 8;
     }
 
     if (!test_windows_file_operations(**filesystem.try_value(), directory, assertContext))

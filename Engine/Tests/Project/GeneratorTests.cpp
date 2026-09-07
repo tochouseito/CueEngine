@@ -71,6 +71,13 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     /// @brief Memory 上の Test 状態を解放する
     ~GeneratorFilesystem() override = default;
 
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D33ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
+
     /// @brief Destination と Operation 所有 Staging の可視状態を返す
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &a_path) noexcept override
     {
