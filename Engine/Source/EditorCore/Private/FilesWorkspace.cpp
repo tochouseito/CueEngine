@@ -713,8 +713,10 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
     if (m_watcher == nullptr)
     {
         m_view.m_isStale = true;
-        return Result<bool>::failure(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
-                                                            "Files workspace watcher is stopped"));
+        return Result<bool>::failure(retain_error(
+            make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
+                                   "Files workspace watcher is stopped"),
+            EditorCoreError::WorkspaceUnavailable, "Files workspace watcher is stopped"));
     }
 
     if (!m_pendingExternalChanges.has_value())
@@ -732,8 +734,10 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
             if (!m_watcher->is_running())
             {
                 m_view.m_isStale = true;
-                return Result<bool>::failure(make_editor_core_error(
-                    m_assertContext, EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
+                return Result<bool>::failure(retain_error(
+                    make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
+                                           "Files workspace watcher terminated"),
+                    EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
             }
             return Result<bool>::success(false);
         }
@@ -765,8 +769,10 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
     if (!m_watcher->is_running())
     {
         m_view.m_isStale = true;
-        return Result<bool>::failure(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
-                                                            "Files workspace watcher terminated"));
+        return Result<bool>::failure(retain_error(
+            make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
+                                   "Files workspace watcher terminated"),
+            EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
     }
     return Result<bool>::success(true);
 }
