@@ -196,8 +196,10 @@ Capture開始時は対応するPlay側の押下状態をReleaseし、Capture中�
 Mouse Buttonを解放し、Mouse位置の連続性を切る。これによりUI操作とPlay操作を分離しながらstuck inputを防ぐ。
 
 Native AdapterとFrame構築の間は固定容量`InputEventQueue`で分離する。通常時はFIFO順を維持し、Overflow時は保持中Eventを
-破棄して`DeviceReset`を先頭に置いた後、Overflowを起こした今回Eventを保持する。累積Overflow回数を診断可能にし、
+破棄して`DeviceReset`とQueueが最後に観測したFocus状態を先頭に置いた後、Overflowを起こした今回Eventを保持する。
+今回Event自体がFocus遷移なら、そのEventを最新Focus状態として一度だけ保持する。累積Overflow回数を診断可能にし、
 部分的なDown／Up列をそのまま残さない。Mouse位置は符号付きClient座標、Wheelは符号付きDeltaとして保持する。
+左右のShift、Control、Altは別のPortable Keyとして保持し、一方のKey Upで他方の押下状態を失わない。
 Gamepad、IME、Text入力、Raw Input、Input Mapping、Rebindingは#209で追加しない。
 
 ### Runtime Application Session Ownership

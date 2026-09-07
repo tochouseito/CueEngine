@@ -9,7 +9,7 @@
 namespace
 {
 /// @brief Windows Virtual-Keyを上位へ数値を漏らさずPortable Keyへ変換する
-[[nodiscard]] std::optional<cue::InputKey> translate_key(std::uintptr_t a_key) noexcept
+[[nodiscard]] std::optional<cue::InputKey> translate_key(std::uintptr_t a_key, std::intptr_t a_longParameter) noexcept
 {
     const UINT key = static_cast<UINT>(a_key);
     if (key >= 'A' && key <= 'Z')
@@ -34,17 +34,38 @@ namespace
     case VK_SPACE:
         return cue::InputKey::Space;
     case VK_SHIFT:
+    {
+        constexpr std::uintptr_t k_scanCodeMask = 0xFF;
+        constexpr unsigned int k_scanCodeShift = 16;
+        const UINT scanCode =
+            static_cast<UINT>((static_cast<std::uintptr_t>(a_longParameter) >> k_scanCodeShift) & k_scanCodeMask);
+        return MapVirtualKeyW(scanCode, MAPVK_VSC_TO_VK_EX) == VK_RSHIFT ? cue::InputKey::RightShift
+                                                                         : cue::InputKey::LeftShift;
+    }
     case VK_LSHIFT:
+        return cue::InputKey::LeftShift;
     case VK_RSHIFT:
-        return cue::InputKey::Shift;
+        return cue::InputKey::RightShift;
     case VK_CONTROL:
+    {
+        constexpr std::uintptr_t k_extendedKeyMask = static_cast<std::uintptr_t>(1) << 24;
+        return (static_cast<std::uintptr_t>(a_longParameter) & k_extendedKeyMask) != 0 ? cue::InputKey::RightControl
+                                                                                       : cue::InputKey::LeftControl;
+    }
     case VK_LCONTROL:
+        return cue::InputKey::LeftControl;
     case VK_RCONTROL:
-        return cue::InputKey::Control;
+        return cue::InputKey::RightControl;
     case VK_MENU:
+    {
+        constexpr std::uintptr_t k_extendedKeyMask = static_cast<std::uintptr_t>(1) << 24;
+        return (static_cast<std::uintptr_t>(a_longParameter) & k_extendedKeyMask) != 0 ? cue::InputKey::RightAlt
+                                                                                       : cue::InputKey::LeftAlt;
+    }
     case VK_LMENU:
+        return cue::InputKey::LeftAlt;
     case VK_RMENU:
-        return cue::InputKey::Alt;
+        return cue::InputKey::RightAlt;
     case VK_LEFT:
         return cue::InputKey::Left;
     case VK_RIGHT:
@@ -153,7 +174,7 @@ WindowsMessageResult WindowsInputMessageSink::process_message(const WindowsMessa
     const UINT message = static_cast<UINT>(a_message.message);
     if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_KEYUP || message == WM_SYSKEYUP)
     {
-        const std::optional<InputKey> key = translate_key(a_message.wordParameter);
+        const std::optional<InputKey> key = translate_key(a_message.wordParameter, a_message.longParameter);
         if (key)
         {
             InputEventType type = InputEventType::KeyUp;

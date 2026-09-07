@@ -10,7 +10,7 @@ namespace cue
 {
 /// @brief Owner Thread上でNative AdapterとFrame構築を分離する固定容量FIFO Queue
 ///
-/// Queue Overflow時は保持中Eventを破棄してDeviceResetを先頭へ置き、入力押下状態の残留を防ぐ
+/// Queue Overflow時は保持中Eventを破棄してDeviceResetと最新Focus状態を先頭へ置き、入力状態の残留を防ぐ
 /// 全操作は同じOwner Threadから呼び、並行Accessしない
 class InputEventQueue final
 {
@@ -27,7 +27,7 @@ class InputEventQueue final
     ~InputEventQueue() noexcept = default;
 
     /// @brief EventをFIFO末尾へ追加し、Overflowなしで保持できた場合にtrueを返す
-    /// @details Overflow時もDeviceResetと今回Eventを順に保持し、falseを返す
+    /// @details Overflow時もDeviceReset、最新Focus状態、今回Eventを順に保持し、falseを返す
     [[nodiscard]] bool push(InputEvent a_event) noexcept;
     /// @brief FIFO先頭Eventを取得し、空の場合は出力を変更せずfalseを返す
     [[nodiscard]] bool try_pop(InputEvent &a_event) noexcept;
@@ -41,5 +41,6 @@ class InputEventQueue final
     std::size_t m_readIndex = 0;
     std::size_t m_count = 0;
     std::uint64_t m_overflowCount = 0;
+    bool m_isFocused = true;
 };
 } // namespace cue

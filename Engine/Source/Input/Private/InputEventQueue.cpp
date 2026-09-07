@@ -17,10 +17,21 @@ bool InputEventQueue::push(InputEvent a_event) noexcept
         m_events[0] = {InputEventType::DeviceReset};
         m_count = 1;
 
-        if (a_event.type != InputEventType::DeviceReset)
+        if (a_event.type == InputEventType::FocusGained || a_event.type == InputEventType::FocusLost)
         {
             m_events[1] = a_event;
             m_count = 2;
+            m_isFocused = a_event.type == InputEventType::FocusGained;
+        }
+        else
+        {
+            m_events[1] = {m_isFocused ? InputEventType::FocusGained : InputEventType::FocusLost};
+            m_count = 2;
+            if (a_event.type != InputEventType::DeviceReset)
+            {
+                m_events[2] = a_event;
+                m_count = 3;
+            }
         }
         return false;
     }
@@ -28,6 +39,10 @@ bool InputEventQueue::push(InputEvent a_event) noexcept
     const std::size_t writeIndex = (m_readIndex + m_count) % k_capacity;
     m_events[writeIndex] = a_event;
     ++m_count;
+    if (a_event.type == InputEventType::FocusGained || a_event.type == InputEventType::FocusLost)
+    {
+        m_isFocused = a_event.type == InputEventType::FocusGained;
+    }
     return true;
 }
 

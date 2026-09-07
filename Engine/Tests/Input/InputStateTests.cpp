@@ -32,12 +32,40 @@ namespace
         }
     }
     if (queue.push({cue::InputEventType::KeyUp, cue::InputKey::B}) || queue.overflow_count() != 1 ||
-        queue.size() != 2 || !queue.try_pop(event) || event.type != cue::InputEventType::DeviceReset ||
-        !queue.try_pop(event) || event.type != cue::InputEventType::KeyUp || event.key != cue::InputKey::B)
+        queue.size() != 3 || !queue.try_pop(event) || event.type != cue::InputEventType::DeviceReset ||
+        !queue.try_pop(event) || event.type != cue::InputEventType::FocusGained || !queue.try_pop(event) ||
+        event.type != cue::InputEventType::KeyUp || event.key != cue::InputKey::B)
     {
         return false;
     }
-    return !queue.try_pop(event);
+    if (queue.try_pop(event) || !queue.push({cue::InputEventType::FocusLost}) || !queue.try_pop(event) ||
+        event.type != cue::InputEventType::FocusLost || !queue.push({cue::InputEventType::FocusGained}))
+    {
+        return false;
+    }
+
+    for (std::size_t index = 1; index < cue::InputEventQueue::k_capacity; ++index)
+    {
+        if (!queue.push({cue::InputEventType::MouseMove}))
+        {
+            return false;
+        }
+    }
+    if (queue.push({cue::InputEventType::KeyDown, cue::InputKey::C}) || queue.overflow_count() != 2 ||
+        !queue.try_pop(event) || event.type != cue::InputEventType::DeviceReset || !queue.try_pop(event) ||
+        event.type != cue::InputEventType::FocusGained || !queue.try_pop(event) ||
+        event.type != cue::InputEventType::KeyDown || event.key != cue::InputKey::C || queue.try_pop(event))
+    {
+        return false;
+    }
+
+    cue::InputState state;
+    state.begin_frame({});
+    state.apply_event({cue::InputEventType::FocusLost});
+    state.apply_event({cue::InputEventType::DeviceReset});
+    state.apply_event({cue::InputEventType::FocusGained});
+    state.apply_event({cue::InputEventType::KeyDown, cue::InputKey::C});
+    return state.snapshot().has_focus() && state.snapshot().is_key_down(cue::InputKey::C);
 }
 
 /// @brief 同一FrameのDown、Repeat、Upと次Frame一時値Resetを検証する
