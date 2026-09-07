@@ -229,8 +229,17 @@ class TestDirectory final
     std::size_t quietPolls = 0U;
     for (std::size_t attempt = 0U; attempt < 300U && quietPolls < 30U; ++attempt)
     {
+        if (!a_watcher.is_running())
+        {
+            return false;
+        }
         cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
         if (!drained)
+        {
+            return false;
+        }
+        if (drained.try_value()->has_value() &&
+            (**drained.try_value()).state != cue::WorkspaceChangeBatchState::ChangesAvailable)
         {
             return false;
         }
