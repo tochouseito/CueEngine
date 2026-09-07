@@ -101,7 +101,7 @@ CueEngineはScoped Lifetimeと明示注入の原則だけを取り入れ、資�
 ### Runtime Module Boundary
 
 共有可能なApplication層をFirst-party Target `Cue.Runtime`として追加する。
-`Cue.Runtime`は`Cue.Foundation`、`Cue.GameCore`、`Cue.Scene`だけへ依存し、
+`Cue.Runtime`は`Cue.Foundation`、`Cue.GameCore`、`Cue.Scene`、`Cue.Input`だけへ依存し、
 Platform Event、Clock、Input等の必要値はPlatform非依存Contractまたは注入Adapterを通して受け取る。
 
 依存方向は次のとおりとする。
@@ -118,7 +118,8 @@ Cue.Editor.Tool --------------------> Cue.EditorCore
 
 Cue.Editor.ImGui -------------------> Cue.EditorCore
 Cue.EditorCore ---------------------> Cue.Runtime
-Cue.Runtime ------------------------> Cue.GameCore / Cue.Scene / Cue.Foundation
+Cue.Runtime ------------------------> Cue.GameCore / Cue.Scene / Cue.Input / Cue.Foundation
+Cue.Input.Windows ------------------> Cue.Input / Cue.Platform.Windows
 ```
 
 `Cue.Runtime`と`Cue.GameCore`は`Cue.EditorCore`、ImGui、Platform Windows、RHI、D3D12へ依存しない。
@@ -176,6 +177,28 @@ Systemが必要とする依存はSystem生成時またはStart Requestへ明示�
 
 SOL-AVESのGlobal／World ContainerはLifetime比較として参考にするが、CueEngineではContainer APIではなく、
 Composition Rootが所有する型付きObject Graphとして実装する。
+
+### Portable Input and UI Routing Amendment
+
+#209ではPortable Inputを独立Target `Cue.Input`へ置き、Win32変換を`Cue.Input.Windows`へ分離する。
+`Cue.Input`は標準Libraryだけを使用し、Platform、Windows、Editor、ImGui、RHI、D3D12へ依存しない。
+`Cue.Input.Windows`は`Cue.Input`と`Cue.Platform.Windows`だけへ依存するAdapterであり、Virtual-Key値、`HWND`、
+`WPARAM`、`LPARAM`をPortable Headerまたは`FrameInputSnapshot`へ保存しない。
+
+Windows Windowが持つ単一`WindowsMessageSink`境界は、`WindowsInputMessageSink`をDecoratorとして使用する。
+Adapterは認識したKeyboard、Mouse、Focus MessageをPortable FIFOへ先に値で格納し、その後に任意のImGui Win32 Sinkへ
+同じMessageを同期転送して、そのHandled ResultをWindowへ返す。ImGuiがMessageを処理した場合もPortable Eventの観測を
+失わない。Window Lifecycle Event QueueはM02の責務のままとし、Input Eventを`WindowEvent`へ追加しない。
+
+`InputState::begin_frame`はImGuiの`NewFrame`後にComposition Rootが確定したKeyboard／Mouse Capture値を受ける。
+Capture開始時は対応するPlay側の押下状態をReleaseし、Capture中のEventをPlay Snapshotへ反映しない。Capture終了時に
+押下状態を復元せず、Key Repeatだけでは再押下しない。Focus喪失とDevice ResetはCapture状態に関係なくKeyboardと
+Mouse Buttonを解放し、Mouse位置の連続性を切る。これによりUI操作とPlay操作を分離しながらstuck inputを防ぐ。
+
+Native AdapterとFrame構築の間は固定容量`InputEventQueue`で分離する。通常時はFIFO順を維持し、Overflow時は保持中Eventを
+破棄して`DeviceReset`を先頭に置いた後、Overflowを起こした今回Eventを保持する。累積Overflow回数を診断可能にし、
+部分的なDown／Up列をそのまま残さない。Mouse位置は符号付きClient座標、Wheelは符号付きDeltaとして保持する。
+Gamepad、IME、Text入力、Raw Input、Input Mapping、Rebindingは#209で追加しない。
 
 ### Runtime Application Session Ownership
 
