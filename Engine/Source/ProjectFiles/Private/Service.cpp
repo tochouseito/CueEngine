@@ -512,7 +512,7 @@ Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFi
 
     const std::string leafKey = leafLocator.try_value()->comparison_key(m_assertContext);
     const WorkspaceEntry *exactEntry = nullptr;
-    bool hasPortableAlias = false;
+    std::size_t portableMatchCount = 0U;
     for (const WorkspaceEntry &entry : snapshot.try_value()->entries)
     {
         Result<RelativePath> entryName = RelativePath::parse(entry.displayName, m_assertContext);
@@ -528,7 +528,7 @@ Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFi
         }
         if (entryName.try_value()->comparison_key(m_assertContext) == leafKey)
         {
-            hasPortableAlias = true;
+            ++portableMatchCount;
             if (entry.displayName == leafText)
             {
                 exactEntry = &entry;
@@ -538,14 +538,20 @@ Result<RelativePath> ProjectFileService::revalidate_external_selection(ProjectFi
 
     if (exactEntry == nullptr)
     {
-        if (hasPortableAlias || a_purpose != ProjectFileSelectionPurpose::SaveFileDestination)
+        if (portableMatchCount != 0U || a_purpose != ProjectFileSelectionPurpose::SaveFileDestination)
         {
             return Result<RelativePath>::failure(make_project_file_error(
                 m_assertContext, ProjectFileError::InvalidRequest,
-                hasPortableAlias ? "Native File Dialog selection uses a non-canonical path spelling"
-                                 : "Native File Dialog selection no longer exists"));
+                portableMatchCount != 0U ? "Native File Dialog selection uses a non-canonical path spelling"
+                                         : "Native File Dialog selection no longer exists"));
         }
         return Result<RelativePath>::success(std::move(*areaRelative.try_value()));
+    }
+    if (portableMatchCount != 1U)
+    {
+        return Result<RelativePath>::failure(
+            make_project_file_error(m_assertContext, ProjectFileError::InvalidRequest,
+                                    "Native File Dialog selection collides with another portable path spelling"));
     }
     if (!exactEntry->is_operable())
     {

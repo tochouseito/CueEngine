@@ -105,6 +105,7 @@ class TestDirectory final
                     CreateDirectoryW(child(L"Assets").c_str(), nullptr) != FALSE &&
                     enable_case_sensitive_directory(child(L"Assets")) &&
                     CreateDirectoryW(child(L"Assets\\Source").c_str(), nullptr) != FALSE &&
+                    enable_case_sensitive_directory(child(L"Assets\\Source")) &&
                     CreateDirectoryW(child(L"Assets\\Runtime").c_str(), nullptr) != FALSE &&
                     CreateDirectoryW(child(L"Generated").c_str(), nullptr) != FALSE &&
                     CreateDirectoryW(child(L"Saved").c_str(), nullptr) != FALSE;
@@ -468,11 +469,15 @@ struct MountPointReparseBuffer final
     cue::Result<cue::RelativePath> deletedBeforeUse =
         revalidate_selected(*service.try_value(), directory.child_utf8(L"Assets\\Source\\Temporary.txt"),
                             ProjectFileSelectionPurpose::OpenExistingFile);
-    if (CreateDirectoryW(directory.child(L"Assets\\source").c_str(), nullptr) == FALSE ||
+    if (!write_file(directory.child(L"Assets\\Source\\existing.txt"), bytes) ||
+        CreateDirectoryW(directory.child(L"Assets\\source").c_str(), nullptr) == FALSE ||
         !write_file(directory.child(L"Assets\\source\\Existing.txt"), bytes))
     {
         return false;
     }
+    cue::Result<cue::RelativePath> collision =
+        revalidate_selected(*service.try_value(), directory.child_utf8(L"Assets\\Source\\Existing.txt"),
+                            ProjectFileSelectionPurpose::OpenExistingFile);
     cue::Result<cue::RelativePath> areaAlias =
         revalidate_selected(*service.try_value(), directory.child_utf8(L"Assets\\source\\Existing.txt"),
                             ProjectFileSelectionPurpose::OpenExistingFile);
@@ -493,7 +498,8 @@ struct MountPointReparseBuffer final
     {
         return false;
     }
-    if (wrongOpenType || wrongFolderType || alias || areaAlias || outside || otherArea || finalReparse || parentReparse)
+    if (wrongOpenType || wrongFolderType || alias || collision || areaAlias || outside || otherArea || finalReparse ||
+        parentReparse)
     {
         return false;
     }
