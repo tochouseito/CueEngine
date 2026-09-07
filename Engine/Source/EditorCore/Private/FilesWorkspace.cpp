@@ -94,6 +94,11 @@ const project_files::ProjectFileOperationResult *FilesViewModel::try_last_operat
 
 const Error *FilesViewModel::try_error() const noexcept
 {
+    if (m_lastOperation.has_value() && m_operationState == FilesOperationState::Failed &&
+        m_lastOperation->try_primary_error() != nullptr)
+    {
+        return m_lastOperation->try_primary_error();
+    }
     if (m_error.has_value())
     {
         return &*m_error;
@@ -783,6 +788,8 @@ Result<void> FilesWorkspaceService::stop() noexcept
     Result<void> stopped = m_watcher->stop();
     if (!stopped)
     {
+        m_isWatcherUnavailable = true;
+        m_view.m_isStale = true;
         return Result<void>::failure(retain_error(std::move(*stopped.try_error()),
                                                   EditorCoreError::WorkspaceUnavailable,
                                                   "Files workspace watcher stop failed"));

@@ -587,12 +587,23 @@ class TestProject final
     }
     cue::Result<cue::project_files::ProjectFileOperationOutcome> createdAfterStop =
         service.create_file("AfterStop.txt", std::as_bytes(std::span(content.data(), content.size())));
-    return service.refresh() && service.select("Folder/Nested.txt") && service.set_search_filter("nested") &&
-           createdAfterStop && is_published(*createdAfterStop.try_value()) &&
-           contains_entry(service.view_model(), "AfterStop.txt") && service.view_model().is_stale() &&
-           service.view_model().try_error() != nullptr && service.view_model().try_error()->code().value() ==
-                                                             static_cast<std::int64_t>(
-                                                                 cue::editor_core::EditorCoreError::WorkspaceUnavailable);
+    if (!service.refresh() || !service.select("Folder/Nested.txt") || !service.set_search_filter("nested") ||
+        !createdAfterStop || !is_published(*createdAfterStop.try_value()) ||
+        !contains_entry(service.view_model(), "AfterStop.txt") || !service.view_model().is_stale() ||
+        service.view_model().try_error() == nullptr || service.view_model().try_error()->code().value() !=
+                                                         static_cast<std::int64_t>(
+                                                             cue::editor_core::EditorCoreError::WorkspaceUnavailable))
+    {
+        return fail_stage("operation-after-stop");
+    }
+    cue::Result<cue::project_files::ProjectFileOperationOutcome> conflictAfterStop =
+        service.create_file("AfterStop.txt", std::as_bytes(std::span(content.data(), content.size())));
+    const cue::project_files::ProjectFileOperationResult *lastOperation = service.view_model().try_last_operation();
+    return conflictAfterStop &&
+           *conflictAfterStop.try_value() == cue::project_files::ProjectFileOperationOutcome::NotCommitted &&
+           service.view_model().operation_state() == cue::editor_core::FilesOperationState::Failed &&
+           lastOperation != nullptr && lastOperation->try_primary_error() != nullptr &&
+           service.view_model().try_error() == lastOperation->try_primary_error() && service.view_model().is_stale();
 }
 } // namespace
 
