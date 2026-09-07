@@ -4,17 +4,17 @@
 
 namespace cue
 {
-/// @brief Platform Adapterが検証済みの不透明Owner値とOwner Threadを保持する
-FileDialogOwnerToken::FileDialogOwnerToken(std::uintptr_t a_nativeValue, std::uintptr_t a_ownerIdentity,
+/// @brief Platform Adapterが検証済みの不透明Owner値、Generation、Owner Threadを保持する
+FileDialogOwnerToken::FileDialogOwnerToken(std::uintptr_t a_nativeValue, std::uint64_t a_ownerGeneration,
                                            std::uint32_t a_ownerThreadId) noexcept
-    : m_nativeValue(a_nativeValue), m_ownerIdentity(a_ownerIdentity), m_ownerThreadId(a_ownerThreadId)
+    : m_nativeValue(a_nativeValue), m_ownerGeneration(a_ownerGeneration), m_ownerThreadId(a_ownerThreadId)
 {
 }
 
 /// @brief Owner Capabilityを移動し、移動元を無効化する
 FileDialogOwnerToken::FileDialogOwnerToken(FileDialogOwnerToken &&a_other) noexcept
     : m_nativeValue(std::exchange(a_other.m_nativeValue, 0U)),
-      m_ownerIdentity(std::exchange(a_other.m_ownerIdentity, 0U)),
+      m_ownerGeneration(std::exchange(a_other.m_ownerGeneration, 0U)),
       m_ownerThreadId(std::exchange(a_other.m_ownerThreadId, 0U))
 {
 }
@@ -25,7 +25,7 @@ FileDialogOwnerToken &FileDialogOwnerToken::operator=(FileDialogOwnerToken &&a_o
     if (this != &a_other)
     {
         m_nativeValue = std::exchange(a_other.m_nativeValue, 0U);
-        m_ownerIdentity = std::exchange(a_other.m_ownerIdentity, 0U);
+        m_ownerGeneration = std::exchange(a_other.m_ownerGeneration, 0U);
         m_ownerThreadId = std::exchange(a_other.m_ownerThreadId, 0U);
     }
 

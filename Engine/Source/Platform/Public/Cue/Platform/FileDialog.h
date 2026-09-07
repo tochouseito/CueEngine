@@ -49,12 +49,12 @@ class FileDialogOwnerToken final
   private:
     friend class FileDialogOwnerAccess;
 
-    /// @brief Platform Adapterが検証済みの不透明Owner値とOwner Threadを保持する
-    FileDialogOwnerToken(std::uintptr_t a_nativeValue, std::uintptr_t a_ownerIdentity,
+    /// @brief Platform Adapterが検証済みの不透明Owner値、Generation、Owner Threadを保持する
+    FileDialogOwnerToken(std::uintptr_t a_nativeValue, std::uint64_t a_ownerGeneration,
                          std::uint32_t a_ownerThreadId) noexcept;
 
     std::uintptr_t m_nativeValue = 0U;
-    std::uintptr_t m_ownerIdentity = 0U;
+    std::uint64_t m_ownerGeneration = 0U;
     std::uint32_t m_ownerThreadId = 0U;
 };
 

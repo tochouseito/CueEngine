@@ -10,6 +10,7 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -22,6 +23,9 @@ using cue::windows_private::make_error;
 using cue::windows_private::make_native_error;
 using cue::windows_private::query_client_size;
 
+static_assert(sizeof(std::uintptr_t) >= sizeof(std::uint64_t),
+              "Windows Dialog Owner Generation requires a 64-bit native handle representation");
+
 constexpr wchar_t k_windowClassName[] = L"CueEngine.Window";
 constexpr DWORD k_windowStyle = WS_OVERLAPPEDWINDOW;
 
@@ -32,6 +36,18 @@ constexpr std::int64_t k_windowCreationFailed = 6;
 constexpr std::int64_t k_windowDestroyFailed = 8;
 constexpr std::int64_t k_windowAlreadyExists = 9;
 constexpr std::int64_t k_classUnregistrationFailed = 10;
+
+/// @brief Process内で再利用しないNative Dialog Owner Generationを発行する
+[[nodiscard]] std::uint64_t next_dialog_owner_generation() noexcept
+{
+    static std::atomic<std::uint64_t> nextGeneration{1U};
+    const std::uint64_t generation = nextGeneration.fetch_add(1U, std::memory_order_relaxed);
+    if (generation == 0U)
+    {
+        std::abort();
+    }
+    return generation;
+}
 
 /// @brief Allocation 失敗を追加 Allocation なしで Fatal 終了境界へ渡し、復帰時も Process を停止する
 [[noreturn]] void terminate_allocation(const cue::AssertContext &a_context) noexcept
@@ -118,8 +134,8 @@ class WindowClassRegistry final
             return cue::Result<void>::success();
         }
 
-        return cue::Result<void>::failure(make_native_error(
-            a_context, k_classUnregistrationFailed, "Windows Window Class unregistration failed", nativeCode));
+        return cue::Result<void>::failure(make_native_error(a_context, k_classUnregistrationFailed,
+                                                            "Windows Window Class unregistration failed", nativeCode));
     }
 
   private:
@@ -344,7 +360,8 @@ Result<void> WindowsWindowSystem::unregister_window_class() noexcept
     return window_class_registry().release(*m_assertContext, m_instance);
 }
 
-WindowsWindow::WindowsWindow(WindowsWindowSystem &a_system) noexcept : m_system(&a_system)
+WindowsWindow::WindowsWindow(WindowsWindowSystem &a_system) noexcept
+    : m_system(&a_system), m_dialogOwnerGeneration(next_dialog_owner_generation())
 {
 }
 
@@ -447,6 +464,11 @@ const void *WindowsWindow::native_view_value() const noexcept
     return m_window;
 }
 
+std::uint64_t WindowsWindow::dialog_owner_generation() const noexcept
+{
+    return m_dialogOwnerGeneration;
+}
+
 void WindowsWindow::acquire_class_reference() noexcept
 {
     verify_thread();
@@ -474,6 +496,16 @@ Result<void> WindowsWindow::create_native(std::wstring_view a_title, int a_width
 
     CUE_ASSERT(m_system->assert_context(), m_window == window,
                "Window Procedure must attach the native handle during creation");
+
+    if (SetPropW(window, k_windowsDialogOwnerGenerationProperty,
+                 reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(m_dialogOwnerGeneration))) == FALSE)
+    {
+        const DWORD nativeCode = GetLastError();
+        static_cast<void>(DestroyWindow(window));
+        return Result<void>::failure(make_native_error(m_system->assert_context(), k_windowCreationFailed,
+                                                       "Windows Window owner generation publication failed",
+                                                       nativeCode));
+    }
 
     Result<WindowSize> clientSizeResult = query_client_size(window, m_system->assert_context());
 
@@ -598,6 +630,7 @@ LRESULT WindowsWindow::process_message(UINT a_message, WPARAM a_wParam, LPARAM a
     {
         // HWND が完全に無効になる最後の通知で関連付けを消し、Interop へ失効 Handle を返さない
         HWND window = m_window;
+        static_cast<void>(RemovePropW(window, k_windowsDialogOwnerGenerationProperty));
         LRESULT result = DefWindowProcW(window, a_message, a_wParam, a_lParam);
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         m_window = nullptr;

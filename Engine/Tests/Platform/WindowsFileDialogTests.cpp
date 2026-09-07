@@ -251,20 +251,18 @@ template <typename T> [[nodiscard]] bool has_utf8_conversion_cause(const cue::Re
         return false;
     }
     HWND reusedHandle = static_cast<HWND>(const_cast<void *>(reusedView.try_value()->value()));
-    const LONG_PTR originalIdentity = GetWindowLongPtrW(reusedHandle, GWLP_USERDATA);
-    const LONG_PTR replacementIdentity = originalIdentity == 1 ? 2 : 1;
-    SetLastError(ERROR_SUCCESS);
-    const LONG_PTR previousIdentity = SetWindowLongPtrW(reusedHandle, GWLP_USERDATA, replacementIdentity);
-    if (previousIdentity != originalIdentity || (previousIdentity == 0 && GetLastError() != ERROR_SUCCESS))
+    HANDLE originalGeneration = GetPropW(reusedHandle, L"CueEngine.DialogOwnerGeneration");
+    HANDLE replacementGeneration = originalGeneration == reinterpret_cast<HANDLE>(1U) ? reinterpret_cast<HANDLE>(2U)
+                                                                                      : reinterpret_cast<HANDLE>(1U);
+    if (originalGeneration == nullptr ||
+        SetPropW(reusedHandle, L"CueEngine.DialogOwnerGeneration", replacementGeneration) == FALSE)
     {
         return false;
     }
     cue::FileDialogRequest reusedRequest(cue::FileDialogKind::OpenFile, {}, {}, {},
                                          std::move(*reusedOwner.try_value()));
     cue::Result<cue::FileDialogResult> reusedResult = service->show(reusedRequest);
-    SetLastError(ERROR_SUCCESS);
-    const LONG_PTR replacedIdentity = SetWindowLongPtrW(reusedHandle, GWLP_USERDATA, originalIdentity);
-    if (replacedIdentity != replacementIdentity || (replacedIdentity == 0 && GetLastError() != ERROR_SUCCESS) ||
+    if (SetPropW(reusedHandle, L"CueEngine.DialogOwnerGeneration", originalGeneration) == FALSE ||
         !has_dialog_error(reusedResult, cue::WindowsFileDialogError::OwnerUnavailable) || !reusedWindow->destroy())
     {
         return false;

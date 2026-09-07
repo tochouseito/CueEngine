@@ -407,11 +407,11 @@ namespace cue
 class FileDialogOwnerAccess final
 {
   public:
-    /// @brief 検証済みNative Owner値とThreadからOpaque Tokenを生成する
-    [[nodiscard]] static FileDialogOwnerToken create(std::uintptr_t a_nativeValue, std::uintptr_t a_ownerIdentity,
+    /// @brief 検証済みNative Owner値、Generation、ThreadからOpaque Tokenを生成する
+    [[nodiscard]] static FileDialogOwnerToken create(std::uintptr_t a_nativeValue, std::uint64_t a_ownerGeneration,
                                                      std::uint32_t a_ownerThreadId) noexcept
     {
-        return FileDialogOwnerToken(a_nativeValue, a_ownerIdentity, a_ownerThreadId);
+        return FileDialogOwnerToken(a_nativeValue, a_ownerGeneration, a_ownerThreadId);
     }
 
     /// @brief Opaque Tokenが保持するNative Owner値をPlatform実装へ返す
@@ -426,10 +426,10 @@ class FileDialogOwnerAccess final
         return a_owner.m_ownerThreadId;
     }
 
-    /// @brief Token発行元Window Objectの一意な非所有Identityを返す
-    [[nodiscard]] static std::uintptr_t owner_identity(const FileDialogOwnerToken &a_owner) noexcept
+    /// @brief HWNDとWindow Objectの再利用を区別するGenerationを返す
+    [[nodiscard]] static std::uint64_t owner_generation(const FileDialogOwnerToken &a_owner) noexcept
     {
-        return a_owner.m_ownerIdentity;
+        return a_owner.m_ownerGeneration;
     }
 };
 
@@ -467,9 +467,9 @@ class WindowsFileDialogService final : public FileDialogService
 
         const FileDialogOwnerToken &owner = a_request.owner();
         const std::uintptr_t nativeOwnerValue = FileDialogOwnerAccess::native_value(owner);
-        const std::uintptr_t ownerIdentity = FileDialogOwnerAccess::owner_identity(owner);
+        const std::uint64_t ownerGeneration = FileDialogOwnerAccess::owner_generation(owner);
         const std::uint32_t ownerThreadId = FileDialogOwnerAccess::owner_thread_id(owner);
-        if (nativeOwnerValue == 0U || ownerIdentity == 0U || ownerThreadId == 0U)
+        if (nativeOwnerValue == 0U || ownerGeneration == 0U || ownerThreadId == 0U)
         {
             return Result<FileDialogResult>::failure(make_dialog_error(
                 *m_assertContext, WindowsFileDialogError::OwnerUnavailable, "File Dialog Owner Token is unavailable"));
@@ -483,10 +483,10 @@ class WindowsFileDialogService final : public FileDialogService
 
         HWND ownerWindow = reinterpret_cast<HWND>(nativeOwnerValue);
         DWORD nativeOwnerThread = GetWindowThreadProcessId(ownerWindow, nullptr);
-        const std::uintptr_t liveOwnerIdentity =
-            static_cast<std::uintptr_t>(GetWindowLongPtrW(ownerWindow, GWLP_USERDATA));
+        const std::uint64_t liveOwnerGeneration = static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(GetPropW(ownerWindow, k_windowsDialogOwnerGenerationProperty)));
         if (IsWindow(ownerWindow) == FALSE || nativeOwnerThread == 0U || nativeOwnerThread != ownerThreadId ||
-            liveOwnerIdentity != ownerIdentity)
+            liveOwnerGeneration != ownerGeneration)
         {
             return Result<FileDialogResult>::failure(
                 make_dialog_error(*m_assertContext, WindowsFileDialogError::OwnerUnavailable,
@@ -620,7 +620,7 @@ Result<FileDialogOwnerToken> create_windows_file_dialog_owner(Window &a_window,
     }
 
     return Result<FileDialogOwnerToken>::success(FileDialogOwnerAccess::create(
-        reinterpret_cast<std::uintptr_t>(nativeWindow), reinterpret_cast<std::uintptr_t>(windowsWindow), ownerThread));
+        reinterpret_cast<std::uintptr_t>(nativeWindow), windowsWindow->dialog_owner_generation(), ownerThread));
 }
 
 /// @brief Project HubとEditorで共有するWindows Native File Dialog Serviceを生成する
