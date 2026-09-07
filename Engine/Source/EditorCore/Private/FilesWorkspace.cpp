@@ -712,6 +712,7 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
     }
     if (m_watcher == nullptr)
     {
+        m_view.m_isStale = true;
         return Result<bool>::failure(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
                                                             "Files workspace watcher is stopped"));
     }
@@ -721,12 +722,19 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
         Result<std::optional<WorkspaceChangeBatch>> drained = m_watcher->drain_changes();
         if (!drained)
         {
+            m_view.m_isStale = true;
             return Result<bool>::failure(retain_error(std::move(*drained.try_error()),
                                                       EditorCoreError::WorkspaceUnavailable,
                                                       "Files workspace watcher drain failed"));
         }
         if (!drained.try_value()->has_value())
         {
+            if (!m_watcher->is_running())
+            {
+                m_view.m_isStale = true;
+                return Result<bool>::failure(make_editor_core_error(
+                    m_assertContext, EditorCoreError::WorkspaceUnavailable, "Files workspace watcher terminated"));
+            }
             return Result<bool>::success(false);
         }
         m_pendingExternalChanges.emplace(std::move(**drained.try_value()));
@@ -754,6 +762,12 @@ Result<bool> FilesWorkspaceService::poll_external_changes() noexcept
         return Result<bool>::failure(std::move(*refreshed.try_error()));
     }
     m_pendingExternalChanges.reset();
+    if (!m_watcher->is_running())
+    {
+        m_view.m_isStale = true;
+        return Result<bool>::failure(make_editor_core_error(m_assertContext, EditorCoreError::WorkspaceUnavailable,
+                                                            "Files workspace watcher terminated"));
+    }
     return Result<bool>::success(true);
 }
 

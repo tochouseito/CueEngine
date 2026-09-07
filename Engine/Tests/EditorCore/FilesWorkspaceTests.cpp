@@ -571,7 +571,14 @@ class TestProject final
             wrongThreadClearRejected = !service.clear_selection();
         });
     wrongThread.join();
-    return wrongThreadRefreshRejected && wrongThreadClearRejected && service.stop() && service.stop();
+    if (!wrongThreadRefreshRejected || !wrongThreadClearRejected || !service.stop() || !service.stop())
+    {
+        return fail_stage("stop");
+    }
+    cue::Result<bool> pollAfterStop = service.poll_external_changes();
+    return !pollAfterStop && service.view_model().is_stale() && pollAfterStop.try_error() != nullptr &&
+           pollAfterStop.try_error()->code().value() ==
+               static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable);
 }
 } // namespace
 
