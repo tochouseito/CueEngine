@@ -401,6 +401,17 @@ class WindowsWorkspaceWatcher final : public cue::WorkspaceWatcher
                     requireRescan(cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict, {}, 0);
                     return;
                 }
+                if (iterator->kind == cue::WorkspaceChangeHintKind::Renamed &&
+                    a_change.kind == cue::WorkspaceChangeHintKind::Renamed)
+                {
+                    if (iterator->previousLocator.has_value() && a_change.previousLocator.has_value() &&
+                        iterator->previousLocator->text() == a_change.previousLocator->text())
+                    {
+                        return;
+                    }
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict, {}, 0);
+                    return;
+                }
                 *iterator = std::move(a_change);
                 return;
             }

@@ -100,6 +100,8 @@ class TestDirectory final
             CreateDirectoryW(child(L"Chain\\Middle\\Watch").c_str(), nullptr) != FALSE &&
             write_file(child(L"Watch\\Modify.txt"), "before") && write_file(child(L"Watch\\RenameOld.txt"), "rename") &&
             write_file(child(L"Watch\\RenameDelete.txt"), "rename-delete") &&
+            write_file(child(L"Watch\\RenameSourceA.txt"), "rename-a") &&
+            write_file(child(L"Watch\\RenameSourceC.txt"), "rename-c") &&
             write_file(child(L"Watch\\Delete.txt"), "delete") && write_file(child(L"Watch\\Burst.txt"), "burst");
     }
     /// @brief Test Directoryの複製を禁止する
@@ -259,6 +261,21 @@ class TestDirectory final
     if (!renameDeleted || renameDeleted->state != cue::WorkspaceChangeBatchState::RescanRequired ||
         renameDeleted->diagnostics.empty() ||
         renameDeleted->diagnostics.front().code != cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict)
+    {
+        return false;
+    }
+
+    if (MoveFileExW(a_directory.child(L"Watch\\RenameSourceA.txt").c_str(),
+                    a_directory.child(L"Watch\\SharedDestination.txt").c_str(), 0U) == FALSE ||
+        MoveFileExW(a_directory.child(L"Watch\\RenameSourceC.txt").c_str(),
+                    a_directory.child(L"Watch\\SharedDestination.txt").c_str(), MOVEFILE_REPLACE_EXISTING) == FALSE)
+    {
+        return false;
+    }
+    std::optional<cue::WorkspaceChangeBatch> conflictingDestination = wait_for_batch(**watcher.try_value());
+    if (!conflictingDestination || conflictingDestination->state != cue::WorkspaceChangeBatchState::RescanRequired ||
+        conflictingDestination->diagnostics.empty() ||
+        conflictingDestination->diagnostics.front().code != cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict)
     {
         return false;
     }
