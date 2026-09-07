@@ -339,6 +339,12 @@ System StopまたはSceneInstance Endが一部失敗しても、依存関係か�
 同じStructural Commandを再登録しない。Error後も未完了Substepの再実行に必要なTokenと依存参照を保持し、
 DestructorへCleanupを委ねない。このPostconditionを満たせないSystemはM14のRegistryへ登録できない。
 
+Sessionは開始済みの全Systemが`Stopped`へ到達するまでSystem Stop Phaseに留まる。
+`StopPending`が一件でも残る場合はStructural CommandをFlushせず、Command Buffer、System Registry、
+SceneInstance、RuntimeWorldを保持して`CleanupFailed`へ移る。再Cleanupは未完了Stop Substepを続行し、
+全SystemのStop完了を確認した後だけFlush Phaseへ進む。したがって、Flush後にSystem Stopを再試行して
+新しいCommandを同じCleanup Sequenceへ追加することはない。
+
 System Stopが登録したStructural CommandのFlushはSessionが所有する独立Cleanup Stepとして一度だけ実行する。
 Flush開始前はSystem Registry、SceneInstance、RuntimeWorldを保持し、通常停止と開始Rollbackのどちらでも
 `SceneInstance::end`より先にFlushする。既存ADR-0016に従い、`World::flush_commands`はCommand単位の成功／失敗を
@@ -415,6 +421,7 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - SceneInstance End部分失敗で生存所有集合とWorldを保持し、再Cleanupできる
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
+- Stop再試行が完了するまでFlush回数が0であり、全System停止後に蓄積Commandを一度だけFlushする
 - Structural Commandの一部が失敗しても全Reportを順序付き診断へ変換し、Batchを再実行せずScene Endを継続する
 - Stop要求がSafe Pointで適用され、Stop後にFrame Updateを拒否する
 - Update ErrorをFatalとせず、診断を保持して停止へ移る
