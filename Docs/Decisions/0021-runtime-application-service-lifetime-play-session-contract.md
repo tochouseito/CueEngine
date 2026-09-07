@@ -271,6 +271,11 @@ Out-of-memory、Owner Thread違反、破棄契約違反等のFatalと混同し�
 5. Seal済み順序でRuntime SystemをStartする
 6. ClockとInputのFrame境界をResetし、Sessionを`Running`として公開する
 
+個々のSystemの`start`はStrong Failureを保証する。Errorを返したSystemは`Started`へ遷移せず、
+購読、Callback、外部登録、Resource、World Mutation等のCleanupを必要とする副作用を残さない。
+SystemはFallibleな準備を非公開Candidateへ行い、必要なRAII Tokenを含めて完全に準備できた場合だけ状態をCommitする。
+この保証を満たせないSystemはM14のRegistryへ登録できない。
+
 失敗時は開始済み要素だけを次の逆順でRollbackする。
 
 1. Start済みSystemを逆順にStopする
@@ -281,7 +286,8 @@ Out-of-memory、Owner Thread違反、破棄契約違反等のFatalと混同し�
 Snapshot検証またはInstantiation Plan作成中はWorldを変更しない。
 Scene実体化失敗はADR-0017に従い、そのOperation由来の生存Entityを残さない。
 RollbackはPrimary Start Errorを保持し、Cleanup Errorを順序付きSecondary Diagnosticとして合成する。
-Cleanupが一つでも未完了なら生存Ownerを失わず`CleanupFailed`へ移る。
+失敗を返したSystem自身は上記Strong FailureによりCleanup対象ではなく、それ以前にStart成功したSystemだけをStopする。
+Cleanupが一つでも未完了なら生存Ownerと再Cleanupに必要な依存閉包を失わず`CleanupFailed`へ移る。
 
 ### Frame and Stop Boundary
 
@@ -318,13 +324,23 @@ M14は汎用Thread-safe QueueまたはParallel Systemを導入しない。
 4. System Stopが生成したStructural Commandがある場合はScene終了前の最後のSafe Pointで適用する
 5. `SceneInstance::end`を実行し、そのInstanceが所有する生存Entityを終了する
 6. `RuntimeWorld::request_stop`を呼び、最後の`tick`でWorldをShutdownする
-7. Clock、Input、System、Scene SessionのSession-local所有物を解放する
+7. 終了を確認でき、未終了Ownerから参照されないSession-local所有物だけを解放する
 8. Pointer、Span、View、Generationを無効化し`Stopped`へ移る
 
 `SceneInstance`終了前に`RuntimeWorld`をShutdownしない。
-System StopまたはSceneInstance Endが一部失敗しても、後続の独立Cleanupを可能な範囲で継続して全Errorを収集する。
-生存Entityを保持する`SceneInstance`が残る場合はRuntimeWorldをShutdownせず、両方を`CleanupFailed` Sessionに保持する。
-再Cleanupは終了済み要素を再実行せず、生存所有物だけを対象にする。
+System StopまたはSceneInstance Endが一部失敗しても、依存関係から独立している後続Cleanupだけを継続して全Errorを収集する。
+失敗したOwnerより下位の依存を先に破棄しない。終了済みであっても、未終了Ownerが再Cleanupで参照し得るObjectは保持する。
+
+`CleanupFailed`では次の依存閉包を最低限保持する。
+
+- Stop未完了Systemがある場合は、そのSystem、System Registry、Clock、Input State、Runtime Scene Session、
+  SceneInstance、RuntimeWorld、および非所有参照先を保持する
+- 生存Entityを持つSceneInstanceがある場合は、そのSceneInstanceとRuntimeWorldを保持する
+- RuntimeWorldのShutdownが未完了の場合は、そのRuntimeWorldと必要なProcess Scope参照を保持する
+- 終了を確認できたOwnerでも、上記未終了Ownerの再Cleanupに必要なら解放しない
+
+すべての未終了Ownerが成功状態へ到達し、依存閉包が不要になった後だけ通常の逆順解放を再開する。
+再Cleanupは終了済みStepを再実行せず、未終了Ownerとその依存閉包だけを対象にする。
 
 RuntimeWorldのShutdown完了後にRuntime Entity Handle、World Pointer、Component View、Command Buffer Pointerを
 Controller、UI、Log Entryへ残さない。診断にはStable Session ID、Scene Asset ID、System ID、Error Categoryを値として保存する。
@@ -372,9 +388,11 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - 同じProcess Scopeから二つのSessionを作成し、異なる`WorldId`と独立状態を持つ
 - Snapshot作成後のEditorDocument変更または破棄がRuntimeへ影響しない
 - Start各StepへのFailure Injectionで、成功済み要素だけが逆順Cleanupされる
+- 各SystemのStart失敗で購読、Resource、World Mutation等の副作用が残らない
 - System Start途中失敗で開始済みSystemだけが一度ずつ逆順Stopされる
 - Scene実体化失敗でOperation由来の生存Entityを残さない
 - SceneInstance End部分失敗で生存所有集合とWorldを保持し、再Cleanupできる
+- System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - Stop要求がSafe Pointで適用され、Stop後にFrame Updateを拒否する
 - Update ErrorをFatalとせず、診断を保持して停止へ移る
 - 10回以上のPlay／StopでSession、World、SceneInstance、System Instanceが残留しない
