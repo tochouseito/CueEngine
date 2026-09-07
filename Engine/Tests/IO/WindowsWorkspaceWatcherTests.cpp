@@ -188,11 +188,19 @@ class TestDirectory final
         if (drained.try_value()->has_value())
         {
             cue::WorkspaceChangeBatch batch = std::move(**drained.try_value());
-            if (batch.state == cue::WorkspaceChangeBatchState::ChangesAvailable &&
-                has_change(batch, a_kind, a_path, a_previous))
+            if (batch.state != cue::WorkspaceChangeBatchState::ChangesAvailable)
             {
-                return batch;
+                return std::nullopt;
             }
+            if (has_change(batch, a_kind, a_path, a_previous))
+            {
+                return a_watcher.is_running() ? std::optional<cue::WorkspaceChangeBatch>(std::move(batch))
+                                              : std::nullopt;
+            }
+        }
+        else if (!a_watcher.is_running())
+        {
+            return std::nullopt;
         }
         Sleep(10U);
     }
