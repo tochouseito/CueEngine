@@ -41,9 +41,10 @@ Project-local Trashを実Windowで確認する。Asset Import／Cook、Asset Dat
 
 1. Files UIから`../Outside.txt`またはTest Project外のPathを移動先として指定する。
 2. 操作が日本語Errorで拒否され、Source FileとProject外Dataの双方が変化しないことを確認する。
-3. ExplorerなどEditor外のProcessから`Assets/Source`配下へFileを作成、Rename、削除する。
-4. Files表示が通知後の再列挙で追従し、消失したEntryのSelectionが安全に解除されることを確認する。
-5. 監視対象外のProject外変更がFiles一覧へ現れないことを確認する。
+3. ExplorerなどEditor外のProcessから`Assets/Source`配下へFileを作成してRenameし、Files表示が通知後の再列挙で追従することを確認する。
+4. Rename後のEntryをFiles UIで選択してから、Editor外のProcessでそのFileを削除する。
+5. Files表示が通知後の再列挙で追従し、消失したEntryのSelectionが安全に解除されることを確認する。
+6. 監視対象外のProject外変更がFiles一覧へ現れないことを確認する。
 
 ## Restart Recovery
 
@@ -56,7 +57,9 @@ Project-local Trashを実Windowで確認する。Asset Import／Cook、Asset Dat
 ## Native Dialog
 
 `Docs/Testing/M13-native-file-dialog-manual-test.md`の`open`、`save`、`folder`と各Cancel経路を実行する。
-Dialog結果をそのまま信頼せず、Project Root相対Locatorへ再検証してからFiles操作へ使用することを確認する。
+この手動ModeはDialogの選択結果とCancelだけを確認し、Files操作へのIntegration経路は持たない。
+Dialog結果をProject Root相対Locatorとして再検証し、境界外を拒否する契約は
+`Cue.ProjectFiles.FileDialogRevalidation`の自動Testで確認する。
 
 ## Expected Safety
 
