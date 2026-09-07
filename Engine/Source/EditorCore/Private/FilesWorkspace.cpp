@@ -201,11 +201,6 @@ Result<std::unique_ptr<FilesWorkspaceService>> FilesWorkspaceService::create(
     {
         return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*refreshed.try_error()));
     }
-    Result<void> recovery = service->refresh_recovery_catalog();
-    if (!recovery)
-    {
-        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*recovery.try_error()));
-    }
     return Result<std::unique_ptr<FilesWorkspaceService>>::success(std::move(service));
 }
 
@@ -220,6 +215,11 @@ Result<void> FilesWorkspaceService::refresh() noexcept
     if (!owner)
     {
         return owner;
+    }
+    Result<void> recovery = refresh_recovery_catalog();
+    if (!recovery)
+    {
+        return recovery;
     }
 
     std::vector<project_files::ProjectFileDirectorySnapshot> nextDirectories;
@@ -850,17 +850,6 @@ Result<project_files::ProjectFileOperationOutcome> FilesWorkspaceService::apply_
     {
         m_view.m_operationState = FilesOperationState::ReconciliationRequired;
         return Result<project_files::ProjectFileOperationOutcome>::failure(std::move(*refreshed.try_error()));
-    }
-    const project_files::ProjectFileOperationKind kind = m_view.m_lastOperation->kind();
-    if (kind == project_files::ProjectFileOperationKind::RecoverableDelete ||
-        kind == project_files::ProjectFileOperationKind::Restore)
-    {
-        Result<void> recovery = refresh_recovery_catalog();
-        if (!recovery)
-        {
-            m_view.m_operationState = FilesOperationState::ReconciliationRequired;
-            return Result<project_files::ProjectFileOperationOutcome>::failure(std::move(*recovery.try_error()));
-        }
     }
     return Result<project_files::ProjectFileOperationOutcome>::success(std::move(outcome));
 }
