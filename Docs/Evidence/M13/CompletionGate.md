@@ -5,16 +5,16 @@
 M13の先行Issue #198から#206、#257、#262がGitHub上でClosedであり、本Gate Issue #207が
 Milestone最後の1件であることを2026-09-07に確認した。
 
-自動検証GateはすべてPassしている。実Windowを使うFiles UI WorkflowとNative Dialog確認だけは、
-CodexのWindows app controlが利用できないためPendingである。`ManualWorkflow.md`へUser確認結果を記録し、
-本項目をPassへ更新するまで#207とM13を完了扱いにしない。
+自動検証GateはすべてPassしている。実Windowを使うFiles UI WorkflowとNative Dialog確認は、
+2026-09-08にUserが実行し、問題なしと報告した。CodexのWindows app controlは利用できなかったため、
+手動結果はUser報告を正本とし、画面Captureまたは操作録画は保存していない。
 
 | Acceptance Gate | Result | Evidence |
 |---|---|---|
 | M13配下の全Issue | Pass予定 | 先行11件Closed、本PRが最後の#207をCloseする |
 | Debug／Development／Release Build | Pass | Source tree `3c94b0f3907b792027245afc4a7d552e279b02c3`で全Targetを3構成Build成功 |
 | CTestとWindows IO／Watcher | Pass | Debug／Developmentは217/217、Releaseは213成功と既定4 Skip、失敗0。Watcherは各構成20回連続成功 |
-| 手動Files UI Workflow | Pending | `ManualWorkflow.md`へ実Windowの確認結果を記録する必要がある |
+| 手動Files UI Workflow | Pass | Userが実WindowでFiles UI、Recovery、Root境界、外部変更、再起動、Native Dialogを確認し、問題なしと報告 |
 | Failure InjectionでData／Root保全 | Pass | Atomic Storage、Create／Copy失敗、Restore競合、Root外／Reparse拒否を決定的Testで検証 |
 | 未実行検証と残るRisk | Pass | 本文末尾へ明記 |
 
@@ -58,11 +58,12 @@ M13対象のIO、ProjectFiles、EditorCore、Editor ImGui、Editor Workflow Test
 ## Manual UI Status
 
 Computer Useの実行時Stateは`apps: []`であり、利用可能APIは`getState`とBrowser操作に限定されていた。
-明示PathからWindows appを取得する正規APIも`cua.getApp is not a function`で利用できなかった。
-このためCodexは実Window操作を実行せず、Headless ImGui TestやProcess Testを手動確認の代用として扱わない。
+明示PathからWindows appを取得する正規APIも`cua.getApp is not a function`で利用できなかったため、
+CodexはHeadless ImGui TestやProcess Testを手動確認の代用として扱わなかった。
 
-Userは`Docs/Testing/M13-files-workflow-manual-test.md`と
-`Docs/Testing/M13-native-file-dialog-manual-test.md`に沿って実Windowを確認し、結果を`ManualWorkflow.md`へ記録する。
+Userは2026-09-08に`Docs/Testing/M13-files-workflow-manual-test.md`と
+`Docs/Testing/M13-native-file-dialog-manual-test.md`の実Window確認を実行し、問題なしと報告した。
+結果は`ManualWorkflow.md`へ記録した。
 
 ## Validation Commands
 
@@ -96,7 +97,7 @@ Userは`Docs/Testing/M13-files-workflow-manual-test.md`と
 - 複数Editor Processまたは非協調Writerによる同時Mutation
 - 実Diskの電源断、Disk Full、実権限喪失、Process強制終了中の書込
 - UNC、Network Drive、ReFS、複数Machine、異なるWindows／Visual Studio Version
-- 実WindowFiles UIとNative Dialogの操作確認（User確認待ち）
+- 手動UI操作のScreen Captureまたは動画記録
 - Asset Import／Cook、Asset Database、Source Control、Cloud Storage
 
 ## Remaining Risks
@@ -107,5 +108,5 @@ Userは`Docs/Testing/M13-files-workflow-manual-test.md`と
 - Windows AdapterはLocal NTFSを検証対象とし、UNC、Network Drive、ReFSは未検証
 - WatcherはFilesystem Journalではなく、通知欠落またはOverflow時は権威的な再走査へ退避する
 - Native DialogはModalであり、CIでは実選択操作を行わない
+- 手動UI結果はUser報告に基づき、再確認用の画面Captureまたは操作録画を保持していない
 - 実Hardware障害と長時間Interactive SessionのResource寿命は未検証
-

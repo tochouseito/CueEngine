@@ -2,10 +2,10 @@
 
 ## Status
 
-Pending User verification.
+Pass.
 
-CodexのWindows app controlが利用できないため、2026-09-07時点では実Window確認を実行していない。
-Headless ImGui Testと実Process Testは成功しているが、本記録では手動Workflow成功の代用として扱わない。
+2026-09-08にUserがLocal Windows x64のDebug Toolを実Windowで操作し、手順全体に問題がないことを報告した。
+CodexのWindows app controlは利用できなかったため、本記録はUser報告を正本とし、画面Captureまたは操作録画は保存していない。
 
 ## Procedure
 
@@ -16,17 +16,17 @@ Headless ImGui Testと実Process Testは成功しているが、本記録では�
 
 | Check | Result | Note |
 |---|---|---|
-| Project作成とEditor Open | Pending | |
-| Folder／File作成、Rename、Move、Copy、検索 | Pending | |
-| F5／DeleteのFiles focus限定 | Pending | |
-| Delete PreviewとEscape Cancel | Pending | |
-| Project-local TrashへのDeleteとRestore | Pending | |
-| Restore競合時の既存Data／Recovery Data保持 | Pending | |
-| Root外Move拒否と日本語Error | Pending | |
-| Editor外変更の再列挙とSelection解除 | Pending | |
-| Editor再起動後のRecovery CatalogとRestore | Pending | |
-| Native Dialogのopen／save／folderとCancel | Pending | |
-| Test ProjectのCleanup | Pending | |
+| Project作成とEditor Open | Pass | 問題なし |
+| Folder／File作成、Rename、Move、Copy、検索 | Pass | 問題なし |
+| F5／DeleteのFiles focus限定 | Pass | 問題なし |
+| Delete PreviewとEscape Cancel | Pass | 問題なし |
+| Project-local TrashへのDeleteとRestore | Pass | 問題なし |
+| Restore競合時の既存Data／Recovery Data保持 | Pass | 問題なし |
+| Root外Move拒否と日本語Error | Pass | 問題なし |
+| Editor外変更の再列挙とSelection解除 | Pass | 問題なし |
+| Editor再起動後のRecovery CatalogとRestore | Pass | 問題なし |
+| Native Dialogのopen／save／folderとCancel | Pass | 問題なし |
+| Test ProjectのCleanup | Pass | 問題なし |
 
 ## Automated Supporting Evidence
 
@@ -38,7 +38,6 @@ Headless ImGui Testと実Process Testは成功しているが、本記録では�
 - `Cue.ProjectFiles.FileDialogRevalidation`: Pass
 - `Cue.IO.WindowsWorkspaceWatcher`: 3構成で各20回連続Pass
 
-## Record Update
+## Result
 
-User確認後、実行日、環境、各Result、発見事項、Test ProjectのCleanup状況を記録する。
-一項目でも失敗した場合はGateをPassにせず、最小のBug Issueへ分離する。
+発見事項はなく、M13の手動Files UI WorkflowとNative Dialog GateをPassとする。
