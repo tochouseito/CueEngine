@@ -426,6 +426,34 @@ const ProjectFileAccessPolicy &ProjectFileService::access_policy() const noexcep
     return m_policy;
 }
 
+Result<FilesystemIdentity> ProjectFileService::area_root_identity(ProjectFileArea a_area) noexcept
+{
+    if (std::this_thread::get_id() != m_ownerThread || m_isBusy)
+    {
+        return Result<FilesystemIdentity>::failure(make_project_file_error(
+            m_assertContext, m_isBusy ? ProjectFileError::Busy : ProjectFileError::InvalidRequest,
+            m_isBusy ? "Project file mutation is already active" : "Project file identity request is invalid"));
+    }
+
+    Result<WorkspaceDirectory> directory = m_workspace->bind_directory(area_root(a_area), m_assertContext);
+    if (!directory)
+    {
+        Error cause = std::move(*directory.try_error());
+        return Result<FilesystemIdentity>::failure(reclassify_project_file_error(
+            m_assertContext, classify_project_file_error(cause, WorkspaceMutationOutcome::NotCommitted),
+            "Project area root identity could not be bound", std::move(cause)));
+    }
+    Result<FilesystemIdentity> identity = m_workspace->directory_identity(*directory.try_value());
+    if (!identity)
+    {
+        Error cause = std::move(*identity.try_error());
+        return Result<FilesystemIdentity>::failure(reclassify_project_file_error(
+            m_assertContext, classify_project_file_error(cause, WorkspaceMutationOutcome::NotCommitted),
+            "Project area root identity could not be verified", std::move(cause)));
+    }
+    return identity;
+}
+
 /// @brief Project Area Directoryを再帰監視する独立Watcherを生成する
 Result<std::unique_ptr<WorkspaceWatcher>> ProjectFileService::create_watcher(ProjectFileArea a_area,
                                                                              WorkspaceWatchLimits a_limits) noexcept

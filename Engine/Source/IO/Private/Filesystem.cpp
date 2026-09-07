@@ -6,6 +6,11 @@
 
 namespace cue
 {
+FilesystemIdentity::FilesystemIdentity(std::uint64_t a_providerScope, std::uint64_t a_entry) noexcept
+    : m_providerScope(a_providerScope), m_entry(a_entry)
+{
+}
+
 FileWriteLease::FileWriteLease(std::unique_ptr<FileWriteLeaseState> a_state) noexcept : m_state(std::move(a_state))
 {
 }
@@ -45,6 +50,12 @@ const RelativePath &StagingArea::path() const noexcept
 StagingArea FilesystemRoot::make_staging_area(RelativePath &&a_path, std::uint64_t a_token) noexcept
 {
     return StagingArea(std::move(a_path), a_token);
+}
+
+FilesystemIdentity FilesystemRoot::make_filesystem_identity(std::uint64_t a_providerScope,
+                                                            std::uint64_t a_entry) noexcept
+{
+    return FilesystemIdentity(a_providerScope, a_entry);
 }
 
 FileWriteLease FilesystemRoot::make_file_write_lease(std::unique_ptr<FileWriteLeaseState> a_state) noexcept

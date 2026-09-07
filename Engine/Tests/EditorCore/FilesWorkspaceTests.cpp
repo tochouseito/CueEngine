@@ -389,6 +389,62 @@ class TestProject final
         return fail_stage("factory-project");
     }
 
+    TestProject foreignProject(a_assertContext);
+    cue::Result<std::unique_ptr<cue::FilesystemRoot>> foreignSourceAssets =
+        foreignProject.is_created()
+            ? cue::create_windows_filesystem_root(foreignProject.child_utf8(L"Assets\\Source"), a_assertContext)
+            : cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(cue::editor_core::make_editor_core_error(
+                  a_assertContext, cue::editor_core::EditorCoreError::InvalidWorkspaceRequest,
+                  "Files workspace foreign project is unavailable"));
+    cue::Result<std::unique_ptr<cue::FilesystemRoot>> foreignSavedRoot =
+        foreignProject.is_created()
+            ? cue::create_windows_filesystem_root(foreignProject.child_utf8(L"Saved"), a_assertContext)
+            : cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(cue::editor_core::make_editor_core_error(
+                  a_assertContext, cue::editor_core::EditorCoreError::InvalidWorkspaceRequest,
+                  "Files workspace foreign project is unavailable"));
+    cue::Result<cue::ProjectDescriptor> foreignSourceDescriptor = project.clone_descriptor(a_assertContext);
+    cue::Result<cue::ProjectDescriptor> foreignSavedDescriptor = project.clone_descriptor(a_assertContext);
+    cue::Result<cue::project_files::ProjectFileService> foreignSourceFiles =
+        create_project_file_service(project, a_assertContext);
+    cue::Result<cue::project_files::ProjectFileService> foreignSavedFiles =
+        create_project_file_service(project, a_assertContext);
+    if (!foreignSourceAssets || !foreignSavedRoot || !foreignSourceDescriptor || !foreignSavedDescriptor ||
+        !foreignSourceFiles || !foreignSavedFiles)
+    {
+        return fail_stage("factory-root-identity-input");
+    }
+    cue::editor_core::ScenePersistenceServices foreignSourcePersistence(
+        **foreignSourceAssets.try_value(), **savedRoot.try_value(), **schemaRegistry.try_value(),
+        *valueRegistry.try_value(), sceneMigrations, componentMigrations);
+    std::unique_ptr<cue::editor_core::EditorController> foreignSourceController =
+        cue::editor_core::EditorController::create(std::move(*foreignSourceDescriptor.try_value()),
+                                                   foreignSourcePersistence, a_assertContext);
+    cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> foreignSourceService =
+        cue::editor_core::FilesWorkspaceService::create(std::move(*foreignSourceFiles.try_value()),
+                                                        *foreignSourceController, k_limits, a_assertContext);
+    if (foreignSourceService || foreignSourceService.try_error() == nullptr ||
+        foreignSourceService.try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidWorkspaceRequest))
+    {
+        return fail_stage("factory-source-root-identity");
+    }
+
+    cue::editor_core::ScenePersistenceServices foreignSavedPersistence(
+        **sourceAssets.try_value(), **foreignSavedRoot.try_value(), **schemaRegistry.try_value(),
+        *valueRegistry.try_value(), sceneMigrations, componentMigrations);
+    std::unique_ptr<cue::editor_core::EditorController> foreignSavedController =
+        cue::editor_core::EditorController::create(std::move(*foreignSavedDescriptor.try_value()),
+                                                   foreignSavedPersistence, a_assertContext);
+    cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> foreignSavedService =
+        cue::editor_core::FilesWorkspaceService::create(std::move(*foreignSavedFiles.try_value()),
+                                                        *foreignSavedController, k_limits, a_assertContext);
+    if (foreignSavedService || foreignSavedService.try_error() == nullptr ||
+        foreignSavedService.try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidWorkspaceRequest))
+    {
+        return fail_stage("factory-saved-root-identity");
+    }
+
     cue::Result<std::unique_ptr<cue::editor_core::FilesWorkspaceService>> files =
         cue::editor_core::FilesWorkspaceService::create(std::move(*projectFiles.try_value()), *editor, k_limits,
                                                         a_assertContext);

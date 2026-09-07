@@ -85,6 +85,13 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     /// @brief 所有Byte列を破棄する
     ~MemoryFilesystemRoot() override = default;
 
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D31ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
+
     /// @brief Test用File本文を直接設定する
     void set(std::string_view a_path, std::string_view a_text)
     {

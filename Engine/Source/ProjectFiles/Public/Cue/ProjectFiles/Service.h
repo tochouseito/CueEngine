@@ -249,6 +249,9 @@ class ProjectFileService final
     /// @brief Serviceが適用するArea Access Policyを返す
     [[nodiscard]] const ProjectFileAccessPolicy &access_policy() const noexcept;
 
+    /// @brief Area RootのNative PathやHandleを公開せず比較専用Identityを返す
+    [[nodiscard]] Result<FilesystemIdentity> area_root_identity(ProjectFileArea a_area) noexcept;
+
     /// @brief 未検証Absolute PathをArea境界、親Chain、Entry種別に照らして再検証する
     ///
     /// 返されたLocatorは観測時点の値であり、実際の読取りまたはMutationは利用直前に再検証する。

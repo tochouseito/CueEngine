@@ -143,6 +143,36 @@ Result<std::unique_ptr<FilesWorkspaceService>> FilesWorkspaceService::create(
         return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*persistence.try_error()));
     }
 
+    Result<FilesystemIdentity> filesSourceIdentity =
+        a_projectFiles.area_root_identity(project_files::ProjectFileArea::SourceAssets);
+    Result<FilesystemIdentity> filesSavedIdentity =
+        a_projectFiles.area_root_identity(project_files::ProjectFileArea::Saved);
+    Result<FilesystemIdentity> editorSourceIdentity = a_editorController.m_sourceAssetsRoot->root_identity();
+    Result<FilesystemIdentity> editorSavedIdentity = a_editorController.m_savedRoot->root_identity();
+    if (!filesSourceIdentity)
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*filesSourceIdentity.try_error()));
+    }
+    if (!filesSavedIdentity)
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*filesSavedIdentity.try_error()));
+    }
+    if (!editorSourceIdentity)
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*editorSourceIdentity.try_error()));
+    }
+    if (!editorSavedIdentity)
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(std::move(*editorSavedIdentity.try_error()));
+    }
+    if (*filesSourceIdentity.try_value() != *editorSourceIdentity.try_value() ||
+        *filesSavedIdentity.try_value() != *editorSavedIdentity.try_value())
+    {
+        return Result<std::unique_ptr<FilesWorkspaceService>>::failure(make_editor_core_error(
+            a_assertContext, EditorCoreError::InvalidWorkspaceRequest,
+            "Project file service and editor persistence roots identify different workspace entries"));
+    }
+
     std::unique_ptr<FilesWorkspaceService> service;
     try
     {

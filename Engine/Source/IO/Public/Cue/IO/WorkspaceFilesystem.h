@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Cue/Foundation/Result.h>
+#include <Cue/IO/FilesystemIdentity.h>
 #include <Cue/IO/RelativePath.h>
 #include <Cue/IO/WorkspaceWatcher.h>
 
@@ -289,6 +290,10 @@ class WorkspaceFilesystem
     /// @brief Directory Capabilityが現在も同じRoot内の通常Directoryを指すか検証する
     [[nodiscard]] virtual Result<void> verify_directory(const WorkspaceDirectory &a_directory) noexcept = 0;
 
+    /// @brief Directory Capabilityが指すNative Entryの比較専用Identityを返す
+    [[nodiscard]] virtual Result<FilesystemIdentity> directory_identity(
+        const WorkspaceDirectory &a_directory) noexcept = 0;
+
     /// @brief Root内Regular Fileを排他的な読取りSnapshotとして上限付きで取得する
     [[nodiscard]] virtual Result<std::vector<std::byte>> read_file_bounded(const BoundWorkspacePath &a_source,
                                                                            std::size_t a_maxBytes) noexcept = 0;
@@ -348,6 +353,9 @@ class WorkspaceFilesystem
         const BoundWorkspacePath &a_entry) noexcept = 0;
 
   protected:
+    /// @brief Platform Provider ScopeとEntry値から比較専用Identityを構築する
+    [[nodiscard]] static FilesystemIdentity make_filesystem_identity(std::uint64_t a_providerScope,
+                                                                     std::uint64_t a_entry) noexcept;
     /// @brief 発行可能なRoot相対Path長を固定してCapabilityを初期化する
     explicit WorkspaceFilesystem(std::size_t a_maxBoundPathCharacters) noexcept;
 

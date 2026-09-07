@@ -7,6 +7,7 @@
 #include <Cue/Schema/Descriptor.h>
 
 #include <cstdlib>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
@@ -120,6 +121,13 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     MemoryFilesystemRoot &operator=(MemoryFilesystemRoot &&) = delete;
     /// @brief Memory File所有値を破棄する
     ~MemoryFilesystemRoot() override = default;
+
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D36ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
 
     /// @brief Test Fileを指定Pathへ設定する
     void set(std::string_view a_path, std::string_view a_text)

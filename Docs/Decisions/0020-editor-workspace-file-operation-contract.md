@@ -139,6 +139,11 @@ Scene保存用`FilesystemRoot`とProject File用`WorkspaceFilesystem`は同じ�
 M13のEditor Compositionは`ProjectFileService`と`ProjectWorkspaceSession`を同じProject Sessionが所有し、どちらか一方だけが
 先に破棄された状態でUI Intentを受理しない。
 
+`FilesWorkspaceService`の構築時はDescriptorの`ProjectId`とRoot Locatorだけで同一性を判断しない。Project File側と
+Scene Persistence側が拘束した`roots.sourceAssets`および`roots.saved`のNative Entry Identityを比較し、両方が一致する場合だけ
+Serviceを公開する。比較にはPlatform Adapterが発行する`FilesystemIdentity`を使用し、絶対Path、Native Handle、Volume名を
+上位Moduleへ公開しない。Identity取得中にRootまたはDirectoryの再Bindingが検出された場合も構築を失敗させる。
+
 ### Area Access Policy
 
 `ProjectFileAccessPolicy`は、読取り可能Area、Mutation可能Area、内部操作専用Area、保護Entryを検証済み

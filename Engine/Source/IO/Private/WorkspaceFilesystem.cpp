@@ -172,6 +172,12 @@ WorkspaceFilesystem::WorkspaceFilesystem(std::size_t a_maxBoundPathCharacters) n
     }
 }
 
+FilesystemIdentity WorkspaceFilesystem::make_filesystem_identity(std::uint64_t a_providerScope,
+                                                                 std::uint64_t a_entry) noexcept
+{
+    return FilesystemIdentity(a_providerScope, a_entry);
+}
+
 Result<WorkspaceDirectory> WorkspaceFilesystem::bind_directory(RelativePath a_locator,
                                                                const AssertContext &a_assertContext) const noexcept
 {

@@ -877,6 +877,9 @@ class WindowsFilesystemRoot final : public cue::FilesystemRoot
     /// @brief Root Handle と Staging 追跡 Storage を解放する
     ~WindowsFilesystemRoot() override;
 
+    /// @brief Binding時のWindows VolumeとFile IDをOpaque比較値として返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override;
+
     /// @brief Known Folder Factoryが取得した親Chain PinをRoot寿命へ移管する
     void adopt_pinned_directories(std::vector<UniqueHandle> &&a_directories) noexcept
     {
@@ -971,6 +974,21 @@ WindowsFilesystemRoot::~WindowsFilesystemRoot()
             }
         }
     }
+}
+
+cue::Result<cue::FilesystemIdentity> WindowsFilesystemRoot::root_identity() const noexcept
+{
+    cue::Result<void> verified = verify_root_identity();
+    if (!verified)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*verified.try_error()));
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3100000000ULL;
+    const std::uint64_t providerScope = k_windowsIdentityProvider | static_cast<std::uint64_t>(m_rootVolumeSerial);
+    const std::uint64_t entry = (static_cast<std::uint64_t>(m_rootFileIndexHigh) << 32U) |
+                                static_cast<std::uint64_t>(m_rootFileIndexLow);
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(providerScope, entry));
 }
 
 cue::Result<void> WindowsFilesystemRoot::verify_root_identity() const noexcept

@@ -2922,6 +2922,10 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
     /// @brief CapabilityのDirectory ChainをIdentity固定して実在検証する
     [[nodiscard]] cue::Result<void> verify_directory(const cue::WorkspaceDirectory &a_directory) noexcept override;
 
+    /// @brief DirectoryのWindows VolumeとFile IDをOpaque比較値として返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> directory_identity(
+        const cue::WorkspaceDirectory &a_directory) noexcept override;
+
     /// @brief Identity固定したRegular Fileを排他的に上限付き読取りする
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file_bounded(const cue::BoundWorkspacePath &a_source,
                                                                         std::size_t a_maxBytes) noexcept override;
@@ -3680,6 +3684,45 @@ cue::Result<void> WindowsWorkspaceFilesystem::verify_directory(const cue::Worksp
         return cue::Result<void>::failure(std::move(*guardsFinished.try_error()));
     }
     return cue::Result<void>::success();
+}
+
+cue::Result<cue::FilesystemIdentity> WindowsWorkspaceFilesystem::directory_identity(
+    const cue::WorkspaceDirectory &a_directory) noexcept
+{
+    if (!owns_directory(a_directory))
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(cue::make_io_error(
+            m_assertContext, cue::IoError::OutsideRoot, "Workspace directory belongs to another root binding"));
+    }
+
+    cue::Result<std::vector<UniqueHandle>> pinned = pin_directory_chain(a_directory);
+    if (!pinned)
+    {
+        return cue::Result<cue::FilesystemIdentity>::failure(std::move(*pinned.try_error()));
+    }
+
+    RootIdentity identity = m_identity;
+    if (a_directory.locator() != nullptr)
+    {
+        if (pinned.try_value()->empty())
+        {
+            return cue::Result<cue::FilesystemIdentity>::failure(
+                cue::make_io_error(m_assertContext, cue::IoError::PreconditionFailed,
+                                   "Workspace directory identity inspection was incomplete"));
+        }
+        cue::Result<RootIdentity> inspected = read_entry_identity(pinned.try_value()->back().get(), m_assertContext);
+        if (!inspected)
+        {
+            return cue::Result<cue::FilesystemIdentity>::failure(std::move(*inspected.try_error()));
+        }
+        identity = *inspected.try_value();
+    }
+
+    constexpr std::uint64_t k_windowsIdentityProvider = 0x57494E3100000000ULL;
+    const std::uint64_t providerScope = k_windowsIdentityProvider | static_cast<std::uint64_t>(identity.volumeSerial);
+    const std::uint64_t entry =
+        (static_cast<std::uint64_t>(identity.fileIndexHigh) << 32U) | static_cast<std::uint64_t>(identity.fileIndexLow);
+    return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(providerScope, entry));
 }
 
 cue::Result<std::vector<std::byte>> WindowsWorkspaceFilesystem::read_file_bounded(

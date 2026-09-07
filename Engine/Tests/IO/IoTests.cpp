@@ -292,6 +292,13 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     /// @brief Native Resource を持たない Test Double を破棄する
     ~FailingFilesystemRoot() override = default;
 
+    /// @brief Test Double InstanceをMemory Root Identityとして返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return cue::Result<cue::FilesystemIdentity>::success(make_filesystem_identity(
+            0x544553544D454D32ULL, static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))));
+    }
+
     /// @brief Query Failure Point を一度だけ再現する
     [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &) noexcept override
     {

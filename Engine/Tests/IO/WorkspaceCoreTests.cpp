@@ -178,6 +178,28 @@ class FakeWorkspaceFilesystem final : public cue::WorkspaceFilesystem
         return cue::Result<void>::success();
     }
 
+    /// @brief Test Double内Directory Locatorを比較専用Identityへ変換する
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> directory_identity(
+        const cue::WorkspaceDirectory &a_directory) noexcept override
+    {
+        if (!owns_directory(a_directory))
+        {
+            return cue::Result<cue::FilesystemIdentity>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::OutsideRoot, "Workspace core test directory belongs to another root"));
+        }
+        std::uint64_t digest = 14695981039346656037ULL;
+        if (a_directory.locator() != nullptr)
+        {
+            for (const char character : a_directory.locator()->text())
+            {
+                digest ^= static_cast<std::uint8_t>(character);
+                digest *= 1099511628211ULL;
+            }
+        }
+        return cue::Result<cue::FilesystemIdentity>::success(
+            make_filesystem_identity(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this)), digest));
+    }
+
     /// @brief この列挙専用Test DoubleではFile読取りを未対応として返す
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file_bounded(const cue::BoundWorkspacePath &,
                                                                         std::size_t) noexcept override
