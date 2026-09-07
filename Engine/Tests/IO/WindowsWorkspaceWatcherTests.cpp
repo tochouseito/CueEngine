@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -22,6 +23,14 @@
 
 namespace
 {
+/// @brief Watcher Testの失敗StageをCTest出力へ記録する
+[[nodiscard]] bool fail_stage(std::string_view a_stage) noexcept
+{
+    std::fwrite(a_stage.data(), 1U, a_stage.size(), stderr);
+    std::fwrite("\n", 1U, 1U, stderr);
+    return false;
+}
+
 class TestFatalHandler final : public cue::FatalHandler
 {
   public:
@@ -145,25 +154,6 @@ class TestDirectory final
     bool m_created = false;
 };
 
-/// @brief Debounce確定済みBatchが得られるまで上限付きで待つ
-[[nodiscard]] std::optional<cue::WorkspaceChangeBatch> wait_for_batch(cue::WorkspaceWatcher &a_watcher) noexcept
-{
-    for (std::size_t attempt = 0U; attempt < 300U; ++attempt)
-    {
-        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
-        if (!drained)
-        {
-            return std::nullopt;
-        }
-        if (drained.try_value()->has_value())
-        {
-            return std::move(**drained.try_value());
-        }
-        Sleep(10U);
-    }
-    return std::nullopt;
-}
-
 /// @brief Batchが指定Pathと種別のHintを保持するか判定する
 [[nodiscard]] bool has_change(const cue::WorkspaceChangeBatch &a_batch, cue::WorkspaceChangeHintKind a_kind,
                               std::string_view a_path, std::string_view a_previous = {}) noexcept
@@ -183,6 +173,142 @@ class TestDirectory final
     return false;
 }
 
+/// @brief 遅延した先行Batchを許容して指定変更を含むBatchまで上限付きで待つ
+[[nodiscard]] std::optional<cue::WorkspaceChangeBatch> wait_for_change(
+    cue::WorkspaceWatcher &a_watcher, cue::WorkspaceChangeHintKind a_kind, std::string_view a_path,
+    std::string_view a_previous = {}) noexcept
+{
+    for (std::size_t attempt = 0U; attempt < 300U; ++attempt)
+    {
+        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
+        if (!drained)
+        {
+            return std::nullopt;
+        }
+        if (drained.try_value()->has_value())
+        {
+            cue::WorkspaceChangeBatch batch = std::move(**drained.try_value());
+            if (batch.state != cue::WorkspaceChangeBatchState::ChangesAvailable)
+            {
+                return std::nullopt;
+            }
+            if (has_change(batch, a_kind, a_path, a_previous))
+            {
+                return a_watcher.is_running() ? std::optional<cue::WorkspaceChangeBatch>(std::move(batch))
+                                              : std::nullopt;
+            }
+        }
+        else if (!a_watcher.is_running())
+        {
+            return std::nullopt;
+        }
+        Sleep(10U);
+    }
+    return std::nullopt;
+}
+
+/// @brief 遅延した通常Batchを許容して指定状態のBatchまで上限付きで待つ
+[[nodiscard]] std::optional<cue::WorkspaceChangeBatch> wait_for_state(
+    cue::WorkspaceWatcher &a_watcher, cue::WorkspaceChangeBatchState a_state) noexcept
+{
+    for (std::size_t attempt = 0U; attempt < 300U; ++attempt)
+    {
+        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
+        if (!drained)
+        {
+            return std::nullopt;
+        }
+        if (drained.try_value()->has_value())
+        {
+            cue::WorkspaceChangeBatch batch = std::move(**drained.try_value());
+            if (batch.state == a_state)
+            {
+                if (!a_watcher.is_running())
+                {
+                    return std::nullopt;
+                }
+                for (const cue::WorkspaceWatchDiagnostic &diagnostic : batch.diagnostics)
+                {
+                    if (diagnostic.code == cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged ||
+                        diagnostic.code == cue::WorkspaceWatchDiagnosticCode::NativeFailure)
+                    {
+                        return std::nullopt;
+                    }
+                }
+                return batch;
+            }
+        }
+        else if (!a_watcher.is_running())
+        {
+            return std::nullopt;
+        }
+        Sleep(10U);
+    }
+    return std::nullopt;
+}
+
+/// @brief 先行Operationの遅延Batchが尽きるまで連続したQuiet期間を待つ
+[[nodiscard]] bool wait_for_quiet(cue::WorkspaceWatcher &a_watcher) noexcept
+{
+    std::size_t quietPolls = 0U;
+    for (std::size_t attempt = 0U; attempt < 300U && quietPolls < 30U; ++attempt)
+    {
+        if (!a_watcher.is_running())
+        {
+            return false;
+        }
+        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
+        if (!drained)
+        {
+            return false;
+        }
+        if (drained.try_value()->has_value() &&
+            (**drained.try_value()).state != cue::WorkspaceChangeBatchState::ChangesAvailable)
+        {
+            return false;
+        }
+        quietPolls = drained.try_value()->has_value() ? 0U : quietPolls + 1U;
+        Sleep(10U);
+    }
+    return quietPolls == 30U;
+}
+
+/// @brief Overflow後の遅延BatchをDrainし、終端診断なしで監視がQuietへ戻るまで待つ
+[[nodiscard]] bool wait_for_recovery_quiet(cue::WorkspaceWatcher &a_watcher) noexcept
+{
+    std::size_t quietPolls = 0U;
+    for (std::size_t attempt = 0U; attempt < 300U && quietPolls < 30U; ++attempt)
+    {
+        if (!a_watcher.is_running())
+        {
+            return false;
+        }
+        cue::Result<std::optional<cue::WorkspaceChangeBatch>> drained = a_watcher.drain_changes();
+        if (!drained)
+        {
+            return false;
+        }
+        if (drained.try_value()->has_value())
+        {
+            quietPolls = 0U;
+            for (const cue::WorkspaceWatchDiagnostic &diagnostic : (**drained.try_value()).diagnostics)
+            {
+                if (diagnostic.code == cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged ||
+                    diagnostic.code == cue::WorkspaceWatchDiagnosticCode::NativeFailure)
+                {
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            ++quietPolls;
+        }
+        Sleep(10U);
+    }
+    return quietPolls == 30U;
+}
+
 /// @brief Create、Modify、Rename、Delete、Coalesce、Root境界を検証する
 [[nodiscard]] bool test_change_batches(cue::WorkspaceFilesystem &a_workspace, const TestDirectory &a_directory,
                                        const cue::AssertContext &a_assertContext) noexcept
@@ -190,79 +316,84 @@ class TestDirectory final
     cue::Result<cue::RelativePath> locator = cue::RelativePath::parse("Watch", a_assertContext);
     if (!locator)
     {
-        return false;
+        return fail_stage("change-batches:locator");
     }
     cue::Result<cue::WorkspaceDirectory> directory =
         a_workspace.bind_directory(std::move(*locator.try_value()), a_assertContext);
     if (!directory)
     {
-        return false;
+        return fail_stage("change-batches:bind");
     }
     constexpr cue::WorkspaceWatchLimits k_limits{256U, 64U * 1024U, 128U, 25U, 250U};
     cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> watcher =
         a_workspace.create_watcher(*directory.try_value(), k_limits);
     if (!watcher || !(*watcher.try_value())->is_running())
     {
-        return false;
+        return fail_stage("change-batches:start");
     }
 
     if (!write_file(a_directory.child(L"Watch\\Created.txt"), "created"))
     {
-        return false;
+        return fail_stage("change-batches:create-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> created = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> created =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Created, "Created.txt");
     if (!created || created->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*created, cue::WorkspaceChangeHintKind::Created, "Created.txt"))
     {
-        return false;
+        return fail_stage("change-batches:create-observe");
     }
 
     if (!write_file(a_directory.child(L"Watch\\Modify.txt"), "after"))
     {
-        return false;
+        return fail_stage("change-batches:modify-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> modified = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> modified =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Modified, "Modify.txt");
     if (!modified || modified->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*modified, cue::WorkspaceChangeHintKind::Modified, "Modify.txt"))
     {
-        return false;
+        return fail_stage("change-batches:modify-observe");
     }
 
     if (MoveFileExW(a_directory.child(L"Watch\\RenameOld.txt").c_str(),
                     a_directory.child(L"Watch\\RenameNew.txt").c_str(), 0U) == FALSE)
     {
-        return false;
+        return fail_stage("change-batches:rename-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> renamed = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> renamed =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Renamed, "RenameNew.txt", "RenameOld.txt");
     if (!renamed || renamed->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*renamed, cue::WorkspaceChangeHintKind::Renamed, "RenameNew.txt", "RenameOld.txt"))
     {
-        return false;
+        return fail_stage("change-batches:rename-observe");
     }
 
     if (DeleteFileW(a_directory.child(L"Watch\\Delete.txt").c_str()) == FALSE)
     {
-        return false;
+        return fail_stage("change-batches:delete-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> removed = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> removed =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Removed, "Delete.txt");
     if (!removed || removed->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*removed, cue::WorkspaceChangeHintKind::Removed, "Delete.txt"))
     {
-        return false;
+        return fail_stage("change-batches:delete-observe");
     }
 
     if (MoveFileExW(a_directory.child(L"Watch\\RenameDelete.txt").c_str(),
                     a_directory.child(L"Watch\\RenamedThenDeleted.txt").c_str(), 0U) == FALSE ||
         DeleteFileW(a_directory.child(L"Watch\\RenamedThenDeleted.txt").c_str()) == FALSE)
     {
-        return false;
+        return fail_stage("change-batches:rename-delete-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> renameDeleted = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> renameDeleted =
+        wait_for_state(**watcher.try_value(), cue::WorkspaceChangeBatchState::RescanRequired);
     if (!renameDeleted || renameDeleted->state != cue::WorkspaceChangeBatchState::RescanRequired ||
         renameDeleted->diagnostics.empty() ||
         renameDeleted->diagnostics.front().code != cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict)
     {
-        return false;
+        return fail_stage("change-batches:rename-delete-observe");
     }
 
     if (MoveFileExW(a_directory.child(L"Watch\\RenameSourceA.txt").c_str(),
@@ -270,27 +401,29 @@ class TestDirectory final
         MoveFileExW(a_directory.child(L"Watch\\RenameSourceC.txt").c_str(),
                     a_directory.child(L"Watch\\SharedDestination.txt").c_str(), MOVEFILE_REPLACE_EXISTING) == FALSE)
     {
-        return false;
+        return fail_stage("change-batches:destination-conflict-write");
     }
-    std::optional<cue::WorkspaceChangeBatch> conflictingDestination = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> conflictingDestination =
+        wait_for_state(**watcher.try_value(), cue::WorkspaceChangeBatchState::RescanRequired);
     if (!conflictingDestination || conflictingDestination->state != cue::WorkspaceChangeBatchState::RescanRequired ||
         conflictingDestination->diagnostics.empty() ||
         conflictingDestination->diagnostics.front().code != cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict)
     {
-        return false;
+        return fail_stage("change-batches:destination-conflict-observe");
     }
 
     for (std::size_t index = 0U; index < 12U; ++index)
     {
         if (!write_file(a_directory.child(L"Watch\\Burst.txt"), std::to_string(index)))
         {
-            return false;
+            return fail_stage("change-batches:burst-write");
         }
     }
-    std::optional<cue::WorkspaceChangeBatch> burst = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> burst =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Modified, "Burst.txt");
     if (!burst || burst->state != cue::WorkspaceChangeBatchState::ChangesAvailable)
     {
-        return false;
+        return fail_stage("change-batches:burst-observe");
     }
     std::size_t burstCount = 0U;
     for (const cue::WorkspaceChangeHint &change : burst->changes)
@@ -300,19 +433,31 @@ class TestDirectory final
             ++burstCount;
         }
     }
-    if (burstCount != 1U || !write_file(a_directory.child(L"Outside.txt"), "outside"))
+    if (burstCount != 1U)
     {
-        return false;
+        return fail_stage("change-batches:burst-coalesce");
+    }
+    if (!wait_for_quiet(**watcher.try_value()))
+    {
+        return fail_stage("change-batches:quiet");
+    }
+    if (!write_file(a_directory.child(L"Outside.txt"), "outside"))
+    {
+        return fail_stage("change-batches:outside-write");
     }
     Sleep(300U);
     cue::Result<std::optional<cue::WorkspaceChangeBatch>> outside = (*watcher.try_value())->drain_changes();
     if (!outside || outside.try_value()->has_value())
     {
-        return false;
+        return fail_stage("change-batches:outside-observe");
     }
     cue::Result<void> stopped = (*watcher.try_value())->stop();
     cue::Result<void> stoppedAgain = (*watcher.try_value())->stop();
-    return stopped && stoppedAgain && !(*watcher.try_value())->is_running();
+    if (!stopped || !stoppedAgain || (*watcher.try_value())->is_running())
+    {
+        return fail_stage("change-batches:stop");
+    }
+    return true;
 }
 
 /// @brief 監視Directory自体のRoot外移動をLifetime中のLocation Lockが拒否するか検証する
@@ -322,37 +467,42 @@ class TestDirectory final
     cue::Result<cue::RelativePath> locator = cue::RelativePath::parse("Movable", a_assertContext);
     if (!locator)
     {
-        return false;
+        return fail_stage("watched-directory:locator");
     }
     cue::Result<cue::WorkspaceDirectory> directory =
         a_workspace.bind_directory(std::move(*locator.try_value()), a_assertContext);
     if (!directory)
     {
-        return false;
+        return fail_stage("watched-directory:bind");
     }
     constexpr cue::WorkspaceWatchLimits k_limits{64U, 16U * 1024U, 32U, 25U, 250U};
     cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> watcher =
         a_workspace.create_watcher(*directory.try_value(), k_limits);
     if (!watcher)
     {
-        return false;
+        return fail_stage("watched-directory:start");
     }
     SetLastError(ERROR_SUCCESS);
     if (MoveFileExW(a_directory.child(L"Movable").c_str(), a_directory.outside_child(L"Escaped").c_str(), 0U) !=
             FALSE ||
         GetLastError() != ERROR_SHARING_VIOLATION || !write_file(a_directory.child(L"Movable\\Inside.txt"), "inside"))
     {
-        return false;
+        return fail_stage("watched-directory:location-lock");
     }
-    std::optional<cue::WorkspaceChangeBatch> batch = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> batch =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Created, "Inside.txt");
     if (!batch || batch->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*batch, cue::WorkspaceChangeHintKind::Created, "Inside.txt") ||
         !(*watcher.try_value())->is_running() || !(*watcher.try_value())->stop())
     {
-        return false;
+        return fail_stage("watched-directory:observe");
     }
-    return MoveFileExW(a_directory.child(L"Movable").c_str(), a_directory.outside_child(L"Escaped").c_str(), 0U) !=
-           FALSE;
+    if (MoveFileExW(a_directory.child(L"Movable").c_str(), a_directory.outside_child(L"Escaped").c_str(), 0U) ==
+        FALSE)
+    {
+        return fail_stage("watched-directory:move-after-stop");
+    }
+    return true;
 }
 
 /// @brief 監視対象までの中間Directoryも親子関係を保ったまま移動不可で固定するか検証する
@@ -363,20 +513,20 @@ class TestDirectory final
     cue::Result<cue::RelativePath> locator = cue::RelativePath::parse("Chain/Middle/Watch", a_assertContext);
     if (!locator)
     {
-        return false;
+        return fail_stage("intermediate-directory:locator");
     }
     cue::Result<cue::WorkspaceDirectory> directory =
         a_workspace.bind_directory(std::move(*locator.try_value()), a_assertContext);
     if (!directory)
     {
-        return false;
+        return fail_stage("intermediate-directory:bind");
     }
     constexpr cue::WorkspaceWatchLimits k_limits{64U, 16U * 1024U, 32U, 25U, 250U};
     cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> watcher =
         a_workspace.create_watcher(*directory.try_value(), k_limits);
     if (!watcher)
     {
-        return false;
+        return fail_stage("intermediate-directory:start");
     }
     SetLastError(ERROR_SUCCESS);
     if (MoveFileExW(a_directory.child(L"Chain\\Middle").c_str(), a_directory.outside_child(L"MiddleEscaped").c_str(),
@@ -384,16 +534,21 @@ class TestDirectory final
         GetLastError() != ERROR_SHARING_VIOLATION ||
         !write_file(a_directory.child(L"Chain\\Middle\\Watch\\Inside.txt"), "inside"))
     {
-        return false;
+        return fail_stage("intermediate-directory:location-lock");
     }
-    std::optional<cue::WorkspaceChangeBatch> batch = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> batch =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Created, "Inside.txt");
     if (!batch || batch->state != cue::WorkspaceChangeBatchState::ChangesAvailable ||
         !has_change(*batch, cue::WorkspaceChangeHintKind::Created, "Inside.txt") || !(*watcher.try_value())->stop())
     {
-        return false;
+        return fail_stage("intermediate-directory:observe");
     }
-    return MoveFileExW(a_directory.child(L"Chain\\Middle").c_str(), a_directory.outside_child(L"MiddleEscaped").c_str(),
-                       0U) != FALSE;
+    if (MoveFileExW(a_directory.child(L"Chain\\Middle").c_str(),
+                    a_directory.outside_child(L"MiddleEscaped").c_str(), 0U) == FALSE)
+    {
+        return fail_stage("intermediate-directory:move-after-stop");
+    }
+    return true;
 }
 
 /// @brief Bounded Queue OverflowをRescanRequiredへ昇格し停止後通知を残さないか検証する
@@ -403,41 +558,60 @@ class TestDirectory final
     cue::Result<cue::RelativePath> locator = cue::RelativePath::parse("Watch", a_assertContext);
     if (!locator)
     {
-        return false;
+        return fail_stage("overflow:locator");
     }
     cue::Result<cue::WorkspaceDirectory> directory =
         a_workspace.bind_directory(std::move(*locator.try_value()), a_assertContext);
     if (!directory)
     {
-        return false;
+        return fail_stage("overflow:bind");
     }
     constexpr cue::WorkspaceWatchLimits k_limits{1U, 128U, 8U, 25U, 250U};
     cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> watcher =
         a_workspace.create_watcher(*directory.try_value(), k_limits);
     if (!watcher)
     {
-        return false;
+        return fail_stage("overflow:start");
     }
     for (std::size_t index = 0U; index < 8U; ++index)
     {
         const std::wstring name = L"Watch\\Overflow" + std::to_wstring(index) + L".txt";
         if (!write_file(a_directory.child(name), "overflow"))
         {
-            return false;
+            return fail_stage("overflow:write");
         }
     }
-    std::optional<cue::WorkspaceChangeBatch> overflow = wait_for_batch(**watcher.try_value());
+    std::optional<cue::WorkspaceChangeBatch> overflow =
+        wait_for_state(**watcher.try_value(), cue::WorkspaceChangeBatchState::RescanRequired);
     if (!overflow || overflow->state != cue::WorkspaceChangeBatchState::RescanRequired || overflow->diagnostics.empty())
     {
-        return false;
+        return fail_stage("overflow:observe");
+    }
+    if (!wait_for_recovery_quiet(**watcher.try_value()))
+    {
+        return fail_stage("overflow:recovery-quiet");
+    }
+    if (CreateDirectoryW(a_directory.child(L"Watch\\AfterOverflow").c_str(), nullptr) == FALSE)
+    {
+        return fail_stage("overflow:resume-write");
+    }
+    std::optional<cue::WorkspaceChangeBatch> resumed =
+        wait_for_change(**watcher.try_value(), cue::WorkspaceChangeHintKind::Created, "AfterOverflow");
+    if (!resumed)
+    {
+        return fail_stage("overflow:resume-observe");
     }
     if (!(*watcher.try_value())->stop() || !write_file(a_directory.child(L"Watch\\AfterStop.txt"), "stopped"))
     {
-        return false;
+        return fail_stage("overflow:stop");
     }
     Sleep(50U);
     cue::Result<std::optional<cue::WorkspaceChangeBatch>> afterStop = (*watcher.try_value())->drain_changes();
-    return afterStop && !afterStop.try_value()->has_value() && !(*watcher.try_value())->is_running();
+    if (!afterStop || afterStop.try_value()->has_value() || (*watcher.try_value())->is_running())
+    {
+        return fail_stage("overflow:after-stop");
+    }
+    return true;
 }
 } // namespace
 
@@ -451,12 +625,14 @@ int main()
     TestDirectory directory;
     if (!directory.is_created())
     {
+        (void)fail_stage("main:fixture");
         return 1;
     }
     cue::Result<std::unique_ptr<cue::WorkspaceFilesystem>> workspace =
         cue::create_windows_workspace_filesystem(directory.root_utf8(), assertContext);
     if (!workspace)
     {
+        (void)fail_stage("main:workspace");
         return 2;
     }
     if (!test_change_batches(**workspace.try_value(), directory, assertContext))
