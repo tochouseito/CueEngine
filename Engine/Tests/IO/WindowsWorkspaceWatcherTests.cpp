@@ -223,8 +223,24 @@ class TestDirectory final
             cue::WorkspaceChangeBatch batch = std::move(**drained.try_value());
             if (batch.state == a_state)
             {
+                if (!a_watcher.is_running())
+                {
+                    return std::nullopt;
+                }
+                for (const cue::WorkspaceWatchDiagnostic &diagnostic : batch.diagnostics)
+                {
+                    if (diagnostic.code == cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged ||
+                        diagnostic.code == cue::WorkspaceWatchDiagnosticCode::NativeFailure)
+                    {
+                        return std::nullopt;
+                    }
+                }
                 return batch;
             }
+        }
+        else if (!a_watcher.is_running())
+        {
+            return std::nullopt;
         }
         Sleep(10U);
     }
