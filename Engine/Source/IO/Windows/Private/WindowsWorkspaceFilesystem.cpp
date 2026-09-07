@@ -10,15 +10,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cwctype>
+#include <deque>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -236,6 +242,634 @@ class WorkspaceReplacementMutexOwnership final
     }
     return cue::Result<std::string>::success(std::move(converted));
 }
+
+/// @brief ReadDirectoryChangesW一件をWorkerからOwner Drainへ渡す
+struct RawWorkspaceChange final
+{
+    DWORD action = 0U;
+    std::wstring name;
+};
+
+/// @brief Root境界内のReadDirectoryChangesWを所有しPortable Batchへ変換する
+class WindowsWorkspaceWatcher final : public cue::WorkspaceWatcher
+{
+  public:
+    /// @brief 検証済みDirectory、Event、上限を所有して未開始Watcherを生成する
+    WindowsWorkspaceWatcher(UniqueHandle a_directory, std::vector<UniqueHandle> a_locationLocks,
+                            std::wstring a_expectedPath, UniqueHandle a_changeEvent, UniqueHandle a_stopEvent,
+                            cue::WorkspaceWatchLimits a_limits, const cue::AssertContext &a_assertContext) noexcept
+        : m_directory(std::move(a_directory)), m_locationLocks(std::move(a_locationLocks)),
+          m_changeEvent(std::move(a_changeEvent)), m_stopEvent(std::move(a_stopEvent)),
+          m_expectedPath(std::move(a_expectedPath)), m_limits(a_limits), m_assertContext(a_assertContext),
+          m_ownerThread(std::this_thread::get_id())
+    {
+        m_overlapped.hEvent = m_changeEvent.get();
+    }
+    /// @brief WorkerとNative Handleの一意所有を保つためCopy構築を禁止する
+    WindowsWorkspaceWatcher(const WindowsWorkspaceWatcher &) = delete;
+    /// @brief WorkerとNative Handleの一意所有を保つためCopy代入を禁止する
+    WindowsWorkspaceWatcher &operator=(const WindowsWorkspaceWatcher &) = delete;
+    /// @brief Object AddressをWorkerへ固定するためMove構築を禁止する
+    WindowsWorkspaceWatcher(WindowsWorkspaceWatcher &&) = delete;
+    /// @brief Object AddressをWorkerへ固定するためMove代入を禁止する
+    WindowsWorkspaceWatcher &operator=(WindowsWorkspaceWatcher &&) = delete;
+    /// @brief Pending IOを取消しWorker終了後に全Handleを解放する
+    ~WindowsWorkspaceWatcher() override
+    {
+        (void)stop_internal();
+    }
+
+    /// @brief 最初のOverlapped監視を発行してWorkerを開始する
+    [[nodiscard]] cue::Result<void> start() noexcept
+    {
+        const DWORD issueCode = issue_read();
+        if (issueCode != ERROR_SUCCESS)
+        {
+            return cue::Result<void>::failure(
+                make_windows_error(m_assertContext, issueCode, "Workspace watcher start failed"));
+        }
+        m_running.store(true, std::memory_order_release);
+        try
+        {
+            /// @brief Native変更完了と停止Eventを待ってBounded Queueへ転送する
+            m_worker = std::thread([this]() noexcept { worker_main(); });
+        }
+        catch (...)
+        {
+            m_running.store(false, std::memory_order_release);
+            CancelIoEx(m_directory.get(), &m_overlapped);
+            DWORD transferred = 0U;
+            GetOverlappedResult(m_directory.get(), &m_overlapped, &transferred, TRUE);
+            m_pending = false;
+            return cue::Result<void>::failure(cue::make_io_error(m_assertContext, cue::IoError::IoFailure,
+                                                                 "Workspace watcher worker could not be created"));
+        }
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Debounce済みRaw EventをPortable Hintへ変換して非Blockingで返す
+    [[nodiscard]] cue::Result<std::optional<cue::WorkspaceChangeBatch>> drain_changes() noexcept override
+    {
+        if (std::this_thread::get_id() != m_ownerThread)
+        {
+            return cue::Result<std::optional<cue::WorkspaceChangeBatch>>::failure(cue::make_io_error(
+                m_assertContext, cue::IoError::PreconditionFailed, "Workspace watcher drain used another thread"));
+        }
+
+        std::deque<RawWorkspaceChange> rawChanges;
+        std::vector<cue::WorkspaceWatchDiagnostic> diagnostics;
+        bool rescanRequired = false;
+        {
+            std::lock_guard lock(m_mutex);
+            if (!m_batchPending)
+            {
+                return cue::Result<std::optional<cue::WorkspaceChangeBatch>>::success(std::nullopt);
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const bool debounceElapsed = now - m_lastChange >= std::chrono::milliseconds(m_limits.debounceMilliseconds);
+            const bool maximumDelayElapsed =
+                now - m_firstChange >= std::chrono::milliseconds(m_limits.maximumBatchDelayMilliseconds);
+            if (!m_rescanRequired && !debounceElapsed && !maximumDelayElapsed)
+            {
+                return cue::Result<std::optional<cue::WorkspaceChangeBatch>>::success(std::nullopt);
+            }
+            rawChanges.swap(m_rawChanges);
+            diagnostics.swap(m_diagnostics);
+            rescanRequired = m_rescanRequired;
+            m_queuedNameBytes = 0U;
+            m_batchPending = false;
+            m_rescanRequired = false;
+        }
+
+        cue::WorkspaceChangeBatch batch;
+        batch.generation = m_nextGeneration++;
+        batch.state = rescanRequired ? cue::WorkspaceChangeBatchState::RescanRequired
+                                     : cue::WorkspaceChangeBatchState::ChangesAvailable;
+        batch.diagnostics = std::move(diagnostics);
+        std::optional<cue::RelativePath> pendingRename;
+
+        /// @brief 個別Hintへ安全に変換できないBatchを再走査要求へ昇格する
+        const auto requireRescan =
+            [&](cue::WorkspaceWatchDiagnosticCode a_code, std::string a_name, std::int64_t a_nativeCode) noexcept
+        {
+            batch.state = cue::WorkspaceChangeBatchState::RescanRequired;
+            batch.changes.clear();
+            try
+            {
+                batch.diagnostics.push_back(cue::WorkspaceWatchDiagnostic{a_code, std::move(a_name), a_nativeCode});
+            }
+            catch (...)
+            {
+                terminate_allocation(m_assertContext);
+            }
+        };
+        /// @brief 同一Pathの単純な連続変更を一件へ集約する
+        const auto appendChange = [&](cue::WorkspaceChangeHint a_change) noexcept
+        {
+            const std::string_view path = a_change.locator.text();
+            for (auto iterator = batch.changes.begin(); iterator != batch.changes.end(); ++iterator)
+            {
+                if (iterator->locator.text() != path)
+                {
+                    continue;
+                }
+                if ((iterator->kind == cue::WorkspaceChangeHintKind::Created &&
+                     a_change.kind == cue::WorkspaceChangeHintKind::Modified) ||
+                    (iterator->kind == cue::WorkspaceChangeHintKind::Modified &&
+                     a_change.kind == cue::WorkspaceChangeHintKind::Modified) ||
+                    (iterator->kind == cue::WorkspaceChangeHintKind::Renamed &&
+                     a_change.kind == cue::WorkspaceChangeHintKind::Modified))
+                {
+                    return;
+                }
+                if (iterator->kind == cue::WorkspaceChangeHintKind::Created &&
+                    a_change.kind == cue::WorkspaceChangeHintKind::Removed)
+                {
+                    batch.changes.erase(iterator);
+                    return;
+                }
+                if (iterator->kind == cue::WorkspaceChangeHintKind::Removed &&
+                    a_change.kind == cue::WorkspaceChangeHintKind::Created)
+                {
+                    iterator->kind = cue::WorkspaceChangeHintKind::Modified;
+                    iterator->previousLocator.reset();
+                    return;
+                }
+                if (iterator->kind == cue::WorkspaceChangeHintKind::Renamed &&
+                    a_change.kind == cue::WorkspaceChangeHintKind::Removed)
+                {
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict, {}, 0);
+                    return;
+                }
+                if (iterator->kind == cue::WorkspaceChangeHintKind::Renamed &&
+                    a_change.kind == cue::WorkspaceChangeHintKind::Renamed)
+                {
+                    if (iterator->previousLocator.has_value() && a_change.previousLocator.has_value() &&
+                        iterator->previousLocator->text() == a_change.previousLocator->text())
+                    {
+                        return;
+                    }
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::ChangeSequenceConflict, {}, 0);
+                    return;
+                }
+                *iterator = std::move(a_change);
+                return;
+            }
+            try
+            {
+                batch.changes.push_back(std::move(a_change));
+            }
+            catch (...)
+            {
+                terminate_allocation(m_assertContext);
+            }
+        };
+
+        if (!rescanRequired)
+        {
+            for (RawWorkspaceChange &raw : rawChanges)
+            {
+                cue::Result<std::string> utf8 = to_utf8(raw.name, m_assertContext);
+                if (!utf8)
+                {
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::InvalidName, {}, 0);
+                    break;
+                }
+                std::replace(utf8.try_value()->begin(), utf8.try_value()->end(), '\\', '/');
+                cue::Result<cue::RelativePath> path = cue::RelativePath::parse(*utf8.try_value(), m_assertContext);
+                if (!path)
+                {
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::InvalidName, std::move(*utf8.try_value()), 0);
+                    break;
+                }
+
+                if (raw.action == FILE_ACTION_RENAMED_OLD_NAME)
+                {
+                    if (pendingRename.has_value())
+                    {
+                        requireRescan(cue::WorkspaceWatchDiagnosticCode::IncompleteRename, {}, 0);
+                        break;
+                    }
+                    pendingRename.emplace(std::move(*path.try_value()));
+                    continue;
+                }
+                if (raw.action == FILE_ACTION_RENAMED_NEW_NAME)
+                {
+                    if (!pendingRename.has_value())
+                    {
+                        requireRescan(cue::WorkspaceWatchDiagnosticCode::IncompleteRename, {}, 0);
+                        break;
+                    }
+                    const std::string_view previousText = pendingRename->text();
+                    bool foldedCreation = false;
+                    for (cue::WorkspaceChangeHint &change : batch.changes)
+                    {
+                        if (change.locator.text() == previousText &&
+                            change.kind == cue::WorkspaceChangeHintKind::Created)
+                        {
+                            change.locator = std::move(*path.try_value());
+                            foldedCreation = true;
+                            break;
+                        }
+                    }
+                    if (!foldedCreation)
+                    {
+                        appendChange(cue::WorkspaceChangeHint(cue::WorkspaceChangeHintKind::Renamed,
+                                                              std::move(*path.try_value()), std::move(pendingRename)));
+                    }
+                    pendingRename.reset();
+                }
+                else
+                {
+                    cue::WorkspaceChangeHintKind kind = cue::WorkspaceChangeHintKind::Modified;
+                    if (raw.action == FILE_ACTION_ADDED)
+                    {
+                        kind = cue::WorkspaceChangeHintKind::Created;
+                    }
+                    else if (raw.action == FILE_ACTION_REMOVED)
+                    {
+                        kind = cue::WorkspaceChangeHintKind::Removed;
+                    }
+                    appendChange(cue::WorkspaceChangeHint(kind, std::move(*path.try_value())));
+                }
+
+                if (batch.state == cue::WorkspaceChangeBatchState::RescanRequired)
+                {
+                    break;
+                }
+
+                if (batch.changes.size() > m_limits.maxBatchChanges)
+                {
+                    requireRescan(cue::WorkspaceWatchDiagnosticCode::QueueOverflow, {}, 0);
+                    break;
+                }
+            }
+            if (batch.state != cue::WorkspaceChangeBatchState::RescanRequired && pendingRename.has_value())
+            {
+                requireRescan(cue::WorkspaceWatchDiagnosticCode::IncompleteRename, {}, 0);
+            }
+        }
+
+        std::optional<cue::WorkspaceChangeBatch> result;
+        try
+        {
+            result.emplace(std::move(batch));
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+        return cue::Result<std::optional<cue::WorkspaceChangeBatch>>::success(std::move(result));
+    }
+
+    /// @brief Owner ThreadからPending IOを取消しWorkerとHandleを解放する
+    [[nodiscard]] cue::Result<void> stop() noexcept override
+    {
+        if (std::this_thread::get_id() != m_ownerThread)
+        {
+            return cue::Result<void>::failure(cue::make_io_error(m_assertContext, cue::IoError::PreconditionFailed,
+                                                                 "Workspace watcher stop used another thread"));
+        }
+        const DWORD stopCode = stop_internal();
+        if (stopCode != ERROR_SUCCESS)
+        {
+            return cue::Result<void>::failure(
+                make_windows_error(m_assertContext, stopCode, "Workspace watcher stop signal failed"));
+        }
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Workerが新しいNative通知を受理できる状態か返す
+    [[nodiscard]] bool is_running() const noexcept override
+    {
+        return m_running.load(std::memory_order_acquire);
+    }
+
+  private:
+    /// @brief 次のOverlapped ReadDirectoryChangesWを発行する
+    [[nodiscard]] DWORD issue_read() noexcept
+    {
+        if (ResetEvent(m_changeEvent.get()) == FALSE)
+        {
+            return GetLastError();
+        }
+        m_overlapped = {};
+        m_overlapped.hEvent = m_changeEvent.get();
+        DWORD immediateBytes = 0U;
+        if (ReadDirectoryChangesW(m_directory.get(), m_buffer.data(), static_cast<DWORD>(sizeof(m_buffer)), TRUE,
+                                  FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                                      FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
+                                      FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION,
+                                  &immediateBytes, &m_overlapped, nullptr) == FALSE)
+        {
+            return GetLastError();
+        }
+        m_pending = true;
+        return ERROR_SUCCESS;
+    }
+
+    /// @brief 監視Directoryが生成時と同じNative Pathに存在するか再検証する
+    [[nodiscard]] DWORD verify_location(bool &a_isSameLocation) noexcept
+    {
+        a_isSameLocation = false;
+        const DWORD pathLength =
+            GetFinalPathNameByHandleW(m_directory.get(), nullptr, 0U, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (pathLength == 0U)
+        {
+            return GetLastError();
+        }
+        std::wstring path;
+        try
+        {
+            path.resize(pathLength);
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+        const DWORD pathWritten = GetFinalPathNameByHandleW(m_directory.get(), path.data(), pathLength,
+                                                            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (pathWritten == 0U || pathWritten >= pathLength)
+        {
+            return GetLastError();
+        }
+        path.resize(pathWritten);
+        a_isSameLocation = path.size() == m_expectedPath.size() &&
+                           CompareStringOrdinal(path.data(), static_cast<int>(path.size()), m_expectedPath.data(),
+                                                static_cast<int>(m_expectedPath.size()), TRUE) == CSTR_EQUAL;
+        return ERROR_SUCCESS;
+    }
+
+    /// @brief Raw Queueを破棄し最初のRescan理由と任意の終端理由だけを保持する
+    void mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode a_code, std::int64_t a_nativeCode) noexcept
+    {
+        bool appendDiagnostic = !m_rescanRequired;
+        const bool terminalDiagnostic = a_code == cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged ||
+                                        a_code == cue::WorkspaceWatchDiagnosticCode::NativeFailure;
+        if (!appendDiagnostic && terminalDiagnostic)
+        {
+            appendDiagnostic = true;
+            for (const cue::WorkspaceWatchDiagnostic &diagnostic : m_diagnostics)
+            {
+                if (diagnostic.code == a_code)
+                {
+                    appendDiagnostic = false;
+                    break;
+                }
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_batchPending)
+        {
+            m_firstChange = now;
+        }
+        m_lastChange = now;
+        m_batchPending = true;
+        m_rescanRequired = true;
+        m_rawChanges.clear();
+        m_queuedNameBytes = 0U;
+        if (!appendDiagnostic)
+        {
+            return;
+        }
+        try
+        {
+            m_diagnostics.push_back(cue::WorkspaceWatchDiagnostic{a_code, {}, a_nativeCode});
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+    }
+
+    /// @brief 一件のNative ActionをBounded Queueへ追加する
+    void enqueue_raw(DWORD a_action, std::wstring_view a_name) noexcept
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_rescanRequired)
+        {
+            return;
+        }
+        const std::size_t nameBytes = a_name.size() * sizeof(wchar_t);
+        if (m_rawChanges.size() >= m_limits.maxQueuedEvents ||
+            nameBytes > m_limits.maxQueuedNameBytes - std::min(m_queuedNameBytes, m_limits.maxQueuedNameBytes))
+        {
+            mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::QueueOverflow, 0);
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_batchPending)
+        {
+            m_firstChange = now;
+        }
+        m_lastChange = now;
+        m_batchPending = true;
+        try
+        {
+            m_rawChanges.push_back(RawWorkspaceChange{a_action, std::wstring(a_name)});
+        }
+        catch (...)
+        {
+            terminate_allocation(m_assertContext);
+        }
+        m_queuedNameBytes += nameBytes;
+    }
+
+    /// @brief Native通知Bufferを境界検証してRaw Queueへ転送する
+    void enqueue_buffer(DWORD a_bytes) noexcept
+    {
+        if (a_bytes == 0U)
+        {
+            std::lock_guard lock(m_mutex);
+            mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::NativeBufferOverflow, 0);
+            return;
+        }
+
+        constexpr std::size_t k_headerBytes = offsetof(FILE_NOTIFY_INFORMATION, FileName);
+        std::size_t offset = 0U;
+        while (offset < a_bytes)
+        {
+            const std::size_t remaining = static_cast<std::size_t>(a_bytes) - offset;
+            if (remaining < k_headerBytes)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::MalformedNotification, 0);
+                return;
+            }
+            const auto *information = reinterpret_cast<const FILE_NOTIFY_INFORMATION *>(
+                reinterpret_cast<const std::byte *>(m_buffer.data()) + offset);
+            const std::size_t nameBytes = information->FileNameLength;
+            if (nameBytes == 0U || nameBytes % sizeof(wchar_t) != 0U || k_headerBytes + nameBytes > remaining)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::MalformedNotification, 0);
+                return;
+            }
+            const bool knownAction =
+                information->Action == FILE_ACTION_ADDED || information->Action == FILE_ACTION_REMOVED ||
+                information->Action == FILE_ACTION_MODIFIED || information->Action == FILE_ACTION_RENAMED_OLD_NAME ||
+                information->Action == FILE_ACTION_RENAMED_NEW_NAME;
+            if (!knownAction)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::MalformedNotification, 0);
+                return;
+            }
+            enqueue_raw(information->Action, std::wstring_view(information->FileName, nameBytes / sizeof(wchar_t)));
+            if (information->NextEntryOffset == 0U)
+            {
+                return;
+            }
+            if (information->NextEntryOffset < k_headerBytes + nameBytes || information->NextEntryOffset > remaining ||
+                information->NextEntryOffset % sizeof(DWORD) != 0U)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::MalformedNotification, 0);
+                return;
+            }
+            offset += information->NextEntryOffset;
+        }
+    }
+
+    /// @brief Stop Eventまたは変更完了まで待ち、継続監視を発行する
+    void worker_main() noexcept
+    {
+        const std::array<HANDLE, 2U> events{m_stopEvent.get(), m_changeEvent.get()};
+        while (true)
+        {
+            const DWORD wait =
+                WaitForMultipleObjects(static_cast<DWORD>(events.size()), events.data(), FALSE, INFINITE);
+            if (wait == WAIT_OBJECT_0)
+            {
+                if (m_pending)
+                {
+                    CancelIoEx(m_directory.get(), &m_overlapped);
+                    DWORD transferred = 0U;
+                    GetOverlappedResult(m_directory.get(), &m_overlapped, &transferred, TRUE);
+                    m_pending = false;
+                }
+                m_running.store(false, std::memory_order_release);
+                return;
+            }
+            if (wait != WAIT_OBJECT_0 + 1U)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::NativeFailure,
+                                   wait == WAIT_FAILED ? static_cast<std::int64_t>(GetLastError())
+                                                       : static_cast<std::int64_t>(ERROR_INVALID_DATA));
+                m_running.store(false, std::memory_order_release);
+                return;
+            }
+
+            DWORD transferred = 0U;
+            if (GetOverlappedResult(m_directory.get(), &m_overlapped, &transferred, FALSE) == FALSE)
+            {
+                const DWORD code = GetLastError();
+                m_pending = false;
+                {
+                    std::lock_guard lock(m_mutex);
+                    mark_rescan_locked(code == ERROR_NOTIFY_ENUM_DIR
+                                           ? cue::WorkspaceWatchDiagnosticCode::NativeBufferOverflow
+                                           : cue::WorkspaceWatchDiagnosticCode::NativeFailure,
+                                       static_cast<std::int64_t>(code));
+                }
+                if (code == ERROR_NOTIFY_ENUM_DIR)
+                {
+                    const DWORD issueCode = issue_read();
+                    if (issueCode == ERROR_SUCCESS)
+                    {
+                        continue;
+                    }
+                    std::lock_guard lock(m_mutex);
+                    mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::NativeFailure,
+                                       static_cast<std::int64_t>(issueCode));
+                }
+                m_running.store(false, std::memory_order_release);
+                return;
+            }
+            m_pending = false;
+            bool isSameLocation = false;
+            const DWORD locationCode = verify_location(isSameLocation);
+            if (locationCode != ERROR_SUCCESS || !isSameLocation)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(locationCode == ERROR_SUCCESS
+                                       ? cue::WorkspaceWatchDiagnosticCode::WatchedDirectoryChanged
+                                       : cue::WorkspaceWatchDiagnosticCode::NativeFailure,
+                                   static_cast<std::int64_t>(locationCode));
+                m_running.store(false, std::memory_order_release);
+                return;
+            }
+            enqueue_buffer(transferred);
+            const DWORD issueCode = issue_read();
+            if (issueCode != ERROR_SUCCESS)
+            {
+                std::lock_guard lock(m_mutex);
+                mark_rescan_locked(cue::WorkspaceWatchDiagnosticCode::NativeFailure,
+                                   static_cast<std::int64_t>(issueCode));
+                m_running.store(false, std::memory_order_release);
+                return;
+            }
+        }
+    }
+
+    /// @brief 任意ThreadのDestructorからもWorkerを確実に停止する
+    [[nodiscard]] DWORD stop_internal() noexcept
+    {
+        DWORD stopCode = ERROR_SUCCESS;
+        if (m_worker.joinable())
+        {
+            if (SetEvent(m_stopEvent.get()) == FALSE)
+            {
+                stopCode = GetLastError();
+                CancelIoEx(m_directory.get(), &m_overlapped);
+            }
+            m_worker.join();
+        }
+        m_running.store(false, std::memory_order_release);
+        {
+            std::lock_guard lock(m_mutex);
+            m_rawChanges.clear();
+            m_diagnostics.clear();
+            m_queuedNameBytes = 0U;
+            m_batchPending = false;
+            m_rescanRequired = false;
+        }
+        m_directory.reset();
+        m_locationLocks.clear();
+        m_changeEvent.reset();
+        m_stopEvent.reset();
+        return stopCode;
+    }
+
+    UniqueHandle m_directory;
+    std::vector<UniqueHandle> m_locationLocks;
+    UniqueHandle m_changeEvent;
+    UniqueHandle m_stopEvent;
+    std::wstring m_expectedPath;
+    cue::WorkspaceWatchLimits m_limits;
+    cue::AssertContext m_assertContext;
+    std::thread::id m_ownerThread;
+    std::thread m_worker;
+    std::atomic_bool m_running{false};
+    std::array<DWORD, (64U * 1024U) / sizeof(DWORD)> m_buffer{};
+    OVERLAPPED m_overlapped{};
+    bool m_pending = false;
+    std::mutex m_mutex;
+    std::deque<RawWorkspaceChange> m_rawChanges;
+    std::vector<cue::WorkspaceWatchDiagnostic> m_diagnostics;
+    std::size_t m_queuedNameBytes = 0U;
+    std::chrono::steady_clock::time_point m_firstChange{};
+    std::chrono::steady_clock::time_point m_lastChange{};
+    std::uint64_t m_nextGeneration = 1U;
+    bool m_batchPending = false;
+    bool m_rescanRequired = false;
+};
+
+/// @brief Pin済みDirectoryと同じIdentityを持つ再帰Watcherを生成する
+[[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_windows_workspace_watcher(
+    std::span<const HANDLE> a_expectedChain, std::wstring_view a_rootPath, std::string_view a_relativeDirectory,
+    cue::WorkspaceWatchLimits a_limits, const cue::AssertContext &a_assertContext) noexcept;
 
 /// @brief Absolute Windows PathをExtended Path表現へ変換する
 [[nodiscard]] cue::Result<std::wstring> make_extended_path(std::wstring a_path,
@@ -754,6 +1388,255 @@ void reject_stale_entry(cue::WorkspaceEntry &a_entry, cue::WorkspaceDiagnosticCo
     {
         terminate_allocation(a_assertContext);
     }
+}
+
+/// @brief Windows Handle Metadataが同じDirectory Objectを示すか判定する
+[[nodiscard]] bool same_directory_information(const BY_HANDLE_FILE_INFORMATION &a_left,
+                                              const BY_HANDLE_FILE_INFORMATION &a_right) noexcept
+{
+    constexpr DWORD k_typeMask = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+    return a_left.dwVolumeSerialNumber == a_right.dwVolumeSerialNumber &&
+           a_left.nFileIndexHigh == a_right.nFileIndexHigh && a_left.nFileIndexLow == a_right.nFileIndexLow &&
+           (a_left.dwFileAttributes & k_typeMask) == (a_right.dwFileAttributes & k_typeMask);
+}
+
+/// @brief 元Root Pathと親Handle列挙を再照合しながらDirectory Chainを移動不可で固定する
+[[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_windows_workspace_watcher(
+    std::span<const HANDLE> a_expectedChain, std::wstring_view a_rootPath, std::string_view a_relativeDirectory,
+    cue::WorkspaceWatchLimits a_limits, const cue::AssertContext &a_assertContext) noexcept
+{
+    if (!a_limits.is_valid() || a_expectedChain.empty() || a_rootPath.empty())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            cue::make_io_error(a_assertContext, cue::IoError::InvalidPath, "Workspace watcher limits are invalid"));
+    }
+
+    std::vector<UniqueHandle> locationLocks;
+    std::wstring path;
+    UniqueHandle directory;
+    try
+    {
+        locationLocks.reserve(a_expectedChain.size() - 1U);
+        path.assign(a_rootPath);
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
+
+    const bool watchesRoot = a_expectedChain.size() == 1U;
+    const DWORD rootFlags =
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | (watchesRoot ? FILE_FLAG_OVERLAPPED : 0U);
+    UniqueHandle rootLock(CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, rootFlags, nullptr));
+    if (!rootLock.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher root lock failed"));
+    }
+    BY_HANDLE_FILE_INFORMATION expectedRoot{};
+    BY_HANDLE_FILE_INFORMATION actualRoot{};
+    if (GetFileInformationByHandle(a_expectedChain.front(), &expectedRoot) == FALSE ||
+        GetFileInformationByHandle(rootLock.get(), &actualRoot) == FALSE)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher root identity query failed"));
+    }
+    if (!same_directory_information(expectedRoot, actualRoot) ||
+        (actualRoot.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+        (actualRoot.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            cue::make_io_error(a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher root identity changed"));
+    }
+    if (watchesRoot)
+    {
+        directory = std::move(rootLock);
+    }
+    else
+    {
+        locationLocks.push_back(std::move(rootLock));
+    }
+
+    std::string_view remaining = a_relativeDirectory;
+    for (std::size_t index = 1U; index < a_expectedChain.size(); ++index)
+    {
+        if (remaining.empty())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::InvalidPath, "Workspace watcher directory chain is incomplete"));
+        }
+        const std::size_t separator = remaining.find('/');
+        const std::string_view component = remaining.substr(0U, separator);
+        cue::Result<std::wstring> nativeComponent = to_utf16(component, a_assertContext);
+        if (!nativeComponent)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                std::move(*nativeComponent.try_error()));
+        }
+
+        const HANDLE parentHandle = locationLocks.back().get();
+        cue::Result<NativeDirectoryEnumeration> before = enumerate_directory_handle_stable(
+            parentHandle, k_windowsHardLimits.maxVisitedEntries, k_windowsHardLimits.maxMetadataBytes, a_assertContext);
+        if (!before)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*before.try_error()));
+        }
+        if (before.try_value()->interruptedCode.has_value())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, *before.try_value()->interruptedCode,
+                                   "Workspace watcher parent enumeration was interrupted"));
+        }
+
+        /// @brief 現在の親直下で要求Spellingが一意なDirectory Entryだけを返す
+        const auto findComponent =
+            [&](const NativeDirectoryEnumeration &a_enumeration) noexcept -> const NativeDirectoryEntry *
+        {
+            const NativeDirectoryEntry *match = nullptr;
+            std::size_t matchingNames = 0U;
+            for (const NativeDirectoryEntry &entry : a_enumeration.entries)
+            {
+                if (CompareStringOrdinal(entry.name.data(), static_cast<int>(entry.name.size()),
+                                         nativeComponent.try_value()->data(),
+                                         static_cast<int>(nativeComponent.try_value()->size()), TRUE) == CSTR_EQUAL)
+                {
+                    ++matchingNames;
+                    if (entry.name == *nativeComponent.try_value())
+                    {
+                        match = &entry;
+                    }
+                }
+            }
+            return matchingNames == 1U ? match : nullptr;
+        };
+
+        BY_HANDLE_FILE_INFORMATION expected{};
+        if (GetFileInformationByHandle(a_expectedChain[index], &expected) == FALSE)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher identity query failed"));
+        }
+        LARGE_INTEGER expectedId{};
+        expectedId.HighPart = static_cast<LONG>(expected.nFileIndexHigh);
+        expectedId.LowPart = expected.nFileIndexLow;
+        const NativeDirectoryEntry *beforeEntry = findComponent(*before.try_value());
+        constexpr DWORD k_typeMask = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        if (beforeEntry == nullptr || !same_file_id(beforeEntry->fileId, expectedId) ||
+            (beforeEntry->attributes & k_typeMask) != (expected.dwFileAttributes & k_typeMask) ||
+            (beforeEntry->attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (beforeEntry->attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher directory left its parent"));
+        }
+
+        std::wstring componentPath;
+        try
+        {
+            componentPath = path;
+            if (!componentPath.empty() && componentPath.back() != L'\\')
+            {
+                componentPath.push_back(L'\\');
+            }
+            componentPath.append(*nativeComponent.try_value());
+        }
+        catch (...)
+        {
+            terminate_allocation(a_assertContext);
+        }
+        if (componentPath.size() >= k_maxWindowsPathLength)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::CapacityExceeded, "Workspace watcher path exceeds the host limit"));
+        }
+
+        const bool watchedDirectory = index + 1U == a_expectedChain.size();
+        const DWORD flags =
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | (watchedDirectory ? FILE_FLAG_OVERLAPPED : 0U);
+        UniqueHandle locked(CreateFileW(componentPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, flags, nullptr));
+        if (!locked.is_valid())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher directory lock failed"));
+        }
+        BY_HANDLE_FILE_INFORMATION actual{};
+        if (GetFileInformationByHandle(locked.get(), &actual) == FALSE)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, GetLastError(), "Workspace watcher identity query failed"));
+        }
+        if (!same_directory_information(expected, actual) ||
+            (actual.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (actual.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                cue::make_io_error(a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher identity changed"));
+        }
+
+        cue::Result<NativeDirectoryEnumeration> after = enumerate_directory_handle_stable(
+            parentHandle, k_windowsHardLimits.maxVisitedEntries, k_windowsHardLimits.maxMetadataBytes, a_assertContext);
+        if (!after)
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*after.try_error()));
+        }
+        if (after.try_value()->interruptedCode.has_value())
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+                make_windows_error(a_assertContext, *after.try_value()->interruptedCode,
+                                   "Workspace watcher parent verification was interrupted"));
+        }
+        const NativeDirectoryEntry *afterEntry = findComponent(*after.try_value());
+        if (afterEntry == nullptr || !same_file_id(afterEntry->fileId, expectedId) ||
+            (afterEntry->attributes & k_typeMask) != (expected.dwFileAttributes & k_typeMask))
+        {
+            return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+                a_assertContext, cue::IoError::OutsideRoot, "Workspace watcher directory left its parent"));
+        }
+
+        path = std::move(componentPath);
+        if (watchedDirectory)
+        {
+            directory = std::move(locked);
+        }
+        else
+        {
+            locationLocks.push_back(std::move(locked));
+        }
+        remaining = separator == std::string_view::npos ? std::string_view{} : remaining.substr(separator + 1U);
+    }
+    if (!remaining.empty() || !directory.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+            a_assertContext, cue::IoError::InvalidPath, "Workspace watcher directory chain is inconsistent"));
+    }
+
+    UniqueHandle changeEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    UniqueHandle stopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!changeEvent.is_valid() || !stopEvent.is_valid())
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(
+            make_windows_error(a_assertContext, GetLastError(), "Workspace watcher event creation failed"));
+    }
+    std::unique_ptr<WindowsWorkspaceWatcher> watcher;
+    try
+    {
+        watcher = std::make_unique<WindowsWorkspaceWatcher>(std::move(directory), std::move(locationLocks),
+                                                            std::move(path), std::move(changeEvent),
+                                                            std::move(stopEvent), a_limits, a_assertContext);
+    }
+    catch (...)
+    {
+        terminate_allocation(a_assertContext);
+    }
+    cue::Result<void> started = watcher->start();
+    if (!started)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*started.try_error()));
+    }
+    std::unique_ptr<cue::WorkspaceWatcher> result(std::move(watcher));
+    return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::success(std::move(result));
 }
 
 /// @brief Primary Error付きNotCommitted結果を構築する
@@ -2021,6 +2904,10 @@ class WindowsWorkspaceFilesystem final : public cue::WorkspaceFilesystem
     [[nodiscard]] cue::Result<cue::BoundWorkspacePath> bind_external_path(
         std::string_view a_unverifiedAbsolutePath) noexcept override;
 
+    /// @brief Identity固定したRoot内Directoryの再帰Watcherを生成する
+    [[nodiscard]] cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> create_watcher(
+        const cue::WorkspaceDirectory &a_directory, cue::WorkspaceWatchLimits a_limits) noexcept override;
+
     /// @brief Directory直下をRoot Pin保持中に列挙する
     [[nodiscard]] cue::Result<cue::DirectorySnapshot> list_directory(const cue::WorkspaceDirectory &a_directory,
                                                                      cue::TraversalLimits a_limits) noexcept override;
@@ -2212,6 +3099,38 @@ cue::Result<std::size_t> WindowsWorkspaceFilesystem::external_root_prefix_length
 
     return cue::Result<std::size_t>::failure(cue::make_io_error(m_assertContext, cue::IoError::OutsideRoot,
                                                                 "External workspace path is outside the bound root"));
+}
+
+cue::Result<std::unique_ptr<cue::WorkspaceWatcher>> WindowsWorkspaceFilesystem::create_watcher(
+    const cue::WorkspaceDirectory &a_directory, cue::WorkspaceWatchLimits a_limits) noexcept
+{
+    if (!owns_directory(a_directory))
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(cue::make_io_error(
+            m_assertContext, cue::IoError::OutsideRoot, "Workspace watcher directory belongs to another root"));
+    }
+    cue::Result<std::vector<UniqueHandle>> pinned = pin_directory_chain(a_directory);
+    if (!pinned)
+    {
+        return cue::Result<std::unique_ptr<cue::WorkspaceWatcher>>::failure(std::move(*pinned.try_error()));
+    }
+    std::vector<HANDLE> expectedChain;
+    try
+    {
+        expectedChain.reserve(pinned.try_value()->size() + 1U);
+        expectedChain.push_back(m_rootHandle.get());
+        for (const UniqueHandle &directory : *pinned.try_value())
+        {
+            expectedChain.push_back(directory.get());
+        }
+    }
+    catch (...)
+    {
+        terminate_allocation(m_assertContext);
+    }
+    const cue::BoundWorkspacePath *locator = a_directory.locator();
+    const std::string_view relativeDirectory = locator == nullptr ? std::string_view{} : locator->text();
+    return create_windows_workspace_watcher(expectedChain, m_rootPath, relativeDirectory, a_limits, m_assertContext);
 }
 
 /// @brief 未検証Absolute Windows PathをRoot相対Portable Capabilityへ正規化する

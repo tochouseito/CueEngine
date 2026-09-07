@@ -2,6 +2,7 @@
 
 #include <Cue/Foundation/Result.h>
 #include <Cue/IO/RelativePath.h>
+#include <Cue/IO/WorkspaceWatcher.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -255,6 +256,10 @@ class WorkspaceFilesystem
     /// 成功は存在、Entry種別、Reparse Point不在を保証しない。利用直前に列挙またはMutationで再検証する。
     [[nodiscard]] virtual Result<BoundWorkspacePath> bind_external_path(
         std::string_view a_unverifiedAbsolutePath) noexcept = 0;
+
+    /// @brief Rootまたは検証済みDirectoryを再帰監視する生成Thread所有の独立Watcherを生成する
+    [[nodiscard]] virtual Result<std::unique_ptr<WorkspaceWatcher>> create_watcher(
+        const WorkspaceDirectory &a_directory, WorkspaceWatchLimits a_limits) noexcept = 0;
 
     /// @brief 検証済みUser LocatorをこのWorkspace固有のDirectory CapabilityへBindingする
     [[nodiscard]] Result<WorkspaceDirectory> bind_directory(RelativePath a_locator,

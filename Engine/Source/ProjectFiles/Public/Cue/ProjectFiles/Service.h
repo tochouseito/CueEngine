@@ -223,6 +223,10 @@ class ProjectFileService final
                                                                      std::string_view a_unverifiedAbsolutePath,
                                                                      ProjectFileSelectionPurpose a_purpose) noexcept;
 
+    /// @brief 指定Project Areaの外部変更を再Query Hintとして受け取るWatcherを生成する
+    [[nodiscard]] Result<std::unique_ptr<WorkspaceWatcher>> create_watcher(ProjectFileArea a_area,
+                                                                           WorkspaceWatchLimits a_limits) noexcept;
+
     /// @brief 指定AreaへCreate-new FolderをAtomic公開する
     [[nodiscard]] Result<ProjectFileOperationResult> create_directory(ProjectFileArea a_area,
                                                                       RelativePath a_destination) noexcept;
