@@ -253,7 +253,7 @@ CleanupFailed --retry cleanup-----> Stopped
 - Stop Requestは`Running`または既存`StopRequested`で冪等に受理する
 - Update ErrorまたはWindow CloseはStop理由を記録して`StopRequested`へ移る
 - Start失敗後のRollbackが完了すれば`Stopped`となり、新しいSessionを作って再試行できる
-- Cleanup途中失敗は`CleanupFailed`となり、生存所有物を保持して同じOwner Threadから再Cleanupできる
+- 再試行可能なCleanup途中失敗は`CleanupFailed`となり、生存所有物を保持して同じOwner Threadから再Cleanupできる
 - `Stopped`または完全に未開始の`Constructed`だけを通常破棄できる
 - live `SceneInstance`または`RuntimeWorld`を保持したDestructorは暗黙Cleanupを推測実行せずProgrammer Errorとする
 
@@ -288,7 +288,8 @@ Snapshot検証またはInstantiation Plan作成中はWorldを変更しない。
 Scene実体化失敗はADR-0017に従い、そのOperation由来の生存Entityを残さない。
 RollbackはPrimary Start Errorを保持し、Cleanup Errorを順序付きSecondary Diagnosticとして合成する。
 失敗を返したSystem自身は上記Strong FailureによりCleanup対象ではなく、それ以前にStart成功したSystemだけをStopする。
-Cleanupが一つでも未完了なら生存Ownerと再Cleanupに必要な依存閉包を失わず`CleanupFailed`へ移る。
+System Stop等の再試行可能なCleanupが未完了なら、生存Ownerと再Cleanupに必要な依存閉包を失わず
+`CleanupFailed`へ移る。`SceneInstance::end`が生存Entityを残す場合は後述のTerminal Cleanup Failureとする。
 
 ### Frame and Stop Boundary
 
@@ -329,7 +330,7 @@ M14は汎用Thread-safe QueueまたはParallel Systemを導入しない。
 8. Pointer、Span、View、Generationを無効化し`Stopped`へ移る
 
 `SceneInstance`終了前に`RuntimeWorld`をShutdownしない。
-System StopまたはSceneInstance Endが一部失敗しても、依存関係から独立している後続Cleanupだけを継続して全Errorを収集する。
+System Stopが一部失敗しても、依存関係から独立している後続SystemのStopを継続して全Errorを収集する。
 失敗したOwnerより下位の依存を先に破棄しない。終了済みであっても、未終了Ownerが再Cleanupで参照し得るObjectは保持する。
 
 `Runtime System::stop`は再試行可能なCleanup契約を持つ。RegistryはSystemごとに`Started`、`StopPending`、`Stopped`を保持し、
@@ -367,13 +368,21 @@ Allocation失敗等、既存APIがProgrammer ErrorまたはFatalとするFlush�
 
 - Stop未完了Systemがある場合は、そのSystem、System Registry、Clock、Input State、Runtime Scene Session、
   SceneInstance、RuntimeWorld、および非所有参照先を保持する
-- 生存Entityを持つSceneInstanceがある場合は、そのSceneInstanceとRuntimeWorldを保持する
+- Stop未完了Systemの依存としてSceneInstanceがliveなら、そのSceneInstanceとRuntimeWorldを保持する
 - RuntimeWorldのShutdownが未完了の場合は、そのRuntimeWorldと必要なProcess Scope参照を保持する
 - 終了を確認できたOwnerでも、上記未終了Ownerの再Cleanupに必要なら解放しない
 
 すべての未終了Ownerが成功状態へ到達し、依存閉包が不要になった後だけ通常の逆順解放を再開する。
 再CleanupはSystemごとのStop ProgressとSessionのFlush実行済み状態を参照し、終了済みStepを再実行せず、
 未終了Ownerとその依存閉包だけを対象にする。消費済みStructural Command Batchは再Cleanup対象にしない。
+
+現行M11の`SceneInstance::end`は、Entity破棄失敗で生存所有集合を保持するが、失敗Categoryごとの再試行可能性を
+保証しない。特にStructural Epochの`CapacityExceeded`はWorld状態が変わらず永続し、live Instanceを破棄することも
+Worldを先にShutdownすることもできない。このためM14のSessionは、`end`のResult失敗または
+`SceneInstanceEndReport`に一件でも失敗がある場合、順序付き診断を記録した後にTerminal Cleanup Failureとして
+`FatalHandler`へ渡し、Processを停止する。`CleanupFailed`へ移して成功見込みのないRetryを提供せず、
+SceneInstanceをliveのまま通常Destructorへ到達させず、World Shutdownを続行しない。将来、Scene側が明示的な
+Retryable分類または所有状態を安全に終了するAPIを提供する場合だけ、別Research Issueで回復経路を追加する。
 
 RuntimeWorldのShutdown完了後にRuntime Entity Handle、World Pointer、Component View、Command Buffer Pointerを
 Controller、UI、Log Entryへ残さない。診断にはStable Session ID、Scene Asset ID、System ID、Error Categoryを値として保存する。
@@ -407,7 +416,7 @@ Runtime Session内部にWindow Message LoopまたはEditor Main Loopを埋め込
 ### Error and Diagnostic Contract
 
 公開Lifecycle操作は`Result`を返し、Invalid State、Identity不一致、Snapshot／Instantiation失敗、
-System Seal／Start／Update／Stop失敗、SceneInstance End失敗、Cleanup未完了、Resource Limit超過を区別する。
+System Seal／Start／Update／Stop失敗、Terminal Scene Cleanup失敗、Cleanup未完了、Resource Limit超過を区別する。
 Primary ErrorとCleanup Errorの合成はADR-0010の順序付きSecondary Diagnostic規則に従う。
 日本語UI文言をRuntime Errorの正本にせず、安定CategoryとContextからPresentationが生成する。
 
@@ -425,7 +434,7 @@ UIまたはSessionを破棄する。Process Logger自体をSessionが所有せ�
 - System Start途中失敗で開始済みSystemだけが一度ずつ逆順Stopされる
 - System Start途中Rollbackで、Stopが登録した非空Structural Command BatchをSceneInstance End前に一度だけ消費する
 - Scene実体化失敗でOperation由来の生存Entityを残さない
-- SceneInstance End部分失敗で生存所有集合とWorldを保持し、再Cleanupできる
+- SceneInstance End部分失敗で順序付き診断を記録し、World Shutdownやlive Instance破棄へ進まず子ProcessをFatal終了する
 - System Stop失敗でSystem、Registry、Clock、Input、Scene Session、Worldの依存閉包を保持して再Cleanupできる
 - System Stopの各SubstepへFailureを注入し、再Cleanupで解除やStructural Commandを重複実行せず完了できる
 - Stop再試行が完了するまで非空BatchのCommand消費が0回であり、全System停止後に各Commandを一度だけ評価・消費する
