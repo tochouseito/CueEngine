@@ -24,6 +24,7 @@ Issue #203のNative File／Folder DialogはModal UIを表示するため、CTest
 3. Extensionを省略したFile名を入力し、`.cuescene`がDefault Extensionとして扱われることを確認する。
 4. 既存File名では上書き確認が表示されることを確認する。実際の保存処理は行わない。
 5. 選択後にConsoleへ未検証Absolute Pathが表示されることを確認する。
+6. 再実行してCancelし、`Cancelled`と表示され、Error終了しないことを確認する。
 
 ## Select Folder
 
