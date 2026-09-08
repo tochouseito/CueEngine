@@ -240,6 +240,10 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     oversizedExplicitMappingInput.pathMappings.front().nativePrefix = std::string(4097U, 'p');
     require(!cue::create_build_diagnostic_bundle(oversizedExplicitMappingInput, limits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput excessiveMappingCountInput = input;
+    excessiveMappingCountInput.pathMappings.resize(limits.maximumPathMappings + 1U);
+    require(!cue::create_build_diagnostic_bundle(excessiveMappingCountInput, limits, a_assertContext).has_value());
+
     cue::BuildDiagnosticBundleInput unknownToolKindInput = input;
     unknownToolKindInput.environment->selectedTools.front().kind = static_cast<cue::BuildToolKind>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownToolKindInput, limits, a_assertContext).has_value());
@@ -386,6 +390,31 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     write_stages(inconsistentStage);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
     write_stages(originalStages);
+
+    const cue::BuildDiagnosticBundleFile *artifactFile = find_file(bundle, "artifact.json");
+    require(artifactFile != nullptr);
+    const std::string originalArtifact = file_text(*artifactFile);
+    /// @brief Artifact Payload差替えを完了してからReaderへ渡す
+    const auto write_artifact = [&destination](std::string_view a_text)
+    {
+        std::ofstream stream(destination / "artifact.json", std::ios::binary | std::ios::trunc);
+        stream.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+        stream.close();
+        require(stream.good());
+    };
+    std::string invalidArtifactHash = originalArtifact;
+    const std::size_t artifactHash = invalidArtifactHash.find("\"contentHash\":\"");
+    require(artifactHash != std::string::npos);
+    invalidArtifactHash[artifactHash + std::string_view("\"contentHash\":\"").size()] = 'z';
+    write_artifact(invalidArtifactHash);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::string invalidArtifactId = originalArtifact;
+    const std::size_t artifactId = invalidArtifactId.find("\"artifactId\":\"");
+    require(artifactId != std::string::npos);
+    invalidArtifactId[artifactId + std::string_view("\"artifactId\":\"").size()] = 'z';
+    write_artifact(invalidArtifactId);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_artifact(originalArtifact);
 
     const auto planFile = std::find_if(bundle.files().begin(), bundle.files().end(),
                                        /// @brief Payload Schema改変検証対象のPlan Fileを検出する

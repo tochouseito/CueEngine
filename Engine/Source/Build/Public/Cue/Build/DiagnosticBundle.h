@@ -27,12 +27,13 @@ enum class BuildDiagnosticBundleError : std::int64_t
     InvalidBundle
 };
 
-/// @brief Diagnostic BundleのFile数とByte数を制限するPolicy
+/// @brief Diagnostic BundleのFile数、Byte数、Path Mapping数を制限するPolicy
 struct BuildDiagnosticBundleLimits final
 {
     std::size_t maximumFileCount = 16U;
     std::uint64_t maximumFileBytes = 4U * 1024U * 1024U;
     std::uint64_t maximumTotalBytes = 16U * 1024U * 1024U;
+    std::size_t maximumPathMappings = 256U;
 };
 
 /// @brief LogとMetadata内のSensitive Native PathをTokenへ置換する一件の規則

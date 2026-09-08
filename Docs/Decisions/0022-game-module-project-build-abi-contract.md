@@ -566,11 +566,14 @@ Environment診断は`code`、任意`tool`、`support`、`path`、`summary`、`re
 `succeeded`、`failed`、`cancelled`、`timedOut`だけを許可し、実行中または未知値を保存しない。
 Stageは`configure`または`build`、Outcomeは`succeeded`、`failed`、`cancelled`、`timedOut`だけを許可する。
 成功はExit Code 0、失敗は1から4294967295までを必須とし、CancelとTimeoutはExit Codeを持たない。
+Artifact Snapshotは`BuildArtifactInventory`と同じlowercase UUID v4、Configuration、安全な相対Path、64文字lowercase
+SHA-256、File Size上限、Path昇順、ASCII case-insensitive重複拒否、必須DLL／Metadata非空制約をReaderにも適用する。
 
 絶対PathはProject Root、Engine Root、選択Tool、Environment診断、およびCallerが明示したMappingをTokenへ置換する。
 未Mappingの絶対Pathを暗黙に追加せず、MappingのNative Prefixは4,096 byte、Tokenは64 byteを上限とする。NUL、Path区切りを含む
 Token、空Prefixを拒否し、借用入力を所有BufferへCopyする前に検証する。Credential名やEnvironment全体は収集しない。
-各File数、File単位Byte数、Bundle総Byte数をSerialization前から適用し、上限超過時に部分出力を公開しない。
+明示Mappingと自動Mapping候補の合計件数は設定上限を所有Vector確保前に適用する。各File数、File単位Byte数、Bundle総Byte数を
+Serialization前から適用し、上限超過時に部分出力を公開しない。
 JSONとLogを含む全FileはStrict UTF-8として生成前と読込時に検証し、Overlong Encoding、Surrogate、範囲外Scalar、
 不完全Sequenceを拒否する。Native Tool出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
 Log先頭のUTF-8 BOMは除去し、CRLFと単独CRはLFへ正規化し、空Logを含め末尾LFを保証する。ReaderはBOM、CR、

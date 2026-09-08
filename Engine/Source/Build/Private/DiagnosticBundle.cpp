@@ -19,6 +19,9 @@ namespace
 constexpr std::size_t k_hardMaximumFileCount = 64U;
 constexpr std::uint64_t k_hardMaximumFileBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t k_hardMaximumTotalBytes = 256U * 1024U * 1024U;
+constexpr std::size_t k_hardMaximumPathMappings = 1024U;
+constexpr std::size_t k_maximumArtifactFiles = 128U;
+constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
 constexpr std::array<std::string_view, 8U> k_bundlePaths = {"artifact.json", "environment.json", "manifest.json",
                                                             "plan.json",     "result.json",      "stages.json",
                                                             "stderr.log",    "stdout.log"};
@@ -146,7 +149,73 @@ constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
     return a_limits.maximumFileCount > 0U && a_limits.maximumFileCount <= k_hardMaximumFileCount &&
            a_limits.maximumFileBytes > 0U && a_limits.maximumFileBytes <= k_hardMaximumFileBytes &&
            a_limits.maximumTotalBytes >= a_limits.maximumFileBytes &&
-           a_limits.maximumTotalBytes <= k_hardMaximumTotalBytes;
+           a_limits.maximumTotalBytes <= k_hardMaximumTotalBytes && a_limits.maximumPathMappings > 0U &&
+           a_limits.maximumPathMappings <= k_hardMaximumPathMappings;
+}
+
+/// @brief Artifact Root外参照とWindowsで危険な要素を含まない相対Pathか検証する
+[[nodiscard]] bool is_safe_artifact_relative_path(std::string_view a_path) noexcept
+{
+    if (a_path.empty() || a_path.front() == '/' || a_path.back() == '/' ||
+        a_path.find('\\') != std::string_view::npos || a_path.find('\0') != std::string_view::npos)
+    {
+        return false;
+    }
+    std::size_t begin = 0U;
+    while (begin < a_path.size())
+    {
+        const std::size_t end = a_path.find('/', begin);
+        const std::string_view component =
+            a_path.substr(begin, end == std::string_view::npos ? a_path.size() - begin : end - begin);
+        if (component.empty() || component == "." || component == ".." || component.back() == ' ' ||
+            component.back() == '.')
+        {
+            return false;
+        }
+        for (const unsigned char value : component)
+        {
+            if (value < 0x20U || value == ':' || value == '*' || value == '?' || value == '"' || value == '<' ||
+                value == '>' || value == '|')
+            {
+                return false;
+            }
+        }
+        if (end == std::string_view::npos)
+        {
+            break;
+        }
+        begin = end + 1U;
+    }
+    return true;
+}
+
+/// @brief Windows上で同じArtifact PathとなるASCII大小文字違いを検出する
+[[nodiscard]] bool artifact_paths_equal(std::string_view a_left, std::string_view a_right) noexcept
+{
+    if (a_left.size() != a_right.size())
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < a_left.size(); ++index)
+    {
+        const unsigned char left = static_cast<unsigned char>(a_left[index]);
+        const unsigned char right = static_cast<unsigned char>(a_right[index]);
+        const unsigned char foldedLeft =
+            left >= 'A' && left <= 'Z' ? static_cast<unsigned char>(left - 'A' + 'a') : left;
+        const unsigned char foldedRight =
+            right >= 'A' && right <= 'Z' ? static_cast<unsigned char>(right - 'A' + 'a') : right;
+        if (foldedLeft != foldedRight)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// @brief Artifact Content Hashがlowercase SHA-256文字列表現か検証する
+[[nodiscard]] bool valid_artifact_hash(std::string_view a_hash) noexcept
+{
+    return a_hash.size() == 64U && std::all_of(a_hash.begin(), a_hash.end(), is_lower_hex);
 }
 
 /// @brief Bundle Schemaが許可する固定File Pathか判定する
@@ -1175,8 +1244,36 @@ class JsonSchemaReader final
         return false;
     }
 
-    /// @brief JSONの符号なし整数を表現範囲と指定上限で検証して読み取る
-    [[nodiscard]] bool unsigned_integer(std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
+    /// @brief Escapeを含まないJSON Stringの借用値を読み取る
+    [[nodiscard]] bool unescaped_string(std::string_view &a_value) noexcept
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset++] != '"')
+        {
+            return false;
+        }
+        const std::size_t begin = m_offset;
+        while (m_offset < m_input.size())
+        {
+            const unsigned char value = static_cast<unsigned char>(m_input[m_offset]);
+            if (value == '"')
+            {
+                a_value = m_input.substr(begin, m_offset - begin);
+                ++m_offset;
+                return true;
+            }
+            if (value < 0x20U || value == '\\')
+            {
+                return false;
+            }
+            ++m_offset;
+        }
+        return false;
+    }
+
+    /// @brief JSONの符号なし整数を値、表現範囲、指定上限付きで読み取る
+    [[nodiscard]] bool unsigned_integer_value(
+        std::uint64_t &a_value, std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
     {
         skip_whitespace();
         const std::size_t begin = m_offset;
@@ -1184,24 +1281,23 @@ class JsonSchemaReader final
         {
             return false;
         }
+        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_value);
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && a_value <= a_maximum;
+    }
+
+    /// @brief JSONの符号なし整数を表現範囲と指定上限で検証して読み取る
+    [[nodiscard]] bool unsigned_integer(std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
+    {
         std::uint64_t value = 0U;
-        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
-        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value <= a_maximum;
+        return unsigned_integer_value(value, a_maximum);
     }
 
     /// @brief JSONの0以外の符号なし整数を読み取る
     [[nodiscard]] bool positive_unsigned_integer(
         std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
     {
-        skip_whitespace();
-        const std::size_t begin = m_offset;
-        if (!consume_digits())
-        {
-            return false;
-        }
         std::uint64_t value = 0U;
-        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
-        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value > 0U && value <= a_maximum;
+        return unsigned_integer_value(value, a_maximum) && value > 0U;
     }
 
     /// @brief JSONの符号付き整数を範囲検証して読み取る
@@ -1574,30 +1670,65 @@ class JsonSchemaReader final
     return false;
 }
 
-/// @brief Artifact File Objectを固定Schemaで読み取る
-[[nodiscard]] bool read_artifact_file(JsonSchemaReader &a_reader) noexcept
+/// @brief 読込中Artifact InventoryのFile制約をAllocationなしで追跡する
+struct ArtifactReadState final
 {
-    return a_reader.begin_object() && a_reader.member("path") && a_reader.string() && a_reader.comma() &&
-           a_reader.member("sizeBytes") && a_reader.unsigned_integer() && a_reader.comma() &&
-           a_reader.member("contentHash") && a_reader.string() && a_reader.end_object();
-}
+    std::array<std::string_view, k_maximumArtifactFiles> paths{};
+    std::size_t fileCount = 0U;
+    bool hasModule = false;
+    bool hasMetadata = false;
+};
 
-/// @brief Artifact File Arrayを固定Schemaで読み取る
-[[nodiscard]] bool read_artifact_file_array(JsonSchemaReader &a_reader) noexcept
+/// @brief Artifact File ObjectをInventory値制約付きで読み取る
+[[nodiscard]] bool read_artifact_file(JsonSchemaReader &a_reader, ArtifactReadState &a_state) noexcept
 {
-    if (!a_reader.begin_array())
+    std::string_view path;
+    std::uint64_t byteSize = 0U;
+    std::string_view contentHash;
+    if (a_state.fileCount >= a_state.paths.size() || !a_reader.begin_object() || !a_reader.member("path") ||
+        !a_reader.unescaped_string(path) || !a_reader.comma() || !a_reader.member("sizeBytes") ||
+        !a_reader.unsigned_integer_value(byteSize, k_maximumArtifactByteSize) || !a_reader.comma() ||
+        !a_reader.member("contentHash") || !a_reader.unescaped_string(contentHash) || !a_reader.end_object() ||
+        !is_safe_artifact_relative_path(path) || !valid_artifact_hash(contentHash))
     {
         return false;
     }
-    if (a_reader.next_is(']'))
+    if (a_state.fileCount > 0U && !(a_state.paths[a_state.fileCount - 1U] < path))
     {
-        return a_reader.end_array();
+        return false;
     }
-    while (read_artifact_file(a_reader))
+    for (std::size_t index = 0U; index < a_state.fileCount; ++index)
+    {
+        if (artifact_paths_equal(a_state.paths[index], path))
+        {
+            return false;
+        }
+    }
+    a_state.paths[a_state.fileCount++] = path;
+    if (path == "CueGameModule.dll")
+    {
+        a_state.hasModule = byteSize > 0U;
+    }
+    else if (path == "CueGameModule.metadata.json")
+    {
+        a_state.hasMetadata = byteSize > 0U;
+    }
+    return true;
+}
+
+/// @brief Artifact File Arrayを件数、順序、重複、必須File制約付きで読み取る
+[[nodiscard]] bool read_artifact_file_array(JsonSchemaReader &a_reader) noexcept
+{
+    ArtifactReadState state;
+    if (!a_reader.begin_array() || a_reader.next_is(']'))
+    {
+        return false;
+    }
+    while (read_artifact_file(a_reader, state))
     {
         if (a_reader.next_is(']'))
         {
-            return a_reader.end_array();
+            return a_reader.end_array() && state.hasModule && state.hasMetadata;
         }
         if (!a_reader.comma())
         {
@@ -1610,9 +1741,11 @@ class JsonSchemaReader final
 /// @brief Artifact Inventory Objectを固定Schemaで読み取る
 [[nodiscard]] bool read_artifact(JsonSchemaReader &a_reader) noexcept
 {
-    return a_reader.begin_object() && a_reader.member("artifactId") && a_reader.string() && a_reader.comma() &&
-           a_reader.member("configuration") && a_reader.string_is({"Debug", "Development", "Release"}) &&
-           a_reader.comma() && a_reader.member("files") && read_artifact_file_array(a_reader) && a_reader.end_object();
+    std::string_view artifactId;
+    return a_reader.begin_object() && a_reader.member("artifactId") && a_reader.unescaped_string(artifactId) &&
+           is_uuid_v4(artifactId) && a_reader.comma() && a_reader.member("configuration") &&
+           a_reader.string_is({"Debug", "Development", "Release"}) && a_reader.comma() && a_reader.member("files") &&
+           read_artifact_file_array(a_reader) && a_reader.end_object();
 }
 
 /// @brief Plan PayloadをVersion 1固定Schemaとして検証する
@@ -1915,8 +2048,29 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic logs are invalid"));
         }
+        std::size_t candidateMappingCount = a_input.pathMappings.size();
+        /// @brief 自動Mapping候補数を設定上限内で加算する
+        const auto add_mapping_candidates = [&](std::size_t a_count) noexcept
+        {
+            if (a_count > a_limits.maximumPathMappings - candidateMappingCount)
+            {
+                return false;
+            }
+            candidateMappingCount += a_count;
+            return true;
+        };
+        if (candidateMappingCount > a_limits.maximumPathMappings || !add_mapping_candidates(1U) ||
+            (a_input.environment &&
+             (!add_mapping_candidates(2U) || !add_mapping_candidates(a_input.environment->selectedTools.size()) ||
+              !add_mapping_candidates(a_input.environment->selectedTools.size()) ||
+              !add_mapping_candidates(a_input.environment->diagnostics.size()))))
+        {
+            return Result<BuildDiagnosticBundle>::failure(
+                make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                  "Diagnostic path mapping count exceeds its configured limit"));
+        }
         std::vector<BuildDiagnosticPathMapping> mappings;
-        mappings.reserve(a_input.pathMappings.size());
+        mappings.reserve(candidateMappingCount);
         for (const BuildDiagnosticPathMapping &mapping : a_input.pathMappings)
         {
             if (!valid_mapping(mapping))
