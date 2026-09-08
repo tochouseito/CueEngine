@@ -190,6 +190,27 @@ void PlaySessionPresenter::set_active_document(std::optional<editor_core::Editor
     m_activeDocumentId = a_documentId;
 }
 
+void PlaySessionPresenter::process_shortcuts() noexcept
+{
+    try
+    {
+        const bool canUseKeyboard =
+            !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+        if (canUseKeyboard && ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
+        {
+            static_cast<void>(submit(EditorPlaySessionCommand::Stop));
+        }
+        else if (canUseKeyboard && ImGui::Shortcut(ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
+        {
+            static_cast<void>(submit(EditorPlaySessionCommand::Play));
+        }
+    }
+    catch (...)
+    {
+        terminate_presenter_exception(*m_assertContext);
+    }
+}
+
 void PlaySessionPresenter::advance_runtime() noexcept
 {
     const editor_core::EditorPlaySessionSnapshot snapshot = m_controller->state_snapshot();
@@ -212,17 +233,6 @@ void PlaySessionPresenter::draw() noexcept
 {
     try
     {
-        const bool canUseKeyboard =
-            !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-        if (canUseKeyboard && ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
-        {
-            static_cast<void>(submit(EditorPlaySessionCommand::Stop));
-        }
-        else if (canUseKeyboard && ImGui::Shortcut(ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
-        {
-            static_cast<void>(submit(EditorPlaySessionCommand::Play));
-        }
-
         if (ImGui::Begin("Runtime"))
         {
             draw_toolbar();

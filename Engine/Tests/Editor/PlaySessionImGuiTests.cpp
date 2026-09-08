@@ -122,6 +122,8 @@ void press_shortcut(cue::editor::PlaySessionPresenter &a_presenter, ImGuiKey a_k
     }
     input.AddKeyEvent(a_key, true);
     ImGui::NewFrame();
+    a_presenter.process_shortcuts();
+    a_presenter.advance_runtime();
     a_presenter.draw();
     ImGui::Render();
     input.AddKeyEvent(a_key, false);
@@ -135,6 +137,8 @@ void press_shortcut(cue::editor::PlaySessionPresenter &a_presenter, ImGuiKey a_k
 void release_shortcut(cue::editor::PlaySessionPresenter &a_presenter) noexcept
 {
     ImGui::NewFrame();
+    a_presenter.process_shortcuts();
+    a_presenter.advance_runtime();
     a_presenter.draw();
     ImGui::Render();
 }
@@ -205,6 +209,7 @@ void test_play_toolbar_and_shutdown(cue::Logger &a_logger, cue::editor::EditorSe
     release_shortcut(*presenter);
     press_shortcut(*presenter, ImGuiKey_F5, false);
     require(presenter->state_snapshot().state == cue::editor_core::EditorPlaySessionState::Running);
+    require(presenter->state_snapshot().frameCount == 1U);
     require(a_router.has_active_subscription());
     require(!presenter->can_play());
     const std::uint64_t generation = presenter->state_snapshot().generation;
@@ -213,17 +218,17 @@ void test_play_toolbar_and_shutdown(cue::Logger &a_logger, cue::editor::EditorSe
     release_shortcut(*presenter);
 
     presenter->advance_runtime();
-    require(presenter->state_snapshot().frameCount == 1U);
+    require(presenter->state_snapshot().frameCount == 3U);
     require(!presenter->begin_editor_shutdown());
     require(presenter->is_shutdown_confirmation_pending());
     require(!presenter->respond_to_editor_shutdown(cue::editor::EditorPlayShutdownDecision::Cancel));
     require(!presenter->is_shutdown_confirmation_pending());
     require(presenter->state_snapshot().state == cue::editor_core::EditorPlaySessionState::Running);
 
+    const std::uint64_t frameCountBeforeStop = presenter->state_snapshot().frameCount;
     press_shortcut(*presenter, ImGuiKey_F5, true);
-    require(presenter->state_snapshot().state == cue::editor_core::EditorPlaySessionState::StopRequested);
-    presenter->advance_runtime();
     require(presenter->state_snapshot().state == cue::editor_core::EditorPlaySessionState::Stopped);
+    require(presenter->state_snapshot().frameCount == frameCountBeforeStop);
     require(!a_router.has_active_subscription());
     require(!presenter->can_stop());
     release_shortcut(*presenter);

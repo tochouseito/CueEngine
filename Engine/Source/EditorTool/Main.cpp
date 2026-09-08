@@ -351,6 +351,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         try
         {
             m_playPresenter->set_active_document(m_session->active_document_id());
+            m_playPresenter->process_shortcuts();
             m_playPresenter->advance_runtime();
             if (m_presenter != nullptr)
             {
