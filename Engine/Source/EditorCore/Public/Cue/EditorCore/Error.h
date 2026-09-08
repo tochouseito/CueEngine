@@ -35,7 +35,10 @@ enum class EditorCoreError : std::int64_t
     InvalidWorkspaceRequest = 18,
     WorkspaceEntryInUse = 19,
     WorkspaceUnavailable = 20,
-    WorkspaceGenerationExhausted = 21
+    WorkspaceGenerationExhausted = 21,
+    InvalidPlayConfiguration = 22,
+    InvalidPlayState = 23,
+    PlayGenerationExhausted = 24
 };
 
 /// @brief Editor Core Error を診断 Summary と共に生成する

@@ -1,6 +1,7 @@
 #include <Cue/EditorCore/EditorController.h>
 #include <Cue/EditorCore/EditorDocument.h>
 #include <Cue/EditorCore/EditorIntent.h>
+#include <Cue/EditorCore/EditorPlaySessionController.h>
 #include <Cue/EditorCore/Error.h>
 #include <Cue/EditorCore/FilesWorkspace.h>
 #include <Cue/EditorCore/Persistence.h>
