@@ -5,14 +5,16 @@
 M14の先行Issue #208から#216、#275がGitHub上でClosedであり、本Gate Issue #217が
 Milestone最後の1件であることを2026-09-08に確認した。
 
-自動検証Gateと実Windowを使うPlay／Stop WorkflowはすべてPassしている。
+自動検証Gateと通常の実Window Play／Stop WorkflowはPassしている。ADR-0021が手動確認を求める
+開始失敗後の再Playは、実WindowからFailureを注入する経路がないため未実行とし、
+自動Process Testの結果と残るRiskを明記する。
 
 | Acceptance Gate | Result | Evidence |
 |---|---|---|
 | M14配下の全Issue | Pass予定 | 先行10件Closed、本PRが最後の#217をCloseする |
 | Debug／Development／Release Build | Pass | Source tree `c04f4d312a326bcc57a5ee435c4e3e41d2a8a0d4`で全Targetを3構成Build成功 |
 | CTestとHeadless／Process Test | Pass | Debug／Developmentは238/238、Releaseは234成功と既定4 Skip、失敗0 |
-| 手動Play／Stop Workflow | Pass | Play／Stop、Shortcut、10回反復、Console、終了／再Openを実Windowで確認 |
+| 手動Play／Stop Workflow | Pass | 通常Play／Stop、Shortcut、10回反復、Console、終了／再Openを実Windowで確認。開始失敗後の再PlayはNot Run |
 | ECS Storage／Query契約の非変更 | Pass | M14開始点からの変更一覧にECS Storage／Query API変更なし |
 | Renderer／Sound／Effect／Physicsの非追加 | Pass | M14開始点からの変更一覧に対象ModuleのSource変更なし |
 | 未実行検証と残るRisk | Pass | 本文末尾へ明記 |
@@ -107,12 +109,14 @@ EditorCore、Editor ImGui、EditorTool、Test、CMake、ADR、手動手順に限
 - Game Rendering、Sound、Effect、Physics、Scripting／Hot Reload、Asset Pipeline
 - Gamepad、IME、Input Mapping Asset、Rebinding UI
 - 手動UI操作のScreenshot保存または動画記録
+- 実WindowのLoad／System Start Failure Injectionと、その失敗表示からの再Play
 
 ## Remaining Risks
 
 - Runtime Loopは単一Thread契約だけを検証しており、並列UpdateとJob Systemは未設計
 - 手動反復は10回かつ各1秒以上であり、長時間Sessionや数千回の再起動を保証しない
 - Runtime Consoleは対話操作とBounded Log Testで確認したが、大量Logの長時間負荷は未測定
+- 開始失敗後の再Playは`Cue.Editor.Workflow.ProcessRoundTrip`で自動検証しただけで、実WindowのFailure表示と再操作は未確認
 - Editor入力とRuntime入力の最小Routingだけを扱い、Input Mapping、Gamepad、IMEは対象外
 - RuntimeはAuthoring Scene Snapshotから生成されるが、Game Renderingや実Game Systemをまだ接続していない
 - ReleaseでSkipされた4件はM14変更とは無関係だが、Release構成のDebug Layer／InfoQueue／DRED経路は未実行

@@ -5,7 +5,8 @@
 Pass.
 
 2026-09-08にComputer UseでLocal Windows x64のDebug Toolを実Window操作した。
-Play／Stop、Shortcut、10回反復、Runtime Console、Play中終了、再Openを確認し、全項目がPassした。
+通常のPlay／Stop、Shortcut、10回反復、Runtime Console、Play中終了、再OpenはPassした。
+ADR-0021が手動確認を求める開始失敗後の再Playは、実WindowからFailureを注入する経路がないためNot Runとする。
 
 ## Procedure
 
@@ -36,6 +37,7 @@ Play／Stop、Shortcut、10回反復、Runtime Console、Play中終了、再Open
 | Console Filter | Pass | `Editor Play`で対象行だけを表示 |
 | Console Copy | Pass | Pointer操作後もEditor操作を継続 |
 | Console Clear | Pass | 実行中Logを消去し、表示が空になった後もPlayとStop操作を継続 |
+| Load／System Start失敗後の再Play | Not Run | 実WindowのFailure Injection経路なし。`Cue.Editor.Workflow.ProcessRoundTrip`で自動検証 |
 | Play中CloseのCancel | Pass | Session 14が継続し、Frame増加を確認 |
 | Stopして閉じる | Pass | Session 14を停止し、未保存変更確認へ遷移 |
 | Scene保存とEditor正常終了 | Pass | `保存`を選択し、Editor Process終了を確認 |
@@ -84,3 +86,7 @@ Computer Useが返した各時点のScreenshotを直接確認した。Screenshot
 Runtime ConsoleへPlay開始Logを表示して`Clear`をPointer操作し、Log表示が空になったことを確認した。
 Playは継続しており、続けてStopすると停止要求と停止完了の新しいLogが表示された。
 これにより、`Clear`後もEditorとRuntime操作を継続できることを確認した。
+
+開始失敗後の再Playは実Windowでは確認していない。Load失敗、Runtime System Start失敗、
+EditorDocument／Selection／Dirty State保持、失敗後の再Playは`Cue.Editor.Workflow.ProcessRoundTrip`で検証済みだが、
+実WindowのFailure表示と利用者による再操作は未検証Riskとして残す。
