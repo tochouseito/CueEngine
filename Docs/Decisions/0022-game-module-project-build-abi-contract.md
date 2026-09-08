@@ -407,6 +407,12 @@ Schema v1のWire形式は次のJSON Objectへ固定する。例示値を除くMe
       "sizeBytes": 123456,
       "hashAlgorithm": "sha256",
       "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "path": "CueGameModule.metadata.json",
+      "sizeBytes": 1024,
+      "hashAlgorithm": "sha256",
+      "contentHash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
     }
   ]
 }
