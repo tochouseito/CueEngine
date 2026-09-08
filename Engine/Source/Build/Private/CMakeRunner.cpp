@@ -27,6 +27,12 @@ namespace
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
 }
 
+/// @brief Environment名がWindows Process境界と同じ比較を行えるASCIIだけで構成されるか検証する
+[[nodiscard]] bool is_ascii_environment_name(std::string_view a_name) noexcept
+{
+    return std::ranges::all_of(a_name, [](unsigned char a_value) { return a_value <= 0x7FU; });
+}
+
 /// @brief ASCII Environment名をWindows規則のCase-insensitive比較する
 [[nodiscard]] bool equals_environment_name(std::string_view a_left, std::string_view a_right) noexcept
 {
@@ -85,7 +91,7 @@ namespace
     for (std::size_t index = 0U; index < a_settings.environmentAllowlist.size(); ++index)
     {
         const cue::ChildProcessEnvironmentEntry &entry = a_settings.environmentAllowlist[index];
-        if (entry.name.empty() || entry.name.find('=') != std::string::npos ||
+        if (entry.name.empty() || !is_ascii_environment_name(entry.name) || entry.name.find('=') != std::string::npos ||
             entry.name.find('\0') != std::string::npos || entry.value.find('\0') != std::string::npos ||
             equals_environment_name(entry.name, "CUE_ENGINE_ROOT"))
         {

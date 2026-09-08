@@ -208,9 +208,13 @@ class RecordingObserver final : public cue::CMakeStageObserver
     duplicateName.environmentAllowlist.push_back({"systemroot", "duplicate"});
     auto duplicateEnvironmentName = cue::run_cmake_build(plan, duplicateName, cue::CMakeConfigureMode::Required, runner,
                                                          cancellation, observer, a_assertContext);
+    cue::CMakeRunnerSettings nonAsciiName = make_settings();
+    nonAsciiName.environmentAllowlist.push_back({"\xC3\x85_VAR", "value"});
+    auto invalidNonAsciiName = cue::run_cmake_build(plan, nonAsciiName, cue::CMakeConfigureMode::Required, runner,
+                                                    cancellation, observer, a_assertContext);
     return !invalid && !invalidExecutable && !invalidEngineRoot && !invalidEnvironmentName &&
-           !duplicateEnvironmentName && runner.m_arguments.empty() && observer.m_started.empty() &&
-           observer.m_completed.empty();
+           !duplicateEnvironmentName && !invalidNonAsciiName && runner.m_arguments.empty() &&
+           observer.m_started.empty() && observer.m_completed.empty();
 }
 } // namespace
 
