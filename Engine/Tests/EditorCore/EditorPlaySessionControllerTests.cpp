@@ -5,19 +5,25 @@
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 #include <Cue/GameCore/Clock.h>
+#include <Cue/GameCore/RuntimeSystem.h>
 #include <Cue/GameCore/World.h>
 #include <Cue/Math/Transform.h>
 #include <Cue/Project/Descriptor.h>
+#include <Cue/Runtime/Error.h>
+#include <Cue/Runtime/RuntimeSystemFactory.h>
 #include <Cue/Scene/Serialization.h>
 #include <Cue/Schema/Descriptor.h>
 #include <Cue/Schema/Registry.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <string_view>
@@ -81,11 +87,81 @@ class TestClock final : public cue::game_core::MonotonicClock
     bool m_shouldFail = false;
 };
 
+struct StopRetryProbe final
+{
+    std::size_t stopCount = 0U;
+    std::size_t failuresRemaining = 1U;
+};
+
+class RetryStopSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief 再Cleanup回数を外部Probeへ記録するTest Systemを生成する
+    RetryStopSystem(StopRetryProbe &a_probe, const cue::AssertContext &a_assertContext) noexcept
+        : m_probe(&a_probe), m_assertContext(&a_assertContext)
+    {
+    }
+
+    /// @brief 副作用なしでSystem Startを完了する
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Frame中はTest Probeを変更せず成功する
+    [[nodiscard]] cue::Result<void> update(const cue::game_core::RuntimeSystemUpdateContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 最初のCleanupだけ失敗し次の呼出しで完了する
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        ++m_probe->stopCount;
+        if (m_probe->failuresRemaining == 0U)
+        {
+            return cue::Result<void>::success();
+        }
+
+        --m_probe->failuresRemaining;
+        cue::ErrorCode code = cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.EditorCore.PlayTest", 2);
+        return cue::Result<void>::failure(
+            cue::Error::create(m_assertContext->fatal_handler(), std::move(code), "Injected Play stop failure"));
+    }
+
+  private:
+    StopRetryProbe *m_probe;
+    const cue::AssertContext *m_assertContext;
+};
+
+class RetryStopSystemFactory final : public cue::runtime::RuntimeSystemFactory
+{
+  public:
+    /// @brief 各Playへ独立Systemを生成するTest FactoryをProject Scope Probeへ結び付ける
+    explicit RetryStopSystemFactory(StopRetryProbe &a_probe) noexcept : m_probe(&a_probe)
+    {
+    }
+
+    /// @brief 一つの再Cleanup検証Systemと不変Descriptorを生成する
+    [[nodiscard]] cue::Result<cue::runtime::RuntimeSystemRegistration> create_system(
+        const cue::AssertContext &a_assertContext) const noexcept override
+    {
+        cue::runtime::RuntimeSystemRegistration registration{
+            {"Editor.Play.StopRetry", cue::game_core::RuntimeUpdatePhase::Update, 0, {}},
+            std::make_unique<RetryStopSystem>(*m_probe, a_assertContext)};
+        return cue::Result<cue::runtime::RuntimeSystemRegistration>::success(std::move(registration));
+    }
+
+  private:
+    StopRetryProbe *m_probe;
+};
+
 /// @brief 条件が偽ならEditor Play Session Testを失敗終了する
-void require(bool a_condition) noexcept
+void require(bool a_condition, std::source_location a_location = std::source_location::current()) noexcept
 {
     if (!a_condition)
     {
+        std::fprintf(stderr, "EditorPlaySessionControllerTests failed at line %u\n", a_location.line());
         std::_Exit(2);
     }
 }
@@ -158,10 +234,11 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> &&a_result) noex
     const cue::editor_core::ProjectWorkspaceSession &a_workspaceSession,
     cue::game_core::WorldIdentitySource &a_worldIdentitySource, TestClock &a_clock,
     const cue::schema::SchemaRegistry &a_schemaRegistry, std::uint64_t a_firstGeneration,
-    const cue::AssertContext &a_assertContext) noexcept
+    const cue::AssertContext &a_assertContext,
+    std::span<const cue::runtime::RuntimeSystemFactory *const> a_systemFactories = {}) noexcept
 {
     return take_value(cue::editor_core::EditorPlaySessionController::create(
-        a_workspaceSession, a_worldIdentitySource, a_clock, a_schemaRegistry,
+        a_workspaceSession, a_worldIdentitySource, a_clock, a_schemaRegistry, a_systemFactories,
         make_type_id(k_transformTypeId, a_assertContext), make_type_id(k_sceneObjectStateTypeId, a_assertContext),
         a_firstGeneration, 100'000'000, a_assertContext));
 }
@@ -306,6 +383,46 @@ void test_document_close_isolation(const cue::schema::SchemaRegistry &a_schemaRe
     require(stopped.documentId.has_value() && stopped.documentId.value() == documentId);
 }
 
+/// @brief CleanupFailedでSession所有を保持し再Stop後に新しいPlayへ進めることを検証する
+void test_cleanup_failure_retry(const cue::schema::SchemaRegistry &a_schemaRegistry,
+                                cue::game_core::WorldIdentitySource &a_worldIdentitySource,
+                                const cue::AssertContext &a_assertContext) noexcept
+{
+    TestClock clock;
+    auto editor = cue::editor_core::EditorController::create(make_project_descriptor(a_assertContext), a_assertContext);
+    cue::RelativePath locator = take_value(cue::RelativePath::parse("Scenes/CleanupRetry.cuescene", a_assertContext));
+    cue::editor_core::EditorDocumentId documentId =
+        take_value(editor->open_document(make_scene_document(a_assertContext), std::move(locator), true));
+    StopRetryProbe probe;
+    RetryStopSystemFactory factory(probe);
+    const std::array<const cue::runtime::RuntimeSystemFactory *, 1U> factories{&factory};
+    auto play = make_play_controller(editor->session(), a_worldIdentitySource, clock, a_schemaRegistry, 400U,
+                                     a_assertContext, factories);
+
+    require(play->start(documentId));
+    require(play->request_stop());
+    cue::Result<void> firstStop = play->stop();
+    require(!firstStop && firstStop.try_error()->code().value() ==
+                              static_cast<std::int64_t>(cue::runtime::RuntimeError::ApplicationSessionCleanupFailed));
+    require(probe.stopCount == 1U);
+    require(play->state_snapshot().state == cue::editor_core::EditorPlaySessionState::CleanupFailed);
+    require(play->state_snapshot().hasFailure);
+
+    cue::Result<void> blockedStart = play->start(documentId);
+    require(!blockedStart && blockedStart.try_error()->code().value() ==
+                                 static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidPlayState));
+    cue::Result<void> completedCleanup = play->stop();
+    require(!completedCleanup && completedCleanup.try_error()->root_code().value() == 2);
+    require(probe.stopCount == 2U);
+    require(play->state_snapshot().state == cue::editor_core::EditorPlaySessionState::Stopped);
+    require(play->stop());
+
+    require(play->start(documentId));
+    require(play->state_snapshot().generation == 401U);
+    require(play->stop());
+    require(probe.stopCount == 3U);
+}
+
 /// @brief 最大GenerationのSession終了後にOverflowを検出して新しいWorldを作らないことを検証する
 void test_generation_exhaustion(const cue::schema::SchemaRegistry &a_schemaRegistry,
                                 cue::game_core::WorldIdentitySource &a_worldIdentitySource,
@@ -342,6 +459,7 @@ int main()
     test_dirty_document_repeated_play(*registry, worldIdentitySource, assertContext);
     test_start_failure_replay(*registry, worldIdentitySource, assertContext);
     test_document_close_isolation(*registry, worldIdentitySource, assertContext);
+    test_cleanup_failure_retry(*registry, worldIdentitySource, assertContext);
     test_generation_exhaustion(*registry, worldIdentitySource, assertContext);
     return 0;
 }

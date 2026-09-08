@@ -4,12 +4,15 @@
 #include <Cue/Foundation/Result.h>
 #include <Cue/Input/FrameInputSnapshot.h>
 #include <Cue/Input/InputEvent.h>
+#include <Cue/Runtime/RuntimeSystemFactory.h>
 #include <Cue/Schema/Types.h>
 
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <thread>
+#include <vector>
 
 namespace cue
 {
@@ -61,7 +64,8 @@ struct EditorPlaySessionSnapshot final
 ///
 /// RuntimeWorld、SceneInstance、EntityHandle、Runtime Pointerを公開せず、状態は所有Value Snapshotだけで通知する
 /// 全公開APIとDestructorはcreateを呼んだOwner Threadから実行する
-/// Workspace Session、Clock、World Identity Source、Schema Registry、AssertContextはControllerより長く生存させる
+/// Workspace Session、Clock、World Identity Source、Schema Registry、System
+/// Factory、AssertContextはControllerより長く生存させる
 class EditorPlaySessionController final
 {
   public:
@@ -94,14 +98,16 @@ class EditorPlaySessionController final
     /// @param a_worldIdentitySource Controllerより長く生存し全Play Worldへ一意Identityを発行するProcess Scope Owner
     /// @param a_clock Controllerより長く生存し同時SessionとMutable状態を共有しない単調Clock
     /// @param a_schemaRegistry Controllerより長く生存するSeal済みSchema定義
+    /// @param a_systemFactories Controllerより長く生存しSessionごとに独立Systemを生成するProject Scope定義
     /// @param a_firstGeneration Process Composition Rootが重複しない範囲として割り当てる最初のnon-zero世代
     /// @param a_maxDeltaNanoseconds Simulationへ一Frameで適用できる正の最大Delta
     /// @param a_assertContext Controllerと返却Errorより長く生存する診断Context
     [[nodiscard]] static Result<std::unique_ptr<EditorPlaySessionController>> create(
         const ProjectWorkspaceSession &a_workspaceSession, game_core::WorldIdentitySource &a_worldIdentitySource,
         game_core::MonotonicClock &a_clock, const schema::SchemaRegistry &a_schemaRegistry,
-        schema::TypeId a_transformTypeId, schema::TypeId a_sceneObjectStateTypeId, std::uint64_t a_firstGeneration,
-        std::int64_t a_maxDeltaNanoseconds, const AssertContext &a_assertContext) noexcept;
+        std::span<const runtime::RuntimeSystemFactory *const> a_systemFactories, schema::TypeId a_transformTypeId,
+        schema::TypeId a_sceneObjectStateTypeId, std::uint64_t a_firstGeneration, std::int64_t a_maxDeltaNanoseconds,
+        const AssertContext &a_assertContext) noexcept;
 
     /// @brief Factory外からの既定構築を禁止する
     EditorPlaySessionController() = delete;
@@ -120,6 +126,7 @@ class EditorPlaySessionController final
     EditorPlaySessionController(ConstructionKey, const ProjectWorkspaceSession &a_workspaceSession,
                                 game_core::WorldIdentitySource &a_worldIdentitySource,
                                 game_core::MonotonicClock &a_clock, const schema::SchemaRegistry &a_schemaRegistry,
+                                std::vector<const runtime::RuntimeSystemFactory *> a_systemFactories,
                                 schema::TypeId a_transformTypeId, schema::TypeId a_sceneObjectStateTypeId,
                                 std::uint64_t a_firstGeneration, std::int64_t a_maxDeltaNanoseconds,
                                 const AssertContext &a_assertContext) noexcept;
@@ -156,6 +163,7 @@ class EditorPlaySessionController final
     const schema::SchemaRegistry *m_schemaRegistry;
     const AssertContext *m_assertContext;
     std::thread::id m_ownerThread;
+    std::vector<const runtime::RuntimeSystemFactory *> m_systemFactories;
     schema::TypeId m_transformTypeId;
     schema::TypeId m_sceneObjectStateTypeId;
     std::int64_t m_maxDeltaNanoseconds;

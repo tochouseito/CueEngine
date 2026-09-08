@@ -24,8 +24,9 @@ namespace cue::editor_core
 Result<std::unique_ptr<EditorPlaySessionController>> EditorPlaySessionController::create(
     const ProjectWorkspaceSession &a_workspaceSession, game_core::WorldIdentitySource &a_worldIdentitySource,
     game_core::MonotonicClock &a_clock, const schema::SchemaRegistry &a_schemaRegistry,
-    schema::TypeId a_transformTypeId, schema::TypeId a_sceneObjectStateTypeId, std::uint64_t a_firstGeneration,
-    std::int64_t a_maxDeltaNanoseconds, const AssertContext &a_assertContext) noexcept
+    std::span<const runtime::RuntimeSystemFactory *const> a_systemFactories, schema::TypeId a_transformTypeId,
+    schema::TypeId a_sceneObjectStateTypeId, std::uint64_t a_firstGeneration, std::int64_t a_maxDeltaNanoseconds,
+    const AssertContext &a_assertContext) noexcept
 {
     if (a_firstGeneration == 0U || a_maxDeltaNanoseconds <= 0)
     {
@@ -33,14 +34,22 @@ Result<std::unique_ptr<EditorPlaySessionController>> EditorPlaySessionController
             a_assertContext, EditorCoreError::InvalidPlayConfiguration,
             "Editor Play Session configuration requires non-zero generation and positive delta"));
     }
+    if (std::find(a_systemFactories.begin(), a_systemFactories.end(), nullptr) != a_systemFactories.end())
+    {
+        return Result<std::unique_ptr<EditorPlaySessionController>>::failure(
+            make_editor_core_error(a_assertContext, EditorCoreError::InvalidPlayConfiguration,
+                                   "Editor Play Session configuration contains a null Runtime System Factory"));
+    }
 
     try
     {
+        std::vector<const runtime::RuntimeSystemFactory *> systemFactories(a_systemFactories.begin(),
+                                                                           a_systemFactories.end());
         return Result<std::unique_ptr<EditorPlaySessionController>>::success(
-            std::make_unique<EditorPlaySessionController>(ConstructionKey{}, a_workspaceSession, a_worldIdentitySource,
-                                                          a_clock, a_schemaRegistry, std::move(a_transformTypeId),
-                                                          std::move(a_sceneObjectStateTypeId), a_firstGeneration,
-                                                          a_maxDeltaNanoseconds, a_assertContext));
+            std::make_unique<EditorPlaySessionController>(
+                ConstructionKey{}, a_workspaceSession, a_worldIdentitySource, a_clock, a_schemaRegistry,
+                std::move(systemFactories), std::move(a_transformTypeId), std::move(a_sceneObjectStateTypeId),
+                a_firstGeneration, a_maxDeltaNanoseconds, a_assertContext));
     }
     catch (const std::bad_alloc &)
     {
@@ -58,13 +67,15 @@ Result<std::unique_ptr<EditorPlaySessionController>> EditorPlaySessionController
 EditorPlaySessionController::EditorPlaySessionController(
     ConstructionKey, const ProjectWorkspaceSession &a_workspaceSession,
     game_core::WorldIdentitySource &a_worldIdentitySource, game_core::MonotonicClock &a_clock,
-    const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
+    const schema::SchemaRegistry &a_schemaRegistry,
+    std::vector<const runtime::RuntimeSystemFactory *> a_systemFactories, schema::TypeId a_transformTypeId,
     schema::TypeId a_sceneObjectStateTypeId, std::uint64_t a_firstGeneration, std::int64_t a_maxDeltaNanoseconds,
     const AssertContext &a_assertContext) noexcept
     : m_workspaceSession(&a_workspaceSession), m_worldIdentitySource(&a_worldIdentitySource), m_clock(&a_clock),
       m_schemaRegistry(&a_schemaRegistry), m_assertContext(&a_assertContext), m_ownerThread(std::this_thread::get_id()),
-      m_transformTypeId(std::move(a_transformTypeId)), m_sceneObjectStateTypeId(std::move(a_sceneObjectStateTypeId)),
-      m_maxDeltaNanoseconds(a_maxDeltaNanoseconds), m_nextGeneration(a_firstGeneration)
+      m_systemFactories(std::move(a_systemFactories)), m_transformTypeId(std::move(a_transformTypeId)),
+      m_sceneObjectStateTypeId(std::move(a_sceneObjectStateTypeId)), m_maxDeltaNanoseconds(a_maxDeltaNanoseconds),
+      m_nextGeneration(a_firstGeneration)
 {
 }
 
@@ -127,6 +138,26 @@ Result<void> EditorPlaySessionController::start(EditorDocumentId a_documentId) n
 
     std::unique_ptr<runtime::RuntimeApplicationSession> candidate = std::move(*created.try_value());
     m_snapshot = {EditorPlaySessionState::Stopped, a_documentId, candidate->generation(), 0U, 0U, false};
+    for (const runtime::RuntimeSystemFactory *factory : m_systemFactories)
+    {
+        Result<runtime::RuntimeSystemRegistration> system = factory->create_system(*m_assertContext);
+        if (!system)
+        {
+            Error error = std::move(*system.try_error());
+            m_snapshot.hasFailure = true;
+            add_document_context(error, a_documentId);
+            return Result<void>::failure(std::move(error));
+        }
+        Result<void> registered = candidate->register_system(std::move(system.try_value()->descriptor),
+                                                             std::move(system.try_value()->system));
+        if (!registered)
+        {
+            Error error = std::move(*registered.try_error());
+            m_snapshot.hasFailure = true;
+            add_document_context(error, a_documentId);
+            return Result<void>::failure(std::move(error));
+        }
+    }
     Result<void> started = candidate->start(*sceneSnapshot.try_value(), *m_worldIdentitySource, *m_schemaRegistry,
                                             m_transformTypeId, m_sceneObjectStateTypeId);
     if (!started)
