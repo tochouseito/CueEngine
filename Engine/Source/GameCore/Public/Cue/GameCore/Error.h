@@ -12,7 +12,8 @@ class AssertContext;
 
 namespace cue::game_core
 {
-/// @brief Entity と Component Storage の回復可能な失敗を分類する Code
+/// @brief Entity、Component Storage、Runtime Lifecycleの回復可能な失敗を分類する
+/// Code
 enum class GameCoreError : std::int64_t
 {
     InvalidEntity = 1,
@@ -28,11 +29,18 @@ enum class GameCoreError : std::int64_t
     InvalidClockConfiguration = 11,
     InvalidClockState = 12,
     InvalidClockSample = 13,
-    ClockOverflow = 14
+    ClockOverflow = 14,
+    InvalidSystemRegistration = 15,
+    DuplicateSystem = 16,
+    MissingSystemDependency = 17,
+    InvalidSystemDependency = 18,
+    InvalidSystemRegistryState = 19,
+    SystemStartFailed = 20,
+    SystemUpdateFailed = 21,
+    SystemStopFailed = 22
 };
 
 /// @brief GameCore Error を診断 Summary と共に生成する
-[[nodiscard]] Error make_game_core_error(
-    const AssertContext &a_assertContext, GameCoreError a_code,
-    std::string_view a_summary) noexcept;
+[[nodiscard]] Error make_game_core_error(const AssertContext &a_assertContext, GameCoreError a_code,
+                                         std::string_view a_summary) noexcept;
 } // namespace cue::game_core
