@@ -9,6 +9,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -84,15 +85,36 @@ namespace
     }
 }
 
-/// @brief ExecutableのPE種別を実行せずPortable Architectureへ変換する
-[[nodiscard]] cue::BuildArchitecture read_binary_architecture(const std::wstring &a_path) noexcept
+/// @brief ExecutableのPE Machineを実行せずPortable Architectureへ変換する
+[[nodiscard]] cue::BuildArchitecture read_binary_architecture(const std::wstring &a_path)
 {
-    DWORD type = 0U;
-    if (GetBinaryTypeW(a_path.c_str(), &type) == FALSE)
+    std::ifstream stream(std::filesystem::path(a_path), std::ios::binary);
+    IMAGE_DOS_HEADER dosHeader{};
+    stream.read(reinterpret_cast<char *>(&dosHeader), sizeof(dosHeader));
+    if (!stream || dosHeader.e_magic != IMAGE_DOS_SIGNATURE || dosHeader.e_lfanew < 0)
     {
         return cue::BuildArchitecture::Unknown;
     }
-    return type == SCS_64BIT_BINARY ? cue::BuildArchitecture::X64 : cue::BuildArchitecture::Unknown;
+    stream.seekg(dosHeader.e_lfanew, std::ios::beg);
+    DWORD signature = 0U;
+    IMAGE_FILE_HEADER fileHeader{};
+    stream.read(reinterpret_cast<char *>(&signature), sizeof(signature));
+    stream.read(reinterpret_cast<char *>(&fileHeader), sizeof(fileHeader));
+    if (!stream || signature != IMAGE_NT_SIGNATURE)
+    {
+        return cue::BuildArchitecture::Unknown;
+    }
+    switch (fileHeader.Machine)
+    {
+    case IMAGE_FILE_MACHINE_AMD64:
+        return cue::BuildArchitecture::X64;
+    case IMAGE_FILE_MACHINE_I386:
+        return cue::BuildArchitecture::X86;
+    case IMAGE_FILE_MACHINE_ARM64:
+        return cue::BuildArchitecture::Arm64;
+    default:
+        return cue::BuildArchitecture::Unknown;
+    }
 }
 
 /// @brief Engine Build Metadataで固定したExecutableを一候補として検査する
@@ -151,42 +173,12 @@ namespace
     return partIndex >= 2U ? std::optional<cue::BuildToolVersion>(version) : std::nullopt;
 }
 
-/// @brief Windows Kits Installed RootsからKitsRoot10を取得する
-[[nodiscard]] std::optional<std::wstring> windows_sdk_root(const cue::AssertContext &a_assertContext) noexcept
-{
-    constexpr wchar_t subkey[] = L"SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots";
-    DWORD bytes = 0U;
-    LSTATUS status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, L"KitsRoot10", RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
-    if (status != ERROR_SUCCESS || bytes < sizeof(wchar_t))
-    {
-        return std::nullopt;
-    }
-    try
-    {
-        std::vector<wchar_t> buffer(bytes / sizeof(wchar_t));
-        status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, L"KitsRoot10", RRF_RT_REG_SZ, nullptr, buffer.data(), &bytes);
-        if (status != ERROR_SUCCESS || buffer.empty())
-        {
-            return std::nullopt;
-        }
-        while (!buffer.empty() && buffer.back() == L'\0')
-        {
-            buffer.pop_back();
-        }
-        return std::wstring(buffer.begin(), buffer.end());
-    }
-    catch (...)
-    {
-        terminate_discovery_exception(a_assertContext);
-    }
-}
-
 /// @brief Engineが記録したWindows SDK VersionのHeaderとx64 Libraryを検査する
 [[nodiscard]] cue::BuildToolCandidate probe_windows_sdk(const cue::AssertContext &a_assertContext)
 {
     cue::BuildToolCandidate candidate;
     candidate.kind = cue::BuildToolKind::WindowsSdk;
-    const auto root = windows_sdk_root(a_assertContext);
+    const auto root = to_windows_path(cue::build_metadata::k_windowsSdkRoot, a_assertContext);
     const auto version = parse_version(cue::build_metadata::k_windowsSdkVersion);
     if (!root || !version)
     {
@@ -306,16 +298,8 @@ BuildEnvironmentInventory discover_current_windows_build_environment(const Asser
         inventory.candidates.push_back(probe_executable(BuildToolKind::CMake, build_metadata::k_cmakeCommand,
                                                         cmakeRoot ? *cmakeRoot : std::string_view{}, a_assertContext));
 
-        const auto visualStudioWindowsRoot = to_windows_path(build_metadata::k_visualStudioRoot, a_assertContext);
-        std::optional<std::string> msbuildPath;
-        if (visualStudioWindowsRoot)
-        {
-            const std::filesystem::path msbuild = std::filesystem::path(*visualStudioWindowsRoot) / L"MSBuild" /
-                                                  L"Current" / L"Bin" / L"amd64" / L"MSBuild.exe";
-            msbuildPath = to_utf8_path(msbuild.native(), a_assertContext);
-        }
         inventory.candidates.push_back(probe_executable(BuildToolKind::VisualStudio,
-                                                        msbuildPath ? *msbuildPath : std::string_view{},
+                                                        build_metadata::k_visualStudioMsbuild,
                                                         build_metadata::k_visualStudioRoot, a_assertContext));
 
         const auto compilerWindowsPath = to_windows_path(build_metadata::k_msvcCompiler, a_assertContext);

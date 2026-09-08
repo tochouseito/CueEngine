@@ -106,6 +106,17 @@ class TestFatalHandler final : public cue::FatalHandler
            has_diagnostic(report, cue::BuildEnvironmentDiagnosticCode::UnsupportedTool);
 }
 
+/// @brief 既知の非x64 ArchitectureをUnknownではなくUnsupportedとして診断するか検証する
+[[nodiscard]] bool test_unsupported_architecture(const cue::AssertContext &a_assertContext)
+{
+    auto inventory = make_inventory();
+    inventory.candidates.front().architecture = cue::BuildArchitecture::X86;
+    const auto report = cue::validate_build_environment(inventory, make_requirements(), a_assertContext);
+    return report.support == cue::BuildEnvironmentSupport::Unsupported &&
+           has_diagnostic(report, cue::BuildEnvironmentDiagnosticCode::UnsupportedTool) &&
+           !has_diagnostic(report, cue::BuildEnvironmentDiagnosticCode::UnknownToolIdentity);
+}
+
 /// @brief 複数の互換候補を暗黙選択せずUnknownとして診断するか検証する
 [[nodiscard]] bool test_ambiguous(const cue::AssertContext &a_assertContext)
 {
@@ -120,8 +131,9 @@ class TestFatalHandler final : public cue::FatalHandler
 /// @brief Native Pathの改行、Quote、制御文字がLog Field内へEscapeされるか検証する
 [[nodiscard]] bool test_safe_path_format(const cue::AssertContext &a_assertContext)
 {
-    const std::string formatted = cue::format_native_path_for_log("C:\\Tool\n\"bad\"\x01", a_assertContext);
-    return formatted == "\"C:\\\\Tool\\n\\\"bad\\\"\\x01\"";
+    const std::string formatted =
+        cue::format_native_path_for_log("C:\\Tool\n\"bad\"\x01\xC2\x85\xE2\x80\xA8\xE2\x80\xAE", a_assertContext);
+    return formatted == "\"C:\\\\Tool\\n\\\"bad\\\"\\x01\\u{0085}\\u{2028}\\u{202E}\"";
 }
 
 /// @brief Command Lineの各Argumentが境界を保ってLog用にEscapeされるか検証する
@@ -142,8 +154,8 @@ int main()
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     return test_supported(assertContext) && test_missing(assertContext) && test_unsupported(assertContext) &&
-                   test_ambiguous(assertContext) && test_safe_path_format(assertContext) &&
-                   test_safe_command_line_format(assertContext)
+                   test_unsupported_architecture(assertContext) && test_ambiguous(assertContext) &&
+                   test_safe_path_format(assertContext) && test_safe_command_line_format(assertContext)
                ? 0
                : 1;
 }

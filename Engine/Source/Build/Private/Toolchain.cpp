@@ -8,6 +8,16 @@
 
 namespace
 {
+constexpr std::array<char, 16U> k_hexDigits = {'0', '1', '2', '3', '4', '5', '6', '7',
+                                               '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+
+struct Utf8Scalar final
+{
+    std::uint32_t value = 0U;
+    std::size_t length = 1U;
+    bool valid = false;
+};
+
 /// @brief Build検証中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_build_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -56,6 +66,88 @@ void add_diagnostic(cue::BuildEnvironmentReport &a_report, cue::BuildEnvironment
         return "Windows SDK";
     }
     return "Build tool";
+}
+
+/// @brief 一ByteをLog表示用Hex Escapeへ追加する
+void append_byte_escape(std::string &a_output, unsigned char a_value)
+{
+    a_output.append("\\x");
+    a_output.push_back(k_hexDigits[(a_value >> 4U) & 0x0FU]);
+    a_output.push_back(k_hexDigits[a_value & 0x0FU]);
+}
+
+/// @brief UTF-8先頭位置から厳密なUnicode Scalarを一つDecodeする
+[[nodiscard]] Utf8Scalar decode_utf8_scalar(std::string_view a_text, std::size_t a_index) noexcept
+{
+    const auto first = static_cast<unsigned char>(a_text[a_index]);
+    if (first < 0x80U)
+    {
+        return {first, 1U, true};
+    }
+    std::size_t length = 0U;
+    std::uint32_t value = 0U;
+    if (first >= 0xC2U && first <= 0xDFU)
+    {
+        length = 2U;
+        value = first & 0x1FU;
+    }
+    else if (first >= 0xE0U && first <= 0xEFU)
+    {
+        length = 3U;
+        value = first & 0x0FU;
+    }
+    else if (first >= 0xF0U && first <= 0xF4U)
+    {
+        length = 4U;
+        value = first & 0x07U;
+    }
+    else
+    {
+        return {first, 1U, false};
+    }
+    if (a_index + length > a_text.size())
+    {
+        return {first, 1U, false};
+    }
+    const auto second = static_cast<unsigned char>(a_text[a_index + 1U]);
+    if ((second & 0xC0U) != 0x80U || (first == 0xE0U && second < 0xA0U) || (first == 0xEDU && second >= 0xA0U) ||
+        (first == 0xF0U && second < 0x90U) || (first == 0xF4U && second >= 0x90U))
+    {
+        return {first, 1U, false};
+    }
+    for (std::size_t offset = 1U; offset < length; ++offset)
+    {
+        const auto continuation = static_cast<unsigned char>(a_text[a_index + offset]);
+        if ((continuation & 0xC0U) != 0x80U)
+        {
+            return {first, 1U, false};
+        }
+        value = (value << 6U) | (continuation & 0x3FU);
+    }
+    return {value, length, true};
+}
+
+/// @brief Log構造や視覚順序を変更し得るUnicode制御Scalarか判定する
+[[nodiscard]] bool is_unsafe_log_scalar(std::uint32_t a_value) noexcept
+{
+    return (a_value >= 0x80U && a_value <= 0x9FU) || a_value == 0xADU || (a_value >= 0x600U && a_value <= 0x605U) ||
+           a_value == 0x61CU || a_value == 0x6DDU || a_value == 0x70FU || (a_value >= 0x890U && a_value <= 0x891U) ||
+           a_value == 0x8E2U || a_value == 0x180EU || (a_value >= 0x200BU && a_value <= 0x200FU) ||
+           (a_value >= 0x2028U && a_value <= 0x202EU) || (a_value >= 0x2060U && a_value <= 0x206FU) ||
+           a_value == 0xFEFFU || (a_value >= 0xFFF9U && a_value <= 0xFFFBU) || a_value == 0x110BDU ||
+           a_value == 0x110CDU || a_value == 0xE0001U || (a_value >= 0xE0020U && a_value <= 0xE007FU);
+}
+
+/// @brief Unicode ScalarをASCIIだけの固定幅Escapeへ追加する
+void append_scalar_escape(std::string &a_output, std::uint32_t a_value)
+{
+    a_output.append("\\u{");
+    const std::uint32_t shift = a_value <= 0xFFFFU ? 12U : 20U;
+    for (std::int32_t current = static_cast<std::int32_t>(shift); current >= 0; current -= 4)
+    {
+        a_output.push_back(k_hexDigits[(a_value >> static_cast<std::uint32_t>(current)) & 0x0FU]);
+    }
+    a_output.push_back('}');
 }
 } // namespace
 
@@ -184,13 +276,13 @@ std::string format_native_path_for_log(std::string_view a_nativePath, const Asse
 {
     try
     {
-        constexpr std::array<char, 16U> digits = {'0', '1', '2', '3', '4', '5', '6', '7',
-                                                  '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
         std::string formatted;
         formatted.reserve(a_nativePath.size() + 2U);
         formatted.push_back('"');
-        for (const unsigned char value : a_nativePath)
+        std::size_t index = 0U;
+        while (index < a_nativePath.size())
         {
+            const auto value = static_cast<unsigned char>(a_nativePath[index]);
             switch (value)
             {
             case '\\':
@@ -211,15 +303,38 @@ std::string format_native_path_for_log(std::string_view a_nativePath, const Asse
             default:
                 if (value < 0x20U || value == 0x7FU)
                 {
-                    formatted.append("\\x");
-                    formatted.push_back(digits[(value >> 4U) & 0x0FU]);
-                    formatted.push_back(digits[value & 0x0FU]);
+                    append_byte_escape(formatted, value);
+                    ++index;
+                }
+                else if (value < 0x80U)
+                {
+                    formatted.push_back(static_cast<char>(value));
+                    ++index;
                 }
                 else
                 {
-                    formatted.push_back(static_cast<char>(value));
+                    const Utf8Scalar scalar = decode_utf8_scalar(a_nativePath, index);
+                    if (!scalar.valid)
+                    {
+                        append_byte_escape(formatted, value);
+                        ++index;
+                    }
+                    else if (is_unsafe_log_scalar(scalar.value))
+                    {
+                        append_scalar_escape(formatted, scalar.value);
+                        index += scalar.length;
+                    }
+                    else
+                    {
+                        formatted.append(a_nativePath.substr(index, scalar.length));
+                        index += scalar.length;
+                    }
                 }
                 break;
+            }
+            if (value == '\\' || value == '"' || value == '\n' || value == '\r' || value == '\t')
+            {
+                ++index;
             }
         }
         formatted.push_back('"');

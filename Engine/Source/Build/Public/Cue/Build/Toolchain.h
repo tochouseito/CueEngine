@@ -25,7 +25,9 @@ enum class BuildToolKind : std::uint8_t
 enum class BuildArchitecture : std::uint8_t
 {
     Unknown,
-    X64
+    X64,
+    X86,
+    Arm64
 };
 
 /// @brief Game ProjectとHostを混在させずBuildするConfiguration

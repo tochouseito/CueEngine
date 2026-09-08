@@ -11,9 +11,37 @@ endfunction()
 
 cue_escape_cpp_string(cueBuildCMakeCommand "${CMAKE_COMMAND}")
 cue_escape_cpp_string(cueBuildCMakeMinimumVersion "${CMAKE_MINIMUM_REQUIRED_VERSION}")
-cue_escape_cpp_string(cueBuildVisualStudioRoot "${CMAKE_GENERATOR_INSTANCE}")
+
+file(TO_CMAKE_PATH "${CMAKE_VS_MSBUILD_COMMAND}" cueBuildVisualStudioMsbuildValue)
+if(
+    NOT cueBuildVisualStudioMsbuildValue
+        MATCHES "^(.*)/MSBuild/Current/Bin(/amd64)?/MSBuild\\.exe$"
+)
+    message(FATAL_ERROR "The selected Visual Studio root could not be recorded")
+endif()
+set(cueBuildVisualStudioRootValue "${CMAKE_MATCH_1}")
+cue_escape_cpp_string(cueBuildVisualStudioRoot "${cueBuildVisualStudioRootValue}")
+cue_escape_cpp_string(cueBuildVisualStudioMsbuild "${cueBuildVisualStudioMsbuildValue}")
 cue_escape_cpp_string(cueBuildMsvcCompiler "${CMAKE_CXX_COMPILER}")
 cue_escape_cpp_string(cueBuildWindowsSdkVersion "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+
+if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR} AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
+    set(cueBuildWindowsSdkRootValue "$ENV{CMAKE_WINDOWS_KITS_10_DIR}")
+else()
+    cmake_host_system_information(
+        RESULT cueBuildWindowsSdkRootValue
+        QUERY WINDOWS_REGISTRY
+        "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
+        VALUE KitsRoot10
+        VIEW BOTH
+    )
+endif()
+
+if(cueBuildWindowsSdkRootValue STREQUAL "")
+    message(FATAL_ERROR "The selected Windows SDK root could not be recorded")
+endif()
+
+cue_escape_cpp_string(cueBuildWindowsSdkRoot "${cueBuildWindowsSdkRootValue}")
 cue_escape_cpp_string(cueBuildEngineSourceRoot "${CMAKE_SOURCE_DIR}")
 cue_escape_cpp_string(cueBuildEngineBinaryRoot "${CMAKE_BINARY_DIR}")
 
@@ -42,7 +70,6 @@ target_link_libraries(
         Cue.Build
     PRIVATE
         Cue.Foundation.Windows
-        advapi32
         version
 )
 target_compile_features(Cue.Build.Windows PUBLIC cxx_std_20)
