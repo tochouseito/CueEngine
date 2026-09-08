@@ -11,6 +11,9 @@
 
 namespace
 {
+/// @brief Windows Unicode Environment Blockの終端を含む最大Code Unit数
+constexpr std::size_t k_maxWindowsEnvironmentLength = 32767U;
+
 /// @brief CMake Runner処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_runner_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -56,6 +59,86 @@ namespace
     return true;
 }
 
+/// @brief Strict UTF-8 TextのWindows UTF-16 Code Unit数を検証して返す
+[[nodiscard]] std::optional<std::size_t> windows_utf16_length(std::string_view a_text) noexcept
+{
+    std::size_t codeUnits = 0U;
+    for (std::size_t index = 0U; index < a_text.size();)
+    {
+        const auto first = static_cast<unsigned char>(a_text[index]);
+        std::size_t length = 0U;
+        std::size_t scalarCodeUnits = 1U;
+        if (first < 0x80U)
+        {
+            length = 1U;
+        }
+        else if (first >= 0xC2U && first <= 0xDFU)
+        {
+            length = 2U;
+        }
+        else if (first >= 0xE0U && first <= 0xEFU)
+        {
+            length = 3U;
+        }
+        else if (first >= 0xF0U && first <= 0xF4U)
+        {
+            length = 4U;
+            scalarCodeUnits = 2U;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        if (index + length > a_text.size())
+        {
+            return std::nullopt;
+        }
+        if (length > 1U)
+        {
+            const auto second = static_cast<unsigned char>(a_text[index + 1U]);
+            if ((second & 0xC0U) != 0x80U || (first == 0xE0U && second < 0xA0U) ||
+                (first == 0xEDU && second >= 0xA0U) || (first == 0xF0U && second < 0x90U) ||
+                (first == 0xF4U && second >= 0x90U))
+            {
+                return std::nullopt;
+            }
+            for (std::size_t offset = 2U; offset < length; ++offset)
+            {
+                if ((static_cast<unsigned char>(a_text[index + offset]) & 0xC0U) != 0x80U)
+                {
+                    return std::nullopt;
+                }
+            }
+        }
+        codeUnits += scalarCodeUnits;
+        if (codeUnits > k_maxWindowsEnvironmentLength)
+        {
+            return std::nullopt;
+        }
+        index += length;
+    }
+    return codeUnits;
+}
+
+/// @brief UTF-8 Environment EntryをWindows Block長へ加算できるか検証する
+[[nodiscard]] bool append_environment_entry_length(std::string_view a_name, std::string_view a_value,
+                                                   std::size_t &a_blockLength) noexcept
+{
+    const std::optional<std::size_t> nameLength = windows_utf16_length(a_name);
+    const std::optional<std::size_t> valueLength = windows_utf16_length(a_value);
+    if (!nameLength || !valueLength)
+    {
+        return false;
+    }
+    const std::size_t entryLength = *nameLength + *valueLength + 2U;
+    if (entryLength > k_maxWindowsEnvironmentLength - a_blockLength)
+    {
+        return false;
+    }
+    a_blockLength += entryLength;
+    return true;
+}
+
 /// @brief CMake起動に使うUTF-8 Pathが埋め込みNULのないAbsolute Pathか検証する
 [[nodiscard]] bool is_absolute_utf8_path(std::string_view a_path)
 {
@@ -88,12 +171,17 @@ namespace
     {
         return false;
     }
+    std::size_t environmentBlockLength = 1U;
     for (std::size_t index = 0U; index < a_settings.environmentAllowlist.size(); ++index)
     {
         const cue::ChildProcessEnvironmentEntry &entry = a_settings.environmentAllowlist[index];
         if (entry.name.empty() || !is_ascii_environment_name(entry.name) || entry.name.find('=') != std::string::npos ||
             entry.name.find('\0') != std::string::npos || entry.value.find('\0') != std::string::npos ||
             equals_environment_name(entry.name, "CUE_ENGINE_ROOT"))
+        {
+            return false;
+        }
+        if (!append_environment_entry_length(entry.name, entry.value, environmentBlockLength))
         {
             return false;
         }
@@ -105,7 +193,7 @@ namespace
             }
         }
     }
-    return true;
+    return append_environment_entry_length("CUE_ENGINE_ROOT", a_settings.engineSourceRoot, environmentBlockLength);
 }
 
 /// @brief Build ConfigurationをCMakeのmulti-config構成名へ変換する

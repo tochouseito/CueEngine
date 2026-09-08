@@ -212,9 +212,17 @@ class RecordingObserver final : public cue::CMakeStageObserver
     nonAsciiName.environmentAllowlist.push_back({"\xC3\x85_VAR", "value"});
     auto invalidNonAsciiName = cue::run_cmake_build(plan, nonAsciiName, cue::CMakeConfigureMode::Required, runner,
                                                     cancellation, observer, a_assertContext);
+    cue::CMakeRunnerSettings invalidUtf8Value = make_settings();
+    invalidUtf8Value.environmentAllowlist.push_back({"VALID_NAME", std::string("\xC3", 1U)});
+    auto invalidEnvironmentValue = cue::run_cmake_build(plan, invalidUtf8Value, cue::CMakeConfigureMode::Required,
+                                                        runner, cancellation, observer, a_assertContext);
+    cue::CMakeRunnerSettings oversizedEnvironment = make_settings();
+    oversizedEnvironment.environmentAllowlist.push_back({"VALID_NAME", std::string(32767U, 'a')});
+    auto invalidEnvironmentLength = cue::run_cmake_build(plan, oversizedEnvironment, cue::CMakeConfigureMode::Required,
+                                                         runner, cancellation, observer, a_assertContext);
     return !invalid && !invalidExecutable && !invalidEngineRoot && !invalidEnvironmentName &&
-           !duplicateEnvironmentName && !invalidNonAsciiName && runner.m_arguments.empty() &&
-           observer.m_started.empty() && observer.m_completed.empty();
+           !duplicateEnvironmentName && !invalidNonAsciiName && !invalidEnvironmentValue && !invalidEnvironmentLength &&
+           runner.m_arguments.empty() && observer.m_started.empty() && observer.m_completed.empty();
 }
 } // namespace
 
