@@ -8,6 +8,7 @@ target_sources(
         Private/CommandBuffer.cpp
         Private/Error.cpp
         Private/RuntimeWorld.cpp
+        Private/RuntimeSystemRegistry.cpp
         Private/World.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -18,6 +19,8 @@ target_sources(
             Public/Cue/GameCore/Entity.h
             Public/Cue/GameCore/Error.h
             Public/Cue/GameCore/RuntimeWorld.h
+            Public/Cue/GameCore/RuntimeSystem.h
+            Public/Cue/GameCore/RuntimeSystemRegistry.h
             Public/Cue/GameCore/UpdateContext.h
             Public/Cue/GameCore/World.h
 )

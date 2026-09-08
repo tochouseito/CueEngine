@@ -19,7 +19,18 @@ target_include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Source/GameCore/Private"
 )
 
-set(cueGameCoreTestTargets CueGameCoreTests CueGameCorePublicHeaderTest CueGameCoreProcessTests CueGameCoreClockTests)
+add_executable(CueGameCoreRuntimeSystemRegistryTests RuntimeSystemRegistryTests.cpp)
+target_link_libraries(CueGameCoreRuntimeSystemRegistryTests PRIVATE Cue.GameCore Cue.Input)
+target_compile_features(CueGameCoreRuntimeSystemRegistryTests PRIVATE cxx_std_20)
+
+set(
+    cueGameCoreTestTargets
+    CueGameCoreTests
+    CueGameCorePublicHeaderTest
+    CueGameCoreProcessTests
+    CueGameCoreClockTests
+    CueGameCoreRuntimeSystemRegistryTests
+)
 
 foreach(testTarget IN LISTS cueGameCoreTestTargets)
     set_target_properties(
@@ -50,6 +61,7 @@ add_custom_target(Cue.GameCore.Tests DEPENDS ${cueGameCoreTestTargets})
 add_test(NAME Cue.GameCore.Storage COMMAND CueGameCoreTests)
 add_test(NAME Cue.GameCore.PublicHeaders COMMAND CueGameCorePublicHeaderTest)
 add_test(NAME Cue.GameCore.Clock COMMAND CueGameCoreClockTests)
+add_test(NAME Cue.GameCore.RuntimeSystemRegistry COMMAND CueGameCoreRuntimeSystemRegistryTests)
 foreach(processMode IN ITEMS
         StructuralReentry
         QueryMutation
@@ -58,6 +70,10 @@ foreach(processMode IN ITEMS
         QueryDestruction
         QueryException
         RuntimeStopWrongThread
+        RuntimeSystemRegistryWrongThread
+        RuntimeSystemRegistryCallbackDestruction
+        RuntimeWorldCallbackDestruction
+        RuntimeWorldRegistryBindingDestruction
 )
     add_test(
         NAME Cue.GameCore.Process.${processMode}
@@ -94,6 +110,7 @@ set_tests_properties(
     Cue.GameCore.Storage
     Cue.GameCore.PublicHeaders
     Cue.GameCore.Clock
+    Cue.GameCore.RuntimeSystemRegistry
     Cue.GameCore.Process.StructuralReentry
     Cue.GameCore.Process.QueryMutation
     Cue.GameCore.Process.NestedQuery
@@ -101,6 +118,10 @@ set_tests_properties(
     Cue.GameCore.Process.QueryDestruction
     Cue.GameCore.Process.QueryException
     Cue.GameCore.Process.RuntimeStopWrongThread
+    Cue.GameCore.Process.RuntimeSystemRegistryWrongThread
+    Cue.GameCore.Process.RuntimeSystemRegistryCallbackDestruction
+    Cue.GameCore.Process.RuntimeWorldCallbackDestruction
+    Cue.GameCore.Process.RuntimeWorldRegistryBindingDestruction
     Cue.GameCore.Process.WrongThread
     Cue.GameCore.Process.HeadlessRuntimeWorld
     PROPERTIES

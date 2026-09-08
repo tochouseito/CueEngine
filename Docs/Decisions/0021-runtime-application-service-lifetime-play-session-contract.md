@@ -228,6 +228,30 @@ Context内にService Locatorを追加しない。秒単位の値は整数ナノ�
 `UpdateContext`の生成権限は`GameClock`に限定し、外部利用者が未検証の`FrameTiming`から直接構築できない。
 Time Scale、Physics Fixed Step、Replay Time Serialization、Network Time、Frame Pacingは#210で追加しない。
 
+### Runtime System Registry Amendment
+
+#211では、Session-localなGame System所有権と単一Thread実行順を`Cue.GameCore`の
+`RuntimeSystemRegistry`へ置く。Registryと全System CallbackはRegistry構築Threadだけが操作し、
+SystemはEditor、ImGui、Platform、RHI、D3D12型を参照しない。`RuntimeSystemUpdateContext`はCallback中だけ有効な
+`World`、`StructuralCommandBuffer`、検証済み`UpdateContext`、Portable `FrameInputSnapshot`の非所有参照を列挙し、
+Service Locatorまたは長期保持可能なAmbient Contextを提供しない。
+
+System定義はRegistryが所有する文字列ID、`PreUpdate`／`Update`／`PostUpdate` Phase、符号付き明示Order、
+必須System ID集合を持つ。Seal時の実行順はPhase、Order、登録順を昇順に比較して固定する。同じPhaseとOrderでは
+登録順を保つ。必須Systemは自動並べ替えに使わず、存在し、重複せず、固定後の順序で依存元より先行することだけを
+検証する。これにより順序の根拠を設定値から再現でき、M14へ依存Graph Schedulerを導入しない。
+
+Registryは`Registering -> Sealed -> Started -> StopPending／Stopped`の状態を持つ。Seal後の追加、二重Seal、
+Seal前のStart、Started前後の不正Updateを回復可能なGameCore Errorとして拒否する。Startは固定順に同期実行し、
+失敗したSystem自身をStartedにせず、それ以前に開始したSystemだけを逆順Stopする。Primary Start Errorは保持し、
+Rollback Stop ErrorをSecondary Diagnosticとして追加する。
+
+Stopは固定順の逆順で実行し、成功済みSystemを再度呼ばない。Stopに失敗したSystemは`StopPending`に残し、
+そのSystemが必須とする未停止依存先を保持する。依存しないSystemのStopは継続し、再試行では未停止Systemだけを対象にする。
+StartedまたはStopPendingのRegistry破棄はProgrammer Errorとする。RegistryのUpdateはSystem Callbackだけを実行し、
+Structural Commandを暗黙Flushしない。#212のRuntime Sessionが全System Update後と全System Stop完了後の
+明示Safe Pointを所有し、一FrameまたはCleanup SequenceのCommand Batchを一度だけ消費する。
+
 ### Runtime Application Session Ownership
 
 `RuntimeApplicationSession`は一回のGame実行を表すcopy不可のOwnerとする。
