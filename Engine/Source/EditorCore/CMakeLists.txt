@@ -6,6 +6,7 @@ target_sources(
         Private/EditorController.cpp
         Private/EditorDocument.cpp
         Private/EditorIntent.cpp
+        Private/EditorPlaySessionController.cpp
         Private/Error.cpp
         Private/FilesWorkspace.cpp
         Private/Persistence.cpp
@@ -17,6 +18,7 @@ target_sources(
             Public/Cue/EditorCore/EditorController.h
             Public/Cue/EditorCore/EditorDocument.h
             Public/Cue/EditorCore/EditorIntent.h
+            Public/Cue/EditorCore/EditorPlaySessionController.h
             Public/Cue/EditorCore/Error.h
             Public/Cue/EditorCore/FilesWorkspace.h
             Public/Cue/EditorCore/Persistence.h
@@ -24,7 +26,10 @@ target_sources(
 )
 
 target_compile_features(Cue.EditorCore PUBLIC cxx_std_20)
-target_link_libraries(Cue.EditorCore PUBLIC Cue.Foundation Cue.IO Cue.Project Cue.ProjectFiles Cue.Scene Cue.Schema)
+target_link_libraries(
+    Cue.EditorCore
+    PUBLIC Cue.Foundation Cue.IO Cue.Project Cue.ProjectFiles Cue.Scene Cue.Schema Cue.Input Cue.Runtime
+)
 target_include_directories(Cue.EditorCore PUBLIC Public)
 
 set_target_properties(
@@ -52,18 +57,24 @@ endif()
 get_target_property(cueEditorCoreLinks Cue.EditorCore LINK_LIBRARIES)
 get_target_property(cueEditorCoreInterfaceLinks Cue.EditorCore INTERFACE_LINK_LIBRARIES)
 
-if(NOT "${cueEditorCoreLinks}" STREQUAL "Cue.Foundation;Cue.IO;Cue.Project;Cue.ProjectFiles;Cue.Scene;Cue.Schema")
+if(
+    NOT "${cueEditorCoreLinks}"
+        STREQUAL "Cue.Foundation;Cue.IO;Cue.Project;Cue.ProjectFiles;Cue.Scene;Cue.Schema;Cue.Input;Cue.Runtime"
+)
     message(
         FATAL_ERROR
-        "Cue.EditorCore must directly link only Cue.Foundation, Cue.IO, Cue.Project, Cue.ProjectFiles, Cue.Scene, and Cue.Schema: "
+        "Cue.EditorCore must directly link only Cue.Foundation, Cue.IO, Cue.Project, Cue.ProjectFiles, Cue.Scene, Cue.Schema, Cue.Input, and Cue.Runtime: "
         "${cueEditorCoreLinks}"
     )
 endif()
 
-if(NOT "${cueEditorCoreInterfaceLinks}" STREQUAL "Cue.Foundation;Cue.IO;Cue.Project;Cue.ProjectFiles;Cue.Scene;Cue.Schema")
+if(
+    NOT "${cueEditorCoreInterfaceLinks}"
+        STREQUAL "Cue.Foundation;Cue.IO;Cue.Project;Cue.ProjectFiles;Cue.Scene;Cue.Schema;Cue.Input;Cue.Runtime"
+)
     message(
         FATAL_ERROR
-        "Cue.EditorCore must expose only Cue.Foundation, Cue.IO, Cue.Project, Cue.ProjectFiles, Cue.Scene, and Cue.Schema: "
+        "Cue.EditorCore must expose only Cue.Foundation, Cue.IO, Cue.Project, Cue.ProjectFiles, Cue.Scene, Cue.Schema, Cue.Input, and Cue.Runtime: "
         "${cueEditorCoreInterfaceLinks}"
     )
 endif()

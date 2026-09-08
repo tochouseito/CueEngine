@@ -13,6 +13,7 @@ target_sources(
             Public/Cue/Runtime/Error.h
             Public/Cue/Runtime/RuntimeApplicationSession.h
             Public/Cue/Runtime/RuntimeSceneSession.h
+            Public/Cue/Runtime/RuntimeSystemFactory.h
 )
 
 target_compile_features(Cue.Runtime PUBLIC cxx_std_20)
