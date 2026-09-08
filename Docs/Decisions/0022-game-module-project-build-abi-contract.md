@@ -295,6 +295,48 @@ Debug／Development／Releaseを相互に混在させない。Game Module Artifa
 Engine Compatibility、Configuration、Architecture、Compiler family、MSVC Toolset Identityを持つ。
 LoaderはDLL Entryを呼ぶ前にManifest Metadataを検査し、Entry呼出後にもModule報告値との一致を検査する。
 
+Game Module Artifact MetadataのFile名をVersion Directory直下の`CueGameModule.metadata.json`、初期`schemaVersion`を`1`とし、
+Wire形式を次のJSON Objectへ固定する。例示値を除くMember名、型、必須性はこの形を正本とする。
+
+```json
+{
+  "schemaVersion": 1,
+  "artifactId": "01234567-89ab-4cde-8f01-23456789abcd",
+  "projectId": "12345678-1234-4abc-8def-1234567890ab",
+  "engineCompatibility": {
+    "minimum": "0.1.0",
+    "maximumExclusive": null
+  },
+  "abiVersion": 1,
+  "configuration": "Debug",
+  "architecture": "x64",
+  "compilerFamily": "msvc",
+  "msvcToolset": {
+    "compilerVersion": 1944,
+    "fullVersion": 194435123,
+    "build": 0
+  },
+  "runtimeLibrary": "DebugDll",
+  "iteratorDebugLevel": 2,
+  "moduleFile": "CueGameModule.dll",
+  "entrySymbol": "cue_game_module_query"
+}
+```
+
+全Memberを必須かつNon-nullとするが、`engineCompatibility.maximumExclusive`だけはJSON StringまたはNullを許可する。
+Top-level、`engineCompatibility`、`msvcToolset`の未知Memberと重複Keyを拒否する。`artifactId`と`projectId`は小文字Canonical
+UUID v4文字列、Engine Versionは`major.minor.patch`の非負整数3要素とし、Project Descriptorの既存契約に従う。
+`abiVersion`はJSON整数`1`、`configuration`は`Debug`、`Development`、`Release`、`architecture`は`x64`、
+`compilerFamily`は`msvc`だけをv1で許可する。`msvcToolset.compilerVersion`、`fullVersion`、`build`はそれぞれ
+`_MSC_VER`、`_MSC_FULL_VER`、`_MSC_BUILD`の`0`以上`9007199254740991`以下のJSON整数とする。
+`runtimeLibrary`はDebugの`DebugDll`またはDevelopment／Releaseの`Dll`、`iteratorDebugLevel`は対応する`_ITERATOR_DEBUG_LEVEL`の
+JSON整数とする。`moduleFile`と`entrySymbol`は上記固定文字列から変更しない。
+
+Writerは上記Member順のUTF-8、BOMなし、LF、末尾改行ありで出力する。ReaderはMember順と意味を持たない空白には依存しない。
+ReaderはMetadata自身を`Current.json`のInventoryでSize／Hash検証してからParseし、Artifact ID、Project ID、Configuration、
+Architecture、Compatibility、ABI、Toolset、Runtime LibraryをHostと照合した後だけDLLをLoadする。未知、欠落、破損した
+Metadata VersionをMigrationせず拒否し、対応するEngineとConfigurationで再Buildして再生成する。
+
 C ABIでAllocator所有権を分離しても、異なるConfigurationやToolsetの組合せを暗黙に互換とは扱わない。
 Generated Project CMakeはEngineが公開するBuild Policy Targetを使用し、DebugではDebug DLL Runtime、
 Development／ReleaseではDLL Runtimeを選択する。`_MSC_VER`、Runtime Library、Iterator Debug Level等の不一致を
@@ -380,6 +422,8 @@ Schema v1のWire形式は次のJSON Objectへ固定する。例示値を除くMe
 重複Entry、WindowsのCase-insensitive比較で衝突するEntryを拒否する。`files`は`path`のUTF-8 Byte列による昇順で保存する。
 Writerは上記Member順のUTF-8、BOMなし、LF、末尾改行ありで出力する。ReaderはJSONのMember順と意味を持たない空白には依存しない。
 Windows実装はOSのCNGを利用できるが、Manifest上のAlgorithmとByte表現を変更しない。
+`files`には`path == "CueGameModule.dll"`と`path == "CueGameModule.metadata.json"`のEntryをそれぞれちょうど一つ必須とし、
+いずれかの省略、Case違い、重複をReaderで拒否する。DLLのSize／Hashはこの必須Entryだけを正本とする。
 
 M16 Publisherは後述のRead Leaseを取得して`Current.json`を一度読み、指定Version Directoryだけを入力にし、全HashとSizeを
 再検証してCopy完了までLeaseを保持する。
@@ -503,6 +547,7 @@ M15で次を検証する。
 - C11とC++20のTranslation UnitがABI Headerを単体Includeできる
 - ABI Public HeaderがSTL、Exception、C++ Class、Windows型を公開しない
 - 誤った外部MetadataのProject ID、Architecture、Configuration、ToolsetをDLL Load前に拒否する
+- `CueGameModule.metadata.json` v1の全必須Memberと型をWriter／Readerで一致させ、未知VersionをLoad前に拒否する
 - Module自己報告のABI Version、Project ID、Configuration不一致をModule Handle生成と登録の前に拒否する
 - Schema、Component宣言、System Factoryを固定順で登録し、失敗時に逆順Cleanupする
 - Module Handle／System State生成失敗時に出力をNullのまま維持し、Module内の部分Resourceを残さない
@@ -518,6 +563,7 @@ M15で次を検証する。
 - `Current.json`の`schemaVersion == 1`だけを受理し、未知Versionを拒否して再Buildで再生成する
 - Schema v1のTop-levelとFile Entryについて、Member名、型、必須性、Artifact ID、Configuration、PathをWriterとReaderで一致させる
 - Schema v1のInventory Hashを、未変換File Byte列に対する小文字64桁SHA-256としてWriterとReaderで一致させる
+- `files`が`CueGameModule.dll`と`CueGameModule.metadata.json`をそれぞれちょうど一つ含まなければ拒否する
 - `NotPublished`では以前のCurrentが変わらず、`PublishedButDurabilityUnknown`では可視Manifestを再読込・再検証して
   Current選択とBuild失敗診断を一致させる
 - 複数Process、複数Artifact Store Instance間でPublishとCleanupをExclusive Mutation Leaseにより直列化し、M16 Publisherの
