@@ -94,23 +94,87 @@ constexpr std::size_t k_maximumSavedOperations = 8U;
                        }) != a_text.end();
 }
 
-/// @brief 制御文字をEscapeしてImGui Textへ安全に渡せるLog文字列を構築する
-[[nodiscard]] std::string make_visible_log_text(std::string_view a_bytes)
+/// @brief 一ByteをImGui表示用Hex Escapeへ追加する
+void append_byte_escape(std::string &a_output, unsigned char a_value)
 {
     constexpr char hexDigits[] = "0123456789ABCDEF";
+    a_output.append("\\x");
+    a_output.push_back(hexDigits[(a_value >> 4U) & 0x0FU]);
+    a_output.push_back(hexDigits[a_value & 0x0FU]);
+}
+
+/// @brief 指定位置からStrict UTF-8 Scalarを構成するByte数を返す
+[[nodiscard]] std::size_t valid_utf8_sequence_length(std::string_view a_text, std::size_t a_index) noexcept
+{
+    const auto first = static_cast<unsigned char>(a_text[a_index]);
+    std::size_t length = 0U;
+    if (first >= 0xC2U && first <= 0xDFU)
+    {
+        length = 2U;
+    }
+    else if (first >= 0xE0U && first <= 0xEFU)
+    {
+        length = 3U;
+    }
+    else if (first >= 0xF0U && first <= 0xF4U)
+    {
+        length = 4U;
+    }
+    else
+    {
+        return 0U;
+    }
+    if (a_index + length > a_text.size())
+    {
+        return 0U;
+    }
+    const auto second = static_cast<unsigned char>(a_text[a_index + 1U]);
+    if ((second & 0xC0U) != 0x80U || (first == 0xE0U && second < 0xA0U) || (first == 0xEDU && second >= 0xA0U) ||
+        (first == 0xF0U && second < 0x90U) || (first == 0xF4U && second >= 0x90U))
+    {
+        return 0U;
+    }
+    for (std::size_t offset = 2U; offset < length; ++offset)
+    {
+        if ((static_cast<unsigned char>(a_text[a_index + offset]) & 0xC0U) != 0x80U)
+        {
+            return 0U;
+        }
+    }
+    return length;
+}
+
+/// @brief 制御Byteと不正UTF-8をEscapeしてImGui Textへ安全に渡せるLog文字列を構築する
+[[nodiscard]] std::string make_visible_log_text(std::string_view a_bytes)
+{
     std::string visible;
     visible.reserve(a_bytes.size());
-    for (const unsigned char value : a_bytes)
+    for (std::size_t index = 0U; index < a_bytes.size();)
     {
+        const auto value = static_cast<unsigned char>(a_bytes[index]);
         if ((value < 0x20U && value != '\n' && value != '\t') || value == 0x7FU)
         {
-            visible.append("\\x");
-            visible.push_back(hexDigits[(value >> 4U) & 0x0FU]);
-            visible.push_back(hexDigits[value & 0x0FU]);
+            append_byte_escape(visible, value);
+            ++index;
+        }
+        else if (value < 0x80U)
+        {
+            visible.push_back(static_cast<char>(value));
+            ++index;
         }
         else
         {
-            visible.push_back(static_cast<char>(value));
+            const std::size_t length = valid_utf8_sequence_length(a_bytes, index);
+            if (length == 0U)
+            {
+                append_byte_escape(visible, value);
+                ++index;
+            }
+            else
+            {
+                visible.append(a_bytes.substr(index, length));
+                index += length;
+            }
         }
     }
     return visible;
@@ -357,6 +421,15 @@ bool BuildPresenter::respond_to_editor_shutdown(EditorBuildShutdownDecision a_de
         m_isShutdownWaitingForCancel = false;
         return false;
     }
+    refresh();
+    if (m_current.state != GameBuildOperationState::Running)
+    {
+        m_openShutdownConfirmation = false;
+        m_isShutdownConfirmationPending = false;
+        m_isShutdownWaitingForCancel = false;
+        m_isShutdownReady = true;
+        return true;
+    }
     if (!m_isShutdownWaitingForCancel && !submit(EditorBuildCommand::Cancel))
     {
         return false;
@@ -488,9 +561,43 @@ void BuildPresenter::save_current_operation()
 void BuildPresenter::set_error(const Error &a_error, std::string_view a_operation)
 {
     m_message.assign(a_operation);
-    m_message.append("に失敗しました。詳細はBuild Consoleを確認してください。");
+    m_message.append("に失敗しました: ");
+    m_message.append(a_error.summary());
+    m_message.append(" (");
+    m_message.append(a_error.code().domain());
+    m_message.push_back(':');
+    m_message.append(std::to_string(a_error.code().value()));
+    m_message.push_back(')');
+    if (const NativeError *native = a_error.try_native_error(); native != nullptr)
+    {
+        m_message.append(" Native=");
+        m_message.append(native->domain());
+        m_message.push_back(':');
+        m_message.append(std::to_string(native->value()));
+    }
+    for (const ErrorContext &context : a_error.contexts())
+    {
+        m_message.append("\n");
+        m_message.append(context.message());
+    }
+    for (const ErrorCause &cause : a_error.causes())
+    {
+        m_message.append("\n原因: ");
+        m_message.append(cause.summary());
+        m_message.append(" (");
+        m_message.append(cause.code().domain());
+        m_message.push_back(':');
+        m_message.append(std::to_string(cause.code().value()));
+        m_message.push_back(')');
+        if (const NativeError *native = cause.try_native_error(); native != nullptr)
+        {
+            m_message.append(" Native=");
+            m_message.append(native->domain());
+            m_message.push_back(':');
+            m_message.append(std::to_string(native->value()));
+        }
+    }
     m_hasError = true;
-    static_cast<void>(a_error);
 }
 
 void BuildPresenter::set_status(std::string_view a_status)
@@ -547,17 +654,18 @@ void BuildPresenter::draw_toolbar() noexcept
 
 void BuildPresenter::draw_progress() noexcept
 {
-    ImGui::Text("状態: %s", state_label(m_current.state));
-    if (m_current.activeStage)
+    const BuildOperationSnapshot &selected = displayed_snapshot();
+    ImGui::Text("状態: %s", state_label(selected.state));
+    if (selected.activeStage)
     {
-        ImGui::Text("Stage: %s", stage_label(*m_current.activeStage));
-        ImGui::ProgressBar(m_current.activeStage == BuildStage::Configure ? 0.35F : 0.75F, ImVec2(-1.0F, 0.0F));
+        ImGui::Text("Stage: %s", stage_label(*selected.activeStage));
+        ImGui::ProgressBar(selected.activeStage == BuildStage::Configure ? 0.35F : 0.75F, ImVec2(-1.0F, 0.0F));
     }
-    else if (m_current.state == GameBuildOperationState::Succeeded)
+    else if (selected.state == GameBuildOperationState::Succeeded)
     {
         ImGui::ProgressBar(1.0F, ImVec2(-1.0F, 0.0F));
     }
-    for (const BuildDiagnosticSnapshot &diagnostic : m_current.diagnostics)
+    for (const BuildDiagnosticSnapshot &diagnostic : selected.diagnostics)
     {
         ImGui::TextColored(ImVec4(1.0F, 0.35F, 0.35F, 1.0F), "%s (%s:%lld)", diagnostic.summary.c_str(),
                            diagnostic.domain.c_str(), static_cast<long long>(diagnostic.code));

@@ -86,7 +86,7 @@ class ControlledRunner final : public cue::ChildProcessRunner
         }
         const std::uint32_t exitCode = m_state->mode.load(std::memory_order_acquire) == RunnerMode::Fail ? 2U : 0U;
         return cue::Result<cue::ChildProcessResult>::success(cue::ChildProcessResult::exited(
-            exitCode, {{sequence, cue::ChildProcessStream::StandardOutput, "build-log\n"}}));
+            exitCode, {{sequence, cue::ChildProcessStream::StandardOutput, "build-log\n" + std::string("\xC3", 1U)}}));
     }
 
   private:
@@ -186,13 +186,17 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     require(serviceResult.has_value());
     std::unique_ptr<cue::GameBuildService> service = std::move(*serviceResult.try_value());
     auto operationIds = std::make_unique<TestOperationIdSource>(
-        std::vector<std::string>{"01234567-89ab-4cde-8f01-23456789abcd", "11234567-89ab-4cde-8f01-23456789abcd",
-                                 "21234567-89ab-4cde-8f01-23456789abcd", "31234567-89ab-4cde-8f01-23456789abcd"});
+        std::vector<std::string>{"", "01234567-89ab-4cde-8f01-23456789abcd", "11234567-89ab-4cde-8f01-23456789abcd",
+                                 "21234567-89ab-4cde-8f01-23456789abcd", "31234567-89ab-4cde-8f01-23456789abcd",
+                                 "41234567-89ab-4cde-8f01-23456789abcd"});
     std::unique_ptr<cue::editor::BuildPresenter> presenter =
         cue::editor::BuildPresenter::create(*service, std::filesystem::current_path().generic_string(),
                                             k_workspaceCompatibility, std::move(operationIds), a_assertContext);
 
     require(presenter->can_start());
+    require(!presenter->submit(cue::editor::EditorBuildCommand::Start));
+    require(presenter->has_error_message());
+    require(presenter->message().find("Cue.Build.Plan") != std::string_view::npos);
     require(presenter->set_configuration(cue::BuildConfiguration::Development));
     require(presenter->submit(cue::editor::EditorBuildCommand::Start));
     require(presenter->current_snapshot().state == cue::GameBuildOperationState::Running);
@@ -232,6 +236,14 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     {
         require(log.operationId == successfulOperationId);
     }
+
+    runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
+    require(presenter->submit(cue::editor::EditorBuildCommand::Start));
+    require(!presenter->begin_editor_shutdown());
+    runnerState.mode.store(RunnerMode::Succeed, std::memory_order_release);
+    require(service->wait_for_completion().has_value());
+    require(presenter->respond_to_editor_shutdown(cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose));
+    require(presenter->take_shutdown_ready());
 
     runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
     press_build_shortcut(*presenter);
