@@ -67,6 +67,27 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
     return result;
 }
 
+/// @brief Windows Test用にAbsolute PathをExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path native_test_path(const std::filesystem::path &a_path)
+{
+#if defined(_WIN32)
+    std::filesystem::path preferred = a_path;
+    preferred.make_preferred();
+    const std::wstring &native = preferred.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return preferred;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+#else
+    return a_path;
+#endif
+}
+
 /// @brief 指定Project RootからDiagnostic検証用Build Planを作成する
 [[nodiscard]] cue::BuildPlan make_plan(std::string_view a_projectRoot, const cue::AssertContext &a_assertContext)
 {
@@ -333,6 +354,25 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(reloaded.operation_id() == bundle.operation_id());
     require(reloaded.state() == bundle.state());
     require(reloaded.manifest_entries().size() == bundle.manifest_entries().size());
+
+#if defined(_WIN32)
+    std::filesystem::path longDestination = destination.parent_path();
+    while (longDestination.native().size() <= 300U)
+    {
+        longDestination /= L"LongPathComponent-0123456789012345678901234567890123456789";
+    }
+    longDestination /= destination.filename();
+    std::filesystem::create_directories(native_test_path(longDestination.parent_path()), cleanupError);
+    require(!cleanupError);
+    std::filesystem::copy(destination, native_test_path(longDestination), std::filesystem::copy_options::recursive,
+                          cleanupError);
+    require(!cleanupError);
+    cue::BuildDiagnosticBundle longPathReloaded = take_value(
+        cue::read_build_diagnostic_bundle_directory(generic_utf8_path(longDestination), limits, a_assertContext));
+    require(longPathReloaded.operation_id() == bundle.operation_id());
+    std::filesystem::remove_all(native_test_path(longDestination.parent_path()), cleanupError);
+    require(!cleanupError);
+#endif
 
     const std::filesystem::path linkedSource = destination.parent_path() / "CueBuildDiagnosticBundleSourceLink";
     std::filesystem::remove(linkedSource, cleanupError);

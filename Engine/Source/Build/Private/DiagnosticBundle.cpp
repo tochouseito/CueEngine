@@ -258,12 +258,38 @@ constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
     }
 }
 
+/// @brief Windows Native検査用にAbsolute PathをExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path native_inspection_path(const std::filesystem::path &a_path)
+{
+#if defined(_WIN32)
+    std::filesystem::path preferred = a_path;
+    preferred.make_preferred();
+    const std::wstring &native = preferred.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return preferred;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        std::wstring extended = L"\\\\?\\UNC\\";
+        extended.append(native.substr(2U));
+        return std::filesystem::path(std::move(extended));
+    }
+    std::wstring extended = L"\\\\?\\";
+    extended.append(native);
+    return std::filesystem::path(std::move(extended));
+#else
+    return a_path;
+#endif
+}
+
 /// @brief Native Filesystem Entryが追跡禁止のReparse Pointか属性で検証する
 [[nodiscard]] bool is_reparse_point(const std::filesystem::path &a_path, std::error_code &a_error) noexcept
 {
     a_error.clear();
 #if defined(_WIN32)
-    const DWORD attributes = GetFileAttributesW(a_path.c_str());
+    const std::filesystem::path inspectionPath = native_inspection_path(a_path);
+    const DWORD attributes = GetFileAttributesW(inspectionPath.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES)
     {
         a_error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
@@ -271,7 +297,8 @@ constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
     }
     return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U;
 #else
-    const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, a_error);
+    const std::filesystem::file_status status =
+        std::filesystem::symlink_status(native_inspection_path(a_path), a_error);
     return !a_error && std::filesystem::is_symlink(status);
 #endif
 }
@@ -2397,8 +2424,11 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
         const auto source = filesystem_path_from_utf8(a_source);
         std::error_code error;
         const bool sourceIsReparsePoint = source && is_reparse_point(*source, error);
-        const std::filesystem::file_status sourceStatus =
-            source && !error ? std::filesystem::symlink_status(*source, error) : std::filesystem::file_status{};
+        const std::filesystem::path inspectionSource =
+            source && !error ? native_inspection_path(*source) : std::filesystem::path{};
+        const std::filesystem::file_status sourceStatus = source && !error
+                                                              ? std::filesystem::symlink_status(inspectionSource, error)
+                                                              : std::filesystem::file_status{};
         if (!source || !source->is_absolute() || error || sourceIsReparsePoint ||
             !std::filesystem::is_directory(sourceStatus))
         {
@@ -2408,7 +2438,7 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
         std::vector<BuildDiagnosticBundleFile> files;
         std::uint64_t totalBytes = 0U;
         std::optional<BuildDiagnosticBundleError> readFailure;
-        for (std::filesystem::directory_iterator iterator(*source, error), end; iterator != end && !error;
+        for (std::filesystem::directory_iterator iterator(inspectionSource, error), end; iterator != end && !error;
              iterator.increment(error))
         {
             const bool entryIsReparsePoint = is_reparse_point(iterator->path(), error);
