@@ -354,7 +354,25 @@ Development／ReleaseではDLL Runtimeを選択する。`_MSC_VER`、Runtime Lib
 Link時またはArtifact Validationで診断し、LNK2038を場当たり的なCompiler Option無効化で回避しない。
 
 Toolchain Versionの許容Rangeは#220のEnvironment ValidationでEngine Build Metadataから決定する。
-本ADRは特定Visual Studio Install Path、Windows SDK Patch Version、CMake Install Pathを共有Projectへ固定しない。
+初期契約は次の半開区間とする。
+
+| Tool | Minimum | Maximum Exclusive | Compatibility Unit |
+| --- | --- | --- | --- |
+| CMake | Engine Configure時の`CMAKE_MINIMUM_REQUIRED_VERSION` | 次のMajor Version | 同一Major |
+| Visual Studio／MSBuild | Engineを生成したVisual Studio Majorの先頭 | 次のMajor Version | 同一Major |
+| MSVC Compiler | EngineをCompileした`_MSC_VER`のMajor／Minor先頭 | 次のMinor Version | 同一Major／Minor |
+| Windows SDK | Engineが選択した4要素Version | 最終要素を1増やしたVersion | 選択Version完全一致 |
+
+CMakeは同一Major内のPreset／Command Line互換、Visual Studioは同一Generator Major、MSVCは同一`_MSC_VER`が表す
+Toolset／Runtime互換を前提とし、MSVCのServicing Patchは許容する。Windows SDKは実際に選択したHeaderとx64 Libraryの組を
+検証するため完全一致とする。これより広いRangeを暗黙に採用せず、次のMajor、MSVC Minor、SDK Versionへ対応するときは
+EngineをそのToolchainで再構成、再検証してBuild Metadataを更新する。
+
+この選択は既知のServicing Updateを許容しつつ、未検証のGenerator、Compiler ABI、SDK Header／Library差を拒否する代わりに、
+新しいToolchainをInstallしただけでは既存Engine Binaryが対応済みにならない。EditorはUnsupportedとUnknownを区別し、対応Engineでの
+再Configure／Buildまたは互換Toolchainの選択を修復案として示す。
+
+本ADRは特定Visual Studio Install Path、Windows SDK Install Root、CMake Install Pathを共有Projectへ固定しない。
 
 ### Editor Build Service Boundary
 
