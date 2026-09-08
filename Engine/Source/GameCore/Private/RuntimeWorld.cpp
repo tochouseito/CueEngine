@@ -2,6 +2,7 @@
 
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/GameCore/Error.h>
+#include <Cue/GameCore/RuntimeSystemRegistry.h>
 
 #include <exception>
 #include <new>
@@ -114,6 +115,11 @@ Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
     if (!callbackValidation)
     {
         return Result<StructuralCommandReport>::failure(std::move(*callbackValidation.try_error()));
+    }
+    if (m_boundSystemRegistry != nullptr && m_boundSystemRegistry->state() == RuntimeSystemRegistryState::StopPending)
+    {
+        return Result<StructuralCommandReport>::failure(
+            make_state_error("Runtime world safe point requires runtime system stop completion"));
     }
     if (m_state == RuntimeWorldState::Stopping && m_boundSystemRegistry != nullptr)
     {

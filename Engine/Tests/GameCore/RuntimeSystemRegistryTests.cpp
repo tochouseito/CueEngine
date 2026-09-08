@@ -87,6 +87,7 @@ struct RecordingOptions final
     bool failsStart = false;
     bool failsUpdate = false;
     bool createsEntity = false;
+    bool createsEntityOnStop = false;
     int remainingStopFailures = 0;
 };
 
@@ -134,9 +135,18 @@ class RecordingSystem final : public cue::game_core::RuntimeSystem
     }
 
     /// @brief Stop試行順を記録し、注入回数を消費した後だけ成功する
-    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &a_context) noexcept override
     {
         m_events->push_back({m_system, EventKind::Stop});
+        if (m_options.createsEntityOnStop && !m_hasCreatedStopEntity)
+        {
+            cue::Result<cue::game_core::PendingEntityId> pending = a_context.commands.create_entity();
+            if (!pending)
+            {
+                return cue::Result<void>::failure(std::move(*pending.try_error()));
+            }
+            m_hasCreatedStopEntity = true;
+        }
         if (m_options.remainingStopFailures > 0)
         {
             --m_options.remainingStopFailures;
@@ -171,6 +181,7 @@ class RecordingSystem final : public cue::game_core::RuntimeSystem
     std::uint64_t m_observedFrameIndex = 0;
     int m_system;
     bool m_observedFocus = false;
+    bool m_hasCreatedStopEntity = false;
 };
 
 class ReentrantSystem final : public cue::game_core::RuntimeSystem
@@ -571,7 +582,7 @@ template <typename T>
                                 events, a_assertContext);
     auto dependent =
         register_system(registry, make_descriptor("dependent", cue::game_core::RuntimeUpdatePhase::Update, 0, {"base"}),
-                        2, events, a_assertContext, {.remainingStopFailures = 1});
+                        2, events, a_assertContext, {.createsEntityOnStop = true, .remainingStopFailures = 1});
     auto independent =
         register_system(registry, make_descriptor("independent", cue::game_core::RuntimeUpdatePhase::PostUpdate, 0), 3,
                         events, a_assertContext);
@@ -583,10 +594,17 @@ template <typename T>
     events.clear();
     cue::Result<void> firstStop = registry.stop(*runtime);
     const std::vector<SystemEvent> expectedFirst = {{3, EventKind::Stop}, {2, EventKind::Stop}};
+    cue::game_core::StructuralCommandBuffer *commands = runtime->try_command_buffer();
     if (!has_error_code(firstStop, cue::game_core::GameCoreError::SystemStopFailed) ||
         !has_root_error_code(firstStop, cue::game_core::GameCoreError::DependencyFailed) || events != expectedFirst ||
         registry.state() != cue::game_core::RuntimeSystemRegistryState::StopPending ||
-        registry.active_system_count() != 2)
+        registry.active_system_count() != 2 || commands == nullptr || commands->size() != 1U)
+    {
+        return false;
+    }
+
+    cue::Result<cue::game_core::StructuralCommandReport> pendingTick = runtime->tick();
+    if (!has_error_code(pendingTick, cue::game_core::GameCoreError::InvalidRuntimeState) || commands->size() != 1U)
     {
         return false;
     }
@@ -594,8 +612,12 @@ template <typename T>
     events.clear();
     cue::Result<void> secondStop = registry.stop(*runtime);
     const std::vector<SystemEvent> expectedSecond = {{2, EventKind::Stop}, {1, EventKind::Stop}};
+    cue::Result<cue::game_core::StructuralCommandReport> cleanupTick = runtime->tick();
     return secondStop && events == expectedSecond && registry.active_system_count() == 0 &&
-           registry.state() == cue::game_core::RuntimeSystemRegistryState::Stopped && shutdown_runtime(*runtime);
+           registry.state() == cue::game_core::RuntimeSystemRegistryState::Stopped && cleanupTick &&
+           cleanupTick.try_value()->results().size() == 1U && cleanupTick.try_value()->results()[0].succeeded() &&
+           cleanupTick.try_value()->results()[0].kind() == cue::game_core::StructuralCommandKind::CreateEntity &&
+           commands->size() == 0U && shutdown_runtime(*runtime);
 }
 
 /// @brief Update失敗で後続Systemを実行せずCauseを保持することを検証する
