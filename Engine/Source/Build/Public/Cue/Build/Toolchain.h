@@ -132,15 +132,22 @@ struct BuildEnvironmentReport final
 };
 
 /// @brief 候補InventoryをEngine要件と照合し、Toolを実行せずに選択または診断する
+///
+/// 全引数は呼出中だけ借用し、返却Reportは必要な値を所有して参照を保持しない。同じ入力Objectを変更しない独立呼出しは並行可能。
+/// Allocation等の予期しない例外はAssertContextのFatalHandlerでProcessを終了し、境界外へ例外を送出しない。
 [[nodiscard]] BuildEnvironmentReport validate_build_environment(const BuildEnvironmentInventory &a_inventory,
                                                                 const BuildEnvironmentRequirements &a_requirements,
                                                                 const AssertContext &a_assertContext) noexcept;
 
 /// @brief Native Pathを改行や制御文字でLog構造を壊さない引用済みUTF-8へ変換する
+///
+/// 引数は呼出中だけ借用し、返却文字列は全Byteを所有する。独立した呼出しは並行可能。Allocation失敗はFatalHandlerへ渡す。
 [[nodiscard]] std::string format_native_path_for_log(std::string_view a_nativePath,
                                                      const AssertContext &a_assertContext) noexcept;
 
 /// @brief 各Argumentを個別にEscapeし、実行用文字列と混同しないLog専用Command Lineへ変換する
+///
+/// Spanと各文字列は呼出中だけ借用し、返却文字列は全Byteを所有する。独立した呼出しは並行可能。Allocation失敗はFatalHandlerへ渡す。
 [[nodiscard]] std::string format_command_line_for_log(std::span<const std::string_view> a_arguments,
                                                       const AssertContext &a_assertContext) noexcept;
 } // namespace cue

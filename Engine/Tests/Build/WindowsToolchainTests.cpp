@@ -4,6 +4,8 @@
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 
+#include <Windows.h>
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -40,8 +42,21 @@ int main()
 
     const cue::BuildEnvironmentInventory inventory = cue::discover_current_windows_build_environment(assertContext);
     const cue::BuildEnvironmentReport report = cue::validate_current_windows_build_environment(assertContext);
+    SYSTEM_INFO nativeSystem{};
+    GetNativeSystemInfo(&nativeSystem);
+    const bool nativeArchitectureMatches = (nativeSystem.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 &&
+                                            inventory.hostArchitecture == cue::BuildArchitecture::X64) ||
+                                           (nativeSystem.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL &&
+                                            inventory.hostArchitecture == cue::BuildArchitecture::X86) ||
+                                           (nativeSystem.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 &&
+                                            inventory.hostArchitecture == cue::BuildArchitecture::Arm64) ||
+                                           (nativeSystem.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_AMD64 &&
+                                            nativeSystem.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_INTEL &&
+                                            nativeSystem.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_ARM64 &&
+                                            inventory.hostArchitecture == cue::BuildArchitecture::Unknown);
     if (inventory.candidates.size() == 4U && report.support == cue::BuildEnvironmentSupport::Supported &&
-        report.selectedTools.size() == 4U && report.supportedConfigurations.size() == 3U && report.diagnostics.empty())
+        report.selectedTools.size() == 4U && report.supportedConfigurations.size() == 3U &&
+        report.diagnostics.empty() && nativeArchitectureMatches)
     {
         return 0;
     }

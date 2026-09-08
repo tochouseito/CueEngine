@@ -52,6 +52,44 @@ namespace
     return converted;
 }
 
+/// @brief Absolute Windows Pathを長いPath対応のWin32 API形式へ正規化する
+[[nodiscard]] std::wstring to_extended_windows_path(std::wstring a_path)
+{
+    std::replace(a_path.begin(), a_path.end(), L'/', L'\\');
+    a_path = std::filesystem::path(a_path).lexically_normal().native();
+    if (a_path.starts_with(L"\\\\?\\"))
+    {
+        return a_path;
+    }
+    if (a_path.starts_with(L"\\\\"))
+    {
+        return L"\\\\?\\UNC\\" + a_path.substr(2U);
+    }
+    if (a_path.size() >= 3U && a_path[1U] == L':' && a_path[2U] == L'\\')
+    {
+        return L"\\\\?\\" + a_path;
+    }
+    return a_path;
+}
+
+/// @brief Native Windows ArchitectureをPortable列挙値へ変換する
+[[nodiscard]] cue::BuildArchitecture native_host_architecture() noexcept
+{
+    SYSTEM_INFO systemInfo{};
+    GetNativeSystemInfo(&systemInfo);
+    switch (systemInfo.wProcessorArchitecture)
+    {
+    case PROCESSOR_ARCHITECTURE_AMD64:
+        return cue::BuildArchitecture::X64;
+    case PROCESSOR_ARCHITECTURE_INTEL:
+        return cue::BuildArchitecture::X86;
+    case PROCESSOR_ARCHITECTURE_ARM64:
+        return cue::BuildArchitecture::Arm64;
+    default:
+        return cue::BuildArchitecture::Unknown;
+    }
+}
+
 /// @brief File Version ResourceをTool実行なしで4要素Versionへ変換する
 [[nodiscard]] std::optional<cue::BuildToolVersion> read_file_version(const std::wstring &a_path,
                                                                      const cue::AssertContext &a_assertContext) noexcept
@@ -131,13 +169,14 @@ namespace
     {
         return candidate;
     }
-    const DWORD attributes = GetFileAttributesW(path->c_str());
+    const std::wstring extendedPath = to_extended_windows_path(*path);
+    const DWORD attributes = GetFileAttributesW(extendedPath.c_str());
     candidate.available = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U &&
                           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U;
     if (candidate.available)
     {
-        candidate.version = read_file_version(*path, a_assertContext);
-        candidate.architecture = read_binary_architecture(*path);
+        candidate.version = read_file_version(extendedPath, a_assertContext);
+        candidate.architecture = read_binary_architecture(extendedPath);
     }
     return candidate;
 }
@@ -190,8 +229,10 @@ namespace
         return candidate;
     }
     const std::filesystem::path sdkRoot(*root);
-    const std::filesystem::path include = sdkRoot / L"Include" / *windowsVersion / L"um" / L"Windows.h";
-    const std::filesystem::path library = sdkRoot / L"Lib" / *windowsVersion / L"um" / L"x64" / L"kernel32.lib";
+    const std::filesystem::path include =
+        to_extended_windows_path((sdkRoot / L"Include" / *windowsVersion / L"um" / L"Windows.h").native());
+    const std::filesystem::path library =
+        to_extended_windows_path((sdkRoot / L"Lib" / *windowsVersion / L"um" / L"x64" / L"kernel32.lib").native());
     std::error_code error;
     candidate.available = std::filesystem::is_regular_file(include, error) && !error;
     error.clear();
@@ -219,7 +260,8 @@ namespace
         return false;
     }
     std::error_code error;
-    return std::filesystem::is_regular_file(std::filesystem::path(*root) / a_marker, error) && !error;
+    const std::filesystem::path marker = std::filesystem::path(*root) / a_marker;
+    return std::filesystem::is_regular_file(to_extended_windows_path(marker.native()), error) && !error;
 }
 } // namespace
 
@@ -276,11 +318,7 @@ BuildEnvironmentInventory discover_current_windows_build_environment(const Asser
     try
     {
         BuildEnvironmentInventory inventory;
-#if defined(_M_X64)
-        inventory.hostArchitecture = BuildArchitecture::X64;
-#else
-        inventory.hostArchitecture = BuildArchitecture::Unknown;
-#endif
+        inventory.hostArchitecture = native_host_architecture();
         inventory.engineSourceRoot = build_metadata::k_engineSourceRoot;
         inventory.engineBinaryRoot = build_metadata::k_engineBinaryRoot;
         inventory.engineSourceAvailable =
