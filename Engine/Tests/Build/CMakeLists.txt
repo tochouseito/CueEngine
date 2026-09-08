@@ -10,11 +10,17 @@ add_executable(CueBuildCMakeRunnerTests CMakeRunnerTests.cpp)
 target_link_libraries(CueBuildCMakeRunnerTests PRIVATE Cue.Build)
 target_compile_features(CueBuildCMakeRunnerTests PRIVATE cxx_std_20)
 
-add_executable(CueBuildPublicHeaderTest CMakeRunnerHeaderCompile.cpp PlanHeaderCompile.cpp PublicHeaderCompile.cpp)
+add_executable(CueBuildServiceTests ServiceTests.cpp)
+target_link_libraries(CueBuildServiceTests PRIVATE Cue.Build)
+target_compile_features(CueBuildServiceTests PRIVATE cxx_std_20)
+
+add_executable(CueBuildPublicHeaderTest CMakeRunnerHeaderCompile.cpp PlanHeaderCompile.cpp PublicHeaderCompile.cpp
+                                        ServiceHeaderCompile.cpp)
 target_link_libraries(CueBuildPublicHeaderTest PRIVATE Cue.Build)
 target_compile_features(CueBuildPublicHeaderTest PRIVATE cxx_std_20)
 
-set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildCMakeRunnerTests CueBuildPublicHeaderTest)
+set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildCMakeRunnerTests CueBuildServiceTests
+                        CueBuildPublicHeaderTest)
 if(WIN32)
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
@@ -62,6 +68,9 @@ set_tests_properties(Cue.Build.Plan PROPERTIES LABELS Build TIMEOUT 20)
 
 add_test(NAME Cue.Build.CMakeRunner COMMAND CueBuildCMakeRunnerTests)
 set_tests_properties(Cue.Build.CMakeRunner PROPERTIES LABELS Build TIMEOUT 20)
+
+add_test(NAME Cue.Build.Service COMMAND CueBuildServiceTests)
+set_tests_properties(Cue.Build.Service PROPERTIES LABELS Build TIMEOUT 30)
 
 add_test(NAME Cue.Build.PublicHeaders COMMAND CueBuildPublicHeaderTest)
 set_tests_properties(Cue.Build.PublicHeaders PROPERTIES LABELS Build TIMEOUT 10)
