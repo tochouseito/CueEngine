@@ -1,6 +1,7 @@
 add_executable(
     CuePlatformPublicHeaderTest
     FileDialogHeaderCompile.cpp
+    ProcessHeaderCompile.cpp
     PublicHeaderCompile.cpp
     SystemCapabilitiesHeaderCompile.cpp
     WindowEventHeaderCompile.cpp
@@ -15,9 +16,14 @@ add_executable(CuePlatformFileDialogTests FileDialogTests.cpp)
 target_link_libraries(CuePlatformFileDialogTests PRIVATE Cue.Platform)
 target_compile_features(CuePlatformFileDialogTests PRIVATE cxx_std_20)
 
+add_executable(CuePlatformProcessTests ProcessTests.cpp)
+target_link_libraries(CuePlatformProcessTests PRIVATE Cue.Platform)
+target_compile_features(CuePlatformProcessTests PRIVATE cxx_std_20)
+
 add_executable(
     CuePlatformWindowsPublicHeaderTest
     PublicHeaderCompile.cpp
+    WindowsProcessHeaderCompile.cpp
     WindowsFileDialogHeaderCompile.cpp
     WindowsPlatformHeaderCompile.cpp
     WindowsMessageSinkHeaderCompile.cpp
@@ -32,6 +38,13 @@ target_compile_features(CuePlatformWindowsPublicHeaderTest PRIVATE cxx_std_20)
 add_executable(CuePlatformWindowsFileDialogTests WindowsFileDialogTests.cpp)
 target_link_libraries(CuePlatformWindowsFileDialogTests PRIVATE Cue.Platform.Windows)
 target_compile_features(CuePlatformWindowsFileDialogTests PRIVATE cxx_std_20)
+
+add_executable(CuePlatformWindowsProcessProbe WindowsProcessProbe.cpp)
+target_compile_features(CuePlatformWindowsProcessProbe PRIVATE cxx_std_20)
+
+add_executable(CuePlatformWindowsProcessTests WindowsProcessTests.cpp)
+target_link_libraries(CuePlatformWindowsProcessTests PRIVATE Cue.Platform.Windows)
+target_compile_features(CuePlatformWindowsProcessTests PRIVATE cxx_std_20)
 
 add_executable(
     CuePlatformWindowsLifecycleTests
@@ -76,8 +89,11 @@ foreach(
     IN ITEMS
         CuePlatformPublicHeaderTest
         CuePlatformFileDialogTests
+        CuePlatformProcessTests
         CuePlatformWindowsPublicHeaderTest
         CuePlatformWindowsFileDialogTests
+        CuePlatformWindowsProcessProbe
+        CuePlatformWindowsProcessTests
         CuePlatformWindowsLifecycleTests
         CuePlatformWindowsMessageSinkTests
         CuePlatformWindowsSystemCapabilityTests
@@ -695,8 +711,11 @@ add_custom_target(
     DEPENDS
         CuePlatformPublicHeaderTest
         CuePlatformFileDialogTests
+        CuePlatformProcessTests
         CuePlatformWindowsPublicHeaderTest
         CuePlatformWindowsFileDialogTests
+        CuePlatformWindowsProcessProbe
+        CuePlatformWindowsProcessTests
         CuePlatformWindowsLifecycleTests
         CuePlatformWindowsMessageSinkTests
         CuePlatformWindowsSystemCapabilityTests
@@ -704,8 +723,13 @@ add_custom_target(
 
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformPublicHeaderTest)
 add_test(NAME Cue.Platform.FileDialog COMMAND CuePlatformFileDialogTests)
+add_test(NAME Cue.Platform.Process.FakeRunner COMMAND CuePlatformProcessTests)
 add_test(NAME Cue.Platform.Windows.PublicHeaders COMMAND CuePlatformWindowsPublicHeaderTest)
 add_test(NAME Cue.Platform.Windows.FileDialog COMMAND CuePlatformWindowsFileDialogTests)
+add_test(
+    NAME Cue.Platform.Windows.Process
+    COMMAND CuePlatformWindowsProcessTests $<TARGET_FILE:CuePlatformWindowsProcessProbe>
+)
 add_test(NAME Cue.Platform.Windows.SystemCapabilities COMMAND CuePlatformWindowsSystemCapabilityTests)
 add_test(NAME Cue.Platform.Windows.MessageSink COMMAND CuePlatformWindowsMessageSinkTests)
 add_test(
@@ -763,8 +787,10 @@ add_test(
 set_tests_properties(
     Cue.Platform.PublicHeaders
     Cue.Platform.FileDialog
+    Cue.Platform.Process.FakeRunner
     Cue.Platform.Windows.PublicHeaders
     Cue.Platform.Windows.FileDialog
+    Cue.Platform.Windows.Process
     Cue.Platform.Windows.SystemCapabilities
     Cue.Platform.Windows.MessageSink
     Cue.Platform.Windows.Lifecycle
@@ -778,3 +804,6 @@ set_tests_properties(
         LABELS Platform
         TIMEOUT 10
 )
+
+# SourceとWindows SDK境界を全件走査する依存TestはProcess Testより長い上限を与える。
+set_tests_properties(Cue.Platform.Dependencies PROPERTIES TIMEOUT 30)
