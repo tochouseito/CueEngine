@@ -78,6 +78,38 @@ struct EmptyComponent final
 {
 };
 
+class RegistryDestroyingSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief Start Callback中にRegistry Ownerを破棄する検証対象を構築する
+    explicit RegistryDestroyingSystem(std::unique_ptr<cue::game_core::RuntimeSystemRegistry> &a_registryOwner) noexcept
+        : m_registryOwner(&a_registryOwner)
+    {
+    }
+
+    /// @brief 実行中のRegistryをOwner経由で破棄してDestructor契約を検証する
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        m_registryOwner->reset();
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 本Scenarioでは到達しないUpdateを成功として定義する
+    [[nodiscard]] cue::Result<void> update(const cue::game_core::RuntimeSystemUpdateContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 本Scenarioでは到達しないStopを成功として定義する
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+  private:
+    std::unique_ptr<cue::game_core::RuntimeSystemRegistry> *m_registryOwner;
+};
+
 /// @brief Test用の検証済みTypeIdを生成する
 [[nodiscard]] cue::schema::TypeId make_type_id(std::string_view a_text, const cue::AssertContext &a_assertContext)
 {
@@ -180,6 +212,29 @@ struct EmptyComponent final
     if (!world)
     {
         return 6;
+    }
+
+    if (a_mode == "RuntimeSystemRegistryCallbackDestruction")
+    {
+        auto runtime = cue::game_core::RuntimeWorld::create(worldIdentitySource, **registry.try_value(),
+                                                            transformTypeId, assertContext);
+        if (!runtime->initialize())
+        {
+            return 15;
+        }
+
+        auto systemRegistry = std::make_unique<cue::game_core::RuntimeSystemRegistry>(assertContext);
+        cue::game_core::RuntimeSystemDescriptor systemDescriptor;
+        systemDescriptor.id = "destroying";
+        auto system = std::make_unique<RegistryDestroyingSystem>(systemRegistry);
+        if (!systemRegistry->register_system(std::move(systemDescriptor), std::move(system)) || !systemRegistry->seal())
+        {
+            return 16;
+        }
+
+        auto start = systemRegistry->start(*runtime);
+        static_cast<void>(start);
+        return 0;
     }
 
     auto componentType = (*world.try_value())->register_component<ReentrantDestructorComponent>(typeId);

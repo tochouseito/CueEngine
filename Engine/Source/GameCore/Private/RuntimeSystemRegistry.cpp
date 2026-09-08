@@ -75,13 +75,14 @@ RuntimeSystemRegistry::RuntimeSystemRegistry(const AssertContext &a_assertContex
 RuntimeSystemRegistry::~RuntimeSystemRegistry() noexcept
 {
     assert_owner_thread();
-    const bool hasActiveSystems = count_active_systems() != 0U;
-    CUE_ASSERT(*m_assertContext, !hasActiveSystems,
-               "Cue.GameCore runtime system registry destruction requires all systems stopped");
-    if (hasActiveSystems)
+    const bool hasActiveLifecycle = m_isInvokingCallback || m_state == RuntimeSystemRegistryState::Started ||
+                                    m_state == RuntimeSystemRegistryState::StopPending || count_active_systems() != 0U;
+    CUE_ASSERT(*m_assertContext, !hasActiveLifecycle,
+               "Cue.GameCore runtime system registry destruction requires an inactive lifecycle and stopped systems");
+    if (hasActiveLifecycle)
     {
         m_assertContext->fatal_handler().terminate(
-            "Cue.GameCore runtime system registry destruction requires all systems stopped");
+            "Cue.GameCore runtime system registry destruction requires an inactive lifecycle and stopped systems");
     }
 }
 
