@@ -123,8 +123,8 @@ void press_shortcut(cue::editor::PlaySessionPresenter &a_presenter, ImGuiKey a_k
     input.AddKeyEvent(a_key, true);
     ImGui::NewFrame();
     a_presenter.process_shortcuts();
-    a_presenter.advance_runtime();
     a_presenter.draw();
+    a_presenter.advance_runtime();
     ImGui::Render();
     input.AddKeyEvent(a_key, false);
     if (a_hasShift)
@@ -138,8 +138,8 @@ void release_shortcut(cue::editor::PlaySessionPresenter &a_presenter) noexcept
 {
     ImGui::NewFrame();
     a_presenter.process_shortcuts();
-    a_presenter.advance_runtime();
     a_presenter.draw();
+    a_presenter.advance_runtime();
     ImGui::Render();
 }
 

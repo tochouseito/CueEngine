@@ -352,6 +352,11 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         {
             m_playPresenter->set_active_document(m_session->active_document_id());
             m_playPresenter->process_shortcuts();
+            m_playPresenter->draw();
+            if (m_playPresenter->take_shutdown_ready())
+            {
+                begin_transition(PendingTransition::CloseProject);
+            }
             m_playPresenter->advance_runtime();
             if (m_presenter != nullptr)
             {
@@ -365,11 +370,6 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             else
             {
                 draw_project_shell();
-            }
-            m_playPresenter->draw();
-            if (m_playPresenter->take_shutdown_ready())
-            {
-                begin_transition(PendingTransition::CloseProject);
             }
             m_filesPresenter->draw();
             draw_locator_dialog();
