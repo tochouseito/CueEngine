@@ -200,6 +200,19 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     oversizedMetadataInput.operation.diagnostics.front().summary = std::string(2048U, 'm');
     require(!cue::create_build_diagnostic_bundle(oversizedMetadataInput, expandingLimits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput oversizedAutomaticPathInput = input;
+    oversizedAutomaticPathInput.environment->engineSourceRoot = std::string(4097U, 'p');
+    require(!cue::create_build_diagnostic_bundle(oversizedAutomaticPathInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownToolKindInput = input;
+    unknownToolKindInput.environment->selectedTools.front().kind = static_cast<cue::BuildToolKind>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownToolKindInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownDiagnosticCodeInput = input;
+    unknownDiagnosticCodeInput.environment->diagnostics.front().code =
+        static_cast<cue::BuildEnvironmentDiagnosticCode>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownDiagnosticCodeInput, limits, a_assertContext).has_value());
+
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
     const std::string destinationUtf8 = generic_utf8_path(destination);
@@ -247,6 +260,38 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
     write_plan(originalPlan);
 
+    const auto environmentFile =
+        std::find_if(bundle.files().begin(), bundle.files().end(),
+                     /// @brief Numeric Enum改変検証対象のEnvironment Fileを検出する
+                     [](const auto &a_file) noexcept { return a_file.relativePath == "environment.json"; });
+    require(environmentFile != bundle.files().end());
+    std::string originalEnvironment;
+    for (const std::byte value : environmentFile->bytes)
+    {
+        originalEnvironment.push_back(static_cast<char>(std::to_integer<unsigned char>(value)));
+    }
+    /// @brief Environment Payload差替えを完了してからReaderへ渡す
+    const auto write_environment = [&destination](std::string_view a_text)
+    {
+        std::ofstream stream(destination / "environment.json", std::ios::binary | std::ios::trunc);
+        stream.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+        stream.close();
+        require(stream.good());
+    };
+    std::string unknownToolKind = originalEnvironment;
+    const std::size_t toolKind = unknownToolKind.find("\"kind\":0");
+    require(toolKind != std::string::npos);
+    unknownToolKind[toolKind + std::string_view("\"kind\":").size()] = '9';
+    write_environment(unknownToolKind);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::string unknownDiagnosticCode = originalEnvironment;
+    const std::size_t diagnosticCode = unknownDiagnosticCode.find("\"code\":3");
+    require(diagnosticCode != std::string::npos);
+    unknownDiagnosticCode[diagnosticCode + std::string_view("\"code\":").size()] = '9';
+    write_environment(unknownDiagnosticCode);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_environment(originalEnvironment);
+
     cue::BuildDiagnosticBundleLimits smallLimits = limits;
     smallLimits.maximumFileBytes = 32U;
     smallLimits.maximumTotalBytes = 512U;
@@ -288,6 +333,11 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(failedState != std::string::npos);
     runningManifest.replace(failedState, std::string_view("\"state\":\"failed\"").size(), "\"state\":\"running\"");
     write_manifest(runningManifest);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+
+    std::string mismatchedManifest = tamperedManifest;
+    mismatchedManifest.replace(failedState, std::string_view("\"state\":\"failed\"").size(), "\"state\":\"cancelled\"");
+    write_manifest(mismatchedManifest);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
 
     const std::size_t entryBegin = tamperedManifest.find("{\"path\":");

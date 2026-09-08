@@ -331,13 +331,23 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
            a_mapping.replacement.find('\0') == std::string::npos;
 }
 
-/// @brief 空Prefixと重複を除外してRedaction規則を追加する
-void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::string_view a_prefix,
-                 std::string_view a_replacement)
+/// @brief 借用中のNative Prefixを所有文字列へCopyする前に上限と制御文字を検証する
+[[nodiscard]] bool valid_native_mapping_prefix(std::string_view a_prefix) noexcept
+{
+    return a_prefix.size() <= 4096U && a_prefix.find('\0') == std::string_view::npos;
+}
+
+/// @brief 空Prefixと重複を除外しBoundedなRedaction規則だけを追加する
+[[nodiscard]] bool add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::string_view a_prefix,
+                               std::string_view a_replacement)
 {
     if (a_prefix.empty())
     {
-        return;
+        return true;
+    }
+    if (!valid_native_mapping_prefix(a_prefix))
+    {
+        return false;
     }
     const auto found =
         std::find_if(a_mappings.begin(), a_mappings.end(),
@@ -347,6 +357,41 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     {
         a_mappings.push_back({std::string(a_prefix), std::string(a_replacement)});
     }
+    return true;
+}
+
+/// @brief Version 1で永続化できるTool種別か検証する
+[[nodiscard]] bool valid_tool_kind(cue::BuildToolKind a_kind) noexcept
+{
+    return a_kind >= cue::BuildToolKind::CMake && a_kind <= cue::BuildToolKind::WindowsSdk;
+}
+
+/// @brief Version 1で永続化できるEnvironment診断種別か検証する
+[[nodiscard]] bool valid_environment_diagnostic_code(cue::BuildEnvironmentDiagnosticCode a_code) noexcept
+{
+    return a_code >= cue::BuildEnvironmentDiagnosticCode::UnsupportedHostArchitecture &&
+           a_code <= cue::BuildEnvironmentDiagnosticCode::MissingEngineBinary;
+}
+
+/// @brief Environment Report内の数値EnumがVersion 1の既知値だけか検証する
+[[nodiscard]] bool valid_environment_enumerations(const cue::BuildEnvironmentReport &a_environment) noexcept
+{
+    for (const cue::BuildToolCandidate &tool : a_environment.selectedTools)
+    {
+        if (!valid_tool_kind(tool.kind))
+        {
+            return false;
+        }
+    }
+    for (const cue::BuildEnvironmentDiagnostic &diagnostic : a_environment.diagnostics)
+    {
+        if (!valid_environment_diagnostic_code(diagnostic.code) ||
+            (diagnostic.tool && !valid_tool_kind(*diagnostic.tool)))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// @brief 入力Copyと中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
@@ -926,8 +971,8 @@ class JsonSchemaReader final
         return false;
     }
 
-    /// @brief JSONの符号なし整数を範囲検証して読み取る
-    [[nodiscard]] bool unsigned_integer() noexcept
+    /// @brief JSONの符号なし整数を表現範囲と指定上限で検証して読み取る
+    [[nodiscard]] bool unsigned_integer(std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
     {
         skip_whitespace();
         const std::size_t begin = m_offset;
@@ -937,7 +982,7 @@ class JsonSchemaReader final
         }
         std::uint64_t value = 0U;
         const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
-        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset;
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value <= a_maximum;
     }
 
     /// @brief JSONの符号付き整数を範囲検証して読み取る
@@ -1114,7 +1159,8 @@ class JsonSchemaReader final
 /// @brief Toolchain Report内のTool Objectを固定Schemaで読み取る
 [[nodiscard]] bool read_tool(JsonSchemaReader &a_reader) noexcept
 {
-    if (!a_reader.begin_object() || !a_reader.member("kind") || !a_reader.unsigned_integer() || !a_reader.comma() ||
+    if (!a_reader.begin_object() || !a_reader.member("kind") ||
+        !a_reader.unsigned_integer(static_cast<std::uint64_t>(cue::BuildToolKind::WindowsSdk)) || !a_reader.comma() ||
         !a_reader.member("path") || !a_reader.string() || !a_reader.comma() || !a_reader.member("root") ||
         !a_reader.string() || !a_reader.comma() || !a_reader.member("version"))
     {
@@ -1156,11 +1202,13 @@ class JsonSchemaReader final
 /// @brief Toolchain Report内のDiagnostic Objectを固定Schemaで読み取る
 [[nodiscard]] bool read_environment_diagnostic(JsonSchemaReader &a_reader) noexcept
 {
-    return a_reader.begin_object() && a_reader.member("code") && a_reader.unsigned_integer() && a_reader.comma() &&
-           a_reader.member("support") && a_reader.string_is({"supported", "unsupported", "unknown"}) &&
-           a_reader.comma() && a_reader.member("path") && a_reader.string() && a_reader.comma() &&
-           a_reader.member("summary") && a_reader.string() && a_reader.comma() && a_reader.member("repairHint") &&
-           a_reader.string() && a_reader.end_object();
+    return a_reader.begin_object() && a_reader.member("code") &&
+           a_reader.unsigned_integer(
+               static_cast<std::uint64_t>(cue::BuildEnvironmentDiagnosticCode::MissingEngineBinary)) &&
+           a_reader.comma() && a_reader.member("support") &&
+           a_reader.string_is({"supported", "unsupported", "unknown"}) && a_reader.comma() && a_reader.member("path") &&
+           a_reader.string() && a_reader.comma() && a_reader.member("summary") && a_reader.string() &&
+           a_reader.comma() && a_reader.member("repairHint") && a_reader.string() && a_reader.end_object();
 }
 
 /// @brief Toolchain Report内のDiagnostic Arrayを固定Schemaで読み取る
@@ -1356,13 +1404,12 @@ class JsonSchemaReader final
 }
 
 /// @brief Result PayloadをVersion 1固定Schemaとして検証する
-[[nodiscard]] bool valid_result_payload(std::string_view a_text) noexcept
+[[nodiscard]] bool valid_result_payload(std::string_view a_text, cue::GameBuildOperationState a_expectedState) noexcept
 {
     JsonSchemaReader reader(a_text);
     return read_schema_header(reader) && reader.comma() && reader.member("state") &&
-           reader.string_is({"succeeded", "failed", "cancelled", "timedOut"}) && reader.comma() &&
-           reader.member("diagnostics") && read_result_diagnostic_array(reader) && reader.end_object() &&
-           reader.finished();
+           reader.string_is({state_text(a_expectedState)}) && reader.comma() && reader.member("diagnostics") &&
+           read_result_diagnostic_array(reader) && reader.end_object() && reader.finished();
 }
 
 /// @brief Artifact PayloadをVersion 1固定Schemaとして検証する
@@ -1395,7 +1442,8 @@ class JsonSchemaReader final
 }
 
 /// @brief 全収集済みJSON PayloadがPath固有のVersion 1 Schemaに一致するか検証する
-[[nodiscard]] bool valid_payload_schemas(std::span<const cue::BuildDiagnosticBundleFile> a_files) noexcept
+[[nodiscard]] bool valid_payload_schemas(std::span<const cue::BuildDiagnosticBundleFile> a_files,
+                                         cue::GameBuildOperationState a_expectedState) noexcept
 {
     for (const cue::BuildDiagnosticBundleFile &file : a_files)
     {
@@ -1408,7 +1456,7 @@ class JsonSchemaReader final
         const bool valid = file.relativePath == "plan.json"          ? valid_plan_payload(text)
                            : file.relativePath == "environment.json" ? valid_environment_payload(text)
                            : file.relativePath == "stages.json"      ? valid_stages_payload(text)
-                           : file.relativePath == "result.json"      ? valid_result_payload(text)
+                           : file.relativePath == "result.json"      ? valid_result_payload(text, a_expectedState)
                            : file.relativePath == "artifact.json"    ? valid_artifact_payload(text)
                                                                      : false;
         if (!valid)
@@ -1607,23 +1655,47 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic bundle input is invalid"));
         }
+        if (a_input.environment && !valid_environment_enumerations(*a_input.environment))
+        {
+            return Result<BuildDiagnosticBundle>::failure(
+                make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                  "Diagnostic environment contains unknown values"));
+        }
         std::vector<BuildDiagnosticPathMapping> mappings = a_input.pathMappings;
-        add_mapping(mappings, a_input.plan.projectRoot, "<PROJECT_ROOT>");
+        if (!add_mapping(mappings, a_input.plan.projectRoot, "<PROJECT_ROOT>"))
+        {
+            return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
+                a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic path mapping is invalid"));
+        }
         if (a_input.environment)
         {
-            add_mapping(mappings, a_input.environment->engineSourceRoot, "<ENGINE_SOURCE_ROOT>");
-            add_mapping(mappings, a_input.environment->engineBinaryRoot, "<ENGINE_BINARY_ROOT>");
+            if (!add_mapping(mappings, a_input.environment->engineSourceRoot, "<ENGINE_SOURCE_ROOT>") ||
+                !add_mapping(mappings, a_input.environment->engineBinaryRoot, "<ENGINE_BINARY_ROOT>"))
+            {
+                return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
+                    a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic path mapping is invalid"));
+            }
             for (std::size_t index = 0U; index < a_input.environment->selectedTools.size(); ++index)
             {
-                add_mapping(mappings, a_input.environment->selectedTools[index].installationRoot,
-                            "<TOOL_ROOT_" + std::to_string(index) + ">");
-                add_mapping(mappings, a_input.environment->selectedTools[index].nativePath,
-                            "<TOOL_PATH_" + std::to_string(index) + ">");
+                if (!add_mapping(mappings, a_input.environment->selectedTools[index].installationRoot,
+                                 "<TOOL_ROOT_" + std::to_string(index) + ">") ||
+                    !add_mapping(mappings, a_input.environment->selectedTools[index].nativePath,
+                                 "<TOOL_PATH_" + std::to_string(index) + ">"))
+                {
+                    return Result<BuildDiagnosticBundle>::failure(
+                        make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                          "Diagnostic path mapping is invalid"));
+                }
             }
             for (std::size_t index = 0U; index < a_input.environment->diagnostics.size(); ++index)
             {
-                add_mapping(mappings, a_input.environment->diagnostics[index].nativePath,
-                            "<DIAGNOSTIC_PATH_" + std::to_string(index) + ">");
+                if (!add_mapping(mappings, a_input.environment->diagnostics[index].nativePath,
+                                 "<DIAGNOSTIC_PATH_" + std::to_string(index) + ">"))
+                {
+                    return Result<BuildDiagnosticBundle>::failure(
+                        make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                          "Diagnostic path mapping is invalid"));
+                }
             }
         }
         if (!std::all_of(mappings.begin(), mappings.end(), valid_mapping))
@@ -1978,7 +2050,7 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
             begin = end + 1U;
         }
         if (!valid_manifest_entries(entries) || manifest != serialize_manifest(*operationId, *state, entries) ||
-            !files_match_manifest(files, entries) || !valid_payload_schemas(files))
+            !files_match_manifest(files, entries) || !valid_payload_schemas(files, *state))
         {
             return Result<BuildDiagnosticBundle>::failure(
                 make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidBundle,
