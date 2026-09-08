@@ -101,7 +101,7 @@ CueEngineはScoped Lifetimeと明示注入の原則だけを取り入れ、資�
 ### Runtime Module Boundary
 
 共有可能なApplication層をFirst-party Target `Cue.Runtime`として追加する。
-`Cue.Runtime`は`Cue.Foundation`、`Cue.GameCore`、`Cue.Scene`、`Cue.Input`だけへ依存し、
+`Cue.Runtime`は`Cue.Foundation`、`Cue.GameCore`、`Cue.Scene`、`Cue.Schema`、`Cue.Input`だけへ依存し、
 Platform Event、Clock、Input等の必要値はPlatform非依存Contractまたは注入Adapterを通して受け取る。
 
 依存方向は次のとおりとする。
