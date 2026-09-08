@@ -281,13 +281,21 @@ Result<void> RuntimeHostApplication::stop(runtime::RuntimeApplicationStopReason 
     }
 
     Result<void> detached = detach_windows_message_sink(*m_state->window, *m_state->inputSink, *m_state->assertContext);
+    Result<std::optional<Error>> retained = m_state->session->take_failure();
     if (!detached)
     {
+        if (retained && retained.try_value()->has_value())
+        {
+            Error primary = std::move(retained.try_value()->value());
+            primary.append_secondary_diagnostics(*m_state->assertContext, *detached.try_error(),
+                                                 "Runtime Host Input Sink detach failed after Runtime stopped",
+                                                 "Input sink detach");
+            return Result<void>::failure(std::move(primary));
+        }
         return detached;
     }
     m_state->isInputSinkAttached = false;
 
-    Result<std::optional<Error>> retained = m_state->session->take_failure();
     if (!retained)
     {
         return Result<void>::failure(std::move(*retained.try_error()));
