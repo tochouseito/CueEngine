@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         Private/CMakeRunner.cpp
         Private/Plan.cpp
+        Private/Service.cpp
         Private/Toolchain.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -12,6 +13,7 @@ target_sources(
         FILES
             Public/Cue/Build/CMakeRunner.h
             Public/Cue/Build/Plan.h
+            Public/Cue/Build/Service.h
             Public/Cue/Build/Toolchain.h
 )
 
