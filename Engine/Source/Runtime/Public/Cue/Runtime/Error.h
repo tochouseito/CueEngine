@@ -12,7 +12,9 @@ class AssertContext;
 
 namespace cue::runtime
 {
-/// @brief Runtime Session所有境界の回復可能な失敗を分類するCode
+/// @brief Runtime Session所有境界のResult失敗とTerminal Fatal診断を分類するCode
+///
+/// SceneCleanupFailedは所有Entityを安全に終了できないTerminal Fatal専用であり、再試行可能なResultでは返さない
 enum class RuntimeError : std::int64_t
 {
     InvalidSceneSessionState = 1,

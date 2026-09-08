@@ -249,12 +249,50 @@ Error RuntimeSceneSession::finish_failed_start(Error &&a_cause) noexcept
                                              "Runtime scene session start failed", std::move(a_cause));
     if (m_runtimeWorld != nullptr)
     {
-        Result<void> shutdown = m_runtimeWorld->shutdown();
-        if (!shutdown)
+        if (m_runtimeWorld->state() == game_core::RuntimeWorldState::Running)
         {
-            primary.append_secondary_diagnostics(*m_assertContext, *shutdown.try_error(),
-                                                 "Runtime world cleanup after scene start failure was incomplete",
-                                                 "Runtime world cleanup");
+            Result<void> stop = m_runtimeWorld->request_stop();
+            if (!stop)
+            {
+                primary.append_secondary_diagnostics(*m_assertContext, *stop.try_error(),
+                                                     "Runtime world stop request after scene start failure failed",
+                                                     "Runtime world cleanup");
+            }
+        }
+
+        if (m_runtimeWorld->state() == game_core::RuntimeWorldState::Stopping)
+        {
+            Result<game_core::StructuralCommandReport> tick = m_runtimeWorld->tick();
+            if (!tick)
+            {
+                primary.append_secondary_diagnostics(*m_assertContext, *tick.try_error(),
+                                                     "Runtime world final safe point after scene start failure failed",
+                                                     "Runtime world cleanup");
+            }
+            else
+            {
+                for (const game_core::StructuralCommandResult &result : tick.try_value()->results())
+                {
+                    if (!result.succeeded())
+                    {
+                        primary.append_secondary_diagnostics(
+                            *m_assertContext, *result.try_error(),
+                            "Runtime world final safe point command after scene start failure failed",
+                            "Structural command");
+                    }
+                }
+            }
+        }
+
+        if (m_runtimeWorld->state() != game_core::RuntimeWorldState::Shutdown)
+        {
+            Result<void> shutdown = m_runtimeWorld->shutdown();
+            if (!shutdown)
+            {
+                primary.append_secondary_diagnostics(*m_assertContext, *shutdown.try_error(),
+                                                     "Runtime world cleanup after scene start failure was incomplete",
+                                                     "Runtime world cleanup");
+            }
         }
         m_runtimeWorld.reset();
     }

@@ -52,6 +52,8 @@ enum class RuntimeSceneSessionState : std::uint8_t
 /// @brief 一つのRuntimeWorldと最大一つのSceneInstanceを同じOwner Threadで所有する境界
 ///
 /// Snapshotはstart中だけ参照し、成功後もMutable SceneDocumentまたはSnapshotを保持しない
+/// startを呼んだThreadをOwnerとし、全公開APIとDestructorを同じThreadから呼び出す
+/// AssertContext、WorldIdentitySource、SchemaRegistryはSessionのendと破棄が完了するまで存続させる
 class RuntimeSceneSession final
 {
   public:
@@ -81,6 +83,12 @@ class RuntimeSceneSession final
 
     /// @brief 新規WorldへSnapshotを同期実体化しRunning Sessionだけを返す
     /// @details 失敗時は生成済みEntityとWorldを終了し、SnapshotまたはSceneDocumentを保持しない
+    /// @param a_snapshot start呼出中だけ参照し成功後も保持しない不変Scene入力
+    /// @param a_identitySource 返却Session、所有RuntimeWorld、発行済みWorld／Entity Identityより長く生存する発行元
+    /// @param a_schemaRegistry 返却Sessionと所有RuntimeWorldのendおよび破棄完了まで生存するSeal済みRegistry
+    /// @param a_transformTypeId Registryへ登録済みのCore Transform Schema Type
+    /// @param a_sceneObjectStateTypeId Registryへ登録済みのScene Object State Schema Type
+    /// @param a_assertContext 返却Session、全返却Error、Sessionのendおよび破棄完了まで生存する診断Context
     [[nodiscard]] static Result<std::unique_ptr<RuntimeSceneSession>> start(
         const scene::SceneSnapshot &a_snapshot, game_core::WorldIdentitySource &a_identitySource,
         const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,

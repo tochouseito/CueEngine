@@ -46,7 +46,7 @@ add_custom_target(Cue.Runtime.Tests DEPENDS ${cueRuntimeTestTargets})
 add_test(NAME Cue.Runtime.SceneSession COMMAND CueRuntimeSceneSessionTests)
 add_test(NAME Cue.Runtime.PublicHeaders COMMAND CueRuntimePublicHeaderTest)
 
-foreach(processMode IN ITEMS OuterEndFailure ReportEndFailure)
+foreach(processMode IN ITEMS OuterEndFailure ReportEndFailure WrongThread LiveDestructor)
     add_test(
         NAME Cue.Runtime.Process.${processMode}
         COMMAND
@@ -63,6 +63,8 @@ set_tests_properties(
     Cue.Runtime.PublicHeaders
     Cue.Runtime.Process.OuterEndFailure
     Cue.Runtime.Process.ReportEndFailure
+    Cue.Runtime.Process.WrongThread
+    Cue.Runtime.Process.LiveDestructor
     PROPERTIES
         LABELS Runtime
         TIMEOUT 10

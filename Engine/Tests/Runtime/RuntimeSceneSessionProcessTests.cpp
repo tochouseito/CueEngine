@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -27,19 +28,21 @@ constexpr int k_emergencyExitCode = 77;
 constexpr std::string_view k_transformTypeId = "50000000-0000-4000-8000-000000000005";
 constexpr std::string_view k_sceneObjectStateTypeId = "10000000-0000-4000-8000-000000000001";
 
-enum class EndFailureMode
+enum class ProcessMode
 {
-    Outer,
-    Report
+    OuterEndFailure,
+    ReportEndFailure,
+    WrongThread,
+    LiveDestructor
 };
 
 struct ProcessState final
 {
-    EndFailureMode mode = EndFailureMode::Outer;
+    ProcessMode mode = ProcessMode::OuterEndFailure;
     bool hasExpectedDiagnostic = false;
     bool didWrite = false;
     bool didFlush = false;
-    bool observedRunningWorld = false;
+    const cue::game_core::RuntimeWorld *observedWorld = nullptr;
     int endCallCount = 0;
 };
 
@@ -55,7 +58,9 @@ class ProcessFatalHandler final : public cue::FatalHandler
     [[noreturn]] void terminate() noexcept override
     {
         const bool isValid = m_state->didWrite && m_state->didFlush && m_state->hasExpectedDiagnostic &&
-                             m_state->observedRunningWorld && m_state->endCallCount == 1;
+                             m_state->observedWorld != nullptr &&
+                             m_state->observedWorld->state() == cue::game_core::RuntimeWorldState::Running &&
+                             m_state->endCallCount == 1;
         std::_Exit(isValid ? k_expectedExitCode : k_invalidDiagnosticExitCode);
     }
 
@@ -67,6 +72,22 @@ class ProcessFatalHandler final : public cue::FatalHandler
 
   private:
     ProcessState *m_state;
+};
+
+class ProgrammerErrorFatalHandler final : public cue::FatalHandler
+{
+  public:
+    /// @brief Assert経由のProgrammer Errorを期待Exit Codeへ変換する
+    [[noreturn]] void terminate() noexcept override
+    {
+        std::_Exit(k_expectedExitCode);
+    }
+
+    /// @brief 全構成の明示Programmer Errorを期待Exit Codeへ変換する
+    [[noreturn]] void terminate(std::string_view) noexcept override
+    {
+        std::_Exit(k_expectedExitCode);
+    }
 };
 
 class InspectingSink final : public cue::LogSink
@@ -88,7 +109,7 @@ class InspectingSink final : public cue::LogSink
             return true;
         }
 
-        if (m_state->mode == EndFailureMode::Outer)
+        if (m_state->mode == ProcessMode::OuterEndFailure)
         {
             m_state->hasExpectedDiagnostic =
                 error->root_code().domain() == "Cue.Scene" &&
@@ -193,8 +214,8 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
         const cue::AssertContext &a_assertContext) const noexcept override
     {
         ++m_state->endCallCount;
-        m_state->observedRunningWorld = a_runtimeWorld.state() == cue::game_core::RuntimeWorldState::Running;
-        if (m_state->mode == EndFailureMode::Outer)
+        m_state->observedWorld = &a_runtimeWorld;
+        if (m_state->mode == ProcessMode::OuterEndFailure)
         {
             return cue::Result<cue::scene::SceneInstanceEndReport>::failure(cue::scene::make_scene_error(
                 a_assertContext, cue::scene::SceneError::RuntimeWorldMismatch, "Injected outer scene end failure"));
@@ -221,7 +242,7 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
 };
 
 /// @brief 指定ModeのScene End失敗を共通Normalizerへ通してFatal終端する
-[[noreturn]] void run_failure_mode(EndFailureMode a_mode) noexcept
+[[noreturn]] void run_failure_mode(ProcessMode a_mode) noexcept
 {
     ProcessState state{a_mode};
     ProcessFatalHandler fatalHandler(state);
@@ -245,6 +266,38 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
     static_cast<void>((*started.try_value())->end());
     std::_Exit(3);
 }
+
+/// @brief RuntimeSceneSession自身のOwner Threadまたはlive Destructor違反を全構成でFatal終端する
+[[noreturn]] void run_programmer_error_mode(ProcessMode a_mode) noexcept
+{
+    ProgrammerErrorFatalHandler fatalHandler;
+    std::vector<std::unique_ptr<cue::LogSink>> sinks;
+    cue::Logger logger(fatalHandler, std::move(sinks));
+    cue::AssertContext assertContext(logger, fatalHandler);
+    cue::schema::SchemaRegistryIdentitySource schemaIdentitySource;
+    std::unique_ptr<cue::schema::SchemaRegistry> registry = make_registry(schemaIdentitySource, assertContext);
+    cue::game_core::WorldIdentitySource worldIdentitySource;
+    cue::scene::ObjectId first =
+        take_value(cue::scene::ObjectId::parse("80000000-0000-4000-8000-000000000002", assertContext));
+    cue::scene::ObjectId second =
+        take_value(cue::scene::ObjectId::parse("80000000-0000-4000-8000-000000000003", assertContext));
+    cue::scene::SceneSnapshot snapshot = make_snapshot(first, second, assertContext);
+    auto session = cue::runtime::RuntimeSceneSession::start(
+        snapshot, worldIdentitySource, *registry, make_type_id(k_transformTypeId, assertContext),
+        make_type_id(k_sceneObjectStateTypeId, assertContext), assertContext);
+    require(session.has_value());
+
+    if (a_mode == ProcessMode::WrongThread)
+    {
+        /// @brief Session Owner以外のThreadから状態取得してThread契約違反を発生させる
+        std::thread foreignThread([&session]() noexcept { static_cast<void>((*session.try_value())->state()); });
+        foreignThread.join();
+        std::_Exit(3);
+    }
+
+    session.try_value()->reset();
+    std::_Exit(3);
+}
 } // namespace
 
 /// @brief Scene終了失敗のCauseまたはFIFO Report診断を子Processで検証する
@@ -257,11 +310,19 @@ int main(int a_argumentCount, char **a_arguments)
     const std::string_view mode(a_arguments[1]);
     if (mode == "OuterEndFailure")
     {
-        run_failure_mode(EndFailureMode::Outer);
+        run_failure_mode(ProcessMode::OuterEndFailure);
     }
     if (mode == "ReportEndFailure")
     {
-        run_failure_mode(EndFailureMode::Report);
+        run_failure_mode(ProcessMode::ReportEndFailure);
+    }
+    if (mode == "WrongThread")
+    {
+        run_programmer_error_mode(ProcessMode::WrongThread);
+    }
+    if (mode == "LiveDestructor")
+    {
+        run_programmer_error_mode(ProcessMode::LiveDestructor);
     }
     return 1;
 }
