@@ -2,11 +2,15 @@ add_executable(CueBuildToolchainTests ToolchainTests.cpp)
 target_link_libraries(CueBuildToolchainTests PRIVATE Cue.Build)
 target_compile_features(CueBuildToolchainTests PRIVATE cxx_std_20)
 
-add_executable(CueBuildPublicHeaderTest PublicHeaderCompile.cpp)
+add_executable(CueBuildPlanTests PlanTests.cpp)
+target_link_libraries(CueBuildPlanTests PRIVATE Cue.Build)
+target_compile_features(CueBuildPlanTests PRIVATE cxx_std_20)
+
+add_executable(CueBuildPublicHeaderTest PlanHeaderCompile.cpp PublicHeaderCompile.cpp)
 target_link_libraries(CueBuildPublicHeaderTest PRIVATE Cue.Build)
 target_compile_features(CueBuildPublicHeaderTest PRIVATE cxx_std_20)
 
-set(cueBuildTestTargets CueBuildToolchainTests CueBuildPublicHeaderTest)
+set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildPublicHeaderTest)
 if(WIN32)
     add_executable(CueBuildWindowsToolchainTests WindowsToolchainTests.cpp)
     target_link_libraries(CueBuildWindowsToolchainTests PRIVATE Cue.Build.Windows)
@@ -41,6 +45,9 @@ add_custom_target(Cue.Build.Tests DEPENDS ${cueBuildTestTargets})
 
 add_test(NAME Cue.Build.Toolchain COMMAND CueBuildToolchainTests)
 set_tests_properties(Cue.Build.Toolchain PROPERTIES LABELS Build TIMEOUT 20)
+
+add_test(NAME Cue.Build.Plan COMMAND CueBuildPlanTests $<TARGET_FILE_DIR:CueBuildPlanTests>)
+set_tests_properties(Cue.Build.Plan PROPERTIES LABELS Build TIMEOUT 20)
 
 add_test(NAME Cue.Build.PublicHeaders COMMAND CueBuildPublicHeaderTest)
 set_tests_properties(Cue.Build.PublicHeaders PROPERTIES LABELS Build TIMEOUT 10)
