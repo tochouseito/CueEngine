@@ -2,6 +2,10 @@ add_executable(CueRuntimeSceneSessionTests RuntimeSceneSessionTests.cpp)
 target_link_libraries(CueRuntimeSceneSessionTests PRIVATE Cue.Runtime)
 target_compile_features(CueRuntimeSceneSessionTests PRIVATE cxx_std_20)
 
+add_executable(CueRuntimeApplicationSessionTests RuntimeApplicationSessionTests.cpp)
+target_link_libraries(CueRuntimeApplicationSessionTests PRIVATE Cue.Runtime)
+target_compile_features(CueRuntimeApplicationSessionTests PRIVATE cxx_std_20)
+
 add_executable(CueRuntimeSceneSessionProcessTests RuntimeSceneSessionProcessTests.cpp)
 target_link_libraries(CueRuntimeSceneSessionProcessTests PRIVATE Cue.Runtime)
 target_compile_features(CueRuntimeSceneSessionProcessTests PRIVATE cxx_std_20)
@@ -15,7 +19,13 @@ add_executable(CueRuntimePublicHeaderTest PublicHeaderCompile.cpp)
 target_link_libraries(CueRuntimePublicHeaderTest PRIVATE Cue.Runtime)
 target_compile_features(CueRuntimePublicHeaderTest PRIVATE cxx_std_20)
 
-set(cueRuntimeTestTargets CueRuntimeSceneSessionTests CueRuntimeSceneSessionProcessTests CueRuntimePublicHeaderTest)
+set(
+    cueRuntimeTestTargets
+    CueRuntimeSceneSessionTests
+    CueRuntimeApplicationSessionTests
+    CueRuntimeSceneSessionProcessTests
+    CueRuntimePublicHeaderTest
+)
 
 foreach(testTarget IN LISTS cueRuntimeTestTargets)
     set_target_properties(
@@ -44,9 +54,19 @@ endforeach()
 add_custom_target(Cue.Runtime.Tests DEPENDS ${cueRuntimeTestTargets})
 
 add_test(NAME Cue.Runtime.SceneSession COMMAND CueRuntimeSceneSessionTests)
+add_test(NAME Cue.Runtime.ApplicationSession COMMAND CueRuntimeApplicationSessionTests)
 add_test(NAME Cue.Runtime.PublicHeaders COMMAND CueRuntimePublicHeaderTest)
 
-foreach(processMode IN ITEMS OuterEndFailure ReportEndFailure WrongThread LiveDestructor)
+foreach(
+    processMode
+    IN ITEMS
+        OuterEndFailure
+        ReportEndFailure
+        WrongThread
+        LiveDestructor
+        ApplicationWrongThread
+        ApplicationLiveDestructor
+)
     add_test(
         NAME Cue.Runtime.Process.${processMode}
         COMMAND
@@ -60,11 +80,14 @@ endforeach()
 
 set_tests_properties(
     Cue.Runtime.SceneSession
+    Cue.Runtime.ApplicationSession
     Cue.Runtime.PublicHeaders
     Cue.Runtime.Process.OuterEndFailure
     Cue.Runtime.Process.ReportEndFailure
     Cue.Runtime.Process.WrongThread
     Cue.Runtime.Process.LiveDestructor
+    Cue.Runtime.Process.ApplicationWrongThread
+    Cue.Runtime.Process.ApplicationLiveDestructor
     PROPERTIES
         LABELS Runtime
         TIMEOUT 10

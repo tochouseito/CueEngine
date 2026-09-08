@@ -51,11 +51,9 @@ add_custom_target(
 add_test(
     NAME Cue.RuntimeHost.Smoke
     COMMAND
-        CueRuntimeHost
-        --smoke-test
-        --title "CueEngine Runtime Host 日本語"
-        --width 640
-        --height 360
+        ${CMAKE_COMMAND}
+        -DTEST_EXECUTABLE=$<TARGET_FILE:CueRuntimeHost>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/VerifyRuntimeApplicationSmoke.cmake
 )
 
 add_test(

@@ -11,10 +11,10 @@ file(STRINGS "${REPORT_FILE}" dependencyReportLines)
 foreach(
     requiredLine
     IN ITEMS
-        "CueRuntimeHost LINK_LIBRARIES: Cue.Foundation;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Platform.Windows.TestSupport"
-        "Allowed direct dependencies: Cue.Foundation;Cue.Platform.Windows;Cue.RHI.D3D12.Windows"
+        "CueRuntimeHost LINK_LIBRARIES: Cue.Foundation;Cue.GameCore;Cue.Input.Windows;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema;Cue.Platform.Windows.TestSupport"
+        "Allowed direct dependencies: Cue.Foundation;Cue.GameCore;Cue.Input.Windows;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema"
         "Testing-only direct dependency: Cue.Platform.Windows.TestSupport"
-        "Forbidden source dependencies: WindowsSDK;D3D12NativeTypes;Renderer;Editor;ECS;Asset"
+        "Forbidden source dependencies: WindowsSDK;D3D12NativeTypes;Renderer;Editor;ProjectFiles;IO;ECS"
 )
     cue_require_report_line(
         dependencyReportLines
@@ -41,7 +41,7 @@ foreach(runtimeHostSource IN LISTS runtimeHostSources)
     file(READ "${runtimeHostSource}" sourceContents)
     string(
         REGEX MATCH
-        "Windows\\.h|WideCharToMultiByte|MultiByteToWideChar|d3d12\\.h|dxgi[0-9_]*\\.h|ID3D12|IDXGI|D3D12_|DXGI_|DirectX|Renderer|Editor|ECS|Asset"
+        "Windows\\.h|WideCharToMultiByte|MultiByteToWideChar|d3d12\\.h|dxgi[0-9_]*\\.h|ID3D12|IDXGI|D3D12_|DXGI_|DirectX|Renderer|Editor|ProjectFiles|Cue/IO|Cue/ECS"
         forbiddenDependency
         "${sourceContents}"
     )

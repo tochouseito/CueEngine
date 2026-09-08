@@ -4,10 +4,12 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
+#include <Cue/GameCore/Clock.h>
 #include <Cue/GameCore/Error.h>
 #include <Cue/GameCore/RuntimeWorld.h>
 #include <Cue/Math/Transform.h>
 #include <Cue/Runtime/Error.h>
+#include <Cue/Runtime/RuntimeApplicationSession.h>
 #include <Cue/Scene/Error.h>
 #include <Cue/Schema/Descriptor.h>
 #include <Cue/Schema/Registry.h>
@@ -33,7 +35,9 @@ enum class ProcessMode
     OuterEndFailure,
     ReportEndFailure,
     WrongThread,
-    LiveDestructor
+    LiveDestructor,
+    ApplicationWrongThread,
+    ApplicationLiveDestructor
 };
 
 struct ProcessState final
@@ -313,7 +317,7 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
     std::_Exit(3);
 }
 
-/// @brief RuntimeSceneSession自身のOwner Threadまたはlive Destructor違反を全構成でFatal終端する
+/// @brief SceneまたはApplication SessionのOwner Threadとlive Destructor違反を全構成でFatal終端する
 [[noreturn]] void run_programmer_error_mode(ProcessMode a_mode) noexcept
 {
     ProgrammerErrorFatalHandler::State programmerErrorState;
@@ -330,6 +334,34 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
     cue::scene::ObjectId second =
         take_value(cue::scene::ObjectId::parse("80000000-0000-4000-8000-000000000003", assertContext));
     cue::scene::SceneSnapshot snapshot = make_snapshot(first, second, assertContext);
+
+    if (a_mode == ProcessMode::ApplicationWrongThread || a_mode == ProcessMode::ApplicationLiveDestructor)
+    {
+        cue::game_core::SteadyMonotonicClock clock;
+        auto application = cue::runtime::RuntimeApplicationSession::create(1U, clock, 100'000'000, assertContext);
+        require(application.has_value());
+        require((*application.try_value())
+                    ->start(snapshot, worldIdentitySource, *registry, make_type_id(k_transformTypeId, assertContext),
+                            make_type_id(k_sceneObjectStateTypeId, assertContext)));
+
+        if (a_mode == ProcessMode::ApplicationWrongThread)
+        {
+            programmerErrorState.expectedMessage = "Cue.Runtime application session API requires its owner thread";
+            programmerErrorState.isArmed = true;
+            /// @brief Application Session Owner以外のThreadから状態取得してThread契約違反を発生させる
+            std::thread foreignThread([&application]() noexcept
+                                      { static_cast<void>((*application.try_value())->state()); });
+            foreignThread.join();
+            std::_Exit(3);
+        }
+
+        programmerErrorState.expectedMessage =
+            "Cue.Runtime application session destruction requires completed runtime cleanup";
+        programmerErrorState.isArmed = true;
+        application.try_value()->reset();
+        std::_Exit(3);
+    }
+
     auto session = cue::runtime::RuntimeSceneSession::start(
         snapshot, worldIdentitySource, *registry, make_type_id(k_transformTypeId, assertContext),
         make_type_id(k_sceneObjectStateTypeId, assertContext), assertContext);
@@ -353,7 +385,7 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
 }
 } // namespace
 
-/// @brief Scene終了失敗のCauseまたはFIFO Report診断を子Processで検証する
+/// @brief Scene終了FatalとSession Programmer Errorの診断を子Processで検証する
 int main(int a_argumentCount, char **a_arguments)
 {
     if (a_argumentCount != 2)
@@ -376,6 +408,14 @@ int main(int a_argumentCount, char **a_arguments)
     if (mode == "LiveDestructor")
     {
         run_programmer_error_mode(ProcessMode::LiveDestructor);
+    }
+    if (mode == "ApplicationWrongThread")
+    {
+        run_programmer_error_mode(ProcessMode::ApplicationWrongThread);
+    }
+    if (mode == "ApplicationLiveDestructor")
+    {
+        run_programmer_error_mode(ProcessMode::ApplicationLiveDestructor);
     }
     return 1;
 }

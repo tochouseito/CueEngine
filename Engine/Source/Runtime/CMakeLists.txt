@@ -4,17 +4,19 @@ target_sources(
     Cue.Runtime
     PRIVATE
         Private/Error.cpp
+        Private/RuntimeApplicationSession.cpp
         Private/RuntimeSceneSession.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
             Public/Cue/Runtime/Error.h
+            Public/Cue/Runtime/RuntimeApplicationSession.h
             Public/Cue/Runtime/RuntimeSceneSession.h
 )
 
 target_compile_features(Cue.Runtime PUBLIC cxx_std_20)
-target_link_libraries(Cue.Runtime PUBLIC Cue.Foundation Cue.GameCore Cue.Scene Cue.Schema)
+target_link_libraries(Cue.Runtime PUBLIC Cue.Foundation Cue.GameCore Cue.Scene Cue.Schema Cue.Input)
 target_include_directories(Cue.Runtime PUBLIC Public)
 
 set_target_properties(
@@ -42,10 +44,10 @@ endif()
 get_target_property(cueRuntimeLinks Cue.Runtime LINK_LIBRARIES)
 get_target_property(cueRuntimeInterfaceLinks Cue.Runtime INTERFACE_LINK_LIBRARIES)
 
-if(NOT "${cueRuntimeLinks}" STREQUAL "Cue.Foundation;Cue.GameCore;Cue.Scene;Cue.Schema")
-    message(FATAL_ERROR "Cue.Runtime must directly link only Cue.Foundation, Cue.GameCore, Cue.Scene, and Cue.Schema: ${cueRuntimeLinks}")
+if(NOT "${cueRuntimeLinks}" STREQUAL "Cue.Foundation;Cue.GameCore;Cue.Scene;Cue.Schema;Cue.Input")
+    message(FATAL_ERROR "Cue.Runtime must directly link only Cue.Foundation, Cue.GameCore, Cue.Scene, Cue.Schema, and Cue.Input: ${cueRuntimeLinks}")
 endif()
 
-if(NOT "${cueRuntimeInterfaceLinks}" STREQUAL "Cue.Foundation;Cue.GameCore;Cue.Scene;Cue.Schema")
-    message(FATAL_ERROR "Cue.Runtime must expose only Cue.Foundation, Cue.GameCore, Cue.Scene, and Cue.Schema: ${cueRuntimeInterfaceLinks}")
+if(NOT "${cueRuntimeInterfaceLinks}" STREQUAL "Cue.Foundation;Cue.GameCore;Cue.Scene;Cue.Schema;Cue.Input")
+    message(FATAL_ERROR "Cue.Runtime must expose only Cue.Foundation, Cue.GameCore, Cue.Scene, Cue.Schema, and Cue.Input: ${cueRuntimeInterfaceLinks}")
 endif()

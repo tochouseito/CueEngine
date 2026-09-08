@@ -20,7 +20,13 @@ enum class RuntimeError : std::int64_t
     InvalidSceneSessionState = 1,
     SceneSessionStartFailed = 2,
     SceneCleanupFailed = 3,
-    RuntimeWorldShutdownFailed = 4
+    RuntimeWorldShutdownFailed = 4,
+    InvalidApplicationSessionState = 5,
+    InvalidApplicationConfiguration = 6,
+    ApplicationSessionStartFailed = 7,
+    ApplicationSessionUpdateFailed = 8,
+    ApplicationSessionCleanupFailed = 9,
+    StructuralCommandFailed = 10
 };
 
 /// @brief Runtime Errorを診断Summaryと共に生成する
