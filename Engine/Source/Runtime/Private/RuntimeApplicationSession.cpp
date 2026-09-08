@@ -294,7 +294,17 @@ Result<void> RuntimeApplicationSession::stop() noexcept
                                       "Runtime application session cleanup is incomplete");
     }
 
-    return finish_scene_cleanup();
+    Result<void> sceneCleanup = finish_scene_cleanup();
+    if (!sceneCleanup)
+    {
+        return sceneCleanup;
+    }
+    if (m_hasCleanupCommandFailure)
+    {
+        return make_operation_failure(RuntimeError::ApplicationSessionCleanupFailed,
+                                      "Runtime application session cleanup contained structural command failures");
+    }
+    return Result<void>::success();
 }
 
 InputEventQueue &RuntimeApplicationSession::input_events() noexcept
@@ -423,6 +433,10 @@ Result<void> RuntimeApplicationSession::flush_system_commands() noexcept
     }
 
     retain_command_failures(*flush.try_value());
+    for (const game_core::StructuralCommandResult &result : flush.try_value()->results())
+    {
+        m_hasCleanupCommandFailure = m_hasCleanupCommandFailure || !result.succeeded();
+    }
     m_hasFlushedSystemCommands = true;
     return Result<void>::success();
 }

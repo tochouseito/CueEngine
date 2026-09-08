@@ -194,5 +194,6 @@ class RuntimeApplicationSession final
     std::unique_ptr<RuntimeSceneSession> m_sceneSession;
     std::optional<Error> m_failure;
     bool m_hasFlushedSystemCommands = false;
+    bool m_hasCleanupCommandFailure = false;
 };
 } // namespace cue::runtime

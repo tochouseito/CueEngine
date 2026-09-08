@@ -6,6 +6,7 @@
 #include <Cue/GameCore/RuntimeSystem.h>
 #include <Cue/GameCore/World.h>
 #include <Cue/Input/InputEventQueue.h>
+#include <Cue/Runtime/Error.h>
 #include <Cue/Runtime/RuntimeApplicationSession.h>
 #include <Cue/Scene/Instantiation.h>
 #include <Cue/Schema/Descriptor.h>
@@ -70,6 +71,7 @@ struct SystemProbe final
     bool failStart = false;
     bool failUpdate = false;
     bool createEntityOnUpdate = false;
+    bool enqueueStaleDestroyOnStop = false;
     std::size_t stopFailuresRemaining = 0;
 };
 
@@ -125,6 +127,26 @@ class RecordingSystem final : public cue::game_core::RuntimeSystem
         {
             --m_probe->stopFailuresRemaining;
             return cue::Result<void>::failure(make_test_error(103, "Injected system stop failure"));
+        }
+        if (m_probe->enqueueStaleDestroyOnStop)
+        {
+            cue::Result<cue::game_core::EntityHandle> entity = a_context.world.create_entity();
+            if (!entity)
+            {
+                return cue::Result<void>::failure(std::move(*entity.try_error()));
+            }
+            const cue::game_core::EntityHandle stale = *entity.try_value();
+            cue::Result<void> destroyed = a_context.world.destroy_entity(stale);
+            if (!destroyed)
+            {
+                return destroyed;
+            }
+            cue::Result<void> queued = a_context.commands.destroy_entity(stale);
+            if (!queued)
+            {
+                return queued;
+            }
+            m_probe->enqueueStaleDestroyOnStop = false;
         }
         return cue::Result<void>::success();
     }
@@ -349,6 +371,37 @@ void test_stop_retry(const cue::schema::SchemaRegistry &a_registry,
     require(session->try_failure() != nullptr);
     require(session->try_failure()->root_code().value() == 103);
 }
+
+/// @brief Stop Commandの個別失敗後も所有物を終了しつつstop ResultへCleanup失敗を返すことを検証する
+void test_stop_command_failure(const cue::schema::SchemaRegistry &a_registry,
+                               cue::game_core::WorldIdentitySource &a_worldIdentitySource,
+                               const cue::scene::SceneSnapshot &a_snapshot,
+                               const cue::AssertContext &a_assertContext) noexcept
+{
+    TestClock clock;
+    auto session =
+        take_value(cue::runtime::RuntimeApplicationSession::create(11U, clock, 100'000'000, a_assertContext));
+    SystemProbe probe;
+    probe.enqueueStaleDestroyOnStop = true;
+    register_system(*session, "CommandFailure", 0, probe, a_assertContext);
+    require(session->start(a_snapshot, a_worldIdentitySource, a_registry,
+                           make_type_id(k_transformTypeId, a_assertContext),
+                           make_type_id(k_sceneObjectStateTypeId, a_assertContext)));
+    require(session->request_stop(cue::runtime::RuntimeApplicationStopReason::Requested));
+
+    cue::Result<void> stopped = session->stop();
+    require(!stopped);
+    require(stopped.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::runtime::RuntimeError::ApplicationSessionCleanupFailed));
+    require(session->state() == cue::runtime::RuntimeApplicationSessionState::Stopped);
+    require(session->try_failure() != nullptr);
+    require(session->try_failure()->code().value() ==
+            static_cast<std::int64_t>(cue::runtime::RuntimeError::StructuralCommandFailed));
+
+    auto failure = session->take_failure();
+    require(failure && failure.try_value()->has_value());
+    require(session->try_failure() == nullptr);
+}
 } // namespace
 
 /// @brief Runtime Application SessionのHeadless Frame順、失敗、再Cleanup契約を検証する
@@ -367,5 +420,6 @@ int main()
     test_start_failure_rollback(*registry, worldIdentitySource, snapshot, assertContext);
     test_update_failure(*registry, worldIdentitySource, snapshot, assertContext);
     test_stop_retry(*registry, worldIdentitySource, snapshot, assertContext);
+    test_stop_command_failure(*registry, worldIdentitySource, snapshot, assertContext);
     return 0;
 }
