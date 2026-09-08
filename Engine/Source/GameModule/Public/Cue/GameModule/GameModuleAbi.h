@@ -43,7 +43,13 @@
 #define CUE_GAME_MODULE_SYSTEM_PHASE_POST_UPDATE UINT32_C(3)
 
 typedef uint32_t CueGameModuleResult;
+/// @brief DLL が所有し、同じ DLL の destroyModule で一度だけ破棄する Project Scope Handle
+///
+/// Host は Handle の生存中 DLL を Unload せず、生成した Project Scope の Owner Thread 上だけで使用する。
 typedef void *CueGameModuleHandle;
+/// @brief DLL が所有し、対応する CueGameSystemDestroyV1 で一度だけ破棄する System State
+///
+/// Host は State の生存中 DLL と親 Module を保持し、生成した Project Scope の Owner Thread 上だけで使用する。
 typedef void *CueGameSystemState;
 
 typedef struct CueGameUtf8ViewV1
@@ -111,15 +117,20 @@ typedef struct CueGameSystemUpdateV1
     int64_t elapsedNanoseconds;
 } CueGameSystemUpdateV1;
 
+/// @brief 成功時だけ null の出力を DLL 所有 State へ置換し、失敗時は null のまま保持する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameSystemCreateV1)(
     CueGameModuleHandle a_module, CueGameSystemState *a_state,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 同じ DLL と Owner Thread 上で DLL 所有 State を一度だけ破棄する
 typedef void(CUE_GAME_MODULE_CALL *CueGameSystemDestroyV1)(CueGameSystemState a_state) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 借用 State を開始し、Diagnostic の Message を呼出中だけ借用出力する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameSystemStartV1)(
     CueGameSystemState a_state, CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 借用 State と呼出中だけ有効な Update を処理する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameSystemUpdateCallbackV1)(
     CueGameSystemState a_state, const CueGameSystemUpdateV1 *a_update,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 借用 State を停止し、Diagnostic の Message を呼出中だけ借用出力する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameSystemStopV1)(
     CueGameSystemState a_state, CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
 
@@ -139,12 +150,15 @@ typedef struct CueGameSystemDescriptorV1
     CueGameSystemStopV1 stop;
 } CueGameSystemDescriptorV1;
 
+/// @brief 呼出中だけ借用する Descriptor を Host 所有 Registry へ Copy 登録する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameRegisterSchemaV1)(
     void *a_context, const CueGameSchemaDescriptorV1 *a_descriptor,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 呼出中だけ借用する Descriptor を Host 所有 Registry へ Copy 登録する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameRegisterComponentV1)(
     void *a_context, const CueGameComponentDescriptorV1 *a_descriptor,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 呼出中だけ借用する Descriptor と Callback を Host 所有 Registry へ Copy 登録する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameRegisterSystemV1)(
     void *a_context, const CueGameSystemDescriptorV1 *a_descriptor,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
@@ -160,11 +174,14 @@ typedef struct CueGameRegistrationSinkV1
     uint64_t reserved[4];
 } CueGameRegistrationSinkV1;
 
+/// @brief 成功時だけ null の出力を DLL 所有 Module へ置換し、失敗時は null のまま保持する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameModuleCreateV1)(
     CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 借用 Module と Sink を使い、Descriptor を呼出中に Host へ Copy 登録する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameModuleRegisterV1)(
     CueGameModuleHandle a_module, const CueGameRegistrationSinkV1 *a_sink,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
+/// @brief 同じ DLL と Owner Thread 上で DLL 所有 Module を一度だけ破棄する
 typedef void(CUE_GAME_MODULE_CALL *CueGameModuleDestroyV1)(CueGameModuleHandle a_module) CUE_GAME_MODULE_NOEXCEPT;
 
 typedef struct CueGameModuleApiV1
@@ -193,6 +210,10 @@ typedef struct CueGameModuleQueryOutputV1
 } CueGameModuleQueryOutputV1;
 
 /// @brief Host要求Versionと互換なDLL所有API Tableを借用出力へ返す
+///
+/// Host は出力構造体を zero initialize して Size と Version を設定する。成功時の API Table と全 Callback は
+/// DLL を Load している間だけ有効で、Query と全 Callback は同じ Project Scope の Owner Thread 上で呼び出す。
+/// C++ 例外は ABI 境界を越えない。
 CUE_GAME_MODULE_EXTERN_C CUE_GAME_MODULE_EXPORT CueGameModuleResult CUE_GAME_MODULE_CALL
 cue_game_module_query(uint32_t a_requestedAbiVersion, CueGameModuleQueryOutputV1 *a_output,
                       CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;

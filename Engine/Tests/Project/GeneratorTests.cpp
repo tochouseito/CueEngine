@@ -378,8 +378,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
-                                                 make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
+                                                 *projectId.try_value(), make_template(), a_assertContext);
     constexpr std::array expected = {std::string_view("Assets/Source"), std::string_view("Assets/Runtime"),
                                      std::string_view("Generated"), std::string_view("Saved"),
                                      std::string_view("Source/Game")};
@@ -411,6 +411,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
            presets.find("windows-vs2026-release") != std::string_view::npos &&
            presets.find("$env{CUE_ENGINE_ROOT}") != std::string_view::npos &&
            module.find("0x12U, 0x34U, 0x56U, 0x78U") != std::string_view::npos &&
+           module.find("a_sink->reserved[0] != 0U") != std::string_view::npos &&
+           module.find("a_sink->reserved[3] != 0U") != std::string_view::npos &&
            module.find("Sample Project") == std::string_view::npos;
 }
 
@@ -491,8 +493,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::Durability, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && filesystem.is_published() &&
            !filesystem.has_staging() && generated.try_error()->root_code().domain() == "Cue.IO" &&
            generated.try_error()->root_code().value() == static_cast<std::int64_t>(cue::IoError::DurabilityUnknown);

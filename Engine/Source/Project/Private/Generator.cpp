@@ -228,7 +228,8 @@ CueGameModuleResult validate_registration(CueGameModuleHandle a_module, const Cu
 {
     if (a_module == nullptr || a_sink == nullptr || a_sink->structSize < sizeof(CueGameRegistrationSinkV1) ||
         a_sink->version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || a_sink->registerSchema == nullptr ||
-        a_sink->registerComponent == nullptr || a_sink->registerSystem == nullptr)
+        a_sink->registerComponent == nullptr || a_sink->registerSystem == nullptr || a_sink->reserved[0] != 0U ||
+        a_sink->reserved[1] != 0U || a_sink->reserved[2] != 0U || a_sink->reserved[3] != 0U)
     {
         constexpr char message[] = "Registration input is invalid";
         set_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT, message, sizeof(message) - 1U);
@@ -307,6 +308,8 @@ struct GeneratedProjectFile final
     std::string contents;
 };
 
+using GameWorkspaceFiles = std::array<GeneratedProjectFile, 4U>;
+
 /// @brief Generator 処理中の予期しない例外を追加 Allocation なしで Fatal 境界へ渡す
 [[noreturn]] void terminate_generator_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -335,8 +338,8 @@ struct GeneratedProjectFile final
 
 /// @brief Staging 基点と Template 相対 Path を結合して再検証済み Path を返す
 [[nodiscard]] cue::Result<cue::RelativePath> make_staging_path(const cue::StagingArea &a_staging,
-                                                              std::string_view a_suffix,
-                                                              const cue::AssertContext &a_assertContext) noexcept
+                                                               std::string_view a_suffix,
+                                                               const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -368,6 +371,22 @@ void rollback_staging(cue::FilesystemRoot &a_filesystem, cue::StagingArea &a_sta
 {
     return a_error.code().domain() == "Cue.IO" &&
            a_error.code().value() == static_cast<std::int64_t>(cue::IoError::DurabilityUnknown);
+}
+
+/// @brief この呼出が作成した Game Workspace File だけを逆順で削除する
+void rollback_created_files(cue::FilesystemRoot &a_filesystem, std::span<const cue::RelativePath> a_paths,
+                            std::span<const std::size_t> a_createdIndexes, cue::Error &a_primary,
+                            const cue::AssertContext &a_assertContext) noexcept
+{
+    for (auto index = a_createdIndexes.rbegin(); index != a_createdIndexes.rend(); ++index)
+    {
+        auto removed = a_filesystem.remove_file(a_paths[*index]);
+        if (!removed)
+        {
+            a_primary.append_secondary_diagnostics(a_assertContext, *removed.try_error(),
+                                                   "Project workspace file rollback failed", "Rollback");
+        }
+    }
 }
 
 /// @brief Byte 列を Copy せず Descriptor Parser へ渡せる UTF-8 View へ変換する
@@ -426,6 +445,15 @@ void rollback_staging(cue::FilesystemRoot &a_filesystem, cue::StagingArea &a_sta
     source.replace(source.find(marker), marker.size(), make_project_uuid_bytes(a_projectId.text()));
     return source;
 }
+
+/// @brief Project固有値を反映したGame SourceとCMake Workspace Templateを所有値として構築する
+[[nodiscard]] GameWorkspaceFiles make_game_workspace_files(const cue::ProjectId &a_projectId)
+{
+    return {GeneratedProjectFile{"CMakeLists.txt", std::string(k_projectCMake)},
+            GeneratedProjectFile{"CMakePresets.json", std::string(k_projectPresets)},
+            GeneratedProjectFile{"Source/Game/CMakeLists.txt", std::string(k_gameCMake)},
+            GeneratedProjectFile{"Source/Game/GameModule.cpp", make_game_module_source(a_projectId)}};
+}
 } // namespace
 
 namespace cue
@@ -461,12 +489,10 @@ Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesys
             return Result<ProjectDescriptor>::failure(std::move(*serialized.try_error()));
         }
 
-        const std::array files = {
-            GeneratedProjectFile{"CueProject.json", *serialized.try_value()},
-            GeneratedProjectFile{"CMakeLists.txt", std::string(k_projectCMake)},
-            GeneratedProjectFile{"CMakePresets.json", std::string(k_projectPresets)},
-            GeneratedProjectFile{"Source/Game/CMakeLists.txt", std::string(k_gameCMake)},
-            GeneratedProjectFile{"Source/Game/GameModule.cpp", make_game_module_source(a_projectId)}};
+        GameWorkspaceFiles gameWorkspaceFiles = make_game_workspace_files(a_projectId);
+        const std::array files = {GeneratedProjectFile{"CueProject.json", *serialized.try_value()},
+                                  std::move(gameWorkspaceFiles[0U]), std::move(gameWorkspaceFiles[1U]),
+                                  std::move(gameWorkspaceFiles[2U]), std::move(gameWorkspaceFiles[3U])};
 
         auto staging = a_parentFilesystem.create_staging_area(*destination.try_value());
         if (!staging)
@@ -562,6 +588,187 @@ Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesys
         }
 
         return Result<ProjectDescriptor>::success(std::move(*descriptor.try_value()));
+    }
+    catch (...)
+    {
+        terminate_generator_exception(a_assertContext);
+    }
+}
+
+Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
+                                           const ProjectDescriptor &a_expectedDescriptor,
+                                           const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        auto validated = validate_project_descriptor(a_expectedDescriptor, a_assertContext);
+        if (!validated)
+        {
+            return Result<void>::failure(std::move(*validated.try_error()));
+        }
+
+        auto loaded = load_project_descriptor(a_projectFilesystem, a_assertContext);
+        if (!loaded)
+        {
+            return Result<void>::failure(std::move(*loaded.try_error()));
+        }
+        if (!a_expectedDescriptor.equivalent_to(*loaded.try_value()))
+        {
+            return Result<void>::failure(make_project_error(a_assertContext, ProjectError::InvalidFormat,
+                                                            "Project descriptor does not match expected project"));
+        }
+
+        const GameWorkspaceFiles files = make_game_workspace_files(a_expectedDescriptor.project_id());
+        std::vector<RelativePath> paths;
+        paths.reserve(files.size());
+        std::array<std::size_t, 4U> missingIndexes{};
+        std::size_t missingCount = 0U;
+
+        for (std::size_t index = 0U; index < files.size(); ++index)
+        {
+            auto path = RelativePath::parse(files[index].path, a_assertContext);
+            if (!path)
+            {
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace path creation failed", std::move(*path.try_error())));
+            }
+            paths.push_back(std::move(*path.try_value()));
+
+            auto type = a_projectFilesystem.query_entry(paths.back());
+            if (!type)
+            {
+                return Result<void>::failure(reclassify_io_error(a_assertContext, "Project workspace preflight failed",
+                                                                 std::move(*type.try_error())));
+            }
+            if (*type.try_value() == EntryType::Missing)
+            {
+                missingIndexes[missingCount++] = index;
+                continue;
+            }
+            if (*type.try_value() != EntryType::RegularFile)
+            {
+                Error cause = make_io_error(a_assertContext, IoError::TypeMismatch,
+                                            "Project workspace path is not a regular file");
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace create-only validation failed", std::move(cause)));
+            }
+
+            auto bytes = a_projectFilesystem.read_file(paths.back(), k_maximumGeneratedFileBytes);
+            if (!bytes)
+            {
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace preflight read failed", std::move(*bytes.try_error())));
+            }
+            if (bytes_as_string(*bytes.try_value()) != files[index].contents)
+            {
+                Error cause = make_io_error(a_assertContext, IoError::AlreadyExists,
+                                            "Existing project workspace file differs from the generator template");
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace create-only validation failed", std::move(cause)));
+            }
+        }
+
+        if (missingCount == 0U)
+        {
+            return Result<void>::success();
+        }
+
+        auto sourceGame = RelativePath::parse("Source/Game", a_assertContext);
+        if (!sourceGame)
+        {
+            return Result<void>::failure(reclassify_io_error(a_assertContext,
+                                                             "Project workspace directory path creation failed",
+                                                             std::move(*sourceGame.try_error())));
+        }
+        auto createdDirectory = a_projectFilesystem.create_directories(*sourceGame.try_value());
+        if (!createdDirectory)
+        {
+            return Result<void>::failure(reclassify_io_error(a_assertContext,
+                                                             "Project workspace directory creation failed",
+                                                             std::move(*createdDirectory.try_error())));
+        }
+
+        std::vector<FileWriteLease> leases;
+        leases.reserve(missingCount);
+        std::vector<std::size_t> createIndexes;
+        createIndexes.reserve(missingCount);
+        for (std::size_t offset = 0U; offset < missingCount; ++offset)
+        {
+            const std::size_t index = missingIndexes[offset];
+            auto lease = a_projectFilesystem.acquire_file_write_lease(paths[index]);
+            if (!lease)
+            {
+                return Result<void>::failure(reclassify_io_error(a_assertContext,
+                                                                 "Project workspace write lease acquisition failed",
+                                                                 std::move(*lease.try_error())));
+            }
+            auto fingerprint =
+                fingerprint_file(a_projectFilesystem, paths[index], k_maximumGeneratedFileBytes, a_assertContext);
+            if (!fingerprint)
+            {
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace leased preflight failed", std::move(*fingerprint.try_error())));
+            }
+            if (fingerprint.try_value()->exists)
+            {
+                auto bytes = a_projectFilesystem.read_file(paths[index], k_maximumGeneratedFileBytes);
+                if (!bytes)
+                {
+                    return Result<void>::failure(reclassify_io_error(
+                        a_assertContext, "Project workspace leased read failed", std::move(*bytes.try_error())));
+                }
+                if (bytes_as_string(*bytes.try_value()) == files[index].contents)
+                {
+                    continue;
+                }
+                Error cause = make_io_error(a_assertContext, IoError::AlreadyExists,
+                                            "Project workspace file changed before create-only write");
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace create-only validation failed", std::move(cause)));
+            }
+            leases.push_back(std::move(*lease.try_value()));
+            createIndexes.push_back(index);
+        }
+
+        std::size_t createdCount = 0U;
+        for (std::size_t offset = 0U; offset < createIndexes.size(); ++offset)
+        {
+            const std::size_t index = createIndexes[offset];
+            const std::span<const char> characters(files[index].contents.data(), files[index].contents.size());
+            auto written = a_projectFilesystem.write_file_atomic_if_unchanged(
+                leases[offset], paths[index], FileFingerprint{}, k_maximumGeneratedFileBytes,
+                std::as_bytes(characters));
+            if (!written)
+            {
+                const bool durabilityUnknown = is_durability_unknown(*written.try_error());
+                Error primary = reclassify_io_error(a_assertContext, "Project workspace file write failed",
+                                                    std::move(*written.try_error()));
+                if (!durabilityUnknown)
+                {
+                    rollback_created_files(a_projectFilesystem, paths,
+                                           std::span<const std::size_t>(createIndexes.data(), createdCount), primary,
+                                           a_assertContext);
+                }
+                return Result<void>::failure(std::move(primary));
+            }
+            ++createdCount;
+
+            auto bytes = a_projectFilesystem.read_file(paths[index], k_maximumGeneratedFileBytes);
+            if (!bytes || bytes_as_string(*bytes.try_value()) != files[index].contents)
+            {
+                Error primary = bytes
+                                    ? make_project_error(a_assertContext, ProjectError::InvalidFormat,
+                                                         "Generated project workspace file changed during verification")
+                                    : reclassify_io_error(a_assertContext, "Project workspace verification read failed",
+                                                          std::move(*bytes.try_error()));
+                rollback_created_files(a_projectFilesystem, paths,
+                                       std::span<const std::size_t>(createIndexes.data(), createdCount), primary,
+                                       a_assertContext);
+                return Result<void>::failure(std::move(primary));
+            }
+        }
+
+        return Result<void>::success();
     }
     catch (...)
     {

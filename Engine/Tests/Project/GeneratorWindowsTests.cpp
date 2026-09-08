@@ -8,10 +8,12 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -245,6 +247,56 @@ class TestDirectory final
                     : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
                           a_assertContext, cue::ProjectError::IoFailure, "Generated project root could not be opened"));
     if (!loaded || !generated.try_value()->equivalent_to(*loaded.try_value()))
+    {
+        return false;
+    }
+
+    auto rootCMake = cue::RelativePath::parse("CMakeLists.txt", a_assertContext);
+    auto presets = cue::RelativePath::parse("CMakePresets.json", a_assertContext);
+    auto gameCMake = cue::RelativePath::parse("Source/Game/CMakeLists.txt", a_assertContext);
+    auto gameModule = cue::RelativePath::parse("Source/Game/GameModule.cpp", a_assertContext);
+    if (!rootCMake || !presets || !gameCMake || !gameModule)
+    {
+        return false;
+    }
+    const std::array workspacePaths = {rootCMake.try_value(), presets.try_value(), gameCMake.try_value(),
+                                       gameModule.try_value()};
+    for (const auto *path : workspacePaths)
+    {
+        if (!projectRoot.try_value()->get()->remove_file(*path))
+        {
+            return false;
+        }
+    }
+
+    auto ensured =
+        cue::ensure_project_game_workspace(**projectRoot.try_value(), *generated.try_value(), a_assertContext);
+    auto ensuredAgain =
+        ensured ? cue::ensure_project_game_workspace(**projectRoot.try_value(), *generated.try_value(), a_assertContext)
+                : cue::Result<void>::failure(cue::make_project_error(a_assertContext, cue::ProjectError::IoFailure,
+                                                                     "Workspace files were not recreated"));
+    if (!ensured || !ensuredAgain || !is_file(directory.child(L"SampleProject\\CMakeLists.txt")) ||
+        !is_file(directory.child(L"SampleProject\\CMakePresets.json")) ||
+        !is_file(directory.child(L"SampleProject\\Source\\Game\\CMakeLists.txt")) ||
+        !is_file(directory.child(L"SampleProject\\Source\\Game\\GameModule.cpp")))
+    {
+        return false;
+    }
+
+    constexpr std::string_view userSource = "// User-owned Game Module source\n";
+    const std::span<const char> userCharacters(userSource.data(), userSource.size());
+    if (!projectRoot.try_value()->get()->remove_file(*rootCMake.try_value()) ||
+        !projectRoot.try_value()->get()->write_file_atomic(*gameModule.try_value(), std::as_bytes(userCharacters)))
+    {
+        return false;
+    }
+    auto conflict =
+        cue::ensure_project_game_workspace(**projectRoot.try_value(), *generated.try_value(), a_assertContext);
+    auto retainedSource = projectRoot.try_value()->get()->read_file(*gameModule.try_value(), 1024U);
+    const bool retained =
+        retainedSource && std::string_view(reinterpret_cast<const char *>(retainedSource.try_value()->data()),
+                                           retainedSource.try_value()->size()) == userSource;
+    if (conflict || is_file(directory.child(L"SampleProject\\CMakeLists.txt")) || !retained)
     {
         return false;
     }

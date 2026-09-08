@@ -25,4 +25,13 @@ struct BlankProjectTemplate final
 [[nodiscard]] Result<ProjectDescriptor> generate_blank_project(
     FilesystemRoot &a_parentFilesystem, std::string_view a_projectName, std::string_view a_displayName,
     const ProjectId &a_projectId, BlankProjectTemplate a_template, const AssertContext &a_assertContext) noexcept;
+
+/// @brief 既存 Project に不足する Game Source と CMake Workspace File だけを追加する
+///
+/// CueProject.json が期待 Descriptor と一致する場合だけ処理する。既存 File が Generator Template と一致すれば保持し、
+/// 内容が異なる場合は一切上書きせず失敗する。通常の失敗ではこの呼出が作成した File を Rollback する。
+/// Atomic Publish 後の DurabilityUnknown では再 Open による確認が必要で、自動 Rollback しない。
+[[nodiscard]] Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
+                                                         const ProjectDescriptor &a_expectedDescriptor,
+                                                         const AssertContext &a_assertContext) noexcept;
 } // namespace cue
