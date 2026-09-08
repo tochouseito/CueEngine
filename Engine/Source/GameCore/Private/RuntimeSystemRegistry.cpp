@@ -253,6 +253,11 @@ Result<void> RuntimeSystemRegistry::start(RuntimeWorld &a_runtimeWorld) noexcept
         return validation;
     }
 
+    Result<void> binding = a_runtimeWorld.bind_system_registry(*this);
+    if (!binding)
+    {
+        return binding;
+    }
     m_runtimeWorld = &a_runtimeWorld;
     RuntimeSystemContext context = {*a_runtimeWorld.try_world(), *a_runtimeWorld.try_command_buffer()};
     for (std::size_t entryIndex : m_executionOrder)
@@ -442,6 +447,7 @@ Result<void> RuntimeSystemRegistry::stop_started(RuntimeWorld &a_runtimeWorld, R
 
     if (count_active_systems() == 0U)
     {
+        a_runtimeWorld.unbind_system_registry(*this);
         m_state = RuntimeSystemRegistryState::Stopped;
         m_runtimeWorld = nullptr;
         return Result<void>::success();

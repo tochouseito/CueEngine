@@ -55,6 +55,7 @@ class RuntimeSystemRegistry final
     /// @brief Phase、Order、登録順から実行順を固定し、必須Systemが先行することを検証する
     [[nodiscard]] Result<void> seal() noexcept;
     /// @brief Seal済み順序でSystemを開始し、途中失敗では開始済みSystemだけを逆順停止する
+    /// @details 成功後は全 System の Stop 完了まで開始時 RuntimeWorld の終了と破棄を固定する
     [[nodiscard]] Result<void> start(RuntimeWorld &a_runtimeWorld) noexcept;
     /// @brief Started Systemを固定順で更新し、Structural CommandのFlushは呼出し側へ委ねる
     [[nodiscard]] Result<void> update(RuntimeWorld &a_runtimeWorld, const UpdateContext &a_timing,

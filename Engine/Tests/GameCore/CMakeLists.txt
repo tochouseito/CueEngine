@@ -73,6 +73,7 @@ foreach(processMode IN ITEMS
         RuntimeSystemRegistryWrongThread
         RuntimeSystemRegistryCallbackDestruction
         RuntimeWorldCallbackDestruction
+        RuntimeWorldRegistryBindingDestruction
 )
     add_test(
         NAME Cue.GameCore.Process.${processMode}
@@ -120,6 +121,7 @@ set_tests_properties(
     Cue.GameCore.Process.RuntimeSystemRegistryWrongThread
     Cue.GameCore.Process.RuntimeSystemRegistryCallbackDestruction
     Cue.GameCore.Process.RuntimeWorldCallbackDestruction
+    Cue.GameCore.Process.RuntimeWorldRegistryBindingDestruction
     Cue.GameCore.Process.WrongThread
     Cue.GameCore.Process.HeadlessRuntimeWorld
     PROPERTIES

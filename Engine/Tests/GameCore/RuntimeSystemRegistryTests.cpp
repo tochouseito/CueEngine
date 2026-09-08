@@ -672,14 +672,33 @@ template <typename T>
         return false;
     }
 
+    cue::Result<void> boundShutdown = startedRuntime->shutdown();
+    cue::Result<void> boundStopRequest = startedRuntime->request_stop();
+    cue::Result<cue::game_core::StructuralCommandReport> boundTick = startedRuntime->tick();
+    cue::game_core::RuntimeSystemRegistry competingRegistry(a_assertContext);
+    if (!competingRegistry.seal())
+    {
+        return false;
+    }
+    cue::Result<void> competingStart = competingRegistry.start(*startedRuntime);
     cue::Result<void> foreignUpdate = registry.update(*otherRuntime, *timing.try_value(), inputState.snapshot());
     cue::Result<void> foreignStop = registry.stop(*otherRuntime);
+    const bool rejectedWorldTermination =
+        has_error_code(boundShutdown, cue::game_core::GameCoreError::InvalidRuntimeState) &&
+        has_error_code(boundStopRequest, cue::game_core::GameCoreError::InvalidRuntimeState) && boundTick &&
+        has_error_code(competingStart, cue::game_core::GameCoreError::InvalidRuntimeState);
     const bool rejectedForeignRuntime =
         has_error_code(foreignUpdate, cue::game_core::GameCoreError::InvalidSystemRegistryState) &&
         has_error_code(foreignStop, cue::game_core::GameCoreError::InvalidSystemRegistryState) &&
         registry.state() == cue::game_core::RuntimeSystemRegistryState::Started && registry.active_system_count() == 1;
 
-    return rejectedForeignRuntime && registry.stop(*startedRuntime) && observedSystem->rejected_all_reentry() &&
+    if (!rejectedWorldTermination || !rejectedForeignRuntime || !registry.stop(*startedRuntime) ||
+        !observedSystem->rejected_all_reentry())
+    {
+        return false;
+    }
+
+    return competingRegistry.start(*startedRuntime) && competingRegistry.stop(*startedRuntime) &&
            shutdown_runtime(*startedRuntime) && shutdown_runtime(*otherRuntime);
 }
 } // namespace

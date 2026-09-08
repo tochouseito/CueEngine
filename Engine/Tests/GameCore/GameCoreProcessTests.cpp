@@ -278,6 +278,26 @@ class RuntimeWorldDestroyingSystem final : public cue::game_core::RuntimeSystem
         std::_Exit(0);
     }
 
+    if (a_mode == "RuntimeWorldRegistryBindingDestruction")
+    {
+        auto runtime = cue::game_core::RuntimeWorld::create(worldIdentitySource, **registry.try_value(),
+                                                            transformTypeId, assertContext);
+        if (!runtime->initialize())
+        {
+            return 17;
+        }
+
+        auto systemRegistry = std::make_unique<cue::game_core::RuntimeSystemRegistry>(assertContext);
+        if (!systemRegistry->seal() || !systemRegistry->start(*runtime))
+        {
+            return 18;
+        }
+
+        runtime.reset();
+        static_cast<void>(systemRegistry.release());
+        std::_Exit(0);
+    }
+
     auto componentType = (*world.try_value())->register_component<ReentrantDestructorComponent>(typeId);
     auto emptyComponentType = (*world.try_value())->register_component<EmptyComponent>(emptyTypeId);
     auto entity = (*world.try_value())->create_entity();

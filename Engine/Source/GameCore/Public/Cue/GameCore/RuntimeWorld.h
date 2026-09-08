@@ -26,6 +26,7 @@ enum class RuntimeWorldState
 /// @brief ECS、Core Transform、Structural Safe Point を所有する Headless Runtime Session
 /// @details create を呼び出した Thread を Owner とし、全公開 API と Destructor は同じ Thread からだけ呼び出す
 /// @details Owner Thread 契約への違反は Data Race を防ぐため Debug／Development／Release の全構成で Fatal 終了する
+/// @details RuntimeSystemRegistry の Start 後は全 System の Stop 完了まで終了と破棄を拒否する
 class RuntimeWorld final
 {
   public:
@@ -110,12 +111,18 @@ class RuntimeWorld final
 
     /// @brief Runtime World API を生成 Thread へ限定して Data Race を防ぐ
     void assert_owner_thread() const noexcept;
+    /// @brief Started から全 System 停止まで World 終了を固定する Registry Binding を取得する
+    [[nodiscard]] Result<void> bind_system_registry(const RuntimeSystemRegistry &a_registry) noexcept;
+    /// @brief 全 System 停止後に同じ Registry の World 終了固定 Binding を解放する
+    void unbind_system_registry(const RuntimeSystemRegistry &a_registry) noexcept;
     /// @brief System Callback中にWorld Lifecycleを固定するLeaseを開始する
     void begin_system_callback_lease() noexcept;
     /// @brief System Callback完了後にWorld Lifecycle固定Leaseを終了する
     void end_system_callback_lease() noexcept;
-    /// @brief System Callback中のWorld Lifecycle変更を回復可能Errorとして拒否する
-    [[nodiscard]] Result<void> validate_lifecycle_mutation() const noexcept;
+    /// @brief System Callback 中の Safe Point または Lifecycle 操作を回復可能 Error として拒否する
+    [[nodiscard]] Result<void> validate_callback_inactive() const noexcept;
+    /// @brief System Callback 中または Registry Binding 中の World 終了操作を回復可能 Error として拒否する
+    [[nodiscard]] Result<void> validate_termination_allowed() const noexcept;
     /// @brief 現在 State が Tick と Runtime Data 参照を許可するか返す
     [[nodiscard]] bool is_operational() const noexcept;
     /// @brief Command Buffer、Transform Token、World を構築の逆順で解放する
@@ -133,6 +140,7 @@ class RuntimeWorld final
     const AssertContext *m_assertContext;
     std::thread::id m_ownerThread;
     RuntimeWorldState m_state = RuntimeWorldState::Initializing;
+    const RuntimeSystemRegistry *m_boundSystemRegistry = nullptr;
     bool m_isSystemCallbackActive = false;
     std::unique_ptr<World> m_world;
     std::optional<ComponentType<math::Transform>> m_transformType;

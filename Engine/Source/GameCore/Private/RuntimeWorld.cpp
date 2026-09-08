@@ -43,12 +43,13 @@ RuntimeWorld::RuntimeWorld(ConstructionKey, WorldIdentitySource &a_identitySourc
 RuntimeWorld::~RuntimeWorld() noexcept
 {
     assert_owner_thread();
-    CUE_ASSERT(*m_assertContext, !m_isSystemCallbackActive,
-               "Cue.GameCore runtime world destruction is forbidden during a system callback");
-    if (m_isSystemCallbackActive)
+    const bool hasSystemBinding = m_boundSystemRegistry != nullptr || m_isSystemCallbackActive;
+    CUE_ASSERT(*m_assertContext, !hasSystemBinding,
+               "Cue.GameCore runtime world destruction is forbidden while a system registry is bound");
+    if (hasSystemBinding)
     {
         m_assertContext->fatal_handler().terminate(
-            "Cue.GameCore runtime world destruction is forbidden during a system callback");
+            "Cue.GameCore runtime world destruction is forbidden while a system registry is bound");
     }
     release_owned_state();
     m_state = RuntimeWorldState::Shutdown;
@@ -57,10 +58,10 @@ RuntimeWorld::~RuntimeWorld() noexcept
 Result<void> RuntimeWorld::initialize() noexcept
 {
     assert_owner_thread();
-    Result<void> lifecycleValidation = validate_lifecycle_mutation();
-    if (!lifecycleValidation)
+    Result<void> callbackValidation = validate_callback_inactive();
+    if (!callbackValidation)
     {
-        return lifecycleValidation;
+        return callbackValidation;
     }
 
     if (m_state != RuntimeWorldState::Initializing)
@@ -109,10 +110,15 @@ Result<void> RuntimeWorld::initialize() noexcept
 Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
 {
     assert_owner_thread();
-    Result<void> lifecycleValidation = validate_lifecycle_mutation();
-    if (!lifecycleValidation)
+    Result<void> callbackValidation = validate_callback_inactive();
+    if (!callbackValidation)
     {
-        return Result<StructuralCommandReport>::failure(std::move(*lifecycleValidation.try_error()));
+        return Result<StructuralCommandReport>::failure(std::move(*callbackValidation.try_error()));
+    }
+    if (m_state == RuntimeWorldState::Stopping && m_boundSystemRegistry != nullptr)
+    {
+        return Result<StructuralCommandReport>::failure(
+            make_state_error("Runtime world final tick requires all runtime systems stopped"));
     }
 
     if (!is_operational())
@@ -139,10 +145,10 @@ Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
 Result<void> RuntimeWorld::request_stop() noexcept
 {
     assert_owner_thread();
-    Result<void> lifecycleValidation = validate_lifecycle_mutation();
-    if (!lifecycleValidation)
+    Result<void> terminationValidation = validate_termination_allowed();
+    if (!terminationValidation)
     {
-        return lifecycleValidation;
+        return terminationValidation;
     }
 
     if (m_state == RuntimeWorldState::Stopping || m_state == RuntimeWorldState::Shutdown)
@@ -162,10 +168,10 @@ Result<void> RuntimeWorld::request_stop() noexcept
 Result<void> RuntimeWorld::shutdown() noexcept
 {
     assert_owner_thread();
-    Result<void> lifecycleValidation = validate_lifecycle_mutation();
-    if (!lifecycleValidation)
+    Result<void> terminationValidation = validate_termination_allowed();
+    if (!terminationValidation)
     {
-        return lifecycleValidation;
+        return terminationValidation;
     }
 
     if (m_state == RuntimeWorldState::Shutdown)
@@ -213,6 +219,31 @@ bool RuntimeWorld::is_operational() const noexcept
     return m_state == RuntimeWorldState::Running || m_state == RuntimeWorldState::Stopping;
 }
 
+Result<void> RuntimeWorld::bind_system_registry(const RuntimeSystemRegistry &a_registry) noexcept
+{
+    assert_owner_thread();
+    if (m_state != RuntimeWorldState::Running || m_boundSystemRegistry != nullptr || m_isSystemCallbackActive)
+    {
+        return Result<void>::failure(make_state_error("Runtime world can bind only one system registry while running"));
+    }
+    m_boundSystemRegistry = &a_registry;
+    return Result<void>::success();
+}
+
+void RuntimeWorld::unbind_system_registry(const RuntimeSystemRegistry &a_registry) noexcept
+{
+    assert_owner_thread();
+    const bool canUnbind = m_boundSystemRegistry == &a_registry && !m_isSystemCallbackActive;
+    CUE_ASSERT(*m_assertContext, canUnbind,
+               "Cue.GameCore runtime world system registry binding must be released by its owner");
+    if (!canUnbind)
+    {
+        m_assertContext->fatal_handler().terminate(
+            "Cue.GameCore runtime world system registry binding must be released by its owner");
+    }
+    m_boundSystemRegistry = nullptr;
+}
+
 void RuntimeWorld::begin_system_callback_lease() noexcept
 {
     assert_owner_thread();
@@ -238,12 +269,22 @@ void RuntimeWorld::end_system_callback_lease() noexcept
     m_isSystemCallbackActive = false;
 }
 
-Result<void> RuntimeWorld::validate_lifecycle_mutation() const noexcept
+Result<void> RuntimeWorld::validate_callback_inactive() const noexcept
 {
     if (m_isSystemCallbackActive)
     {
         return Result<void>::failure(
-            make_state_error("Runtime world lifecycle cannot change during a system callback"));
+            make_state_error("Runtime world safe point and lifecycle APIs reject system callback reentry"));
+    }
+    return Result<void>::success();
+}
+
+Result<void> RuntimeWorld::validate_termination_allowed() const noexcept
+{
+    if (m_isSystemCallbackActive || m_boundSystemRegistry != nullptr)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime world termination requires all runtime systems stopped"));
     }
     return Result<void>::success();
 }
