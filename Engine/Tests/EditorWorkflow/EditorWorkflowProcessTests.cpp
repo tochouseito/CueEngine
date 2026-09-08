@@ -143,6 +143,10 @@ class TestDirectory final
         {
             commandLine.append(L" --process-test-action files-workflow");
         }
+        else if (*a_processTestAction == "play-repeated-workflow")
+        {
+            commandLine.append(L" --process-test-action play-repeated-workflow");
+        }
         else
         {
             commandLine.append(L" --process-test-action edit-close-save");
@@ -535,6 +539,11 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         std::_Exit(19);
     }
 
+    if (!run_editor_process(a_editorExecutable, projectPath, "play-repeated-workflow") ||
+        read_file(savedScenePath) != childSavedSceneBytes)
+    {
+        std::_Exit(50);
+    }
 }
 } // namespace
 
