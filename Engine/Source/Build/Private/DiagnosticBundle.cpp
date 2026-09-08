@@ -22,6 +22,8 @@ constexpr std::uint64_t k_hardMaximumTotalBytes = 256U * 1024U * 1024U;
 constexpr std::array<std::string_view, 8U> k_bundlePaths = {"artifact.json", "environment.json", "manifest.json",
                                                             "plan.json",     "result.json",      "stages.json",
                                                             "stderr.log",    "stdout.log"};
+constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
+    "artifact.json", "environment.json", "plan.json", "result.json", "stages.json", "stderr.log", "stdout.log"};
 
 /// @brief 回復不能なBundle内部例外をFatalHandlerへ通知してProcessを停止する
 [[noreturn]] void terminate_bundle_exception(const cue::AssertContext &a_assertContext) noexcept
@@ -61,6 +63,71 @@ constexpr std::array<std::string_view, 8U> k_bundlePaths = {"artifact.json", "en
         }
     }
     return true;
+}
+
+/// @brief Byte列がOverlong、Surrogate、範囲外Scalarを含まないStrict UTF-8か検証する
+[[nodiscard]] bool valid_utf8_bytes(const unsigned char *a_bytes, std::size_t a_size) noexcept
+{
+    for (std::size_t index = 0U; index < a_size;)
+    {
+        const unsigned char first = a_bytes[index];
+        std::size_t length = 0U;
+        if (first < 0x80U)
+        {
+            length = 1U;
+        }
+        else if (first >= 0xC2U && first <= 0xDFU)
+        {
+            length = 2U;
+        }
+        else if (first >= 0xE0U && first <= 0xEFU)
+        {
+            length = 3U;
+        }
+        else if (first >= 0xF0U && first <= 0xF4U)
+        {
+            length = 4U;
+        }
+        else
+        {
+            return false;
+        }
+        if (length > a_size - index)
+        {
+            return false;
+        }
+        if (length > 1U)
+        {
+            const unsigned char second = a_bytes[index + 1U];
+            if ((second & 0xC0U) != 0x80U || (first == 0xE0U && second < 0xA0U) ||
+                (first == 0xEDU && second >= 0xA0U) || (first == 0xF0U && second < 0x90U) ||
+                (first == 0xF4U && second >= 0x90U))
+            {
+                return false;
+            }
+            for (std::size_t offset = 2U; offset < length; ++offset)
+            {
+                if ((a_bytes[index + offset] & 0xC0U) != 0x80U)
+                {
+                    return false;
+                }
+            }
+        }
+        index += length;
+    }
+    return true;
+}
+
+/// @brief String ViewをStrict UTF-8として検証する
+[[nodiscard]] bool valid_utf8(std::string_view a_text) noexcept
+{
+    return valid_utf8_bytes(reinterpret_cast<const unsigned char *>(a_text.data()), a_text.size());
+}
+
+/// @brief Bundle Byte ViewをStrict UTF-8として検証する
+[[nodiscard]] bool valid_utf8(std::span<const std::byte> a_bytes) noexcept
+{
+    return valid_utf8_bytes(reinterpret_cast<const unsigned char *>(a_bytes.data()), a_bytes.size());
 }
 
 /// @brief User指定上限が正数かつHard Limit内に収まるか検証する
@@ -366,6 +433,28 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     return a_kind >= cue::BuildToolKind::CMake && a_kind <= cue::BuildToolKind::WindowsSdk;
 }
 
+/// @brief Version 1で永続化できる対応可否か検証する
+[[nodiscard]] bool valid_environment_support(cue::BuildEnvironmentSupport a_support) noexcept
+{
+    return a_support == cue::BuildEnvironmentSupport::Supported ||
+           a_support == cue::BuildEnvironmentSupport::Unsupported || a_support == cue::BuildEnvironmentSupport::Unknown;
+}
+
+/// @brief Version 1で永続化できるTool Architectureか検証する
+[[nodiscard]] bool valid_build_architecture(cue::BuildArchitecture a_architecture) noexcept
+{
+    return a_architecture == cue::BuildArchitecture::Unknown || a_architecture == cue::BuildArchitecture::X64 ||
+           a_architecture == cue::BuildArchitecture::X86 || a_architecture == cue::BuildArchitecture::Arm64;
+}
+
+/// @brief Version 1で永続化できるBuild Configurationか検証する
+[[nodiscard]] bool valid_build_configuration(cue::BuildConfiguration a_configuration) noexcept
+{
+    return a_configuration == cue::BuildConfiguration::Debug ||
+           a_configuration == cue::BuildConfiguration::Development ||
+           a_configuration == cue::BuildConfiguration::Release;
+}
+
 /// @brief Version 1で永続化できるEnvironment診断種別か検証する
 [[nodiscard]] bool valid_environment_diagnostic_code(cue::BuildEnvironmentDiagnosticCode a_code) noexcept
 {
@@ -376,22 +465,27 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
 /// @brief Environment Report内の数値EnumがVersion 1の既知値だけか検証する
 [[nodiscard]] bool valid_environment_enumerations(const cue::BuildEnvironmentReport &a_environment) noexcept
 {
+    if (!valid_environment_support(a_environment.support))
+    {
+        return false;
+    }
     for (const cue::BuildToolCandidate &tool : a_environment.selectedTools)
     {
-        if (!valid_tool_kind(tool.kind))
+        if (!valid_tool_kind(tool.kind) || !valid_build_architecture(tool.architecture))
         {
             return false;
         }
     }
     for (const cue::BuildEnvironmentDiagnostic &diagnostic : a_environment.diagnostics)
     {
-        if (!valid_environment_diagnostic_code(diagnostic.code) ||
+        if (!valid_environment_diagnostic_code(diagnostic.code) || !valid_environment_support(diagnostic.support) ||
             (diagnostic.tool && !valid_tool_kind(*diagnostic.tool)))
         {
             return false;
         }
     }
-    return true;
+    return std::all_of(a_environment.supportedConfigurations.begin(), a_environment.supportedConfigurations.end(),
+                       valid_build_configuration);
 }
 
 /// @brief Diagnostic Bundleへ永続化できる終端Build Operation Stateか検証する
@@ -399,6 +493,35 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
 {
     return a_state == cue::GameBuildOperationState::Succeeded || a_state == cue::GameBuildOperationState::Failed ||
            a_state == cue::GameBuildOperationState::Cancelled || a_state == cue::GameBuildOperationState::TimedOut;
+}
+
+/// @brief Stage、Outcome、Exit CodeがBuildStageResult契約と一致するか検証する
+[[nodiscard]] bool valid_stage_snapshot(const cue::BuildStageSnapshot &a_stage) noexcept
+{
+    const bool validStage = a_stage.stage == cue::BuildStage::Configure || a_stage.stage == cue::BuildStage::Build;
+    const bool validOutcome =
+        a_stage.outcome == cue::BuildStageOutcome::Succeeded || a_stage.outcome == cue::BuildStageOutcome::Failed ||
+        a_stage.outcome == cue::BuildStageOutcome::Cancelled || a_stage.outcome == cue::BuildStageOutcome::TimedOut;
+    const bool exited =
+        a_stage.outcome == cue::BuildStageOutcome::Succeeded || a_stage.outcome == cue::BuildStageOutcome::Failed;
+    return validStage && validOutcome && exited == a_stage.exitCode.has_value() &&
+           (a_stage.outcome != cue::BuildStageOutcome::Succeeded || a_stage.exitCode == 0U) &&
+           (a_stage.outcome != cue::BuildStageOutcome::Failed || a_stage.exitCode != 0U);
+}
+
+/// @brief 現在Operationへ属するLogのStreamとUTF-8 Byte列を検証する
+[[nodiscard]] bool valid_operation_logs(const cue::BuildOperationSnapshot &a_operation) noexcept
+{
+    for (const cue::BuildLogSnapshot &log : a_operation.logs)
+    {
+        const bool knownStream = log.stream == cue::ChildProcessStream::StandardOutput ||
+                                 log.stream == cue::ChildProcessStream::StandardError;
+        if (log.operationId == a_operation.operationId && (!knownStream || !valid_utf8(log.bytes)))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// @brief 入力Copyと中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
@@ -493,6 +616,23 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
         return "Release";
     }
     return "Unknown";
+}
+
+/// @brief Build Architectureを永続化用の安定文字列へ変換する
+[[nodiscard]] const char *architecture_text(cue::BuildArchitecture a_architecture) noexcept
+{
+    switch (a_architecture)
+    {
+    case cue::BuildArchitecture::Unknown:
+        return "unknown";
+    case cue::BuildArchitecture::X64:
+        return "x64";
+    case cue::BuildArchitecture::X86:
+        return "x86";
+    case cue::BuildArchitecture::Arm64:
+        return "arm64";
+    }
+    return "unknown";
 }
 
 /// @brief 所有文字列を内容を変えずBundle用Byte列へ変換する
@@ -607,8 +747,7 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
         {
             return std::nullopt;
         }
-        if (!output.append(",\"architecture\":") ||
-            !output.append_json_string(tool.architecture == cue::BuildArchitecture::X64 ? "x64" : "unknown") ||
+        if (!output.append(",\"architecture\":") || !output.append_json_string(architecture_text(tool.architecture)) ||
             !output.append(",\"available\":") || !output.append(tool.available ? "true" : "false") ||
             !output.push_back('}'))
         {
@@ -812,6 +951,10 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     {
         if (log.operationId == a_operation.operationId && log.stream == a_stream)
         {
+            if (!valid_utf8(log.bytes))
+            {
+                return std::nullopt;
+            }
             const std::size_t remaining = a_maximumBytes - output.size();
             std::optional<std::string> redacted = redact_bounded(log.bytes, a_mappings, remaining);
             if (!redacted)
@@ -1191,8 +1334,9 @@ class JsonSchemaReader final
     {
         return false;
     }
-    return a_reader.comma() && a_reader.member("architecture") && a_reader.string_is({"x64", "unknown"}) &&
-           a_reader.comma() && a_reader.member("available") && a_reader.boolean() && a_reader.end_object();
+    return a_reader.comma() && a_reader.member("architecture") &&
+           a_reader.string_is({"unknown", "x64", "x86", "arm64"}) && a_reader.comma() && a_reader.member("available") &&
+           a_reader.boolean() && a_reader.end_object();
 }
 
 /// @brief Toolchain Report内のTool Arrayを固定Schemaで読み取る
@@ -1586,30 +1730,20 @@ class JsonSchemaReader final
 /// @brief Manifestが全既知項目を重複なく列挙し必須Fileを収集済みか検証する
 [[nodiscard]] bool valid_manifest_entries(std::span<const cue::BuildDiagnosticManifestEntry> a_entries) noexcept
 {
-    if (a_entries.size() + 1U != k_bundlePaths.size())
+    if (a_entries.size() != k_manifestEntryPaths.size())
     {
         return false;
     }
-    for (const std::string_view path : k_bundlePaths)
+    for (std::size_t index = 0U; index < k_manifestEntryPaths.size(); ++index)
     {
-        if (path == "manifest.json")
-        {
-            continue;
-        }
-        const std::size_t count = static_cast<std::size_t>(
-            std::count_if(a_entries.begin(), a_entries.end(),
-                          /// @brief 現在の既知Pathと一致するManifest Entryを数える
-                          [path](const auto &a_entry) noexcept { return a_entry.relativePath == path; }));
-        if (count != 1U)
+        const std::string_view path = k_manifestEntryPaths[index];
+        const cue::BuildDiagnosticManifestEntry &entry = a_entries[index];
+        if (entry.relativePath != path)
         {
             return false;
         }
-        const auto entry =
-            std::find_if(a_entries.begin(), a_entries.end(),
-                         /// @brief 現在の既知Pathに対応するManifest Entryを取得する
-                         [path](const auto &a_candidate) noexcept { return a_candidate.relativePath == path; });
         const bool optional = path == "artifact.json" || path == "environment.json";
-        if (!optional && !entry->collected)
+        if (!optional && !entry.collected)
         {
             return false;
         }
@@ -1691,6 +1825,16 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
                 make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
                                   "Diagnostic environment contains unknown values"));
         }
+        if (!std::all_of(a_input.operation.stages.begin(), a_input.operation.stages.end(), valid_stage_snapshot))
+        {
+            return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
+                a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic stages are inconsistent"));
+        }
+        if (!valid_operation_logs(a_input.operation))
+        {
+            return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
+                a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic logs are invalid"));
+        }
         std::vector<BuildDiagnosticPathMapping> mappings;
         mappings.reserve(a_input.pathMappings.size());
         for (const BuildDiagnosticPathMapping &mapping : a_input.pathMappings)
@@ -1754,6 +1898,10 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         /// @brief 一つの生成Fileへ上限を適用しManifest収集Entryも同時に記録する
         const auto collect = [&](std::string a_path, std::string a_text) -> std::optional<BuildDiagnosticBundleError>
         {
+            if (!valid_utf8(a_text))
+            {
+                return BuildDiagnosticBundleError::InvalidInput;
+            }
             const std::uint64_t size = static_cast<std::uint64_t>(a_text.size());
             if (auto failure = add_file(files, a_path, std::move(a_text), a_limits, totalBytes))
             {
@@ -1839,8 +1987,15 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         if (failure)
         {
             return Result<BuildDiagnosticBundle>::failure(
-                make_bundle_error(a_assertContext, *failure, "Diagnostic bundle exceeded its configured limits"));
+                make_bundle_error(a_assertContext, *failure,
+                                  *failure == BuildDiagnosticBundleError::InvalidInput
+                                      ? "Diagnostic bundle contains invalid UTF-8"
+                                      : "Diagnostic bundle exceeded its configured limits"));
         }
+        std::sort(entries.begin(), entries.end(),
+                  /// @brief Manifest EntryをSchema v1のPath昇順へ固定する
+                  [](const auto &a_left, const auto &a_right) noexcept
+                  { return a_left.relativePath < a_right.relativePath; });
         const std::string manifest =
             serialize_manifest(a_input.operation.operationId, a_input.operation.state, entries);
         failure = add_file(files, "manifest.json", manifest, a_limits, totalBytes);
@@ -2027,6 +2182,11 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
             if (!stream && !bytes.empty())
             {
                 error = std::make_error_code(std::errc::io_error);
+                break;
+            }
+            if (!valid_utf8(bytes))
+            {
+                readFailure = BuildDiagnosticBundleError::InvalidBundle;
                 break;
             }
             totalBytes += size;

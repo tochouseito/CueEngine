@@ -5,11 +5,13 @@
 #include <Cue/Foundation/Log.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <source_location>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -168,6 +170,13 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     cue::BuildDiagnosticBundle bundle = take_value(cue::create_build_diagnostic_bundle(input, limits, a_assertContext));
     require(bundle.state() == cue::GameBuildOperationState::Failed);
     require(bundle.files().size() == 8U);
+    constexpr std::array<std::string_view, 7U> expectedEntryPaths = {
+        "artifact.json", "environment.json", "plan.json", "result.json", "stages.json", "stderr.log", "stdout.log"};
+    require(bundle.manifest_entries().size() == expectedEntryPaths.size());
+    for (std::size_t index = 0U; index < expectedEntryPaths.size(); ++index)
+    {
+        require(bundle.manifest_entries()[index].relativePath == expectedEntryPaths[index]);
+    }
     require(find_entry(bundle, "environment.json") != nullptr);
     require(find_entry(bundle, "environment.json")->collected);
     require(find_entry(bundle, "artifact.json") != nullptr);
@@ -222,9 +231,49 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     unknownDiagnosticToolInput.environment->diagnostics.front().tool = static_cast<cue::BuildToolKind>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownDiagnosticToolInput, limits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput unknownEnvironmentSupportInput = input;
+    unknownEnvironmentSupportInput.environment->support = static_cast<cue::BuildEnvironmentSupport>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownEnvironmentSupportInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownDiagnosticSupportInput = input;
+    unknownDiagnosticSupportInput.environment->diagnostics.front().support =
+        static_cast<cue::BuildEnvironmentSupport>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownDiagnosticSupportInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownArchitectureInput = input;
+    unknownArchitectureInput.environment->selectedTools.front().architecture =
+        static_cast<cue::BuildArchitecture>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownArchitectureInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownConfigurationInput = input;
+    unknownConfigurationInput.environment->supportedConfigurations.front() = static_cast<cue::BuildConfiguration>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownConfigurationInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput knownArchitectureInput = input;
+    knownArchitectureInput.environment->selectedTools.front().architecture = cue::BuildArchitecture::X86;
+    require(
+        bundle_text(take_value(cue::create_build_diagnostic_bundle(knownArchitectureInput, limits, a_assertContext)))
+            .find("\"architecture\":\"x86\"") != std::string::npos);
+
     cue::BuildDiagnosticBundleInput unknownStateInput = input;
     unknownStateInput.operation.state = static_cast<cue::GameBuildOperationState>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownStateInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownStageInput = input;
+    unknownStageInput.operation.stages.front().stage = static_cast<cue::BuildStage>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownStageInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownStageOutcomeInput = input;
+    unknownStageOutcomeInput.operation.stages.front().outcome = static_cast<cue::BuildStageOutcome>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownStageOutcomeInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput inconsistentStageInput = input;
+    inconsistentStageInput.operation.stages.front().exitCode.reset();
+    require(!cue::create_build_diagnostic_bundle(inconsistentStageInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput invalidUtf8LogInput = input;
+    invalidUtf8LogInput.operation.logs.front().bytes = std::string("\xC3", 1U);
+    require(!cue::create_build_diagnostic_bundle(invalidUtf8LogInput, limits, a_assertContext).has_value());
 
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
@@ -241,6 +290,25 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(reloaded.operation_id() == bundle.operation_id());
     require(reloaded.state() == bundle.state());
     require(reloaded.manifest_entries().size() == bundle.manifest_entries().size());
+
+    const auto stdoutFile =
+        std::find_if(bundle.files().begin(), bundle.files().end(),
+                     /// @brief UTF-8改変検証対象の標準出力Logを検出する
+                     [](const auto &a_file) noexcept { return a_file.relativePath == "stdout.log"; });
+    require(stdoutFile != bundle.files().end() && !stdoutFile->bytes.empty());
+    std::vector<std::byte> invalidUtf8Log = stdoutFile->bytes;
+    invalidUtf8Log.front() = std::byte{0xFFU};
+    /// @brief 標準出力LogのByte列を差替えてReaderへ渡す
+    const auto write_stdout = [&destination](std::span<const std::byte> a_bytes)
+    {
+        std::ofstream stream(destination / "stdout.log", std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char *>(a_bytes.data()), static_cast<std::streamsize>(a_bytes.size()));
+        stream.close();
+        require(stream.good());
+    };
+    write_stdout(invalidUtf8Log);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_stdout(stdoutFile->bytes);
 
     const auto planFile = std::find_if(bundle.files().begin(), bundle.files().end(),
                                        /// @brief Payload Schema改変検証対象のPlan Fileを検出する
@@ -357,6 +425,17 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     std::string mismatchedManifest = tamperedManifest;
     mismatchedManifest.replace(failedState, std::string_view("\"state\":\"failed\"").size(), "\"state\":\"cancelled\"");
     write_manifest(mismatchedManifest);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+
+    std::string reorderedManifest = tamperedManifest;
+    const std::size_t firstEntryBegin = reorderedManifest.find("{\"path\":");
+    const std::size_t firstEntryEnd = reorderedManifest.find('\n', firstEntryBegin) + 1U;
+    const std::size_t secondEntryEnd = reorderedManifest.find('\n', firstEntryEnd) + 1U;
+    require(firstEntryBegin != std::string::npos && firstEntryEnd > firstEntryBegin && secondEntryEnd > firstEntryEnd);
+    const std::string firstEntry = reorderedManifest.substr(firstEntryBegin, firstEntryEnd - firstEntryBegin);
+    const std::string secondEntry = reorderedManifest.substr(firstEntryEnd, secondEntryEnd - firstEntryEnd);
+    reorderedManifest.replace(firstEntryBegin, secondEntryEnd - firstEntryBegin, secondEntry + firstEntry);
+    write_manifest(reorderedManifest);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
 
     const std::size_t entryBegin = tamperedManifest.find("{\"path\":");

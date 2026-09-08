@@ -541,7 +541,8 @@ Build Diagnostic Bundleは、Build失敗を再現・共有するための再生�
 Schema v1はUTF-8、BOMなし、LF、末尾改行ありのJSONとLog Fileで構成する。Writerは次の固定Member順でCanonical JSONを出力し、
 Readerは各Memberの欠落、重複、未知Member、型不一致、未知列挙値、末尾Dataを拒否する。`manifest.json`はFile名、収集状態、
 Byte数、欠損理由を含み、Canonical表現とのByte完全一致を要求する。収集済みPayloadはManifestのByte数と実Fileを照合した後、
-個別Schemaも検証する。
+個別Schemaも検証する。`entries`は`artifact.json`、`environment.json`、`plan.json`、`result.json`、`stages.json`、
+`stderr.log`、`stdout.log`のPath昇順へ固定し、位置ごとの一致も検証する。
 
 | File | Schema v1の必須内容 |
 | --- | --- |
@@ -559,13 +560,19 @@ Environment診断は`code`、任意`tool`、`support`、`path`、`summary`、`re
 `CMake = 0`、`VisualStudio = 1`、`MsvcCompiler = 2`、`WindowsSdk = 3`の安定した数値値だけを許可する。
 `code`は`UnsupportedHostArchitecture = 0`、`MissingTool = 1`、`UnknownToolIdentity = 2`、`UnsupportedTool = 3`、
 `AmbiguousTool = 4`、`MissingEngineSource = 5`、`MissingEngineBinary = 6`だけを許可する。
+`support`は`supported`、`unsupported`、`unknown`、`architecture`は`unknown`、`x64`、`x86`、`arm64`、
+対応Configurationは`Debug`、`Development`、`Release`の既知値だけを許可する。
 `tool`がない診断はJSON `null`とする。Build Operation `state`は`Succeeded`、`Failed`、`Cancelled`、`TimedOut`に対応する
 `succeeded`、`failed`、`cancelled`、`timedOut`だけを許可し、実行中または未知値を保存しない。
+Stageは`configure`または`build`、Outcomeは`succeeded`、`failed`、`cancelled`、`timedOut`だけを許可する。
+成功はExit Code 0、失敗は0以外を必須とし、CancelとTimeoutはExit Codeを持たない。
 
 絶対PathはProject Root、Engine Root、選択Tool、Environment診断、およびCallerが明示したMappingをTokenへ置換する。
 未Mappingの絶対Pathを暗黙に追加せず、MappingのNative Prefixは4,096 byte、Tokenは64 byteを上限とする。NUL、Path区切りを含む
 Token、空Prefixを拒否し、借用入力を所有BufferへCopyする前に検証する。Credential名やEnvironment全体は収集しない。
 各File数、File単位Byte数、Bundle総Byte数をSerialization前から適用し、上限超過時に部分出力を公開しない。
+JSONとLogを含む全FileはStrict UTF-8として生成前と読込時に検証し、Overlong Encoding、Surrogate、範囲外Scalar、
+不完全Sequenceを拒否する。Native Tool出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
 
 `schemaVersion`は全JSONで整数`1`だけを受理する。v1 Bundleは診断用Snapshotであり、Readerは未知Versionを推測読込または
 In-place Migrationしない。Schema追加、Member意味変更、列挙値変更、Redaction契約変更は先行ADRで新Versionと互換性方針を決め、
