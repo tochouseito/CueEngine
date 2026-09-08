@@ -1,0 +1,348 @@
+#include <Cue/Build/Windows/WindowsToolchain.h>
+
+#include <Cue/Foundation/Assert.h>
+#include <Cue/Foundation/Windows/UtfConversion.h>
+
+#include <EngineBuildMetadata.h>
+
+#include <Windows.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace
+{
+/// @brief Windows Toolchain検出中の予期しない例外をFatal境界へ渡す
+[[noreturn]] void terminate_discovery_exception(const cue::AssertContext &a_assertContext) noexcept
+{
+    a_assertContext.fatal_handler().terminate("Windows build environment discovery failed unexpectedly");
+    std::abort();
+}
+
+/// @brief UTF-8 Build Metadata PathをWin32 API用UTF-16へ変換する
+[[nodiscard]] std::optional<std::wstring> to_windows_path(std::string_view a_path,
+                                                          const cue::AssertContext &a_assertContext) noexcept
+{
+    std::wstring converted;
+    const cue::WindowsUtfConversionResult result =
+        cue::convert_utf8_to_windows_utf16(a_path, converted, a_assertContext.fatal_handler());
+    if (result.status != cue::WindowsUtfConversionStatus::Success || converted.empty())
+    {
+        return std::nullopt;
+    }
+    return converted;
+}
+
+/// @brief UTF-16 Native PathをPublic Report用UTF-8へ変換する
+[[nodiscard]] std::optional<std::string> to_utf8_path(std::wstring_view a_path,
+                                                      const cue::AssertContext &a_assertContext) noexcept
+{
+    std::string converted;
+    const cue::WindowsUtfConversionResult result =
+        cue::convert_windows_utf16_to_utf8(a_path, converted, a_assertContext.fatal_handler());
+    if (result.status != cue::WindowsUtfConversionStatus::Success || converted.empty())
+    {
+        return std::nullopt;
+    }
+    return converted;
+}
+
+/// @brief File Version ResourceをTool実行なしで4要素Versionへ変換する
+[[nodiscard]] std::optional<cue::BuildToolVersion> read_file_version(const std::wstring &a_path,
+                                                                     const cue::AssertContext &a_assertContext) noexcept
+{
+    DWORD ignored = 0U;
+    const DWORD size = GetFileVersionInfoSizeW(a_path.c_str(), &ignored);
+    if (size == 0U)
+    {
+        return std::nullopt;
+    }
+    try
+    {
+        std::vector<std::byte> data(size);
+        if (GetFileVersionInfoW(a_path.c_str(), 0U, size, data.data()) == FALSE)
+        {
+            return std::nullopt;
+        }
+        VS_FIXEDFILEINFO *info = nullptr;
+        UINT infoSize = 0U;
+        if (VerQueryValueW(data.data(), L"\\", reinterpret_cast<void **>(&info), &infoSize) == FALSE ||
+            info == nullptr || infoSize < sizeof(VS_FIXEDFILEINFO) || info->dwSignature != VS_FFI_SIGNATURE)
+        {
+            return std::nullopt;
+        }
+        return cue::BuildToolVersion{HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
+                                     HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS)};
+    }
+    catch (...)
+    {
+        terminate_discovery_exception(a_assertContext);
+    }
+}
+
+/// @brief ExecutableのPE種別を実行せずPortable Architectureへ変換する
+[[nodiscard]] cue::BuildArchitecture read_binary_architecture(const std::wstring &a_path) noexcept
+{
+    DWORD type = 0U;
+    if (GetBinaryTypeW(a_path.c_str(), &type) == FALSE)
+    {
+        return cue::BuildArchitecture::Unknown;
+    }
+    return type == SCS_64BIT_BINARY ? cue::BuildArchitecture::X64 : cue::BuildArchitecture::Unknown;
+}
+
+/// @brief Engine Build Metadataで固定したExecutableを一候補として検査する
+[[nodiscard]] cue::BuildToolCandidate probe_executable(cue::BuildToolKind a_kind, std::string_view a_path,
+                                                       std::string_view a_installationRoot,
+                                                       const cue::AssertContext &a_assertContext)
+{
+    cue::BuildToolCandidate candidate;
+    candidate.kind = a_kind;
+    candidate.nativePath = a_path;
+    candidate.installationRoot = a_installationRoot;
+    const auto path = to_windows_path(a_path, a_assertContext);
+    if (!path)
+    {
+        return candidate;
+    }
+    const DWORD attributes = GetFileAttributesW(path->c_str());
+    candidate.available = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U &&
+                          (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U;
+    if (candidate.available)
+    {
+        candidate.version = read_file_version(*path, a_assertContext);
+        candidate.architecture = read_binary_architecture(*path);
+    }
+    return candidate;
+}
+
+/// @brief Dot区切りVersionを最大4要素の整数へ厳密変換する
+[[nodiscard]] std::optional<cue::BuildToolVersion> parse_version(std::string_view a_text) noexcept
+{
+    cue::BuildToolVersion version;
+    std::uint32_t *parts[] = {&version.major, &version.minor, &version.patch, &version.build};
+    std::size_t partIndex = 0U;
+    std::uint64_t value = 0U;
+    bool hasDigit = false;
+    for (std::size_t index = 0U; index <= a_text.size(); ++index)
+    {
+        if (index < a_text.size() && a_text[index] >= '0' && a_text[index] <= '9')
+        {
+            hasDigit = true;
+            value = value * 10U + static_cast<std::uint64_t>(a_text[index] - '0');
+            if (value > UINT32_MAX)
+            {
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (!hasDigit || partIndex >= 4U || (index < a_text.size() && a_text[index] != '.'))
+        {
+            return std::nullopt;
+        }
+        *parts[partIndex++] = static_cast<std::uint32_t>(value);
+        value = 0U;
+        hasDigit = false;
+    }
+    return partIndex >= 2U ? std::optional<cue::BuildToolVersion>(version) : std::nullopt;
+}
+
+/// @brief Windows Kits Installed RootsからKitsRoot10を取得する
+[[nodiscard]] std::optional<std::wstring> windows_sdk_root(const cue::AssertContext &a_assertContext) noexcept
+{
+    constexpr wchar_t subkey[] = L"SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots";
+    DWORD bytes = 0U;
+    LSTATUS status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, L"KitsRoot10", RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+    if (status != ERROR_SUCCESS || bytes < sizeof(wchar_t))
+    {
+        return std::nullopt;
+    }
+    try
+    {
+        std::vector<wchar_t> buffer(bytes / sizeof(wchar_t));
+        status = RegGetValueW(HKEY_LOCAL_MACHINE, subkey, L"KitsRoot10", RRF_RT_REG_SZ, nullptr, buffer.data(), &bytes);
+        if (status != ERROR_SUCCESS || buffer.empty())
+        {
+            return std::nullopt;
+        }
+        while (!buffer.empty() && buffer.back() == L'\0')
+        {
+            buffer.pop_back();
+        }
+        return std::wstring(buffer.begin(), buffer.end());
+    }
+    catch (...)
+    {
+        terminate_discovery_exception(a_assertContext);
+    }
+}
+
+/// @brief Engineが記録したWindows SDK VersionのHeaderとx64 Libraryを検査する
+[[nodiscard]] cue::BuildToolCandidate probe_windows_sdk(const cue::AssertContext &a_assertContext)
+{
+    cue::BuildToolCandidate candidate;
+    candidate.kind = cue::BuildToolKind::WindowsSdk;
+    const auto root = windows_sdk_root(a_assertContext);
+    const auto version = parse_version(cue::build_metadata::k_windowsSdkVersion);
+    if (!root || !version)
+    {
+        return candidate;
+    }
+    const auto windowsVersion = to_windows_path(cue::build_metadata::k_windowsSdkVersion, a_assertContext);
+    if (!windowsVersion)
+    {
+        return candidate;
+    }
+    const std::filesystem::path sdkRoot(*root);
+    const std::filesystem::path include = sdkRoot / L"Include" / *windowsVersion / L"um" / L"Windows.h";
+    const std::filesystem::path library = sdkRoot / L"Lib" / *windowsVersion / L"um" / L"x64" / L"kernel32.lib";
+    std::error_code error;
+    candidate.available = std::filesystem::is_regular_file(include, error) && !error;
+    error.clear();
+    candidate.available = candidate.available && std::filesystem::is_regular_file(library, error) && !error;
+    candidate.version = version;
+    candidate.architecture = candidate.available ? cue::BuildArchitecture::X64 : cue::BuildArchitecture::Unknown;
+    if (auto utf8 = to_utf8_path((sdkRoot / L"Include" / *windowsVersion).native(), a_assertContext))
+    {
+        candidate.nativePath = std::move(*utf8);
+    }
+    if (auto utf8 = to_utf8_path(sdkRoot.native(), a_assertContext))
+    {
+        candidate.installationRoot = std::move(*utf8);
+    }
+    return candidate;
+}
+
+/// @brief Path配下のMarkerがRegular Fileとして存在するか判定する
+[[nodiscard]] bool has_marker(std::string_view a_root, std::wstring_view a_marker,
+                              const cue::AssertContext &a_assertContext) noexcept
+{
+    const auto root = to_windows_path(a_root, a_assertContext);
+    if (!root)
+    {
+        return false;
+    }
+    std::error_code error;
+    return std::filesystem::is_regular_file(std::filesystem::path(*root) / a_marker, error) && !error;
+}
+} // namespace
+
+namespace cue
+{
+BuildEnvironmentRequirements current_windows_build_requirements(const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        BuildEnvironmentRequirements requirements;
+        requirements.hostArchitecture = BuildArchitecture::X64;
+        requirements.supportedConfigurations = {BuildConfiguration::Debug, BuildConfiguration::Development,
+                                                BuildConfiguration::Release};
+        requirements.tools.reserve(4U);
+        const auto cmakeMinimum = parse_version(build_metadata::k_cmakeMinimumVersion);
+        if (!cmakeMinimum || cmakeMinimum->major == UINT32_MAX)
+        {
+            terminate_discovery_exception(a_assertContext);
+        }
+        BuildToolVersion cmakeMaximum = *cmakeMinimum;
+        ++cmakeMaximum.major;
+        cmakeMaximum.minor = 0U;
+        cmakeMaximum.patch = 0U;
+        cmakeMaximum.build = 0U;
+        requirements.tools.push_back({BuildToolKind::CMake, *cmakeMinimum, cmakeMaximum, BuildArchitecture::X64});
+        requirements.tools.push_back({BuildToolKind::VisualStudio,
+                                      {build_metadata::k_visualStudioMajor, 0U, 0U, 0U},
+                                      {build_metadata::k_visualStudioMajor + 1U, 0U, 0U, 0U},
+                                      BuildArchitecture::X64});
+        constexpr std::uint32_t compilerMajor = _MSC_VER / 100U;
+        constexpr std::uint32_t compilerMinor = _MSC_VER % 100U;
+        requirements.tools.push_back({BuildToolKind::MsvcCompiler,
+                                      {compilerMajor, compilerMinor, 0U, 0U},
+                                      {compilerMajor, compilerMinor + 1U, 0U, 0U},
+                                      BuildArchitecture::X64});
+        const auto sdkVersion = parse_version(build_metadata::k_windowsSdkVersion);
+        if (!sdkVersion || sdkVersion->build == UINT32_MAX)
+        {
+            terminate_discovery_exception(a_assertContext);
+        }
+        BuildToolVersion sdkMaximum = *sdkVersion;
+        ++sdkMaximum.build;
+        requirements.tools.push_back({BuildToolKind::WindowsSdk, *sdkVersion, sdkMaximum, BuildArchitecture::X64});
+        return requirements;
+    }
+    catch (...)
+    {
+        terminate_discovery_exception(a_assertContext);
+    }
+}
+
+BuildEnvironmentInventory discover_current_windows_build_environment(const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        BuildEnvironmentInventory inventory;
+#if defined(_M_X64)
+        inventory.hostArchitecture = BuildArchitecture::X64;
+#else
+        inventory.hostArchitecture = BuildArchitecture::Unknown;
+#endif
+        inventory.engineSourceRoot = build_metadata::k_engineSourceRoot;
+        inventory.engineBinaryRoot = build_metadata::k_engineBinaryRoot;
+        inventory.engineSourceAvailable =
+            has_marker(inventory.engineSourceRoot, L"Engine\\Source\\GameModule\\CMakeLists.txt", a_assertContext);
+        inventory.engineBinaryAvailable = has_marker(inventory.engineBinaryRoot, L"CMakeCache.txt", a_assertContext);
+        inventory.candidates.reserve(4U);
+
+        const auto cmakeWindowsPath = to_windows_path(build_metadata::k_cmakeCommand, a_assertContext);
+        std::optional<std::string> cmakeRoot;
+        if (cmakeWindowsPath)
+        {
+            const std::filesystem::path cmakePath(*cmakeWindowsPath);
+            cmakeRoot = to_utf8_path(cmakePath.parent_path().parent_path().native(), a_assertContext);
+        }
+        inventory.candidates.push_back(probe_executable(BuildToolKind::CMake, build_metadata::k_cmakeCommand,
+                                                        cmakeRoot ? *cmakeRoot : std::string_view{}, a_assertContext));
+
+        const auto visualStudioWindowsRoot = to_windows_path(build_metadata::k_visualStudioRoot, a_assertContext);
+        std::optional<std::string> msbuildPath;
+        if (visualStudioWindowsRoot)
+        {
+            const std::filesystem::path msbuild = std::filesystem::path(*visualStudioWindowsRoot) / L"MSBuild" /
+                                                  L"Current" / L"Bin" / L"amd64" / L"MSBuild.exe";
+            msbuildPath = to_utf8_path(msbuild.native(), a_assertContext);
+        }
+        inventory.candidates.push_back(probe_executable(BuildToolKind::VisualStudio,
+                                                        msbuildPath ? *msbuildPath : std::string_view{},
+                                                        build_metadata::k_visualStudioRoot, a_assertContext));
+
+        const auto compilerWindowsPath = to_windows_path(build_metadata::k_msvcCompiler, a_assertContext);
+        std::optional<std::string> compilerRootUtf8;
+        if (compilerWindowsPath)
+        {
+            const std::filesystem::path compilerPath(*compilerWindowsPath);
+            const std::filesystem::path compilerRoot =
+                compilerPath.parent_path().parent_path().parent_path().parent_path();
+            compilerRootUtf8 = to_utf8_path(compilerRoot.native(), a_assertContext);
+        }
+        inventory.candidates.push_back(probe_executable(BuildToolKind::MsvcCompiler, build_metadata::k_msvcCompiler,
+                                                        compilerRootUtf8 ? *compilerRootUtf8 : std::string_view{},
+                                                        a_assertContext));
+        inventory.candidates.push_back(probe_windows_sdk(a_assertContext));
+        return inventory;
+    }
+    catch (...)
+    {
+        terminate_discovery_exception(a_assertContext);
+    }
+}
+
+BuildEnvironmentReport validate_current_windows_build_environment(const AssertContext &a_assertContext) noexcept
+{
+    BuildEnvironmentInventory inventory = discover_current_windows_build_environment(a_assertContext);
+    BuildEnvironmentRequirements requirements = current_windows_build_requirements(a_assertContext);
+    return validate_build_environment(inventory, requirements, a_assertContext);
+}
+} // namespace cue
