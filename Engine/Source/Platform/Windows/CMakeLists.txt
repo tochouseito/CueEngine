@@ -7,6 +7,7 @@ target_sources(
         Private/UtfConversion.h
         Private/SystemCapabilityMapper.cpp
         Private/SystemCapabilityMapper.h
+        Private/WindowsProcess.cpp
         Private/WindowsMessageSink.cpp
         Private/WindowsFileDialog.cpp
         Private/WindowsWindowInterop.cpp
@@ -23,6 +24,7 @@ target_sources(
             Public/Cue/Platform/Windows/WindowsPlatform.h
             Public/Cue/Platform/Windows/WindowsFileDialog.h
             Public/Cue/Platform/Windows/WindowsMessageSink.h
+            Public/Cue/Platform/Windows/WindowsProcess.h
             Public/Cue/Platform/Windows/WindowsWindowInterop.h
 )
 
