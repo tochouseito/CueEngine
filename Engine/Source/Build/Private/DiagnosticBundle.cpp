@@ -650,14 +650,14 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
            (a_stage.outcome != cue::BuildStageOutcome::Failed || a_stage.exitCode != 0U);
 }
 
-/// @brief 現在Operationへ属するLogのStreamとUTF-8 Byte列を検証する
+/// @brief 現在Operationへ属するLogのStream種別を検証する
 [[nodiscard]] bool valid_operation_logs(const cue::BuildOperationSnapshot &a_operation) noexcept
 {
     for (const cue::BuildLogSnapshot &log : a_operation.logs)
     {
         const bool knownStream = log.stream == cue::ChildProcessStream::StandardOutput ||
                                  log.stream == cue::ChildProcessStream::StandardError;
-        if (log.operationId == a_operation.operationId && (!knownStream || !valid_utf8(log.bytes)))
+        if (log.operationId == a_operation.operationId && !knownStream)
         {
             return false;
         }
@@ -1081,30 +1081,34 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     return std::move(output).finish();
 }
 
-/// @brief 指定Streamかつ現在Operationに属するLogをRedactして連結する
+/// @brief 指定Streamの全Chunkを上限内で連結してからUTF-8検証とRedactionを適用する
 [[nodiscard]] std::optional<std::string> serialize_log(const cue::BuildOperationSnapshot &a_operation,
                                                        cue::ChildProcessStream a_stream,
                                                        const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
                                                        std::size_t a_maximumBytes)
 {
-    std::string output;
+    std::string source;
     for (const cue::BuildLogSnapshot &log : a_operation.logs)
     {
         if (log.operationId == a_operation.operationId && log.stream == a_stream)
         {
-            if (!valid_utf8(log.bytes))
+            if (log.bytes.size() > a_maximumBytes - source.size())
             {
                 return std::nullopt;
             }
-            const std::size_t remaining = a_maximumBytes - output.size();
-            std::optional<std::string> redacted = redact_bounded(log.bytes, a_mappings, remaining);
-            if (!redacted)
-            {
-                return std::nullopt;
-            }
-            output.append(*redacted);
+            source.append(log.bytes);
         }
     }
+    if (!valid_utf8(source))
+    {
+        return std::nullopt;
+    }
+    std::optional<std::string> redacted = redact_bounded(source, a_mappings, a_maximumBytes);
+    if (!redacted)
+    {
+        return std::nullopt;
+    }
+    std::string output = std::move(*redacted);
     constexpr std::string_view byteOrderMark = "\xEF\xBB\xBF";
     if (output.starts_with(byteOrderMark))
     {
@@ -2329,8 +2333,9 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
             return Result<void>::failure(make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
                                                            "Diagnostic destination must be absolute"));
         }
+        const std::filesystem::path nativeDestination = native_inspection_path(*destination);
         std::error_code error;
-        if (std::filesystem::exists(*destination, error) || error)
+        if (std::filesystem::exists(nativeDestination, error) || error)
         {
             return Result<void>::failure(make_bundle_error(a_assertContext,
                                                            error ? BuildDiagnosticBundleError::FilesystemFailure
@@ -2344,7 +2349,8 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
             return Result<void>::failure(make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
                                                            "Diagnostic destination has no parent or name"));
         }
-        std::filesystem::create_directories(parent, error);
+        const std::filesystem::path nativeParent = native_inspection_path(parent);
+        std::filesystem::create_directories(nativeParent, error);
         if (error)
         {
             return Result<void>::failure(make_bundle_error(a_assertContext,
@@ -2359,8 +2365,9 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
         }
         std::filesystem::path staging = parent / name;
         staging += *stagingSuffix;
-        if (std::filesystem::exists(staging, error) || error || !std::filesystem::create_directory(staging, error) ||
-            error)
+        const std::filesystem::path nativeStaging = native_inspection_path(staging);
+        if (std::filesystem::exists(nativeStaging, error) || error ||
+            !std::filesystem::create_directory(nativeStaging, error) || error)
         {
             return Result<void>::failure(make_bundle_error(a_assertContext,
                                                            BuildDiagnosticBundleError::FilesystemFailure,
@@ -2373,7 +2380,7 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
             std::error_code cleanupError;
             if (stagingOwned)
             {
-                std::filesystem::remove_all(staging, cleanupError);
+                std::filesystem::remove_all(nativeStaging, cleanupError);
             }
             return Result<void>::failure(make_bundle_error(a_assertContext, a_code, a_summary));
         };
@@ -2383,7 +2390,7 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
             {
                 return fail(BuildDiagnosticBundleError::InvalidBundle, "Diagnostic bundle path is invalid");
             }
-            std::ofstream stream(staging / file.relativePath, std::ios::binary | std::ios::trunc);
+            std::ofstream stream(nativeStaging / file.relativePath, std::ios::binary | std::ios::trunc);
             stream.write(reinterpret_cast<const char *>(file.bytes.data()),
                          static_cast<std::streamsize>(file.bytes.size()));
             stream.flush();
@@ -2392,11 +2399,11 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
                 return fail(BuildDiagnosticBundleError::FilesystemFailure, "Diagnostic file write failed");
             }
         }
-        std::filesystem::rename(staging, *destination, error);
+        std::filesystem::rename(nativeStaging, nativeDestination, error);
         if (error)
         {
             std::error_code destinationError;
-            const bool destinationExists = std::filesystem::exists(*destination, destinationError);
+            const bool destinationExists = std::filesystem::exists(nativeDestination, destinationError);
             return fail(destinationExists && !destinationError ? BuildDiagnosticBundleError::DestinationAlreadyExists
                                                                : BuildDiagnosticBundleError::FilesystemFailure,
                         "Diagnostic destination could not be published");

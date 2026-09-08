@@ -362,17 +362,32 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
         longDestination /= L"LongPathComponent-0123456789012345678901234567890123456789";
     }
     longDestination /= destination.filename();
-    std::filesystem::create_directories(native_test_path(longDestination.parent_path()), cleanupError);
-    require(!cleanupError);
-    std::filesystem::copy(destination, native_test_path(longDestination), std::filesystem::copy_options::recursive,
-                          cleanupError);
-    require(!cleanupError);
+    std::filesystem::remove_all(native_test_path(longDestination.parent_path()), cleanupError);
+    require(!cleanupError &&
+            cue::write_build_diagnostic_bundle_directory(bundle, generic_utf8_path(longDestination), a_assertContext)
+                .has_value());
     cue::BuildDiagnosticBundle longPathReloaded = take_value(
         cue::read_build_diagnostic_bundle_directory(generic_utf8_path(longDestination), limits, a_assertContext));
     require(longPathReloaded.operation_id() == bundle.operation_id());
     std::filesystem::remove_all(native_test_path(longDestination.parent_path()), cleanupError);
     require(!cleanupError);
 #endif
+
+    cue::BuildOperationSnapshot splitLogOperation = input.operation;
+    splitLogOperation.logs = {{std::string(input.operation.operationId), cue::BuildStage::Build, 0U,
+                               cue::ChildProcessStream::StandardOutput, "prefix C:/Users/Tes"},
+                              {std::string(input.operation.operationId), cue::BuildStage::Build, 1U,
+                               cue::ChildProcessStream::StandardOutput, "ter/Compiler.exe\n"},
+                              {std::string(input.operation.operationId), cue::BuildStage::Build, 2U,
+                               cue::ChildProcessStream::StandardError, std::string("UTF-8: ") + "\xE6\x97"},
+                              {std::string(input.operation.operationId), cue::BuildStage::Build, 3U,
+                               cue::ChildProcessStream::StandardError, std::string("\xA5\xE6\x9C\xAC\n")}};
+    cue::BuildDiagnosticBundleInput splitLogInput = input;
+    splitLogInput.operation = std::move(splitLogOperation);
+    cue::BuildDiagnosticBundle splitLogBundle =
+        take_value(cue::create_build_diagnostic_bundle(splitLogInput, limits, a_assertContext));
+    require(file_text(*find_file(splitLogBundle, "stdout.log")) == "prefix <USER_HOME>/Compiler.exe\n");
+    require(file_text(*find_file(splitLogBundle, "stderr.log")) == "UTF-8: 日本\n");
 
     const std::filesystem::path linkedSource = destination.parent_path() / "CueBuildDiagnosticBundleSourceLink";
     std::filesystem::remove(linkedSource, cleanupError);

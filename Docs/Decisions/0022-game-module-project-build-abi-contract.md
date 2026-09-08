@@ -577,11 +577,12 @@ Token、空Prefixを拒否し、借用入力を所有BufferへCopyする前に�
 明示Mappingと自動Mapping候補の合計件数は設定上限を所有Vector確保前に適用する。各File数、File単位Byte数、Bundle総Byte数を
 Serialization前から適用し、上限超過時に部分出力を公開しない。
 JSONとLogを含む全FileはStrict UTF-8として生成前と読込時に検証し、Overlong Encoding、Surrogate、範囲外Scalar、
-不完全Sequenceを拒否する。Native Tool出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
+不完全Sequenceを拒否する。LogはOS Read Chunk境界ではなく同じStreamの連結後Byte列を検証・Token化する。Native Tool
+出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
 Log先頭のUTF-8 BOMは除去し、CRLFと単独CRはLFへ正規化し、空Logを含め末尾LFを保証する。ReaderはBOM、CR、
 末尾LF欠落を拒否する。Bundle Source Directory自身と配下Entryは、WindowsではExtended-length Native Pathへ
 変換して`FILE_ATTRIBUTE_REPARSE_POINT`を明示検査し、Tagの種類に関係なく追跡せず拒否する。列挙とFile読込も
-同じNative Pathを使用し、`MAX_PATH`を超える有効な絶対Pathを短いPathと同じ契約で扱う。
+同じNative Pathを使用し、WriterのDestination／Stagingも含め`MAX_PATH`を超える有効な絶対Pathを短いPathと同じ契約で扱う。
 
 `schemaVersion`は全JSONで整数`1`だけを受理する。v1 Bundleは診断用Snapshotであり、Readerは未知Versionを推測読込または
 In-place Migrationしない。Schema追加、Member意味変更、列挙値変更、Redaction契約変更は先行ADRで新Versionと互換性方針を決め、
