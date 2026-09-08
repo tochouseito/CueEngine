@@ -135,7 +135,10 @@ void append_byte_escape(std::string &a_output, unsigned char a_value)
            a_value == 0x8E2U || a_value == 0x180EU || (a_value >= 0x200BU && a_value <= 0x200FU) ||
            (a_value >= 0x2028U && a_value <= 0x202EU) || (a_value >= 0x2060U && a_value <= 0x206FU) ||
            a_value == 0xFEFFU || (a_value >= 0xFFF9U && a_value <= 0xFFFBU) || a_value == 0x110BDU ||
-           a_value == 0x110CDU || a_value == 0xE0001U || (a_value >= 0xE0020U && a_value <= 0xE007FU);
+           a_value == 0x110CDU || (a_value >= 0x13430U && a_value <= 0x1343FU) ||
+           (a_value >= 0x1BCA0U && a_value <= 0x1BCA3U) ||
+           (a_value >= 0x1D173U && a_value <= 0x1D17AU) || a_value == 0xE0001U ||
+           (a_value >= 0xE0020U && a_value <= 0xE007FU);
 }
 
 /// @brief Unicode ScalarをASCIIだけの固定幅Escapeへ追加する

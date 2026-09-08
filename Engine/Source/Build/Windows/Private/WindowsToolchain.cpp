@@ -252,7 +252,7 @@ namespace
 
 /// @brief Path配下のMarkerがRegular Fileとして存在するか判定する
 [[nodiscard]] bool has_marker(std::string_view a_root, std::wstring_view a_marker,
-                              const cue::AssertContext &a_assertContext) noexcept
+                              const cue::AssertContext &a_assertContext)
 {
     const auto root = to_windows_path(a_root, a_assertContext);
     if (!root)

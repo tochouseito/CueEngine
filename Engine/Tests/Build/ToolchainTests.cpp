@@ -132,8 +132,11 @@ class TestFatalHandler final : public cue::FatalHandler
 [[nodiscard]] bool test_safe_path_format(const cue::AssertContext &a_assertContext)
 {
     const std::string formatted =
-        cue::format_native_path_for_log("C:\\Tool\n\"bad\"\x01\xC2\x85\xE2\x80\xA8\xE2\x80\xAE", a_assertContext);
-    return formatted == "\"C:\\\\Tool\\n\\\"bad\\\"\\x01\\u{0085}\\u{2028}\\u{202E}\"";
+        cue::format_native_path_for_log("C:\\Tool\n\"bad\"\x01\xC2\x85\xE2\x80\xA8\xE2\x80\xAE"
+                                        "\xF0\x93\x90\xB0\xF0\x9B\xB2\xA0\xF0\x9D\x85\xB3",
+                                        a_assertContext);
+    return formatted ==
+           "\"C:\\\\Tool\\n\\\"bad\\\"\\x01\\u{0085}\\u{2028}\\u{202E}\\u{013430}\\u{01BCA0}\\u{01D173}\"";
 }
 
 /// @brief Command Lineの各Argumentが境界を保ってLog用にEscapeされるか検証する
