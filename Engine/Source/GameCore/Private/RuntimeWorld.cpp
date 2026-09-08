@@ -9,40 +9,33 @@
 
 namespace cue::game_core
 {
-std::unique_ptr<RuntimeWorld> RuntimeWorld::create(
-    WorldIdentitySource &a_identitySource,
-    const schema::SchemaRegistry &a_schemaRegistry,
-    schema::TypeId a_transformTypeId,
-    const AssertContext &a_assertContext) noexcept
+std::unique_ptr<RuntimeWorld> RuntimeWorld::create(WorldIdentitySource &a_identitySource,
+                                                   const schema::SchemaRegistry &a_schemaRegistry,
+                                                   schema::TypeId a_transformTypeId,
+                                                   const AssertContext &a_assertContext) noexcept
 {
     try
     {
-        return std::make_unique<RuntimeWorld>(
-            ConstructionKey{}, a_identitySource, a_schemaRegistry,
-            std::move(a_transformTypeId), a_assertContext);
+        return std::make_unique<RuntimeWorld>(ConstructionKey{}, a_identitySource, a_schemaRegistry,
+                                              std::move(a_transformTypeId), a_assertContext);
     }
     catch (const std::bad_alloc &)
     {
-        a_assertContext.fatal_handler().terminate(
-            "Cue.GameCore runtime world allocation failed");
+        a_assertContext.fatal_handler().terminate("Cue.GameCore runtime world allocation failed");
     }
     catch (...)
     {
-        a_assertContext.fatal_handler().terminate(
-            "Cue.GameCore runtime world construction failed");
+        a_assertContext.fatal_handler().terminate("Cue.GameCore runtime world construction failed");
     }
 
     std::terminate();
 }
 
-RuntimeWorld::RuntimeWorld(
-    ConstructionKey, WorldIdentitySource &a_identitySource,
-    const schema::SchemaRegistry &a_schemaRegistry,
-    schema::TypeId a_transformTypeId,
-    const AssertContext &a_assertContext) noexcept
+RuntimeWorld::RuntimeWorld(ConstructionKey, WorldIdentitySource &a_identitySource,
+                           const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
+                           const AssertContext &a_assertContext) noexcept
     : m_identitySource(&a_identitySource), m_schemaRegistry(&a_schemaRegistry),
-      m_transformTypeId(std::move(a_transformTypeId)),
-      m_assertContext(&a_assertContext),
+      m_transformTypeId(std::move(a_transformTypeId)), m_assertContext(&a_assertContext),
       m_ownerThread(std::this_thread::get_id())
 {
 }
@@ -50,6 +43,13 @@ RuntimeWorld::RuntimeWorld(
 RuntimeWorld::~RuntimeWorld() noexcept
 {
     assert_owner_thread();
+    CUE_ASSERT(*m_assertContext, !m_isSystemCallbackActive,
+               "Cue.GameCore runtime world destruction is forbidden during a system callback");
+    if (m_isSystemCallbackActive)
+    {
+        m_assertContext->fatal_handler().terminate(
+            "Cue.GameCore runtime world destruction is forbidden during a system callback");
+    }
     release_owned_state();
     m_state = RuntimeWorldState::Shutdown;
 }
@@ -57,15 +57,18 @@ RuntimeWorld::~RuntimeWorld() noexcept
 Result<void> RuntimeWorld::initialize() noexcept
 {
     assert_owner_thread();
+    Result<void> lifecycleValidation = validate_lifecycle_mutation();
+    if (!lifecycleValidation)
+    {
+        return lifecycleValidation;
+    }
 
     if (m_state != RuntimeWorldState::Initializing)
     {
-        return Result<void>::failure(
-            make_state_error("Runtime world can only initialize once"));
+        return Result<void>::failure(make_state_error("Runtime world can only initialize once"));
     }
 
-    auto worldResult = World::create(*m_identitySource, *m_schemaRegistry,
-                                     *m_assertContext);
+    auto worldResult = World::create(*m_identitySource, *m_schemaRegistry, *m_assertContext);
 
     if (!worldResult)
     {
@@ -74,8 +77,7 @@ Result<void> RuntimeWorld::initialize() noexcept
     }
 
     m_world = std::move(*worldResult.try_value());
-    auto transformResult =
-        m_world->register_component<math::Transform>(m_transformTypeId);
+    auto transformResult = m_world->register_component<math::Transform>(m_transformTypeId);
 
     if (!transformResult)
     {
@@ -89,8 +91,7 @@ Result<void> RuntimeWorld::initialize() noexcept
 
     try
     {
-        m_commandBuffer =
-            std::make_unique<StructuralCommandBuffer>(*m_world);
+        m_commandBuffer = std::make_unique<StructuralCommandBuffer>(*m_world);
     }
     catch (const std::bad_alloc &)
     {
@@ -108,6 +109,11 @@ Result<void> RuntimeWorld::initialize() noexcept
 Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
 {
     assert_owner_thread();
+    Result<void> lifecycleValidation = validate_lifecycle_mutation();
+    if (!lifecycleValidation)
+    {
+        return Result<StructuralCommandReport>::failure(std::move(*lifecycleValidation.try_error()));
+    }
 
     if (!is_operational())
     {
@@ -123,8 +129,7 @@ Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
 
         if (!shutdownResult)
         {
-            return Result<StructuralCommandReport>::failure(
-                std::move(*shutdownResult.try_error()));
+            return Result<StructuralCommandReport>::failure(std::move(*shutdownResult.try_error()));
         }
     }
 
@@ -134,17 +139,20 @@ Result<StructuralCommandReport> RuntimeWorld::tick() noexcept
 Result<void> RuntimeWorld::request_stop() noexcept
 {
     assert_owner_thread();
+    Result<void> lifecycleValidation = validate_lifecycle_mutation();
+    if (!lifecycleValidation)
+    {
+        return lifecycleValidation;
+    }
 
-    if (m_state == RuntimeWorldState::Stopping ||
-        m_state == RuntimeWorldState::Shutdown)
+    if (m_state == RuntimeWorldState::Stopping || m_state == RuntimeWorldState::Shutdown)
     {
         return Result<void>::success();
     }
 
     if (m_state != RuntimeWorldState::Running)
     {
-        return Result<void>::failure(
-            make_state_error("Runtime world stop requires Running"));
+        return Result<void>::failure(make_state_error("Runtime world stop requires Running"));
     }
 
     m_state = RuntimeWorldState::Stopping;
@@ -154,6 +162,11 @@ Result<void> RuntimeWorld::request_stop() noexcept
 Result<void> RuntimeWorld::shutdown() noexcept
 {
     assert_owner_thread();
+    Result<void> lifecycleValidation = validate_lifecycle_mutation();
+    if (!lifecycleValidation)
+    {
+        return lifecycleValidation;
+    }
 
     if (m_state == RuntimeWorldState::Shutdown)
     {
@@ -192,27 +205,57 @@ StructuralCommandBuffer *RuntimeWorld::try_command_buffer() noexcept
 const ComponentType<math::Transform> *RuntimeWorld::try_transform_type() const noexcept
 {
     assert_owner_thread();
-    return is_operational() && m_transformType.has_value()
-               ? &m_transformType.value()
-               : nullptr;
+    return is_operational() && m_transformType.has_value() ? &m_transformType.value() : nullptr;
 }
 
 bool RuntimeWorld::is_operational() const noexcept
 {
-    return m_state == RuntimeWorldState::Running ||
-           m_state == RuntimeWorldState::Stopping;
+    return m_state == RuntimeWorldState::Running || m_state == RuntimeWorldState::Stopping;
+}
+
+void RuntimeWorld::begin_system_callback_lease() noexcept
+{
+    assert_owner_thread();
+    CUE_ASSERT(*m_assertContext, !m_isSystemCallbackActive,
+               "Cue.GameCore runtime world system callback lease must not be nested");
+    if (m_isSystemCallbackActive)
+    {
+        m_assertContext->fatal_handler().terminate(
+            "Cue.GameCore runtime world system callback lease must not be nested");
+    }
+    m_isSystemCallbackActive = true;
+}
+
+void RuntimeWorld::end_system_callback_lease() noexcept
+{
+    assert_owner_thread();
+    CUE_ASSERT(*m_assertContext, m_isSystemCallbackActive,
+               "Cue.GameCore runtime world system callback lease is not active");
+    if (!m_isSystemCallbackActive)
+    {
+        m_assertContext->fatal_handler().terminate("Cue.GameCore runtime world system callback lease is not active");
+    }
+    m_isSystemCallbackActive = false;
+}
+
+Result<void> RuntimeWorld::validate_lifecycle_mutation() const noexcept
+{
+    if (m_isSystemCallbackActive)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime world lifecycle cannot change during a system callback"));
+    }
+    return Result<void>::success();
 }
 
 void RuntimeWorld::assert_owner_thread() const noexcept
 {
     const bool isOwner = std::this_thread::get_id() == m_ownerThread;
-    CUE_ASSERT(*m_assertContext, isOwner,
-               "Cue.GameCore runtime world API requires its owner thread");
+    CUE_ASSERT(*m_assertContext, isOwner, "Cue.GameCore runtime world API requires its owner thread");
 
     if (!isOwner)
     {
-        m_assertContext->fatal_handler().terminate(
-            "Cue.GameCore runtime world API requires its owner thread");
+        m_assertContext->fatal_handler().terminate("Cue.GameCore runtime world API requires its owner thread");
     }
 }
 
@@ -230,22 +273,18 @@ void RuntimeWorld::release_owned_state() noexcept
 
 Error RuntimeWorld::make_state_error(std::string_view a_summary) const noexcept
 {
-    return make_game_core_error(*m_assertContext,
-                                GameCoreError::InvalidRuntimeState,
-                                a_summary);
+    return make_game_core_error(*m_assertContext, GameCoreError::InvalidRuntimeState, a_summary);
 }
 
 [[noreturn]] void RuntimeWorld::terminate_allocation() noexcept
 {
     release_owned_state();
-    m_assertContext->fatal_handler().terminate(
-        "Cue.GameCore runtime world allocation failed");
+    m_assertContext->fatal_handler().terminate("Cue.GameCore runtime world allocation failed");
 }
 
 [[noreturn]] void RuntimeWorld::terminate_exception() noexcept
 {
     release_owned_state();
-    m_assertContext->fatal_handler().terminate(
-        "Cue.GameCore runtime world caught an unexpected exception");
+    m_assertContext->fatal_handler().terminate("Cue.GameCore runtime world caught an unexpected exception");
 }
 } // namespace cue::game_core

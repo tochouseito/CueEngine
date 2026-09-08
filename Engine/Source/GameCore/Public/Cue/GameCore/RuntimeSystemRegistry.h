@@ -78,7 +78,7 @@ class RuntimeSystemRegistry final
     [[nodiscard]] Result<void> validate_runtime_world(RuntimeWorld &a_runtimeWorld, bool a_requiresRunning,
                                                       const RuntimeWorld *a_expectedRuntimeWorld) const noexcept;
     /// @brief 開始済みSystemを依存先保持付きで逆順停止する
-    [[nodiscard]] Result<void> stop_started(RuntimeSystemContext &a_context) noexcept;
+    [[nodiscard]] Result<void> stop_started(RuntimeWorld &a_runtimeWorld, RuntimeSystemContext &a_context) noexcept;
     /// @brief 指定Systemを必要とする未停止Systemが残る場合にtrueを返す
     [[nodiscard]] bool has_live_dependent(std::string_view a_systemId) const noexcept;
     /// @brief Assertを再入せず現在の開始済みSystem数を数える

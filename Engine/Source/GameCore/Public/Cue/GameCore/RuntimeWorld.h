@@ -54,15 +54,15 @@ class RuntimeWorld final
     };
 
     /// @brief 呼び出し Thread を Owner とする初期化前の Headless Runtime World 所有者を生成する
-    /// @param a_identitySource Process 全体で共有し全 RuntimeWorld、発行済み EntityHandle、ComponentType より長く生存する発行元
+    /// @param a_identitySource Process 全体で共有し全 RuntimeWorld、発行済み EntityHandle、ComponentType
+    /// より長く生存する発行元
     /// @param a_schemaRegistry RuntimeWorld より長く生存する Seal 済み Schema Registry
     /// @param a_transformTypeId Core Transform を識別する登録済み Schema Type
     /// @param a_assertContext RuntimeWorld より長く生存する非所有診断 Context
-    [[nodiscard]] static std::unique_ptr<RuntimeWorld> create(
-        WorldIdentitySource &a_identitySource,
-        const schema::SchemaRegistry &a_schemaRegistry,
-        schema::TypeId a_transformTypeId,
-        const AssertContext &a_assertContext) noexcept;
+    [[nodiscard]] static std::unique_ptr<RuntimeWorld> create(WorldIdentitySource &a_identitySource,
+                                                              const schema::SchemaRegistry &a_schemaRegistry,
+                                                              schema::TypeId a_transformTypeId,
+                                                              const AssertContext &a_assertContext) noexcept;
 
     /// @brief Factory を通らない Runtime World 生成を禁止する
     RuntimeWorld() = delete;
@@ -78,10 +78,8 @@ class RuntimeWorld final
     ~RuntimeWorld() noexcept;
 
     /// @brief Factory が保持する外部寿命と Transform Schema Type を固定する
-    RuntimeWorld(ConstructionKey, WorldIdentitySource &a_identitySource,
-                 const schema::SchemaRegistry &a_schemaRegistry,
-                 schema::TypeId a_transformTypeId,
-                 const AssertContext &a_assertContext) noexcept;
+    RuntimeWorld(ConstructionKey, WorldIdentitySource &a_identitySource, const schema::SchemaRegistry &a_schemaRegistry,
+                 schema::TypeId a_transformTypeId, const AssertContext &a_assertContext) noexcept;
 
     /// @brief ECS World、Core Transform、Command Buffer を順に初期化する
     [[nodiscard]] Result<void> initialize() noexcept;
@@ -108,8 +106,16 @@ class RuntimeWorld final
     [[nodiscard]] const ComponentType<math::Transform> *try_transform_type() const noexcept;
 
   private:
+    friend class RuntimeSystemRegistry;
+
     /// @brief Runtime World API を生成 Thread へ限定して Data Race を防ぐ
     void assert_owner_thread() const noexcept;
+    /// @brief System Callback中にWorld Lifecycleを固定するLeaseを開始する
+    void begin_system_callback_lease() noexcept;
+    /// @brief System Callback完了後にWorld Lifecycle固定Leaseを終了する
+    void end_system_callback_lease() noexcept;
+    /// @brief System Callback中のWorld Lifecycle変更を回復可能Errorとして拒否する
+    [[nodiscard]] Result<void> validate_lifecycle_mutation() const noexcept;
     /// @brief 現在 State が Tick と Runtime Data 参照を許可するか返す
     [[nodiscard]] bool is_operational() const noexcept;
     /// @brief Command Buffer、Transform Token、World を構築の逆順で解放する
@@ -127,6 +133,7 @@ class RuntimeWorld final
     const AssertContext *m_assertContext;
     std::thread::id m_ownerThread;
     RuntimeWorldState m_state = RuntimeWorldState::Initializing;
+    bool m_isSystemCallbackActive = false;
     std::unique_ptr<World> m_world;
     std::optional<ComponentType<math::Transform>> m_transformType;
     std::unique_ptr<StructuralCommandBuffer> m_commandBuffer;

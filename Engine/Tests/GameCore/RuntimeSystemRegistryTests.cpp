@@ -185,6 +185,7 @@ class ReentrantSystem final : public cue::game_core::RuntimeSystem
     /// @brief Start Callback中のStop再入が状態Errorとして拒否されたことを記録する
     [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
     {
+        m_startWorldShutdownRejected = is_world_mutation_rejected(m_runtime->shutdown());
         m_startRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
         return cue::Result<void>::success();
     }
@@ -192,6 +193,7 @@ class ReentrantSystem final : public cue::game_core::RuntimeSystem
     /// @brief Update Callback中のStop再入が状態Errorとして拒否されたことを記録する
     [[nodiscard]] cue::Result<void> update(const cue::game_core::RuntimeSystemUpdateContext &) noexcept override
     {
+        m_updateWorldShutdownRejected = is_world_mutation_rejected(m_runtime->shutdown());
         m_updateRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
         return cue::Result<void>::success();
     }
@@ -199,6 +201,7 @@ class ReentrantSystem final : public cue::game_core::RuntimeSystem
     /// @brief Stop Callback中のStop再入が状態Errorとして拒否されたことを記録する
     [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
     {
+        m_stopWorldShutdownRejected = is_world_mutation_rejected(m_runtime->shutdown());
         m_stopRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
         return cue::Result<void>::success();
     }
@@ -206,7 +209,8 @@ class ReentrantSystem final : public cue::game_core::RuntimeSystem
     /// @brief 全Lifecycle Callbackの再入が拒否された場合にtrueを返す
     [[nodiscard]] bool rejected_all_reentry() const noexcept
     {
-        return m_startRejected && m_updateRejected && m_stopRejected;
+        return m_startRejected && m_updateRejected && m_stopRejected && m_startWorldShutdownRejected &&
+               m_updateWorldShutdownRejected && m_stopWorldShutdownRejected;
     }
 
   private:
@@ -218,11 +222,22 @@ class ReentrantSystem final : public cue::game_core::RuntimeSystem
                    static_cast<std::int64_t>(cue::game_core::GameCoreError::InvalidSystemRegistryState);
     }
 
+    /// @brief Callback中のRuntimeWorld終了が状態Errorの場合にtrueを返す
+    [[nodiscard]] static bool is_world_mutation_rejected(const cue::Result<void> &a_result) noexcept
+    {
+        return !a_result && a_result.try_error()->code().domain() == "Cue.GameCore" &&
+               a_result.try_error()->code().value() ==
+                   static_cast<std::int64_t>(cue::game_core::GameCoreError::InvalidRuntimeState);
+    }
+
     cue::game_core::RuntimeSystemRegistry *m_registry;
     cue::game_core::RuntimeWorld *m_runtime;
     bool m_startRejected = false;
     bool m_updateRejected = false;
     bool m_stopRejected = false;
+    bool m_startWorldShutdownRejected = false;
+    bool m_updateWorldShutdownRejected = false;
+    bool m_stopWorldShutdownRejected = false;
 };
 
 /// @brief Test用Loggerを追加Sinkなしで生成する

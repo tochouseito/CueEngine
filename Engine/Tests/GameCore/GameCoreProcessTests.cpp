@@ -110,6 +110,38 @@ class RegistryDestroyingSystem final : public cue::game_core::RuntimeSystem
     std::unique_ptr<cue::game_core::RuntimeSystemRegistry> *m_registryOwner;
 };
 
+class RuntimeWorldDestroyingSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief Start Callback中にRuntimeWorld Ownerを破棄する検証対象を構築する
+    explicit RuntimeWorldDestroyingSystem(std::unique_ptr<cue::game_core::RuntimeWorld> &a_runtimeOwner) noexcept
+        : m_runtimeOwner(&a_runtimeOwner)
+    {
+    }
+
+    /// @brief Callback Lease中のRuntimeWorldをOwner経由で破棄してDestructor契約を検証する
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        m_runtimeOwner->reset();
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 本Scenarioでは到達しないUpdateを成功として定義する
+    [[nodiscard]] cue::Result<void> update(const cue::game_core::RuntimeSystemUpdateContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 本Scenarioでは到達しないStopを成功として定義する
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        return cue::Result<void>::success();
+    }
+
+  private:
+    std::unique_ptr<cue::game_core::RuntimeWorld> *m_runtimeOwner;
+};
+
 /// @brief Test用の検証済みTypeIdを生成する
 [[nodiscard]] cue::schema::TypeId make_type_id(std::string_view a_text, const cue::AssertContext &a_assertContext)
 {
@@ -214,7 +246,7 @@ class RegistryDestroyingSystem final : public cue::game_core::RuntimeSystem
         return 6;
     }
 
-    if (a_mode == "RuntimeSystemRegistryCallbackDestruction")
+    if (a_mode == "RuntimeSystemRegistryCallbackDestruction" || a_mode == "RuntimeWorldCallbackDestruction")
     {
         auto runtime = cue::game_core::RuntimeWorld::create(worldIdentitySource, **registry.try_value(),
                                                             transformTypeId, assertContext);
@@ -226,7 +258,15 @@ class RegistryDestroyingSystem final : public cue::game_core::RuntimeSystem
         auto systemRegistry = std::make_unique<cue::game_core::RuntimeSystemRegistry>(assertContext);
         cue::game_core::RuntimeSystemDescriptor systemDescriptor;
         systemDescriptor.id = "destroying";
-        auto system = std::make_unique<RegistryDestroyingSystem>(systemRegistry);
+        std::unique_ptr<cue::game_core::RuntimeSystem> system;
+        if (a_mode == "RuntimeSystemRegistryCallbackDestruction")
+        {
+            system = std::make_unique<RegistryDestroyingSystem>(systemRegistry);
+        }
+        else
+        {
+            system = std::make_unique<RuntimeWorldDestroyingSystem>(runtime);
+        }
         if (!systemRegistry->register_system(std::move(systemDescriptor), std::move(system)) || !systemRegistry->seal())
         {
             return 16;
@@ -234,7 +274,8 @@ class RegistryDestroyingSystem final : public cue::game_core::RuntimeSystem
 
         auto start = systemRegistry->start(*runtime);
         static_cast<void>(start);
-        return 0;
+        static_cast<void>(systemRegistry.release());
+        std::_Exit(0);
     }
 
     auto componentType = (*world.try_value())->register_component<ReentrantDestructorComponent>(typeId);

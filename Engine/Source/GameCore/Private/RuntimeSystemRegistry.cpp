@@ -258,15 +258,17 @@ Result<void> RuntimeSystemRegistry::start(RuntimeWorld &a_runtimeWorld) noexcept
     for (std::size_t entryIndex : m_executionOrder)
     {
         Entry &entry = *m_entries[entryIndex];
+        a_runtimeWorld.begin_system_callback_lease();
         m_isInvokingCallback = true;
         Result<void> result = entry.system->start(context);
         m_isInvokingCallback = false;
+        a_runtimeWorld.end_system_callback_lease();
         if (!result)
         {
             Error primary = reclassify_system_error(*m_assertContext, GameCoreError::SystemStartFailed,
                                                     "Runtime system start failed", entry.descriptor.id,
                                                     std::move(*result.try_error()));
-            Result<void> rollback = stop_started(context);
+            Result<void> rollback = stop_started(a_runtimeWorld, context);
             if (!rollback)
             {
                 primary.append_secondary_diagnostics(*m_assertContext, *rollback.try_error(),
@@ -307,9 +309,11 @@ Result<void> RuntimeSystemRegistry::update(RuntimeWorld &a_runtimeWorld, const U
     for (std::size_t entryIndex : m_executionOrder)
     {
         Entry &entry = *m_entries[entryIndex];
+        a_runtimeWorld.begin_system_callback_lease();
         m_isInvokingCallback = true;
         Result<void> result = entry.system->update(context);
         m_isInvokingCallback = false;
+        a_runtimeWorld.end_system_callback_lease();
         if (!result)
         {
             Error error = reclassify_system_error(*m_assertContext, GameCoreError::SystemUpdateFailed,
@@ -351,7 +355,7 @@ Result<void> RuntimeSystemRegistry::stop(RuntimeWorld &a_runtimeWorld) noexcept
     }
 
     RuntimeSystemContext context = {*a_runtimeWorld.try_world(), *a_runtimeWorld.try_command_buffer()};
-    return stop_started(context);
+    return stop_started(a_runtimeWorld, context);
 }
 
 RuntimeSystemRegistryState RuntimeSystemRegistry::state() const noexcept
@@ -403,7 +407,7 @@ Result<void> RuntimeSystemRegistry::validate_runtime_world(RuntimeWorld &a_runti
     return Result<void>::success();
 }
 
-Result<void> RuntimeSystemRegistry::stop_started(RuntimeSystemContext &a_context) noexcept
+Result<void> RuntimeSystemRegistry::stop_started(RuntimeWorld &a_runtimeWorld, RuntimeSystemContext &a_context) noexcept
 {
     std::optional<Error> primaryError;
     for (auto iterator = m_executionOrder.rbegin(); iterator != m_executionOrder.rend(); ++iterator)
@@ -419,9 +423,11 @@ Result<void> RuntimeSystemRegistry::stop_started(RuntimeSystemContext &a_context
         }
 
         entry.state = Entry::State::StopPending;
+        a_runtimeWorld.begin_system_callback_lease();
         m_isInvokingCallback = true;
         Result<void> result = entry.system->stop(a_context);
         m_isInvokingCallback = false;
+        a_runtimeWorld.end_system_callback_lease();
         if (result)
         {
             entry.state = Entry::State::Stopped;
