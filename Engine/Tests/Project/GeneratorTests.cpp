@@ -6,6 +6,7 @@
 #include <Cue/Project/Error.h>
 #include <Cue/Project/Generator.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -44,10 +45,19 @@ enum class FailurePoint : std::uint8_t
     WriteDescriptor,
     ReadDescriptor,
     VerifyDescriptor,
+    WriteBuildFile,
+    ReadBuildFile,
+    VerifyBuildFile,
     Publish,
     Durability,
     Rollback,
     WriteDescriptorAndRollback
+};
+
+struct TestFile final
+{
+    std::string path;
+    std::vector<std::byte> bytes;
 };
 
 class GeneratorFilesystem final : public cue::FilesystemRoot
@@ -89,9 +99,12 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
         {
             return cue::Result<cue::EntryType>::success(cue::EntryType::Directory);
         }
-        if (a_path.text() == "cue-staging-test/CueProject.json" && !m_descriptor.empty())
+        for (const TestFile &file : m_files)
         {
-            return cue::Result<cue::EntryType>::success(cue::EntryType::RegularFile);
+            if (a_path.text() == file.path)
+            {
+                return cue::Result<cue::EntryType>::success(cue::EntryType::RegularFile);
+            }
         }
         return cue::Result<cue::EntryType>::success(cue::EntryType::Missing);
     }
@@ -100,28 +113,40 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file(const cue::RelativePath &a_path,
                                                                 std::size_t a_maxBytes) noexcept override
     {
-        if (a_path.text() != "cue-staging-test/CueProject.json" || m_descriptor.empty())
+        const auto file = std::find_if(m_files.begin(), m_files.end(), [&a_path](const TestFile &a_candidate)
+                                       { return a_candidate.path == a_path.text(); });
+        if (file == m_files.end())
         {
             return cue::Result<std::vector<std::byte>>::failure(
-                cue::make_io_error(*m_assertContext, cue::IoError::NotFound, "Staged descriptor was not found"));
+                cue::make_io_error(*m_assertContext, cue::IoError::NotFound, "Staged project file was not found"));
         }
-        if (m_failure == FailurePoint::ReadDescriptor)
+        if (m_failure == FailurePoint::ReadDescriptor && a_path.text() == "cue-staging-test/CueProject.json")
         {
             return cue::Result<std::vector<std::byte>>::failure(cue::make_io_error(
                 *m_assertContext, cue::IoError::IoFailure, "Injected descriptor verification read failure"));
         }
-        if (m_failure == FailurePoint::VerifyDescriptor)
+        if (m_failure == FailurePoint::VerifyDescriptor && a_path.text() == "cue-staging-test/CueProject.json")
         {
             const std::array invalid = {std::byte{'{'}};
-            return cue::Result<std::vector<std::byte>>::success(
-                std::vector<std::byte>(invalid.begin(), invalid.end()));
+            return cue::Result<std::vector<std::byte>>::success(std::vector<std::byte>(invalid.begin(), invalid.end()));
         }
-        if (m_descriptor.size() > a_maxBytes)
+        if (m_failure == FailurePoint::ReadBuildFile && a_path.text() == "cue-staging-test/Source/Game/GameModule.cpp")
         {
             return cue::Result<std::vector<std::byte>>::failure(cue::make_io_error(
-                *m_assertContext, cue::IoError::CapacityExceeded, "Staged descriptor exceeds read limit"));
+                *m_assertContext, cue::IoError::IoFailure, "Injected build file verification read failure"));
         }
-        return cue::Result<std::vector<std::byte>>::success(std::vector<std::byte>(m_descriptor));
+        if (m_failure == FailurePoint::VerifyBuildFile &&
+            a_path.text() == "cue-staging-test/Source/Game/GameModule.cpp")
+        {
+            const std::array invalid = {std::byte{'?'}};
+            return cue::Result<std::vector<std::byte>>::success(std::vector<std::byte>(invalid.begin(), invalid.end()));
+        }
+        if (file->bytes.size() > a_maxBytes)
+        {
+            return cue::Result<std::vector<std::byte>>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::CapacityExceeded, "Staged project file exceeds read limit"));
+        }
+        return cue::Result<std::vector<std::byte>>::success(std::vector<std::byte>(file->bytes));
     }
 
     /// @brief Generator が要求した標準 Directory を記録し、指定 Stage の失敗を注入する
@@ -145,26 +170,39 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<void> write_file_atomic(const cue::RelativePath &a_path,
                                                       std::span<const std::byte> a_bytes) noexcept override
     {
-        if (m_failure == FailurePoint::WriteDescriptor || m_failure == FailurePoint::WriteDescriptorAndRollback)
+        if ((m_failure == FailurePoint::WriteDescriptor || m_failure == FailurePoint::WriteDescriptorAndRollback) &&
+            a_path.text() == "cue-staging-test/CueProject.json")
         {
             return cue::Result<void>::failure(
                 cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, "Injected descriptor write failure"));
         }
-        if (!m_hasStaging || a_path.text() != "cue-staging-test/CueProject.json")
+        if (m_failure == FailurePoint::WriteBuildFile && a_path.text() == "cue-staging-test/Source/Game/GameModule.cpp")
         {
             return cue::Result<void>::failure(
-                cue::make_io_error(*m_assertContext, cue::IoError::OutsideRoot, "Descriptor is outside staging"));
+                cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, "Injected build file write failure"));
         }
-        m_descriptor.assign(a_bytes.begin(), a_bytes.end());
+        if (!m_hasStaging || !a_path.text().starts_with("cue-staging-test/"))
+        {
+            return cue::Result<void>::failure(
+                cue::make_io_error(*m_assertContext, cue::IoError::OutsideRoot, "Project file is outside staging"));
+        }
+        const auto existing = std::find_if(m_files.begin(), m_files.end(), [&a_path](const TestFile &a_candidate)
+                                           { return a_candidate.path == a_path.text(); });
+        if (existing != m_files.end())
+        {
+            return cue::Result<void>::failure(
+                cue::make_io_error(*m_assertContext, cue::IoError::AlreadyExists, "Project file already exists"));
+        }
+        m_files.push_back(TestFile{std::string(a_path.text()), std::vector<std::byte>(a_bytes.begin(), a_bytes.end())});
         return cue::Result<void>::success();
     }
 
     /// @brief Generator Test対象外のRecovery Backup公開を明示的に拒否する
-    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(
-        const cue::RelativePath &, std::span<const std::byte>, const cue::AssertContext &) noexcept override
+    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(const cue::RelativePath &, std::span<const std::byte>,
+                                                                 const cue::AssertContext &) noexcept override
     {
-        return cue::Result<void>::failure(cue::make_io_error(
-            *m_assertContext, cue::IoError::IoFailure, "Recovery backup is not used by generator tests"));
+        return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::IoFailure,
+                                                             "Recovery backup is not used by generator tests"));
     }
 
     [[nodiscard]] cue::Result<cue::FileWriteLease> acquire_file_write_lease(const cue::RelativePath &) noexcept override
@@ -225,8 +263,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
         invalidate_staging(a_staging);
         if (m_failure == FailurePoint::Durability)
         {
-            return cue::Result<void>::failure(cue::make_io_error(
-                *m_assertContext, cue::IoError::DurabilityUnknown, "Injected post-publish durability failure"));
+            return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::DurabilityUnknown,
+                                                                 "Injected post-publish durability failure"));
         }
         return cue::Result<void>::success();
     }
@@ -246,7 +284,7 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
         }
         m_hasStaging = false;
         m_directories.clear();
-        m_descriptor.clear();
+        m_files.clear();
         invalidate_staging(a_staging);
         return cue::Result<void>::success();
     }
@@ -272,7 +310,37 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     /// @brief Descriptor File が作成されたか返す
     [[nodiscard]] bool has_descriptor() const noexcept
     {
-        return !m_descriptor.empty();
+        return has_file("CueProject.json");
+    }
+
+    /// @brief Generatorが指定した相対PathのStaged Fileを作成したか返す
+    [[nodiscard]] bool has_file(std::string_view a_path) const noexcept
+    {
+        constexpr std::string_view prefix = "cue-staging-test/";
+        return std::ranges::any_of(m_files,
+                                   [a_path, prefix](const TestFile &a_file)
+                                   {
+                                       return std::string_view(a_file.path).starts_with(prefix) &&
+                                              std::string_view(a_file.path).substr(prefix.size()) == a_path;
+                                   });
+    }
+
+    /// @brief Generatorが書いたUTF-8 File内容を検証用Viewとして返す
+    [[nodiscard]] std::string_view file_contents(std::string_view a_path) const noexcept
+    {
+        constexpr std::string_view prefix = "cue-staging-test/";
+        const auto file =
+            std::ranges::find_if(m_files,
+                                 [a_path, prefix](const TestFile &a_value)
+                                 {
+                                     return std::string_view(a_value.path).starts_with(prefix) &&
+                                            std::string_view(a_value.path).substr(prefix.size()) == a_path;
+                                 });
+        if (file == m_files.end())
+        {
+            return {};
+        }
+        return std::string_view(reinterpret_cast<const char *>(file->bytes.data()), file->bytes.size());
     }
 
   private:
@@ -282,7 +350,7 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     bool m_hasStaging = false;
     bool m_isPublished = false;
     std::vector<std::string> m_directories;
-    std::vector<std::byte> m_descriptor;
+    std::vector<TestFile> m_files;
 };
 
 /// @brief 各 Test で独立した既知 UUID v4 を構築する
@@ -310,11 +378,14 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     constexpr std::array expected = {std::string_view("Assets/Source"), std::string_view("Assets/Runtime"),
-                                     std::string_view("Generated"), std::string_view("Saved")};
+                                     std::string_view("Generated"), std::string_view("Saved"),
+                                     std::string_view("Source/Game")};
     if (!generated || !filesystem.is_published() || filesystem.has_staging() || !filesystem.has_descriptor() ||
+        !filesystem.has_file("CMakeLists.txt") || !filesystem.has_file("CMakePresets.json") ||
+        !filesystem.has_file("Source/Game/CMakeLists.txt") || !filesystem.has_file("Source/Game/GameModule.cpp") ||
         filesystem.directories().size() != expected.size())
     {
         return false;
@@ -326,18 +397,35 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
             return false;
         }
     }
+    const std::string_view projectCMake = filesystem.file_contents("CMakeLists.txt");
+    const std::string_view presets = filesystem.file_contents("CMakePresets.json");
+    const std::string_view module = filesystem.file_contents("Source/Game/GameModule.cpp");
     auto serialized = cue::serialize_project_descriptor(*generated.try_value(), a_assertContext);
     return serialized && serialized.try_value()->find("\"defaultScene\":null") != std::string::npos &&
            serialized.try_value()->find("CMakeLists") == std::string::npos &&
-           serialized.try_value()->find("Renderer") == std::string::npos;
+           serialized.try_value()->find("Renderer") == std::string::npos &&
+           projectCMake.find("CUE_ENGINE_ROOT") != std::string_view::npos &&
+           projectCMake.find("CMAKE_VS_PLATFORM_NAME STREQUAL \"x64\"") != std::string_view::npos &&
+           projectCMake.find("Sample Project") == std::string_view::npos &&
+           presets.find("windows-vs2026-debug") != std::string_view::npos &&
+           presets.find("windows-vs2026-development") != std::string_view::npos &&
+           presets.find("windows-vs2026-release") != std::string_view::npos &&
+           presets.find("$env{CUE_ENGINE_ROOT}") != std::string_view::npos &&
+           module.find("0x12U, 0x34U, 0x56U, 0x78U") != std::string_view::npos &&
+           module.find("a_sink->reserved[0] != 0U") != std::string_view::npos &&
+           module.find("a_sink->reserved[3] != 0U") != std::string_view::npos &&
+           module.find("Sample Project") == std::string_view::npos;
 }
 
 /// @brief Portable 単一 Segment でない Project 名を Filesystem 変更前に拒否するか検証する
 [[nodiscard]] bool test_invalid_names(const cue::AssertContext &a_assertContext)
 {
-    constexpr std::array names = {std::string_view(""),          std::string_view("Nested/Project"),
-                                  std::string_view("CON"),       std::string_view("nul.txt"),
-                                  std::string_view("Project."),  std::string_view("Project "),
+    constexpr std::array names = {std::string_view(""),
+                                  std::string_view("Nested/Project"),
+                                  std::string_view("CON"),
+                                  std::string_view("nul.txt"),
+                                  std::string_view("Project."),
+                                  std::string_view("Project "),
                                   std::string_view("Project Name")};
     for (const std::string_view name : names)
     {
@@ -359,8 +447,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, true, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && !filesystem.has_staging() &&
            !filesystem.is_published();
 }
@@ -368,18 +456,20 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 /// @brief Publish 前の各失敗を Project Error へ分類し、最終 Directory と Staging を残さないか検証する
 [[nodiscard]] bool test_failure_rollback(const cue::AssertContext &a_assertContext)
 {
-    constexpr std::array failures = {FailurePoint::CreateStaging, FailurePoint::CreateDirectory,
-                                     FailurePoint::WriteDescriptor, FailurePoint::ReadDescriptor,
-                                     FailurePoint::VerifyDescriptor, FailurePoint::Publish};
+    constexpr std::array failures = {
+        FailurePoint::CreateStaging,  FailurePoint::CreateDirectory,  FailurePoint::WriteDescriptor,
+        FailurePoint::ReadDescriptor, FailurePoint::VerifyDescriptor, FailurePoint::WriteBuildFile,
+        FailurePoint::ReadBuildFile,  FailurePoint::VerifyBuildFile,  FailurePoint::Publish};
     for (const FailurePoint failure : failures)
     {
         GeneratorFilesystem filesystem(failure, false, a_assertContext);
         auto projectId = make_project_id(a_assertContext);
         auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
                                                      *projectId.try_value(), make_template(), a_assertContext);
-        const cue::ProjectError expected = failure == FailurePoint::VerifyDescriptor
-                                               ? cue::ProjectError::InvalidFormat
-                                               : cue::ProjectError::IoFailure;
+        const cue::ProjectError expected =
+            failure == FailurePoint::VerifyDescriptor || failure == FailurePoint::VerifyBuildFile
+                ? cue::ProjectError::InvalidFormat
+                : cue::ProjectError::IoFailure;
         if (!has_project_error(generated, expected) || filesystem.is_published() || filesystem.has_staging())
         {
             return false;
@@ -393,8 +483,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::WriteDescriptorAndRollback, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && filesystem.has_staging() &&
            !filesystem.is_published() && !generated.try_error()->contexts().empty();
 }
@@ -404,8 +494,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::Durability, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && filesystem.is_published() &&
            !filesystem.has_staging() && generated.try_error()->root_code().domain() == "Cue.IO" &&
            generated.try_error()->root_code().value() == static_cast<std::int64_t>(cue::IoError::DurabilityUnknown);

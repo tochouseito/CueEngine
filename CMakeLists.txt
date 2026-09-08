@@ -1,7 +1,7 @@
 # CueEngine Rebuild の正式なビルド入口を定義する
 cmake_minimum_required(VERSION 4.2.0)
 
-project(CueEngine LANGUAGES CXX)
+project(CueEngine LANGUAGES C CXX)
 
 include(CTest)
 
@@ -16,6 +16,7 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 add_subdirectory(Engine/Source/Foundation)
+add_subdirectory(Engine/Source/GameModule)
 add_subdirectory(Engine/Source/Schema)
 add_subdirectory(Engine/Source/GameCore)
 add_subdirectory(Engine/Source/IO)
@@ -80,6 +81,7 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(Tools/GameCoreBenchmark)
     add_subdirectory(Engine/Tests/Foundation)
+    add_subdirectory(Engine/Tests/GameModule)
     add_subdirectory(Engine/Tests/Schema)
     add_subdirectory(Engine/Tests/GameCore)
     if(WIN32)
