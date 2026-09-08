@@ -378,8 +378,8 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), make_template(), a_assertContext);
+    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                                 make_template(), a_assertContext);
     constexpr std::array expected = {std::string_view("Assets/Source"), std::string_view("Assets/Runtime"),
                                      std::string_view("Generated"), std::string_view("Saved"),
                                      std::string_view("Source/Game")};
@@ -405,6 +405,7 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
            serialized.try_value()->find("CMakeLists") == std::string::npos &&
            serialized.try_value()->find("Renderer") == std::string::npos &&
            projectCMake.find("CUE_ENGINE_ROOT") != std::string_view::npos &&
+           projectCMake.find("CMAKE_VS_PLATFORM_NAME STREQUAL \"x64\"") != std::string_view::npos &&
            projectCMake.find("Sample Project") == std::string_view::npos &&
            presets.find("windows-vs2026-debug") != std::string_view::npos &&
            presets.find("windows-vs2026-development") != std::string_view::npos &&

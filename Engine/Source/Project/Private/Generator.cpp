@@ -42,6 +42,9 @@ endif()
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "CueGame initially supports Windows x64 with MSVC only")
 endif()
+if(NOT CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
+    message(FATAL_ERROR "CueGame initially supports the Visual Studio x64 platform only")
+endif()
 if(NOT DEFINED CUE_ENGINE_ROOT OR CUE_ENGINE_ROOT STREQUAL "")
     message(FATAL_ERROR "CUE_ENGINE_ROOT must locate the CueEngine source checkout")
 endif()
@@ -723,8 +726,8 @@ Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
                 std::as_bytes(characters));
             if (!written)
             {
-                return Result<void>::failure(reclassify_io_error(
-                    a_assertContext, "Project workspace file write failed", std::move(*written.try_error())));
+                return Result<void>::failure(reclassify_io_error(a_assertContext, "Project workspace file write failed",
+                                                                 std::move(*written.try_error())));
             }
 
             auto bytes = a_projectFilesystem.read_file(paths[index], k_maximumGeneratedFileBytes);
