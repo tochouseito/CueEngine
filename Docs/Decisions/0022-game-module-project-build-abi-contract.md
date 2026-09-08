@@ -347,15 +347,37 @@ CandidateはProcess成功だけで公開せず、次をすべて検証する。
 検証成功後、Candidate集合を`Generated/Artifacts/<configuration>/Versions/<artifact-id>`へ一意な不変Directoryとして公開する。
 既存Version Directoryを置換せず、同じArtifact IDが存在する場合は不一致として拒否する。Directory公開と全File再検証の後、
 Artifact ID、相対Path、Size、Hashを持つ小さい`Current.json`だけをADR-0014のRegular File Atomic Replaceで更新する。
-M16 Publisherは`Current.json`を一度読んで指定Version Directoryだけを入力にし、全HashとSizeを再検証する。
+
+`Current.json`はMilestone間で共有するVersion付き永続Manifestであり、初期`schemaVersion`を`1`とする。Readerは
+`schemaVersion == 1`だけを受理し、未知Version、新しいVersion、欠落Versionを推測して読まない。`Current.json`は再生成可能な
+Build出力なので、互換性のないVersionをIn-place Migrationせず、対応するEngineとConfigurationでGame Moduleを再Buildして再生成する。
+M16 Publisherは後述のRead Leaseを取得して`Current.json`を一度読み、指定Version Directoryだけを入力にし、全HashとSizeを
+再検証してCopy完了までLeaseを保持する。
 このVersion Snapshotは再生成可能なPublisher入力であり、RuntimeがProjectのGenerated Rootから直接Loadする契約ではない。
 失敗、Cancel、Timeout、Editor終了、Metadata不一致ではCandidateを成功として公開せず、以前の成功SnapshotとInventoryを保持する。
 失敗OperationのLog、Plan、Environment Report、Stage Resultは`Saved/Build/Operations/<operation-id>`へ診断可能な範囲で残す。
 
+`Current.json`更新結果はADR-0014のOutcomeを失敗理由から分離して扱う。
+
+- `Committed`: 新しいManifestをCurrentとして確定し、Build Operationを成功にできる
+- `NotPublished`: Build Operationを失敗とし、以前のCurrentが維持されているものとして扱う
+- `PublishedButDurabilityUnknown`: Build Operationを成功にせず、同じMutation Lease内で`Current.json`を再読込し、Schema、参照先、
+  Inventory、Size、Hashを再検証する。検証できた可視Manifestを現在の選択として診断へ記録し、旧Current維持とは報告しない。
+  再読込または検証に失敗した場合はCurrent不明としてPublisher利用を停止し、旧版または新版を推測しない
+
+通常のBuild成功通知、Recent状態、Package開始は`Committed`だけから自動継続する。`PublishedButDurabilityUnknown`で可視な新版を
+M16 Publisherへ渡すには、再度Read Leaseを取得して同じ検証を通し、利用者へDurability不明を明示した再試行操作を要求する。
+
 Artifact Retention、古いBinary Tree削除、Diagnostic Bundle上限は後続Issueで決めるが、User SourceとLatest Successful Artifactを
-Cleanup対象へ含めない。`Current.json`が参照しない公開済みVersion Directoryは後続Cleanup対象にできるが、
-Current Manifestと参照先Versionを同じCleanup Operationで削除しない。CleanupはBuild成功条件にせず、
-失敗しても成功Artifactの正本を失わせない。
+Cleanup対象へ含めない。
+
+Build Publish、Cleanup、M16 Publisher読取りは、ConfigurationごとのArtifact Storeが発行するProject Scope Leaseを必須とする。
+Version Directory公開から`Current.json`更新とOutcome再検証までは一つのExclusive Mutation Leaseで直列化する。Cleanupも同じ
+Exclusive Mutation Leaseを取得し、Current参照先を削除しない。PublisherはShared Read Leaseを`Current.json`読取り前に取得し、
+参照先のHash検証とPackage CandidateへのCopyが完了するまで保持する。Exclusive Mutation Leaseは既存Read Leaseの終了を待つため、
+読取り中のVersionをCleanupできない。Directory公開直後の未参照VersionもPublish Lease中はCleanupから保護される。
+全First-party Build／Publisher入口はこのArtifact Storeを経由し、Lease取得失敗時に同期なしのFilesystem操作へFallbackしない。
+CleanupはBuild成功条件にせず、失敗しても成功Artifactの正本を失わせない。
 
 ### Error and Diagnostic Contract
 
@@ -387,6 +409,7 @@ Export時は#226のRedaction契約へ従う。
 - C++型を直接渡せないため、Game APIはVersion付きHost Functionとして個別設計する必要がある
 - M15 ABI v1だけでは任意Project ComponentをRuntime ECSへ格納、Query、編集できない
 - ABIを変更するたびにVersionと互換性Testが必要になる
+- Artifact Publish、Cleanup、Publisher読取りをProject Scope Leaseで同期する必要がある
 
 ### Mitigations
 
@@ -454,7 +477,10 @@ M15で次を検証する。
 - UIなしでBuild Request、Plan、Cancel、Retry、Artifact Publishを検証できる
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
 - 不変Version Directory公開後に`Current.json`だけをAtomic Replaceする
-- 失敗BuildまたはCurrent Manifest更新失敗後も以前の成功Artifact HashとInventoryが変わらない
+- `Current.json`の`schemaVersion == 1`だけを受理し、未知Versionを拒否して再Buildで再生成する
+- `NotPublished`では以前のCurrentが変わらず、`PublishedButDurabilityUnknown`では可視Manifestを再読込・再検証して
+  Current選択とBuild失敗診断を一致させる
+- PublishとCleanupをExclusive Mutation Leaseで直列化し、M16 PublisherのRead Lease中は参照Versionを削除しない
 - Runtime、Game Module、Build CoreからEditor／ImGuiへの逆依存がない
 - M15差分にAsset Pipeline、Hot Reload、ECS Storage改良が含まれない
 
