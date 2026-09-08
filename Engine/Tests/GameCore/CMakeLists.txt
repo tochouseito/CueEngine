@@ -13,6 +13,11 @@ target_compile_features(CueGameCoreProcessTests PRIVATE cxx_std_20)
 add_executable(CueGameCoreClockTests ClockTests.cpp)
 target_link_libraries(CueGameCoreClockTests PRIVATE Cue.GameCore)
 target_compile_features(CueGameCoreClockTests PRIVATE cxx_std_20)
+target_include_directories(
+    CueGameCoreClockTests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Source/GameCore/Private"
+)
 
 set(cueGameCoreTestTargets CueGameCoreTests CueGameCorePublicHeaderTest CueGameCoreProcessTests CueGameCoreClockTests)
 

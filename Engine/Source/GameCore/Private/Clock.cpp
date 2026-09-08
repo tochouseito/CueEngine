@@ -1,5 +1,7 @@
 #include <Cue/GameCore/Clock.h>
 
+#include "ClockInternals.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/GameCore/Error.h>
 
@@ -71,15 +73,56 @@ GameClock::GameClock(MonotonicClock &a_clock, std::int64_t a_maxDeltaNanoseconds
 {
 }
 
+GameClock::GameClock(GameClock &&a_other) noexcept
+    : m_clock(a_other.m_clock), m_assertContext(a_other.m_assertContext),
+      m_maxDeltaNanoseconds(a_other.m_maxDeltaNanoseconds), m_lastSampleNanoseconds(a_other.m_lastSampleNanoseconds),
+      m_simulationTimeNanoseconds(a_other.m_simulationTimeNanoseconds), m_nextFrameIndex(a_other.m_nextFrameIndex),
+      m_isInitialized(a_other.m_isInitialized), m_isPaused(a_other.m_isPaused),
+      m_isFrameIndexExhausted(a_other.m_isFrameIndexExhausted)
+{
+    a_other.invalidate_after_move();
+}
+
+GameClock &GameClock::operator=(GameClock &&a_other) noexcept
+{
+    if (this != &a_other)
+    {
+        m_clock = a_other.m_clock;
+        m_assertContext = a_other.m_assertContext;
+        m_maxDeltaNanoseconds = a_other.m_maxDeltaNanoseconds;
+        m_lastSampleNanoseconds = a_other.m_lastSampleNanoseconds;
+        m_simulationTimeNanoseconds = a_other.m_simulationTimeNanoseconds;
+        m_nextFrameIndex = a_other.m_nextFrameIndex;
+        m_isInitialized = a_other.m_isInitialized;
+        m_isPaused = a_other.m_isPaused;
+        m_isFrameIndexExhausted = a_other.m_isFrameIndexExhausted;
+        a_other.invalidate_after_move();
+    }
+
+    return *this;
+}
+
 Result<void> GameClock::reset() noexcept
 {
+    if (m_clock == nullptr)
+    {
+        return Result<void>::failure(make_state_error("Moved-from game clock cannot be reset"));
+    }
+
     Result<MonotonicClockSample> sampleResult = sample_validated();
     if (!sampleResult)
     {
         return Result<void>::failure(take_error(sampleResult));
     }
 
-    m_lastSampleNanoseconds = sampleResult.try_value()->nanoseconds;
+    const std::int64_t sampleNanoseconds = sampleResult.try_value()->nanoseconds;
+    if (m_isInitialized && sampleNanoseconds < m_lastSampleNanoseconds)
+    {
+        return Result<void>::failure(make_game_core_error(*m_assertContext, GameCoreError::InvalidClockSample,
+                                                          "Monotonic clock sample moved backwards on reset"));
+    }
+
+    m_lastSampleNanoseconds = sampleNanoseconds;
     m_simulationTimeNanoseconds = 0;
     m_nextFrameIndex = 0;
     m_isInitialized = true;
@@ -106,43 +149,22 @@ Result<UpdateContext> GameClock::advance_frame() noexcept
         return Result<UpdateContext>::failure(take_error(sampleResult));
     }
 
-    const std::int64_t sampleNanoseconds = sampleResult.try_value()->nanoseconds;
-    if (sampleNanoseconds < m_lastSampleNanoseconds)
-    {
-        return Result<UpdateContext>::failure(make_game_core_error(*m_assertContext, GameCoreError::InvalidClockSample,
-                                                                   "Monotonic clock sample moved backwards"));
-    }
-
-    const std::int64_t observedDeltaNanoseconds = sampleNanoseconds - m_lastSampleNanoseconds;
-    const bool wasDeltaClamped = !m_isPaused && observedDeltaNanoseconds > m_maxDeltaNanoseconds;
-    const std::int64_t simulationDeltaNanoseconds =
-        m_isPaused ? 0 : (wasDeltaClamped ? m_maxDeltaNanoseconds : observedDeltaNanoseconds);
-    if (simulationDeltaNanoseconds > std::numeric_limits<std::int64_t>::max() - m_simulationTimeNanoseconds)
-    {
-        return Result<UpdateContext>::failure(make_game_core_error(*m_assertContext, GameCoreError::ClockOverflow,
-                                                                   "Game clock simulation time overflowed"));
-    }
-
-    const FrameTiming timing = {
-        m_nextFrameIndex,
-        observedDeltaNanoseconds,
-        simulationDeltaNanoseconds,
-        m_simulationTimeNanoseconds + simulationDeltaNanoseconds,
-        m_isPaused,
-        wasDeltaClamped,
+    details::ClockAdvanceState state = {
+        m_lastSampleNanoseconds, m_simulationTimeNanoseconds, m_nextFrameIndex, m_isPaused, m_isFrameIndexExhausted,
     };
+    Result<details::ClockAdvance> advanceResult = details::calculate_frame_advance(
+        state, sampleResult.try_value()->nanoseconds, m_maxDeltaNanoseconds, *m_assertContext);
+    if (!advanceResult)
+    {
+        return Result<UpdateContext>::failure(take_error(advanceResult));
+    }
 
-    m_lastSampleNanoseconds = sampleNanoseconds;
-    m_simulationTimeNanoseconds = timing.simulationTimeNanoseconds;
-    if (m_nextFrameIndex == std::numeric_limits<std::uint64_t>::max())
-    {
-        m_isFrameIndexExhausted = true;
-    }
-    else
-    {
-        ++m_nextFrameIndex;
-    }
-    return Result<UpdateContext>::success(UpdateContext(timing));
+    details::ClockAdvance &advance = *advanceResult.try_value();
+    m_lastSampleNanoseconds = advance.state.lastSampleNanoseconds;
+    m_simulationTimeNanoseconds = advance.state.simulationTimeNanoseconds;
+    m_nextFrameIndex = advance.state.nextFrameIndex;
+    m_isFrameIndexExhausted = advance.state.isFrameIndexExhausted;
+    return Result<UpdateContext>::success(UpdateContext(advance.timing));
 }
 
 Result<void> GameClock::pause() noexcept
@@ -218,8 +240,67 @@ Result<MonotonicClockSample> GameClock::sample_validated() noexcept
     return Result<MonotonicClockSample>::success(std::move(*sampleResult.try_value()));
 }
 
+void GameClock::invalidate_after_move() noexcept
+{
+    m_clock = nullptr;
+    m_maxDeltaNanoseconds = 0;
+    m_lastSampleNanoseconds = 0;
+    m_simulationTimeNanoseconds = 0;
+    m_nextFrameIndex = 0;
+    m_isInitialized = false;
+    m_isPaused = false;
+    m_isFrameIndexExhausted = false;
+}
+
 Error GameClock::make_state_error(const char *a_summary) const noexcept
 {
     return make_game_core_error(*m_assertContext, GameCoreError::InvalidClockState, a_summary);
 }
+
+namespace details
+{
+Result<ClockAdvance> calculate_frame_advance(ClockAdvanceState a_state, std::int64_t a_sampleNanoseconds,
+                                             std::int64_t a_maxDeltaNanoseconds,
+                                             const AssertContext &a_assertContext) noexcept
+{
+    if (a_state.isFrameIndexExhausted)
+    {
+        return Result<ClockAdvance>::failure(
+            make_game_core_error(a_assertContext, GameCoreError::ClockOverflow, "Game clock frame index is exhausted"));
+    }
+    if (a_sampleNanoseconds < a_state.lastSampleNanoseconds)
+    {
+        return Result<ClockAdvance>::failure(make_game_core_error(a_assertContext, GameCoreError::InvalidClockSample,
+                                                                  "Monotonic clock sample moved backwards"));
+    }
+
+    const std::int64_t observedDeltaNanoseconds = a_sampleNanoseconds - a_state.lastSampleNanoseconds;
+    const bool wasDeltaClamped = !a_state.isPaused && observedDeltaNanoseconds > a_maxDeltaNanoseconds;
+    const std::int64_t simulationDeltaNanoseconds =
+        a_state.isPaused ? 0 : (wasDeltaClamped ? a_maxDeltaNanoseconds : observedDeltaNanoseconds);
+    if (simulationDeltaNanoseconds > std::numeric_limits<std::int64_t>::max() - a_state.simulationTimeNanoseconds)
+    {
+        return Result<ClockAdvance>::failure(make_game_core_error(a_assertContext, GameCoreError::ClockOverflow,
+                                                                  "Game clock simulation time overflowed"));
+    }
+
+    const FrameTiming timing = {
+        a_state.nextFrameIndex,     observedDeltaNanoseconds,
+        simulationDeltaNanoseconds, a_state.simulationTimeNanoseconds + simulationDeltaNanoseconds,
+        a_state.isPaused,           wasDeltaClamped,
+    };
+    a_state.lastSampleNanoseconds = a_sampleNanoseconds;
+    a_state.simulationTimeNanoseconds = timing.simulationTimeNanoseconds;
+    if (a_state.nextFrameIndex == std::numeric_limits<std::uint64_t>::max())
+    {
+        a_state.isFrameIndexExhausted = true;
+    }
+    else
+    {
+        ++a_state.nextFrameIndex;
+    }
+
+    return Result<ClockAdvance>::success(ClockAdvance{timing, a_state});
+}
+} // namespace details
 } // namespace cue::game_core

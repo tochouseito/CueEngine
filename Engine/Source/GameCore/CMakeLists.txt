@@ -4,6 +4,7 @@ target_sources(
     Cue.GameCore
     PRIVATE
         Private/Clock.cpp
+        Private/ClockInternals.h
         Private/CommandBuffer.cpp
         Private/Error.cpp
         Private/RuntimeWorld.cpp

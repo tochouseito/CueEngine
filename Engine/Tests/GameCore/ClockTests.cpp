@@ -4,16 +4,22 @@
 #include <Cue/GameCore/Clock.h>
 #include <Cue/GameCore/Error.h>
 
+#include "ClockInternals.h"
+
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace
 {
+static_assert(!std::is_constructible_v<cue::game_core::UpdateContext, cue::game_core::FrameTiming>);
+
 class TestFatalHandler final : public cue::FatalHandler
 {
   public:
@@ -268,6 +274,89 @@ template <typename T>
            !overflowClock.is_initialized();
 }
 
+/// @brief GameClock移動後に移動元がClock Sourceを再消費できないことを検証する
+[[nodiscard]] bool test_move_invalidates_source(cue::AssertContext &a_context) noexcept
+{
+    constexpr std::array<std::int64_t, 2> k_samples = {100, 110};
+    ScriptedClock source(k_samples);
+    cue::Result<cue::game_core::GameClock> clockResult = cue::game_core::GameClock::create(source, 50, a_context);
+    if (!clockResult || !clockResult.try_value()->reset())
+    {
+        return false;
+    }
+
+    cue::game_core::GameClock moved = std::move(*clockResult.try_value());
+    cue::Result<void> movedFromReset = clockResult.try_value()->reset();
+    if (clockResult.try_value()->is_initialized() ||
+        !has_error_code(movedFromReset, cue::game_core::GameCoreError::InvalidClockState))
+    {
+        return false;
+    }
+
+    return moved.is_initialized() && moved.advance_frame().has_value();
+}
+
+/// @brief 初期化済みClockの再Resetが逆行Sampleで既存状態を失わないことを検証する
+[[nodiscard]] bool test_reset_preserves_state_on_backward_sample(cue::AssertContext &a_context) noexcept
+{
+    constexpr std::array<std::int64_t, 4> k_samples = {100, 110, 90, 120};
+    ScriptedClock source(k_samples);
+    cue::Result<cue::game_core::GameClock> clockResult = cue::game_core::GameClock::create(source, 50, a_context);
+    if (!clockResult)
+    {
+        return false;
+    }
+
+    cue::game_core::GameClock clock = std::move(*clockResult.try_value());
+    if (!clock.reset() || !clock.advance_frame())
+    {
+        return false;
+    }
+
+    cue::Result<void> resetResult = clock.reset();
+    if (!has_error_code(resetResult, cue::game_core::GameCoreError::InvalidClockSample) ||
+        clock.next_frame_index() != 1 || clock.simulation_time_nanoseconds() != 10)
+    {
+        return false;
+    }
+
+    cue::Result<cue::game_core::UpdateContext> recovered = clock.advance_frame();
+    return recovered && recovered.try_value()->timing().frameIndex == 1 &&
+           recovered.try_value()->timing().simulationTimeNanoseconds == 20;
+}
+
+/// @brief Simulation TimeとFrame Indexの内部Overflow分岐が状態Commit前に拒否されることを検証する
+[[nodiscard]] bool test_internal_overflow_paths(cue::AssertContext &a_context) noexcept
+{
+    cue::game_core::details::ClockAdvanceState simulationState = {
+        100, std::numeric_limits<std::int64_t>::max() - 5, 7, false, false,
+    };
+    cue::Result<cue::game_core::details::ClockAdvance> simulationOverflow =
+        cue::game_core::details::calculate_frame_advance(simulationState, 110, 20, a_context);
+    if (!has_error_code(simulationOverflow, cue::game_core::GameCoreError::ClockOverflow) ||
+        simulationState.lastSampleNanoseconds != 100 ||
+        simulationState.simulationTimeNanoseconds != std::numeric_limits<std::int64_t>::max() - 5 ||
+        simulationState.nextFrameIndex != 7)
+    {
+        return false;
+    }
+
+    cue::game_core::details::ClockAdvanceState frameState = {
+        100, 0, std::numeric_limits<std::uint64_t>::max(), false, false,
+    };
+    cue::Result<cue::game_core::details::ClockAdvance> lastFrame =
+        cue::game_core::details::calculate_frame_advance(frameState, 101, 20, a_context);
+    if (!lastFrame || lastFrame.try_value()->timing.frameIndex != std::numeric_limits<std::uint64_t>::max() ||
+        !lastFrame.try_value()->state.isFrameIndexExhausted)
+    {
+        return false;
+    }
+
+    cue::Result<cue::game_core::details::ClockAdvance> frameOverflow =
+        cue::game_core::details::calculate_frame_advance(lastFrame.try_value()->state, 102, 20, a_context);
+    return has_error_code(frameOverflow, cue::game_core::GameCoreError::ClockOverflow);
+}
+
 /// @brief Standard steady_clock Adapterが非負かつ非逆行のSampleを返すことを検証する
 [[nodiscard]] bool test_steady_clock(cue::AssertContext &a_context) noexcept
 {
@@ -286,7 +375,9 @@ int main()
     std::unique_ptr<cue::Logger> logger = create_logger(handler);
     cue::AssertContext context(*logger, handler);
     return test_deterministic_timing(context) && test_delta_clamp(context) && test_pause_resume(context) &&
-                   test_invalid_values(context) && test_steady_clock(context)
+                   test_invalid_values(context) && test_move_invalidates_source(context) &&
+                   test_reset_preserves_state_on_backward_sample(context) && test_internal_overflow_paths(context) &&
+                   test_steady_clock(context)
                ? 0
                : 1;
 }

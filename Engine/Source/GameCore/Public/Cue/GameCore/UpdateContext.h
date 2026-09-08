@@ -4,6 +4,8 @@
 
 namespace cue::game_core
 {
+class GameClock;
+
 /// @brief 一Frameで観測した単調時間とSimulationへ適用した時間を保持する値
 struct FrameTiming final
 {
@@ -21,8 +23,6 @@ struct FrameTiming final
 class UpdateContext final
 {
   public:
-    /// @brief 検証済みFrame Timingを一Frameの更新値として複製する
-    explicit UpdateContext(FrameTiming a_timing) noexcept;
     /// @brief Frame更新値を独立して複製する
     UpdateContext(const UpdateContext &) noexcept = default;
     /// @brief Frame更新値を独立して複製代入する
@@ -42,6 +42,11 @@ class UpdateContext final
     [[nodiscard]] double simulation_seconds() const noexcept;
 
   private:
+    friend class GameClock;
+
+    /// @brief GameClockだけが検証済みFrame Timingから更新値を生成する
+    explicit UpdateContext(FrameTiming a_timing) noexcept;
+
     FrameTiming m_timing;
 };
 } // namespace cue::game_core

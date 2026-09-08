@@ -219,10 +219,13 @@ Simulation Deltaへ使用する。成功したFrameへ0から単調増加するI
 Pause中のFrameは観測Deltaを診断用に保持するが、Simulation Deltaを0としてSimulation Timeを進めない。
 `resume`は現在Sampleを新しい基準へ置き換えてからPauseを解除し、Pause中またはResume直前までの経過を
 次Frameへ混入させない。`pause`、`resume`、`advance_frame`は`reset`成功前に使用できない。
+初期化済みClockの再`reset`でも現在基準より小さいSampleを拒否し、既存状態を維持する。
+`GameClock`のmoveはClock Sourceを消費できる権限を移動先だけに残し、移動元を再`reset`不能な未初期化状態にする。
 
 Frameごとの`UpdateContext`は検証済み`FrameTiming`を値で自己所有し、Clock、Renderer、Audio、Native API、
 Runtime WorldへのPointerを保持しない。System Registryは#211でこのContextと必要なWorld／Input参照を明示引数として受け、
 Context内にService Locatorを追加しない。秒単位の値は整数ナノ秒から利用時に変換し、NaNやInfinityを正本状態へ保存しない。
+`UpdateContext`の生成権限は`GameClock`に限定し、外部利用者が未検証の`FrameTiming`から直接構築できない。
 Time Scale、Physics Fixed Step、Replay Time Serialization、Network Time、Frame Pacingは#210で追加しない。
 
 ### Runtime Application Session Ownership

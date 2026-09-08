@@ -67,10 +67,10 @@ class GameClock final
     GameClock(const GameClock &) = delete;
     /// @brief Session-local Clock状態の複製代入を禁止する
     GameClock &operator=(const GameClock &) = delete;
-    /// @brief Clock状態と非所有参照を移動する
-    GameClock(GameClock &&) noexcept = default;
-    /// @brief Clock状態と非所有参照を移動代入する
-    GameClock &operator=(GameClock &&) noexcept = default;
+    /// @brief Clock状態と非所有参照を移動し、移動元を操作不能な未初期化状態にする
+    GameClock(GameClock &&a_other) noexcept;
+    /// @brief Clock状態と非所有参照を移動代入し、移動元を操作不能な未初期化状態にする
+    GameClock &operator=(GameClock &&a_other) noexcept;
     /// @brief 非所有参照を解放せずSession-local状態だけを破棄する
     ~GameClock() noexcept = default;
 
@@ -101,6 +101,8 @@ class GameClock final
               const AssertContext &a_assertContext) noexcept;
     /// @brief Clock Sourceの値を取得して非負値へ検証する
     [[nodiscard]] Result<MonotonicClockSample> sample_validated() noexcept;
+    /// @brief 移動元のClock Sourceを切り離して二重消費を防ぐ
+    void invalidate_after_move() noexcept;
     /// @brief GameClockの状態違反を診断するErrorを生成する
     [[nodiscard]] Error make_state_error(const char *a_summary) const noexcept;
 
