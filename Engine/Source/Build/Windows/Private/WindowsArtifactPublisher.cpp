@@ -513,7 +513,9 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                          0U,
                                          {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, 0U}};
     const CueGameModuleResult result = query(CUE_GAME_MODULE_ABI_VERSION_1, &output, &diagnostic);
-    if (result != CUE_GAME_MODULE_RESULT_SUCCESS || output.api == nullptr)
+    if (result != CUE_GAME_MODULE_RESULT_SUCCESS || output.structSize != sizeof(CueGameModuleQueryOutputV1) ||
+        output.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || output.api == nullptr || output.reserved[0] != 0U ||
+        output.reserved[1] != 0U)
     {
         return cue::Result<void>::failure(make_error(a_assertContext,
                                                      cue::WindowsBuildArtifactError::ModuleContractMismatch,
@@ -528,8 +530,12 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                    : CUE_GAME_MODULE_CONFIGURATION_RELEASE);
     if (api.structSize != sizeof(CueGameModuleApiV1) || api.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
         api.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || api.configuration != expectedConfiguration ||
-        api.architecture != CUE_GAME_MODULE_ARCHITECTURE_X64 || api.projectId.structSize != sizeof(CueGameUuidV1) ||
-        api.projectId.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
+        api.architecture != CUE_GAME_MODULE_ARCHITECTURE_X64 || api.reserved != 0U ||
+        api.projectId.structSize != sizeof(CueGameUuidV1) ||
+        api.projectId.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || api.createModule == nullptr ||
+        api.registerSchemas == nullptr || api.registerComponents == nullptr || api.registerSystems == nullptr ||
+        api.destroyModule == nullptr || api.reservedTail[0] != 0U || api.reservedTail[1] != 0U ||
+        api.reservedTail[2] != 0U || api.reservedTail[3] != 0U ||
         !std::equal(a_projectId.begin(), a_projectId.end(), api.projectId.bytes))
     {
         return cue::Result<void>::failure(make_error(a_assertContext,
@@ -631,13 +637,13 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         const std::string visibleBytes{std::istreambuf_iterator<char>(visible), std::istreambuf_iterator<char>()};
         const bool newManifestVisible = visible.is_open() && !visible.bad() && visibleBytes == a_content;
         static_cast<void>(DeleteFileW(temporary.c_str()));
-        return cue::Result<void>::failure(
-            make_windows_error(a_assertContext,
-                               newManifestVisible ? cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown
-                                                  : cue::WindowsBuildArtifactError::CurrentManifestFailed,
-                               code,
-                               newManifestVisible ? "Current artifact manifest is visible but durability is unknown"
-                                                  : "Current artifact manifest was not published"));
+        if (newManifestVisible)
+        {
+            return cue::Result<void>::success();
+        }
+        return cue::Result<void>::failure(make_windows_error(a_assertContext,
+                                                             cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                                                             code, "Current artifact manifest was not published"));
     }
     return cue::Result<void>::success();
 }
@@ -812,6 +818,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     make_error(*m_assertContext, cue::WindowsBuildArtifactError::ArtifactAlreadyExists,
                                "Artifact Version already exists"));
             }
+            if (a_cancellation.is_cancel_requested())
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+            }
             std::filesystem::rename(candidate, version, filesystemError);
             if (filesystemError)
             {
@@ -848,10 +858,6 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*inventory.try_error()));
-            }
-            if (a_cancellation.is_cancel_requested())
-            {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
             }
             cue::Result<void> current = publish_current(store, a_plan.operation_id(),
                                                         serialize_current(*inventory.try_value()), *m_assertContext);

@@ -38,6 +38,19 @@ if(WIN32)
             $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
     )
 
+    add_library(CueBuildInvalidArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildInvalidArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildInvalidArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildInvalidArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_INVALID_API=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
 
@@ -71,6 +84,7 @@ if(WIN32)
         CueBuildWindowsToolchainTests
         CueBuildWindowsPublicHeaderTest
         CueBuildArtifactProbe
+        CueBuildInvalidArtifactProbe
         CueBuildWindowsArtifactPublisherTests
     )
 endif()
@@ -130,6 +144,7 @@ if(WIN32)
     set_tests_properties(Cue.Build.Windows.PublicHeaders PROPERTIES LABELS "Build;Windows" TIMEOUT 10)
 
     add_test(NAME Cue.Build.Windows.ArtifactPublisher
-             COMMAND CueBuildWindowsArtifactPublisherTests $<TARGET_FILE:CueBuildArtifactProbe>)
+             COMMAND CueBuildWindowsArtifactPublisherTests $<TARGET_FILE:CueBuildArtifactProbe>
+                     $<TARGET_FILE:CueBuildInvalidArtifactProbe>)
     set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
 endif()

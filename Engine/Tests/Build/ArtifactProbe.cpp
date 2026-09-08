@@ -18,6 +18,34 @@ constexpr CueGameUuidV1 k_projectId = {
     sizeof(CueGameUuidV1),
     CUE_GAME_MODULE_STRUCTURE_VERSION_1,
     {0x41U, 0x23U, 0x45U, 0x67U, 0x89U, 0xabU, 0x4cU, 0xdeU, 0x8fU, 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0xabU, 0xcdU}};
+
+/// @brief Test用Module Handleを一つだけ生成する
+CueGameModuleResult CUE_GAME_MODULE_CALL create_module(CueGameModuleHandle *a_module,
+                                                       CueGameModuleDiagnosticV1 *) noexcept
+{
+    static std::uint8_t moduleState = 0U;
+    if (a_module == nullptr || *a_module != nullptr)
+    {
+        return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+    }
+    *a_module = &moduleState;
+    return CUE_GAME_MODULE_RESULT_SUCCESS;
+}
+
+/// @brief Test用Descriptor集合を空の登録成功として返す
+CueGameModuleResult CUE_GAME_MODULE_CALL register_empty(CueGameModuleHandle a_module,
+                                                        const CueGameRegistrationSinkV1 *a_sink,
+                                                        CueGameModuleDiagnosticV1 *) noexcept
+{
+    return a_module != nullptr && a_sink != nullptr ? CUE_GAME_MODULE_RESULT_SUCCESS
+                                                    : CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+}
+
+/// @brief Test用Module Handleの非所有参照を終了する
+void CUE_GAME_MODULE_CALL destroy_module(CueGameModuleHandle) noexcept
+{
+}
+
 constexpr CueGameModuleApiV1 k_api = {sizeof(CueGameModuleApiV1),
                                       CUE_GAME_MODULE_STRUCTURE_VERSION_1,
                                       CUE_GAME_MODULE_ABI_VERSION_1,
@@ -25,12 +53,20 @@ constexpr CueGameModuleApiV1 k_api = {sizeof(CueGameModuleApiV1),
                                       CUE_GAME_MODULE_ARCHITECTURE_X64,
                                       0U,
                                       k_projectId,
+#if defined(CUE_TEST_INVALID_API)
                                       nullptr,
-                                      nullptr,
-                                      nullptr,
-                                      nullptr,
-                                      nullptr,
+#else
+                                      &create_module,
+#endif
+                                      &register_empty,
+                                      &register_empty,
+                                      &register_empty,
+                                      &destroy_module,
+#if defined(CUE_TEST_INVALID_API)
+                                      {1U, 0U, 0U, 0U}};
+#else
                                       {0U, 0U, 0U, 0U}};
+#endif
 } // namespace
 
 /// @brief Test用Game Moduleの固定ABI Tableを返す

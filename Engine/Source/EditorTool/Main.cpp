@@ -1,3 +1,4 @@
+#include <Cue/Build/DiagnosticBundle.h>
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 #include <Cue/Build/Windows/WindowsToolchain.h>
 #include <Cue/Editor/ImGui/BuildPresenter.h>
@@ -660,17 +661,20 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         if (m_buildPresenter != nullptr &&
             m_buildPresenter->current_snapshot().state == cue::GameBuildOperationState::Running)
         {
-            static_cast<void>(m_buildPresenter->begin_editor_shutdown());
-            const bool immediatelyReady = m_buildPresenter->respond_to_editor_shutdown(
-                cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose);
-            if (!immediatelyReady)
+            const bool alreadyReady = m_buildPresenter->begin_editor_shutdown();
+            if (!alreadyReady)
             {
-                cue::Result<void> completed = m_buildService->wait_for_completion();
-                m_buildPresenter->refresh();
-                if (!completed || !m_buildPresenter->take_shutdown_ready())
+                const bool immediatelyReady = m_buildPresenter->respond_to_editor_shutdown(
+                    cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose);
+                if (!immediatelyReady)
                 {
-                    m_assertContext->fatal_handler().terminate(
-                        "Editor Tool destruction requires completed Build cleanup");
+                    cue::Result<void> completed = m_buildService->wait_for_completion();
+                    m_buildPresenter->refresh();
+                    if (!completed || !m_buildPresenter->take_shutdown_ready())
+                    {
+                        m_assertContext->fatal_handler().terminate(
+                            "Editor Tool destruction requires completed Build cleanup");
+                    }
                 }
             }
         }
@@ -696,7 +700,22 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             const auto fail = [this](std::string_view a_summary) noexcept
             { return cue::Result<void>::failure(make_tool_error(*m_assertContext, k_processTestFailed, a_summary)); };
 
-            if (m_buildPresenter == nullptr || m_buildService == nullptr)
+            /// @brief Process Test用File全体を比較可能なByte列として読む
+            const auto read_file = [](const std::filesystem::path &a_path)
+            {
+                std::ifstream input(a_path, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+            };
+
+            /// @brief Process Test専用Sourceを完全なByte列として置換する
+            const auto write_source = [](const std::filesystem::path &a_path, std::string_view a_bytes) noexcept
+            {
+                std::ofstream output(a_path, std::ios::binary | std::ios::trunc);
+                output.write(a_bytes.data(), static_cast<std::streamsize>(a_bytes.size()));
+                return output.good();
+            };
+
+            if (m_buildPresenter == nullptr || m_buildService == nullptr || !m_buildWorkspaceCompatibility)
             {
                 return fail("Build workflow is unavailable in the Editor composition");
             }
@@ -707,30 +726,30 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             }
             cue::Result<void> completed = m_buildService->wait_for_completion();
             m_buildPresenter->refresh();
-            const cue::BuildOperationSnapshot &snapshot = m_buildPresenter->current_snapshot();
+            const cue::BuildOperationSnapshot initialSnapshot = m_buildPresenter->current_snapshot();
             if (!completed)
             {
                 return cue::Result<void>::failure(std::move(*completed.try_error()));
             }
-            if (snapshot.state != cue::GameBuildOperationState::Succeeded)
+            if (initialSnapshot.state != cue::GameBuildOperationState::Succeeded)
             {
-                for (const cue::BuildLogSnapshot &log : snapshot.logs)
+                for (const cue::BuildLogSnapshot &log : initialSnapshot.logs)
                 {
                     static_cast<void>(std::fwrite(log.bytes.data(), sizeof(char), log.bytes.size(), stderr));
                 }
                 static_cast<void>(std::fflush(stderr));
-                if (!snapshot.diagnostics.empty())
+                if (!initialSnapshot.diagnostics.empty())
                 {
-                    return fail(snapshot.diagnostics.front().summary);
+                    return fail(initialSnapshot.diagnostics.front().summary);
                 }
-                if (!snapshot.logs.empty())
+                if (!initialSnapshot.logs.empty())
                 {
-                    return fail(snapshot.logs.back().bytes);
+                    return fail(initialSnapshot.logs.back().bytes);
                 }
                 return fail("Editor Build did not complete successfully");
             }
-            if (!snapshot.artifact || snapshot.artifact->configuration() != a_configuration ||
-                snapshot.artifact->files().size() != 2U || snapshot.stages.size() != 2U)
+            if (!initialSnapshot.artifact || initialSnapshot.artifact->configuration() != a_configuration ||
+                initialSnapshot.artifact->files().size() != 2U || initialSnapshot.stages.size() != 2U)
             {
                 return fail("Editor Build did not publish the requested Game Module artifact");
             }
@@ -747,11 +766,118 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             std::ifstream currentStream(currentPath, std::ios::binary);
             const std::string current{std::istreambuf_iterator<char>(currentStream), std::istreambuf_iterator<char>()};
             if (!currentStream.is_open() || currentStream.bad() ||
-                current.find(snapshot.operationId) == std::string::npos ||
+                current.find(initialSnapshot.operationId) == std::string::npos ||
                 current.find("CueGameModule.dll") == std::string::npos ||
                 current.find("CueGameModule.metadata.json") == std::string::npos)
             {
                 return fail("Editor Build Current manifest does not identify the published artifact");
+            }
+            currentStream.close();
+
+            const std::filesystem::path gameSource = projectRoot / "Source" / "Game" / "GameModule.cpp";
+            std::ifstream sourceStream(gameSource, std::ios::binary);
+            const std::string source{std::istreambuf_iterator<char>(sourceStream), std::istreambuf_iterator<char>()};
+            if (!sourceStream.is_open() || sourceStream.bad() || source.empty() ||
+                !write_source(gameSource, source + "\n#error CUE_EDITOR_PROCESS_EXPECTED_BUILD_FAILURE\n"))
+            {
+                return fail("Editor Build process test could not prepare its isolated failure input");
+            }
+            const bool configuredForReuse = m_buildPresenter->set_force_configure(false);
+            const bool failureSubmitted =
+                configuredForReuse && m_buildPresenter->submit(cue::editor::EditorBuildCommand::Start);
+            cue::Result<void> failureCompleted =
+                failureSubmitted ? m_buildService->wait_for_completion() : cue::Result<void>::success();
+            m_buildPresenter->refresh();
+            const cue::BuildOperationSnapshot failedSnapshot = m_buildPresenter->current_snapshot();
+            const bool sourceRestored = write_source(gameSource, source);
+            if (!sourceRestored)
+            {
+                return fail("Editor Build process test could not restore its isolated Source input");
+            }
+            if (!failureSubmitted || !failureCompleted ||
+                failedSnapshot.state != cue::GameBuildOperationState::Failed ||
+                !failedSnapshot.latestSuccessfulArtifact || failedSnapshot.artifact ||
+                read_file(currentPath) != current)
+            {
+                return fail("Editor Build failure did not preserve the previous successful artifact");
+            }
+            if (!failedSnapshot.profile)
+            {
+                return fail("Editor Build failure did not retain its Build Profile");
+            }
+            cue::BuildRequest failedRequest{std::string(projectLocator), *failedSnapshot.profile,
+                                            failedSnapshot.operationId, *m_buildWorkspaceCompatibility};
+            cue::Result<cue::BuildPlan> failedPlan = cue::create_build_plan(failedRequest, *m_assertContext);
+            if (!failedPlan)
+            {
+                return cue::Result<void>::failure(std::move(*failedPlan.try_error()));
+            }
+            cue::BuildDiagnosticBundleInput diagnosticInput{
+                failedSnapshot,
+                cue::make_build_diagnostic_plan_snapshot(*failedPlan.try_value(), *m_assertContext),
+                std::nullopt,
+                {}};
+            cue::BuildDiagnosticBundleLimits diagnosticLimits;
+            cue::Result<cue::BuildDiagnosticBundle> diagnostic =
+                cue::create_build_diagnostic_bundle(diagnosticInput, diagnosticLimits, *m_assertContext);
+            const std::filesystem::path diagnosticParent = projectRoot / "Saved" / "Build" / "DiagnosticBundles";
+            const std::filesystem::path diagnosticPath = diagnosticParent / failedSnapshot.operationId;
+            std::error_code filesystemError;
+            std::filesystem::create_directories(diagnosticParent, filesystemError);
+            cue::Result<std::string> diagnosticLocator = convert_argument(diagnosticPath.native(), *m_assertContext);
+            if (!diagnostic || filesystemError || !diagnosticLocator)
+            {
+                return fail("Editor Build diagnostic bundle could not be prepared");
+            }
+            cue::Result<void> diagnosticWritten = cue::write_build_diagnostic_bundle_directory(
+                *diagnostic.try_value(), *diagnosticLocator.try_value(), *m_assertContext);
+            if (!diagnosticWritten)
+            {
+                return cue::Result<void>::failure(std::move(*diagnosticWritten.try_error()));
+            }
+            cue::Result<cue::BuildDiagnosticBundle> diagnosticRead = cue::read_build_diagnostic_bundle_directory(
+                *diagnosticLocator.try_value(), diagnosticLimits, *m_assertContext);
+            if (!diagnosticRead || diagnosticRead.try_value()->operation_id() != failedSnapshot.operationId ||
+                diagnosticRead.try_value()->state() != cue::GameBuildOperationState::Failed ||
+                diagnosticRead.try_value()->files().size() != diagnostic.try_value()->files().size())
+            {
+                return fail("Editor Build diagnostic bundle did not survive its write and read workflow");
+            }
+
+            if (!m_buildPresenter->submit(cue::editor::EditorBuildCommand::Retry))
+            {
+                return fail("Editor Build retry command could not be submitted");
+            }
+            completed = m_buildService->wait_for_completion();
+            m_buildPresenter->refresh();
+            const cue::BuildOperationSnapshot &retrySnapshot = m_buildPresenter->current_snapshot();
+            if (!completed)
+            {
+                return cue::Result<void>::failure(std::move(*completed.try_error()));
+            }
+            if (retrySnapshot.state != cue::GameBuildOperationState::Succeeded)
+            {
+                if (!retrySnapshot.diagnostics.empty())
+                {
+                    return fail(retrySnapshot.diagnostics.front().summary);
+                }
+                if (!retrySnapshot.logs.empty())
+                {
+                    return fail(retrySnapshot.logs.back().bytes);
+                }
+                return fail("Editor Build retry did not succeed");
+            }
+            if (retrySnapshot.operationId == failedSnapshot.operationId)
+            {
+                return fail("Editor Build retry reused the failed Operation identity");
+            }
+            if (!retrySnapshot.artifact || retrySnapshot.artifact->configuration() != a_configuration)
+            {
+                return fail("Editor Build retry did not publish the requested configuration");
+            }
+            if (read_file(currentPath).find(retrySnapshot.operationId) == std::string::npos)
+            {
+                return fail("Editor Build retry Current manifest does not identify the new artifact");
             }
             return cue::Result<void>::success();
         }
@@ -1138,6 +1264,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         cue::BuildWorkspaceCompatibility compatibility{cue::BuildGenerator::VisualStudio2026,
                                                        cue::BuildArchitecture::X64, *compiler->version,
                                                        k_engineBuildPolicyVersion};
+        m_buildWorkspaceCompatibility = compatibility;
         m_buildPresenter = cue::editor::BuildPresenter::create(
             *m_buildService, std::string(m_session->project_locator()), compatibility,
             std::make_unique<WindowsBuildOperationIdSource>(*m_assertContext), *m_assertContext);
@@ -1966,6 +2093,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     std::unique_ptr<cue::editor::PlaySessionPresenter> m_playPresenter;
     std::unique_ptr<cue::GameBuildService> m_buildService;
     std::unique_ptr<cue::editor::BuildPresenter> m_buildPresenter;
+    std::optional<cue::BuildWorkspaceCompatibility> m_buildWorkspaceCompatibility;
     std::unique_ptr<cue::editor::EditorPresenter> m_presenter;
     std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;

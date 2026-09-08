@@ -100,7 +100,8 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
 }
 
 /// @brief Artifact公開、Lock取消、失敗時Current保全を一つのProject Rootで検証する
-void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const cue::AssertContext &a_assertContext)
+void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const std::filesystem::path &a_invalidProbe,
+                                     const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path projectRoot =
         a_probe.parent_path() / ("CueBuildArtifactPublisherTests-" + std::string(k_configurationName));
@@ -157,11 +158,19 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(current.find(std::string(plan.operation_id())) != std::string::npos);
     require(current.find("sha256") != std::string::npos);
 
-    cue::BuildPlan failedPlan = make_plan(projectRoot, "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto failedLease = take_value(publisher->acquire_build_lease(failedPlan, cancellation));
-    require(failedLease.has_value());
+    cue::BuildPlan invalidPlan = make_plan(projectRoot, "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto invalidLease = take_value(publisher->acquire_build_lease(invalidPlan, cancellation));
+    require(invalidLease.has_value());
     require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
-    require(!publisher->publish(failedPlan, cancellation, std::move(*failedLease)).has_value());
+    require(std::filesystem::copy_file(a_invalidProbe, outputDirectory / "CueGameModule.dll"));
+    require(!publisher->publish(invalidPlan, cancellation, std::move(*invalidLease)).has_value());
+    require(read_text(currentPath) == current);
+
+    cue::BuildPlan missingPlan = make_plan(projectRoot, "21234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto missingLease = take_value(publisher->acquire_build_lease(missingPlan, cancellation));
+    require(missingLease.has_value());
+    require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
+    require(!publisher->publish(missingPlan, cancellation, std::move(*missingLease)).has_value());
     require(read_text(currentPath) == current);
 
     std::filesystem::remove_all(projectRoot, error);
@@ -172,11 +181,12 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
 /// @brief Windows Artifact PublisherのProcess間契約とAtomic Current保全を検証する
 int main(int a_argumentCount, char **a_arguments)
 {
-    require(a_argumentCount == 2);
+    require(a_argumentCount == 3);
     TestFatalHandler fatalHandler;
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
-    test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), assertContext);
+    test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), std::filesystem::path(a_arguments[2]),
+                                    assertContext);
     return 0;
 }
