@@ -139,6 +139,28 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
     return nullptr;
 }
 
+/// @brief Bundleから指定PathのFileを検索する
+[[nodiscard]] const cue::BuildDiagnosticBundleFile *find_file(const cue::BuildDiagnosticBundle &a_bundle,
+                                                              std::string_view a_path) noexcept
+{
+    const auto file = std::find_if(a_bundle.files().begin(), a_bundle.files().end(),
+                                   /// @brief 指定Pathと一致するBundle Fileを検出する
+                                   [a_path](const auto &a_file) noexcept { return a_file.relativePath == a_path; });
+    return file == a_bundle.files().end() ? nullptr : &*file;
+}
+
+/// @brief Bundle FileのByte列を検査用文字列へ変換する
+[[nodiscard]] std::string file_text(const cue::BuildDiagnosticBundleFile &a_file)
+{
+    std::string text;
+    text.reserve(a_file.bytes.size());
+    for (const std::byte value : a_file.bytes)
+    {
+        text.push_back(static_cast<char>(std::to_integer<unsigned char>(value)));
+    }
+    return text;
+}
+
 /// @brief Bundle全FileのByte列を検査用文字列へ連結する
 [[nodiscard]] std::string bundle_text(const cue::BuildDiagnosticBundle &a_bundle)
 {
@@ -275,6 +297,13 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     invalidUtf8LogInput.operation.logs.front().bytes = std::string("\xC3", 1U);
     require(!cue::create_build_diagnostic_bundle(invalidUtf8LogInput, limits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput nonCanonicalLogInput = input;
+    nonCanonicalLogInput.operation.logs.front().bytes = std::string("\xEF\xBB\xBF", 3U) + "First\r\nSecond";
+    cue::BuildDiagnosticBundle normalizedLogBundle =
+        take_value(cue::create_build_diagnostic_bundle(nonCanonicalLogInput, limits, a_assertContext));
+    require(find_file(normalizedLogBundle, "stdout.log") != nullptr);
+    require(file_text(*find_file(normalizedLogBundle, "stdout.log")) == "First\nSecond\n");
+
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
     const std::string destinationUtf8 = generic_utf8_path(destination);
@@ -290,6 +319,18 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(reloaded.operation_id() == bundle.operation_id());
     require(reloaded.state() == bundle.state());
     require(reloaded.manifest_entries().size() == bundle.manifest_entries().size());
+
+    const std::filesystem::path linkedSource = destination.parent_path() / "CueBuildDiagnosticBundleSourceLink";
+    std::filesystem::remove(linkedSource, cleanupError);
+    require(!cleanupError);
+    std::filesystem::create_directory_symlink(destination, linkedSource, cleanupError);
+    if (!cleanupError)
+    {
+        require(!cue::read_build_diagnostic_bundle_directory(generic_utf8_path(linkedSource), limits, a_assertContext)
+                     .has_value());
+        require(std::filesystem::remove(linkedSource));
+    }
+    cleanupError.clear();
 
     const auto stdoutFile =
         std::find_if(bundle.files().begin(), bundle.files().end(),
@@ -308,7 +349,43 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     };
     write_stdout(invalidUtf8Log);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::vector<std::byte> carriageReturnLog = stdoutFile->bytes;
+    const auto lineFeed = std::find(carriageReturnLog.begin(), carriageReturnLog.end(), std::byte{'\n'});
+    require(lineFeed != carriageReturnLog.end());
+    *lineFeed = std::byte{'\r'};
+    write_stdout(carriageReturnLog);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::vector<std::byte> unterminatedLog = stdoutFile->bytes;
+    unterminatedLog.back() = std::byte{'x'};
+    write_stdout(unterminatedLog);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    require(stdoutFile->bytes.size() >= 3U);
+    std::vector<std::byte> byteOrderMarkedLog = stdoutFile->bytes;
+    byteOrderMarkedLog[0U] = std::byte{0xEFU};
+    byteOrderMarkedLog[1U] = std::byte{0xBBU};
+    byteOrderMarkedLog[2U] = std::byte{0xBFU};
+    write_stdout(byteOrderMarkedLog);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
     write_stdout(stdoutFile->bytes);
+
+    const cue::BuildDiagnosticBundleFile *stagesFile = find_file(bundle, "stages.json");
+    require(stagesFile != nullptr);
+    const std::string originalStages = file_text(*stagesFile);
+    /// @brief Stage Payload差替えを完了してからReaderへ渡す
+    const auto write_stages = [&destination](std::string_view a_text)
+    {
+        std::ofstream stream(destination / "stages.json", std::ios::binary | std::ios::trunc);
+        stream.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+        stream.close();
+        require(stream.good());
+    };
+    std::string inconsistentStage = originalStages;
+    const std::size_t successfulExitCode = inconsistentStage.find("\"exitCode\":0");
+    require(successfulExitCode != std::string::npos);
+    inconsistentStage[successfulExitCode + std::string_view("\"exitCode\":").size()] = '1';
+    write_stages(inconsistentStage);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_stages(originalStages);
 
     const auto planFile = std::find_if(bundle.files().begin(), bundle.files().end(),
                                        /// @brief Payload Schema改変検証対象のPlan Fileを検出する

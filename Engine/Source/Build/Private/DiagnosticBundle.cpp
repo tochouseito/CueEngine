@@ -130,6 +130,16 @@ constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
     return valid_utf8_bytes(reinterpret_cast<const unsigned char *>(a_bytes.data()), a_bytes.size());
 }
 
+/// @brief Bundle FileがBOMなしStrict UTF-8、LF改行、末尾改行のText契約を満たすか検証する
+[[nodiscard]] bool valid_bundle_text(std::span<const std::byte> a_bytes) noexcept
+{
+    constexpr std::array<std::byte, 3U> byteOrderMark = {std::byte{0xEFU}, std::byte{0xBBU}, std::byte{0xBFU}};
+    return !a_bytes.empty() && a_bytes.back() == std::byte{'\n'} && valid_utf8(a_bytes) &&
+           (a_bytes.size() < byteOrderMark.size() ||
+            !std::equal(byteOrderMark.begin(), byteOrderMark.end(), a_bytes.begin())) &&
+           std::find(a_bytes.begin(), a_bytes.end(), std::byte{'\r'}) == a_bytes.end();
+}
+
 /// @brief User指定上限が正数かつHard Limit内に収まるか検証する
 [[nodiscard]] bool valid_limits(const cue::BuildDiagnosticBundleLimits &a_limits) noexcept
 {
@@ -964,6 +974,36 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
             output.append(*redacted);
         }
     }
+    constexpr std::string_view byteOrderMark = "\xEF\xBB\xBF";
+    if (output.starts_with(byteOrderMark))
+    {
+        output.erase(0U, byteOrderMark.size());
+    }
+    std::size_t writeOffset = 0U;
+    for (std::size_t readOffset = 0U; readOffset < output.size(); ++readOffset)
+    {
+        if (output[readOffset] == '\r')
+        {
+            output[writeOffset++] = '\n';
+            if (readOffset + 1U < output.size() && output[readOffset + 1U] == '\n')
+            {
+                ++readOffset;
+            }
+        }
+        else
+        {
+            output[writeOffset++] = output[readOffset];
+        }
+    }
+    output.resize(writeOffset);
+    if (output.empty() || output.back() != '\n')
+    {
+        if (output.size() >= a_maximumBytes)
+        {
+            return std::nullopt;
+        }
+        output.push_back('\n');
+    }
     return output;
 }
 
@@ -1147,6 +1187,20 @@ class JsonSchemaReader final
         std::uint64_t value = 0U;
         const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
         return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value <= a_maximum;
+    }
+
+    /// @brief JSONの0以外の符号なし整数を読み取る
+    [[nodiscard]] bool positive_unsigned_integer() noexcept
+    {
+        skip_whitespace();
+        const std::size_t begin = m_offset;
+        if (!consume_digits())
+        {
+            return false;
+        }
+        std::uint64_t value = 0U;
+        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value > 0U;
     }
 
     /// @brief JSONの符号付き整数を範囲検証して読み取る
@@ -1415,13 +1469,37 @@ class JsonSchemaReader final
 [[nodiscard]] bool read_stage(JsonSchemaReader &a_reader) noexcept
 {
     if (!a_reader.begin_object() || !a_reader.member("stage") || !a_reader.string_is({"configure", "build"}) ||
-        !a_reader.comma() || !a_reader.member("outcome") ||
-        !a_reader.string_is({"succeeded", "failed", "cancelled", "timedOut"}) || !a_reader.comma() ||
-        !a_reader.member("exitCode"))
+        !a_reader.comma() || !a_reader.member("outcome"))
     {
         return false;
     }
-    return (a_reader.next_is('n') ? a_reader.null_value() : a_reader.unsigned_integer()) && a_reader.end_object();
+    enum class ExitCodeRequirement : std::uint8_t
+    {
+        Zero,
+        Positive,
+        Null
+    };
+    ExitCodeRequirement requirement = ExitCodeRequirement::Null;
+    if (a_reader.string_is({"succeeded"}))
+    {
+        requirement = ExitCodeRequirement::Zero;
+    }
+    else if (a_reader.string_is({"failed"}))
+    {
+        requirement = ExitCodeRequirement::Positive;
+    }
+    else if (!a_reader.string_is({"cancelled", "timedOut"}))
+    {
+        return false;
+    }
+    if (!a_reader.comma() || !a_reader.member("exitCode"))
+    {
+        return false;
+    }
+    const bool validExitCode = requirement == ExitCodeRequirement::Zero       ? a_reader.unsigned_integer(0U)
+                               : requirement == ExitCodeRequirement::Positive ? a_reader.positive_unsigned_integer()
+                                                                              : a_reader.null_value();
+    return validExitCode && a_reader.end_object();
 }
 
 /// @brief Stage結果Arrayを固定Schemaで読み取る
@@ -2123,7 +2201,9 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
         }
         const auto source = filesystem_path_from_utf8(a_source);
         std::error_code error;
-        if (!source || !source->is_absolute() || !std::filesystem::is_directory(*source, error) || error)
+        const std::filesystem::file_status sourceStatus =
+            source ? std::filesystem::symlink_status(*source, error) : std::filesystem::file_status{};
+        if (!source || !source->is_absolute() || error || !std::filesystem::is_directory(sourceStatus))
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::FilesystemFailure, "Diagnostic source is unavailable"));
@@ -2184,7 +2264,7 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
                 error = std::make_error_code(std::errc::io_error);
                 break;
             }
-            if (!valid_utf8(bytes))
+            if (!valid_bundle_text(bytes))
             {
                 readFailure = BuildDiagnosticBundleError::InvalidBundle;
                 break;

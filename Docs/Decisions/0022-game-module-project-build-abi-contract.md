@@ -573,6 +573,8 @@ Token、空Prefixを拒否し、借用入力を所有BufferへCopyする前に�
 各File数、File単位Byte数、Bundle総Byte数をSerialization前から適用し、上限超過時に部分出力を公開しない。
 JSONとLogを含む全FileはStrict UTF-8として生成前と読込時に検証し、Overlong Encoding、Surrogate、範囲外Scalar、
 不完全Sequenceを拒否する。Native Tool出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
+Log先頭のUTF-8 BOMは除去し、CRLFと単独CRはLFへ正規化し、空Logを含め末尾LFを保証する。ReaderはBOM、CR、
+末尾LF欠落を拒否する。Bundle Source Directory自身と配下EntryのReparse Pointを追跡せず拒否する。
 
 `schemaVersion`は全JSONで整数`1`だけを受理する。v1 Bundleは診断用Snapshotであり、Readerは未知Versionを推測読込または
 In-place Migrationしない。Schema追加、Member意味変更、列挙値変更、Redaction契約変更は先行ADRで新Versionと互換性方針を決め、
