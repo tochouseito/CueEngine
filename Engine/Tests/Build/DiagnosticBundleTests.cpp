@@ -330,7 +330,10 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
 
     cue::BuildDiagnosticBundleInput invalidUtf8LogInput = input;
     invalidUtf8LogInput.operation.logs.front().bytes = std::string("\xC3", 1U);
-    require(!cue::create_build_diagnostic_bundle(invalidUtf8LogInput, limits, a_assertContext).has_value());
+    auto invalidUtf8Result = cue::create_build_diagnostic_bundle(invalidUtf8LogInput, limits, a_assertContext);
+    require(!invalidUtf8Result.has_value());
+    require(invalidUtf8Result.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::BuildDiagnosticBundleError::InvalidInput));
 
     cue::BuildDiagnosticBundleInput nonCanonicalLogInput = input;
     nonCanonicalLogInput.operation.logs.front().bytes = std::string("\xEF\xBB\xBF", 3U) + "First\r\nSecond";

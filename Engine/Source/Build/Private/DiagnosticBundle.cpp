@@ -1081,11 +1081,26 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     return std::move(output).finish();
 }
 
+/// @brief Log直列化が失敗した安定分類
+enum class LogSerializationFailure : std::uint8_t
+{
+    None,
+    InvalidInput,
+    SizeLimitExceeded
+};
+
+/// @brief Log直列化の所有Byte列と失敗分類
+struct LogSerializationResult final
+{
+    std::string bytes;
+    LogSerializationFailure failure = LogSerializationFailure::None;
+};
+
 /// @brief 指定Streamの全Chunkを上限内で連結してからUTF-8検証とRedactionを適用する
-[[nodiscard]] std::optional<std::string> serialize_log(const cue::BuildOperationSnapshot &a_operation,
-                                                       cue::ChildProcessStream a_stream,
-                                                       const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
-                                                       std::size_t a_maximumBytes)
+[[nodiscard]] LogSerializationResult serialize_log(const cue::BuildOperationSnapshot &a_operation,
+                                                   cue::ChildProcessStream a_stream,
+                                                   const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+                                                   std::size_t a_maximumBytes)
 {
     std::string source;
     for (const cue::BuildLogSnapshot &log : a_operation.logs)
@@ -1094,19 +1109,19 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
         {
             if (log.bytes.size() > a_maximumBytes - source.size())
             {
-                return std::nullopt;
+                return {{}, LogSerializationFailure::SizeLimitExceeded};
             }
             source.append(log.bytes);
         }
     }
     if (!valid_utf8(source))
     {
-        return std::nullopt;
+        return {{}, LogSerializationFailure::InvalidInput};
     }
     std::optional<std::string> redacted = redact_bounded(source, a_mappings, a_maximumBytes);
     if (!redacted)
     {
-        return std::nullopt;
+        return {{}, LogSerializationFailure::SizeLimitExceeded};
     }
     std::string output = std::move(*redacted);
     constexpr std::string_view byteOrderMark = "\xEF\xBB\xBF";
@@ -1135,11 +1150,11 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     {
         if (output.size() >= a_maximumBytes)
         {
-            return std::nullopt;
+            return {{}, LogSerializationFailure::SizeLimitExceeded};
         }
         output.push_back('\n');
     }
-    return output;
+    return {std::move(output), LogSerializationFailure::None};
 }
 
 /// @brief Size Policyを適用しながら一FileをBundle候補へ追加する
@@ -2259,25 +2274,29 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         {
             const std::uint64_t maximumBytes =
                 std::min(a_limits.maximumFileBytes, a_limits.maximumTotalBytes - totalBytes);
-            std::optional<std::string> output = serialize_log(a_input.operation, ChildProcessStream::StandardOutput,
-                                                              mappings, static_cast<std::size_t>(maximumBytes));
-            failure = output ? collect("stdout.log", std::move(*output))
-                             : std::optional<BuildDiagnosticBundleError>(
-                                   maximumBytes < a_limits.maximumFileBytes
-                                       ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
-                                       : BuildDiagnosticBundleError::FileSizeLimitExceeded);
+            LogSerializationResult output = serialize_log(a_input.operation, ChildProcessStream::StandardOutput,
+                                                          mappings, static_cast<std::size_t>(maximumBytes));
+            failure =
+                output.failure == LogSerializationFailure::None ? collect("stdout.log", std::move(output.bytes))
+                : output.failure == LogSerializationFailure::InvalidInput
+                    ? std::optional<BuildDiagnosticBundleError>(BuildDiagnosticBundleError::InvalidInput)
+                    : std::optional<BuildDiagnosticBundleError>(
+                          maximumBytes < a_limits.maximumFileBytes ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
+                                                                   : BuildDiagnosticBundleError::FileSizeLimitExceeded);
         }
         if (!failure)
         {
             const std::uint64_t maximumBytes =
                 std::min(a_limits.maximumFileBytes, a_limits.maximumTotalBytes - totalBytes);
-            std::optional<std::string> output = serialize_log(a_input.operation, ChildProcessStream::StandardError,
-                                                              mappings, static_cast<std::size_t>(maximumBytes));
-            failure = output ? collect("stderr.log", std::move(*output))
-                             : std::optional<BuildDiagnosticBundleError>(
-                                   maximumBytes < a_limits.maximumFileBytes
-                                       ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
-                                       : BuildDiagnosticBundleError::FileSizeLimitExceeded);
+            LogSerializationResult output = serialize_log(a_input.operation, ChildProcessStream::StandardError,
+                                                          mappings, static_cast<std::size_t>(maximumBytes));
+            failure =
+                output.failure == LogSerializationFailure::None ? collect("stderr.log", std::move(output.bytes))
+                : output.failure == LogSerializationFailure::InvalidInput
+                    ? std::optional<BuildDiagnosticBundleError>(BuildDiagnosticBundleError::InvalidInput)
+                    : std::optional<BuildDiagnosticBundleError>(
+                          maximumBytes < a_limits.maximumFileBytes ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
+                                                                   : BuildDiagnosticBundleError::FileSizeLimitExceeded);
         }
         if (!failure && (a_input.operation.artifact || a_input.operation.latestSuccessfulArtifact))
         {
