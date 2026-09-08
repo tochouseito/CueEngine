@@ -160,7 +160,8 @@ Project Root内の役割を次のように定める。
 | `Generated/Build/<workspace-key>` | CMake Binary Tree、生成IDE Project、Compiler中間物 | No | 互換なToolchain入力では再利用する |
 | `Generated/Build/Candidates/<operation-id>` | 成功Processから収集した未公開Artifact | No | 検証後にPublishまたは破棄できる |
 | `Saved/Build/Operations/<operation-id>` | Build Log、Plan、Environment、Result Snapshot | No | 診断Retention Policyで管理する |
-| `Generated/Artifacts/<configuration>` | M16 Publisher入力となる検証済み成功Artifact Snapshot | No | 新しい成功ArtifactのPublish時だけ置換する |
+| `Generated/Artifacts/<configuration>/Versions/<artifact-id>` | M16 Publisher入力となる不変の成功Artifact集合 | No | 一意Directoryとして一度だけ公開する |
+| `Generated/Artifacts/<configuration>/Current.json` | 現在の成功Artifact IDとInventoryを指す小さいManifest | No | 新しい成功Versionの検証後だけAtomic Replaceする |
 
 `Assets/Source`はAsset Authoring用であり、C++ Sourceを置かない。`Assets/Runtime`はAsset Pipeline出力用であり、
 Game DLL、PDB、Build Logを置かない。Machine固有Engine Source／Binary LocationはCMake引数またはUser Workspace設定から渡し、
@@ -199,6 +200,9 @@ Function PointerをDLL Unload後に呼ばない。v1はGame ModuleからHost機�
 後続のGameplay APIは必要機能だけを列挙したVersion付きTableとして追加し、既存v1構造体の予約領域へ暗黙追加しない。
 
 生成、登録、Start、Update、Stop等の失敗可能なABI関数は安定した数値Resultを返す。
+Hostは全出力Handleと出力構造体をNullまたは0へ初期化してからCallbackを呼ぶ。Module HandleまたはSystem Stateの
+生成Callbackは成功時だけ完全構築済みHandleの所有権を出力へ移し、失敗時は出力をNullのまま維持して
+Module内部の部分構築ResourceをすべてRollbackする。Queryと登録Callbackも失敗時に部分的な出力所有権をHostへ移さない。
 System StateとModule Handleの破棄Callbackだけは戻り値を持たない失敗不能操作とし、同じ入力へ一度だけ呼ぶ。
 破棄Callbackは所有物を完全に解放して正常復帰するか、契約違反を検出したModule自身がProcessをFail-fast終了する。
 Exception、部分解放状態、再試行要求をHostへ返してはならず、Hostは破棄失敗を回復可能Errorへ変換してDLLをUnloadしない。
@@ -217,7 +221,8 @@ String、Array、File Handleを他方の`free`、`delete`、Destructorで破棄�
 5. Project ScopeのModule Handleを破棄する
 
 Schema登録は`TypeId`、診断名、連続Schema Version、Field ID、Field診断名、Reserved Field IDをC互換Descriptorで渡す。
-HostはCallback中に全値をFirst-party所有値へCopyし、既存`SchemaRegistryBuilder`へ追加する。
+HostはCallback中に全値をFirst-party所有の一時Registration BatchへCopyし、Callback成功後だけ既存
+`SchemaRegistryBuilder`へ追加する。Callback失敗、Descriptor不正、Copy失敗ではBatch全体を破棄し、Builderを変更しない。
 登録後に借用Pointerを保持しない。Core Schemaを先に登録し、Game SchemaとTombstoneをModule登録順で受理した後、
 全衝突を検査してSchema Registryを一度だけSealする。
 
@@ -228,8 +233,11 @@ ECS Storage／ABIの別Researchを先行させる。M15では宣言の重複、�
 Component StorageやSerializationを追加しない。
 
 System登録はStable UTF-8 ID、`PreUpdate`／`Update`／`PostUpdate`、`int32_t` Order、Dependency ID Array、
-System State生成／破棄、Start／Update／Stop Callbackを渡す。HostはDescriptorを即時Copyし、CallbackとModule Handleを保持する
-First-party FactoryをProject Scopeへ構築する。FactoryはSessionごとにHost側`RuntimeSystem` Adapterを一つ生成する。
+System State生成／破棄、Start／Update／Stop Callbackを渡す。HostはDescriptorを即時Copyし、CallbackとModule Handleへの
+非所有参照を保持するFirst-party FactoryをProject Scopeへ構築する。Composition Rootが所有する
+`ProjectGameModuleConnection`だけがModule Handleの一意Ownerとなり、全Factory、Adapter、System Stateより長く生存する。
+System登録もHost所有の一時Batchへ集約し、Callbackと全Descriptorの検証成功後だけFactory集合として公開する。
+FactoryはModule Handleを破棄せず、SessionごとにHost側`RuntimeSystem` Adapterを一つ生成する。
 AdapterがDLL側System Stateを一意所有し、Adapterの破棄処理が失敗不能なDLL側破棄Callbackの一回実行を包含する。
 System StateをAdapterと別のOwnerへ置かず、Adapterより先に独立破棄しない。
 
@@ -336,14 +344,18 @@ CandidateはProcess成功だけで公開せず、次をすべて検証する。
 - ABI、Project、Engine Compatibility、Toolset Metadataが一致する
 - Artifact InventoryのFile名、相対Path、Size、Hashが確定している
 
-検証成功後、StorageのAtomic Replace契約で`Generated/Artifacts/<configuration>`の
-`Latest Successful Artifact` Snapshotを更新する。このSnapshotは再生成可能なM16 Publisher入力であり、
-RuntimeがProjectのGenerated Rootから直接Loadする契約ではない。
+検証成功後、Candidate集合を`Generated/Artifacts/<configuration>/Versions/<artifact-id>`へ一意な不変Directoryとして公開する。
+既存Version Directoryを置換せず、同じArtifact IDが存在する場合は不一致として拒否する。Directory公開と全File再検証の後、
+Artifact ID、相対Path、Size、Hashを持つ小さい`Current.json`だけをADR-0014のRegular File Atomic Replaceで更新する。
+M16 Publisherは`Current.json`を一度読んで指定Version Directoryだけを入力にし、全HashとSizeを再検証する。
+このVersion Snapshotは再生成可能なPublisher入力であり、RuntimeがProjectのGenerated Rootから直接Loadする契約ではない。
 失敗、Cancel、Timeout、Editor終了、Metadata不一致ではCandidateを成功として公開せず、以前の成功SnapshotとInventoryを保持する。
 失敗OperationのLog、Plan、Environment Report、Stage Resultは`Saved/Build/Operations/<operation-id>`へ診断可能な範囲で残す。
 
 Artifact Retention、古いBinary Tree削除、Diagnostic Bundle上限は後続Issueで決めるが、User SourceとLatest Successful Artifactを
-Cleanup対象へ含めない。CleanupはBuild成功条件にせず、失敗しても成功Artifactの正本を失わせない。
+Cleanup対象へ含めない。`Current.json`が参照しない公開済みVersion Directoryは後続Cleanup対象にできるが、
+Current Manifestと参照先Versionを同じCleanup Operationで削除しない。CleanupはBuild成功条件にせず、
+失敗しても成功Artifactの正本を失わせない。
 
 ### Error and Diagnostic Contract
 
@@ -432,14 +444,17 @@ M15で次を検証する。
 - 誤った外部MetadataのProject ID、Architecture、Configuration、ToolsetをDLL Load前に拒否する
 - Module自己報告のABI Version、Project ID、Configuration不一致をModule Handle生成と登録の前に拒否する
 - Schema、Component宣言、System Factoryを固定順で登録し、失敗時に逆順Cleanupする
+- Module Handle／System State生成失敗時に出力をNullのまま維持し、Module内の部分Resourceを残さない
 - 二つのSessionが別のDLL側System Stateを持ち、片方の停止が他方へ影響しない
+- `ProjectGameModuleConnection`だけがModule Handleを所有し、Factoryは長寿命の非所有参照だけを持つ
 - System StateとModule Handleを生成したDLL側Callbackで一度だけ破棄する
 - Adapter破棄がSystem State破棄を包含し、失敗不能破棄Callback以外の経路で解放しない
 - Callback、Factory、System State生存中にDLLをUnloadしない
 - Project ScopeとGame Module使用Sessionの全Callbackを一つのOwner Threadへ限定する
 - UIなしでBuild Request、Plan、Cancel、Retry、Artifact Publishを検証できる
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
-- 失敗Build後も以前の成功Artifact HashとInventoryが変わらない
+- 不変Version Directory公開後に`Current.json`だけをAtomic Replaceする
+- 失敗BuildまたはCurrent Manifest更新失敗後も以前の成功Artifact HashとInventoryが変わらない
 - Runtime、Game Module、Build CoreからEditor／ImGuiへの逆依存がない
 - M15差分にAsset Pipeline、Hot Reload、ECS Storage改良が含まれない
 
