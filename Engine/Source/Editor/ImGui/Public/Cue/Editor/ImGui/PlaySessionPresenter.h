@@ -142,6 +142,7 @@ class PlaySessionPresenter final
     std::optional<editor_core::EditorDocumentId> m_activeDocumentId;
     std::array<char, 128> m_filter{};
     std::string m_message;
+    bool m_shouldFocusWindow = false;
     bool m_hasError = false;
     bool m_openShutdownConfirmation = false;
     bool m_isShutdownConfirmationPending = false;

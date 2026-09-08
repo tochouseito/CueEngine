@@ -658,7 +658,8 @@ void EditorPresenter::draw() noexcept
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         constexpr ImGuiWindowFlags k_windowFlags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoCollapse |
-                                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+                                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
         if (ImGui::Begin("CueEngine Editor", nullptr, k_windowFlags))
         {
             if (document != nullptr)

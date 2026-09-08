@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 static_assert(!std::is_copy_constructible_v<cue::editor::EditorPresenter>);
 static_assert(!std::is_move_constructible_v<cue::editor::EditorPresenter>);
@@ -184,6 +185,12 @@ void draw_frame(cue::editor::EditorPresenter &a_presenter) noexcept
 {
     ImGui::NewFrame();
     a_presenter.draw();
+    const bool isVisible = ImGui::Begin("CueEngine Editor");
+    require(isVisible);
+    const ImGuiWindow *editorWindow = ImGui::GetCurrentWindowRead();
+    require(editorWindow != nullptr);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoBringToFrontOnFocus) != 0);
+    ImGui::End();
     ImGui::Render();
 }
 

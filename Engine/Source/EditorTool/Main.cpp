@@ -750,7 +750,6 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         {
             m_playPresenter->set_active_document(m_session->active_document_id());
             m_playPresenter->process_shortcuts();
-            m_playPresenter->draw();
             if (m_playPresenter->take_shutdown_ready())
             {
                 begin_transition(PendingTransition::CloseProject);
@@ -770,6 +769,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 draw_project_shell();
             }
             m_filesPresenter->draw();
+            m_playPresenter->draw();
             draw_locator_dialog();
             draw_close_dialog();
             draw_overwrite_dialog();
