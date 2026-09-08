@@ -6,16 +6,27 @@ add_executable(CueBuildPlanTests PlanTests.cpp)
 target_link_libraries(CueBuildPlanTests PRIVATE Cue.Build)
 target_compile_features(CueBuildPlanTests PRIVATE cxx_std_20)
 
-add_executable(CueBuildPublicHeaderTest PlanHeaderCompile.cpp PublicHeaderCompile.cpp)
+add_executable(CueBuildCMakeRunnerTests CMakeRunnerTests.cpp)
+target_link_libraries(CueBuildCMakeRunnerTests PRIVATE Cue.Build)
+target_compile_features(CueBuildCMakeRunnerTests PRIVATE cxx_std_20)
+
+add_executable(CueBuildPublicHeaderTest CMakeRunnerHeaderCompile.cpp PlanHeaderCompile.cpp PublicHeaderCompile.cpp)
 target_link_libraries(CueBuildPublicHeaderTest PRIVATE Cue.Build)
 target_compile_features(CueBuildPublicHeaderTest PRIVATE cxx_std_20)
 
-set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildPublicHeaderTest)
+set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildCMakeRunnerTests CueBuildPublicHeaderTest)
 if(WIN32)
+    add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
+    target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
+
+    add_executable(CueBuildCMakeRunnerProcessTests CMakeRunnerProcessTests.cpp)
+    target_link_libraries(CueBuildCMakeRunnerProcessTests PRIVATE Cue.Build Cue.Platform.Windows)
+    target_compile_features(CueBuildCMakeRunnerProcessTests PRIVATE cxx_std_20)
+
     add_executable(CueBuildWindowsToolchainTests WindowsToolchainTests.cpp)
     target_link_libraries(CueBuildWindowsToolchainTests PRIVATE Cue.Build.Windows)
     target_compile_features(CueBuildWindowsToolchainTests PRIVATE cxx_std_20)
-    list(APPEND cueBuildTestTargets CueBuildWindowsToolchainTests)
+    list(APPEND cueBuildTestTargets CueBuildCMakeRunnerProbe CueBuildCMakeRunnerProcessTests CueBuildWindowsToolchainTests)
 endif()
 
 foreach(testTarget IN LISTS cueBuildTestTargets)
@@ -49,10 +60,17 @@ set_tests_properties(Cue.Build.Toolchain PROPERTIES LABELS Build TIMEOUT 20)
 add_test(NAME Cue.Build.Plan COMMAND CueBuildPlanTests $<TARGET_FILE_DIR:CueBuildPlanTests>)
 set_tests_properties(Cue.Build.Plan PROPERTIES LABELS Build TIMEOUT 20)
 
+add_test(NAME Cue.Build.CMakeRunner COMMAND CueBuildCMakeRunnerTests)
+set_tests_properties(Cue.Build.CMakeRunner PROPERTIES LABELS Build TIMEOUT 20)
+
 add_test(NAME Cue.Build.PublicHeaders COMMAND CueBuildPublicHeaderTest)
 set_tests_properties(Cue.Build.PublicHeaders PROPERTIES LABELS Build TIMEOUT 10)
 
 if(WIN32)
+    add_test(NAME Cue.Build.CMakeRunner.Process
+             COMMAND CueBuildCMakeRunnerProcessTests $<TARGET_FILE:CueBuildCMakeRunnerProbe>)
+    set_tests_properties(Cue.Build.CMakeRunner.Process PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
+
     add_test(NAME Cue.Build.Windows.Toolchain COMMAND CueBuildWindowsToolchainTests)
     set_tests_properties(Cue.Build.Windows.Toolchain PROPERTIES LABELS "Build;Windows" TIMEOUT 20)
 endif()
