@@ -113,7 +113,8 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
                        "Configuring C:\\Users\\Tester\\CueProject\\Source\\Game\n"},
                       {operation.operationId, cue::BuildStage::Build, 1U, cue::ChildProcessStream::StandardError,
                        "C:/Users/Tester/CueProject/Source/Game/Game.cpp(1): error\n"}};
-    operation.diagnostics = {{"Cue.Build", 2, "Build failed", {"C:/Users/Tester/CueProject"}}};
+    operation.diagnostics = {
+        {"Cue.Build", 2, "Build failed", {"C:/Users/Tester/CueProject"}, cue::BuildNativeErrorSnapshot{"Win32", 5}}};
     operation.latestSuccessfulArtifact = make_artifact(a_plan, a_assertContext);
     return operation;
 }
@@ -174,6 +175,7 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(allText.find("Source/Game/Game.cpp") != std::string::npos);
     require(allText.find("4.2.0.0") != std::string::npos);
     require(allText.find("supportedConfigurations") != std::string::npos);
+    require(allText.find("\"nativeError\":{\"domain\":\"Win32\",\"code\":5}") != std::string::npos);
 
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";

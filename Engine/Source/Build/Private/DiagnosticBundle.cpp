@@ -491,7 +491,20 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
             }
             append_json_string(output, redact(diagnostic.contexts[contextIndex], a_mappings));
         }
-        output.append("]}");
+        output.append("],\"nativeError\":");
+        if (diagnostic.nativeError)
+        {
+            output.append("{\"domain\":");
+            append_json_string(output, diagnostic.nativeError->domain);
+            output.append(",\"code\":");
+            output.append(std::to_string(diagnostic.nativeError->code));
+            output.push_back('}');
+        }
+        else
+        {
+            output.append("null");
+        }
+        output.push_back('}');
     }
     output.append("]\n}\n");
     return output;
