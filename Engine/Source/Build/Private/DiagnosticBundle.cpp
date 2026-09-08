@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -141,6 +142,108 @@ void append_json_string(std::string &a_output, std::string_view a_value)
     a_output.push_back('"');
 }
 
+class BoundedTextBuilder final
+{
+  public:
+    /// @brief 最大Byte数を超えない文字列Builderを初期化する
+    explicit BoundedTextBuilder(std::size_t a_maximumBytes) noexcept : m_maximumBytes(a_maximumBytes)
+    {
+    }
+
+    /// @brief 残り上限内なら文字列を追記する
+    [[nodiscard]] bool append(std::string_view a_value)
+    {
+        if (a_value.size() > remaining())
+        {
+            m_exceeded = true;
+            return false;
+        }
+        m_text.append(a_value);
+        return true;
+    }
+
+    /// @brief 残り上限内なら一文字を追記する
+    [[nodiscard]] bool push_back(char a_value)
+    {
+        if (remaining() == 0U)
+        {
+            m_exceeded = true;
+            return false;
+        }
+        m_text.push_back(a_value);
+        return true;
+    }
+
+    /// @brief 残り上限内でJSON StringをEscapeして追記する
+    [[nodiscard]] bool append_json_string(std::string_view a_value)
+    {
+        constexpr char hexDigits[] = "0123456789ABCDEF";
+        if (!push_back('"'))
+        {
+            return false;
+        }
+        for (const unsigned char value : a_value)
+        {
+            bool appended = false;
+            switch (value)
+            {
+            case '"':
+                appended = append("\\\"");
+                break;
+            case '\\':
+                appended = append("\\\\");
+                break;
+            case '\n':
+                appended = append("\\n");
+                break;
+            case '\r':
+                appended = append("\\r");
+                break;
+            case '\t':
+                appended = append("\\t");
+                break;
+            default:
+                if (value < 0x20U || value == 0x7FU)
+                {
+                    appended = append("\\u00") && push_back(hexDigits[(value >> 4U) & 0x0FU]) &&
+                               push_back(hexDigits[value & 0x0FU]);
+                }
+                else
+                {
+                    appended = push_back(static_cast<char>(value));
+                }
+                break;
+            }
+            if (!appended)
+            {
+                return false;
+            }
+        }
+        return push_back('"');
+    }
+
+    /// @brief 現在残っている追記可能Byte数を返す
+    [[nodiscard]] std::size_t remaining() const noexcept
+    {
+        return m_text.size() <= m_maximumBytes ? m_maximumBytes - m_text.size() : 0U;
+    }
+
+    /// @brief 上限内で完成した文字列だけを返す
+    [[nodiscard]] std::optional<std::string> finish() &&
+    {
+        if (m_exceeded)
+        {
+            return std::nullopt;
+        }
+        return std::move(m_text);
+    }
+
+  private:
+    std::string m_text;
+    std::size_t m_maximumBytes = 0U;
+    bool m_exceeded = false;
+};
+
 /// @brief ASCII英大文字だけを小文字へ正規化する
 [[nodiscard]] unsigned char fold_ascii(unsigned char a_value) noexcept
 {
@@ -244,16 +347,6 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     {
         a_mappings.push_back({std::string(a_prefix), std::string(a_replacement)});
     }
-}
-
-/// @brief 全Mappingを用いて任意のSeparator表現を含むSensitive PathをToken化する
-[[nodiscard]] std::string redact(std::string a_text, const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
-{
-    for (const cue::BuildDiagnosticPathMapping &mapping : a_mappings)
-    {
-        replace_path(a_text, mapping.nativePrefix, mapping.replacement);
-    }
-    return a_text;
 }
 
 /// @brief 入力Copyと中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
@@ -371,230 +464,275 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     return text;
 }
 
-/// @brief Build Plan SnapshotをRedact済みJSONへSerializeする
-[[nodiscard]] std::string serialize_plan(const cue::BuildDiagnosticPlanSnapshot &a_plan,
-                                         const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
+/// @brief Redaction後の値を残り上限内でJSON Stringとして追記する
+[[nodiscard]] bool append_redacted_json(BoundedTextBuilder &a_output, std::string_view a_value,
+                                        const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
 {
-    std::string output = "{\n\"schemaVersion\":1,\n";
+    std::optional<std::string> redacted = redact_bounded(a_value, a_mappings, a_output.remaining());
+    return redacted && a_output.append_json_string(*redacted);
+}
+
+/// @brief Build Plan Snapshotを上限内のRedact済みJSONへSerializeする
+[[nodiscard]] std::optional<std::string> serialize_plan(const cue::BuildDiagnosticPlanSnapshot &a_plan,
+                                                        const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+                                                        std::size_t a_maximumBytes)
+{
+    BoundedTextBuilder output(a_maximumBytes);
+    if (!output.append("{\n\"schemaVersion\":1,\n"))
+    {
+        return std::nullopt;
+    }
     /// @brief Plan FieldをRedactしてJSON Memberとして追記する
     const auto add = [&output, &a_mappings](std::string_view a_name, const std::string &a_value, bool a_last)
     {
-        append_json_string(output, a_name);
-        output.push_back(':');
-        append_json_string(output, redact(a_value, a_mappings));
-        output.append(a_last ? "\n" : ",\n");
+        return output.append_json_string(a_name) && output.push_back(':') &&
+               append_redacted_json(output, a_value, a_mappings) && output.append(a_last ? "\n" : ",\n");
     };
-    add("projectRoot", a_plan.projectRoot, false);
-    add("presetName", a_plan.presetName, false);
-    add("workspaceKey", a_plan.workspaceKey, false);
-    add("binaryDirectory", a_plan.binaryDirectory, false);
-    add("candidateDirectory", a_plan.candidateDirectory, false);
-    add("operationDirectory", a_plan.operationDirectory, false);
-    add("artifactStoreDirectory", a_plan.artifactStoreDirectory, false);
-    add("targetName", a_plan.targetName, true);
-    output.append("}\n");
-    return output;
+    if (!add("projectRoot", a_plan.projectRoot, false) || !add("presetName", a_plan.presetName, false) ||
+        !add("workspaceKey", a_plan.workspaceKey, false) || !add("binaryDirectory", a_plan.binaryDirectory, false) ||
+        !add("candidateDirectory", a_plan.candidateDirectory, false) ||
+        !add("operationDirectory", a_plan.operationDirectory, false) ||
+        !add("artifactStoreDirectory", a_plan.artifactStoreDirectory, false) ||
+        !add("targetName", a_plan.targetName, true) || !output.append("}\n"))
+    {
+        return std::nullopt;
+    }
+    return std::move(output).finish();
 }
 
-/// @brief Toolchain Environment ReportをRedact済みJSONへSerializeする
-[[nodiscard]] std::string serialize_environment(const cue::BuildEnvironmentReport &a_environment,
-                                                const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
+/// @brief Toolchain Environment Reportを上限内のRedact済みJSONへSerializeする
+[[nodiscard]] std::optional<std::string> serialize_environment(
+    const cue::BuildEnvironmentReport &a_environment, const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+    std::size_t a_maximumBytes)
 {
-    std::string output = "{\n\"schemaVersion\":1,\n\"support\":";
-    append_json_string(
-        output, a_environment.support == cue::BuildEnvironmentSupport::Supported
-                    ? "supported"
-                    : (a_environment.support == cue::BuildEnvironmentSupport::Unsupported ? "unsupported" : "unknown"));
-    output.append(",\n\"engineSourceRoot\":");
-    append_json_string(output, redact(a_environment.engineSourceRoot, a_mappings));
-    output.append(",\n\"engineBinaryRoot\":");
-    append_json_string(output, redact(a_environment.engineBinaryRoot, a_mappings));
-    output.append(",\n\"supportedConfigurations\":[");
+    BoundedTextBuilder output(a_maximumBytes);
+    const std::string_view support =
+        a_environment.support == cue::BuildEnvironmentSupport::Supported
+            ? "supported"
+            : (a_environment.support == cue::BuildEnvironmentSupport::Unsupported ? "unsupported" : "unknown");
+    if (!output.append("{\n\"schemaVersion\":1,\n\"support\":") || !output.append_json_string(support) ||
+        !output.append(",\n\"engineSourceRoot\":") ||
+        !append_redacted_json(output, a_environment.engineSourceRoot, a_mappings) ||
+        !output.append(",\n\"engineBinaryRoot\":") ||
+        !append_redacted_json(output, a_environment.engineBinaryRoot, a_mappings) ||
+        !output.append(",\n\"supportedConfigurations\":["))
+    {
+        return std::nullopt;
+    }
     for (std::size_t index = 0U; index < a_environment.supportedConfigurations.size(); ++index)
     {
-        if (index > 0U)
+        if ((index > 0U && !output.push_back(',')) ||
+            !output.append_json_string(configuration_text(a_environment.supportedConfigurations[index])))
         {
-            output.push_back(',');
+            return std::nullopt;
         }
-        append_json_string(output, configuration_text(a_environment.supportedConfigurations[index]));
     }
-    output.append("],\n\"selectedTools\":[");
+    if (!output.append("],\n\"selectedTools\":["))
+    {
+        return std::nullopt;
+    }
     for (std::size_t index = 0U; index < a_environment.selectedTools.size(); ++index)
     {
         const cue::BuildToolCandidate &tool = a_environment.selectedTools[index];
-        if (index > 0U)
+        if ((index > 0U && !output.push_back(',')) || !output.append("{\"kind\":") ||
+            !output.append(std::to_string(static_cast<std::uint32_t>(tool.kind))) || !output.append(",\"path\":") ||
+            !append_redacted_json(output, tool.nativePath, a_mappings) || !output.append(",\"root\":") ||
+            !append_redacted_json(output, tool.installationRoot, a_mappings) || !output.append(",\"version\":"))
         {
-            output.push_back(',');
+            return std::nullopt;
         }
-        output.append("{\"kind\":");
-        output.append(std::to_string(static_cast<std::uint32_t>(tool.kind)));
-        output.append(",\"path\":");
-        append_json_string(output, redact(tool.nativePath, a_mappings));
-        output.append(",\"root\":");
-        append_json_string(output, redact(tool.installationRoot, a_mappings));
-        output.append(",\"version\":");
         if (tool.version)
         {
-            append_json_string(output, std::to_string(tool.version->major) + "." + std::to_string(tool.version->minor) +
-                                           "." + std::to_string(tool.version->patch) + "." +
-                                           std::to_string(tool.version->build));
+            const std::string version = std::to_string(tool.version->major) + "." +
+                                        std::to_string(tool.version->minor) + "." +
+                                        std::to_string(tool.version->patch) + "." + std::to_string(tool.version->build);
+            if (!output.append_json_string(version))
+            {
+                return std::nullopt;
+            }
         }
-        else
+        else if (!output.append("null"))
         {
-            output.append("null");
+            return std::nullopt;
         }
-        output.append(",\"architecture\":");
-        append_json_string(output, tool.architecture == cue::BuildArchitecture::X64 ? "x64" : "unknown");
-        output.append(",\"available\":");
-        output.append(tool.available ? "true" : "false");
-        output.push_back('}');
+        if (!output.append(",\"architecture\":") ||
+            !output.append_json_string(tool.architecture == cue::BuildArchitecture::X64 ? "x64" : "unknown") ||
+            !output.append(",\"available\":") || !output.append(tool.available ? "true" : "false") ||
+            !output.push_back('}'))
+        {
+            return std::nullopt;
+        }
     }
-    output.append("],\n\"diagnostics\":[");
+    if (!output.append("],\n\"diagnostics\":["))
+    {
+        return std::nullopt;
+    }
     for (std::size_t index = 0U; index < a_environment.diagnostics.size(); ++index)
     {
         const cue::BuildEnvironmentDiagnostic &diagnostic = a_environment.diagnostics[index];
-        if (index > 0U)
-        {
-            output.push_back(',');
-        }
-        output.append("{\"code\":");
-        output.append(std::to_string(static_cast<std::uint32_t>(diagnostic.code)));
-        output.append(",\"support\":");
-        append_json_string(
-            output,
+        const std::string_view diagnosticSupport =
             diagnostic.support == cue::BuildEnvironmentSupport::Supported
                 ? "supported"
-                : (diagnostic.support == cue::BuildEnvironmentSupport::Unsupported ? "unsupported" : "unknown"));
-        output.append(",\"path\":");
-        append_json_string(output, redact(diagnostic.nativePath, a_mappings));
-        output.append(",\"summary\":");
-        append_json_string(output, redact(diagnostic.summary, a_mappings));
-        output.append(",\"repairHint\":");
-        append_json_string(output, redact(diagnostic.repairHint, a_mappings));
-        output.push_back('}');
+                : (diagnostic.support == cue::BuildEnvironmentSupport::Unsupported ? "unsupported" : "unknown");
+        if ((index > 0U && !output.push_back(',')) || !output.append("{\"code\":") ||
+            !output.append(std::to_string(static_cast<std::uint32_t>(diagnostic.code))) ||
+            !output.append(",\"support\":") || !output.append_json_string(diagnosticSupport) ||
+            !output.append(",\"path\":") || !append_redacted_json(output, diagnostic.nativePath, a_mappings) ||
+            !output.append(",\"summary\":") || !append_redacted_json(output, diagnostic.summary, a_mappings) ||
+            !output.append(",\"repairHint\":") || !append_redacted_json(output, diagnostic.repairHint, a_mappings) ||
+            !output.push_back('}'))
+        {
+            return std::nullopt;
+        }
     }
-    output.append("]\n}\n");
-    return output;
+    if (!output.append("]\n}\n"))
+    {
+        return std::nullopt;
+    }
+    return std::move(output).finish();
 }
 
-/// @brief 完了済みBuild Stage列をJSONへSerializeする
-[[nodiscard]] std::string serialize_stages(const cue::BuildOperationSnapshot &a_operation)
+/// @brief 完了済みBuild Stage列を上限内のJSONへSerializeする
+[[nodiscard]] std::optional<std::string> serialize_stages(const cue::BuildOperationSnapshot &a_operation,
+                                                          std::size_t a_maximumBytes)
 {
-    std::string output = "{\n\"schemaVersion\":1,\n\"stages\":[";
+    BoundedTextBuilder output(a_maximumBytes);
+    if (!output.append("{\n\"schemaVersion\":1,\n\"stages\":["))
+    {
+        return std::nullopt;
+    }
     for (std::size_t index = 0U; index < a_operation.stages.size(); ++index)
     {
         const cue::BuildStageSnapshot &stage = a_operation.stages[index];
-        if (index > 0U)
+        if ((index > 0U && !output.push_back(',')) || !output.append("{\"stage\":") ||
+            !output.append_json_string(stage_text(stage.stage)) || !output.append(",\"outcome\":") ||
+            !output.append_json_string(outcome_text(stage.outcome)) || !output.append(",\"exitCode\":") ||
+            !output.append(stage.exitCode ? std::to_string(*stage.exitCode) : "null") || !output.push_back('}'))
         {
-            output.push_back(',');
+            return std::nullopt;
         }
-        output.append("{\"stage\":");
-        append_json_string(output, stage_text(stage.stage));
-        output.append(",\"outcome\":");
-        append_json_string(output, outcome_text(stage.outcome));
-        output.append(",\"exitCode\":");
-        output.append(stage.exitCode ? std::to_string(*stage.exitCode) : "null");
-        output.push_back('}');
     }
-    output.append("]\n}\n");
-    return output;
+    if (!output.append("]\n}\n"))
+    {
+        return std::nullopt;
+    }
+    return std::move(output).finish();
 }
 
-/// @brief Build終端StateとError ChainをRedact済みJSONへSerializeする
-[[nodiscard]] std::string serialize_result(const cue::BuildOperationSnapshot &a_operation,
-                                           const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
+/// @brief Build終端StateとError Chainを上限内のRedact済みJSONへSerializeする
+[[nodiscard]] std::optional<std::string> serialize_result(
+    const cue::BuildOperationSnapshot &a_operation, const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+    std::size_t a_maximumBytes)
 {
-    std::string output = "{\n\"schemaVersion\":1,\n\"state\":";
-    append_json_string(output, state_text(a_operation.state));
-    output.append(",\n\"diagnostics\":[");
+    BoundedTextBuilder output(a_maximumBytes);
+    if (!output.append("{\n\"schemaVersion\":1,\n\"state\":") ||
+        !output.append_json_string(state_text(a_operation.state)) || !output.append(",\n\"diagnostics\":["))
+    {
+        return std::nullopt;
+    }
     for (std::size_t index = 0U; index < a_operation.diagnostics.size(); ++index)
     {
         const cue::BuildDiagnosticSnapshot &diagnostic = a_operation.diagnostics[index];
-        if (index > 0U)
+        if ((index > 0U && !output.push_back(',')) || !output.append("{\"domain\":") ||
+            !output.append_json_string(diagnostic.domain) || !output.append(",\"code\":") ||
+            !output.append(std::to_string(diagnostic.code)) || !output.append(",\"summary\":") ||
+            !append_redacted_json(output, diagnostic.summary, a_mappings) || !output.append(",\"contexts\":["))
         {
-            output.push_back(',');
+            return std::nullopt;
         }
-        output.append("{\"domain\":");
-        append_json_string(output, diagnostic.domain);
-        output.append(",\"code\":");
-        output.append(std::to_string(diagnostic.code));
-        output.append(",\"summary\":");
-        append_json_string(output, redact(diagnostic.summary, a_mappings));
-        output.append(",\"contexts\":[");
         for (std::size_t contextIndex = 0U; contextIndex < diagnostic.contexts.size(); ++contextIndex)
         {
-            if (contextIndex > 0U)
+            if ((contextIndex > 0U && !output.push_back(',')) ||
+                !append_redacted_json(output, diagnostic.contexts[contextIndex], a_mappings))
             {
-                output.push_back(',');
+                return std::nullopt;
             }
-            append_json_string(output, redact(diagnostic.contexts[contextIndex], a_mappings));
         }
-        output.append("],\"nativeError\":");
+        if (!output.append("],\"nativeError\":"))
+        {
+            return std::nullopt;
+        }
         if (diagnostic.nativeError)
         {
-            output.append("{\"domain\":");
-            append_json_string(output, diagnostic.nativeError->domain);
-            output.append(",\"code\":");
-            output.append(std::to_string(diagnostic.nativeError->code));
-            output.push_back('}');
+            if (!output.append("{\"domain\":") || !output.append_json_string(diagnostic.nativeError->domain) ||
+                !output.append(",\"code\":") || !output.append(std::to_string(diagnostic.nativeError->code)) ||
+                !output.push_back('}'))
+            {
+                return std::nullopt;
+            }
         }
-        else
+        else if (!output.append("null"))
         {
-            output.append("null");
+            return std::nullopt;
         }
-        output.push_back('}');
+        if (!output.push_back('}'))
+        {
+            return std::nullopt;
+        }
     }
-    output.append("]\n}\n");
-    return output;
+    if (!output.append("]\n}\n"))
+    {
+        return std::nullopt;
+    }
+    return std::move(output).finish();
 }
 
-/// @brief 一つのArtifact Inventoryを指定JSON Memberへ追記する
-void append_artifact(std::string &a_output, std::string_view a_name, const cue::BuildArtifactInventory &a_artifact)
+/// @brief 一つのArtifact Inventoryを指定JSON Memberへ上限内で追記する
+[[nodiscard]] bool append_artifact(BoundedTextBuilder &a_output, std::string_view a_name,
+                                   const cue::BuildArtifactInventory &a_artifact)
 {
-    append_json_string(a_output, a_name);
-    a_output.append(":{\"artifactId\":");
-    append_json_string(a_output, a_artifact.artifact_id());
-    a_output.append(",\"configuration\":");
-    append_json_string(a_output, configuration_text(a_artifact.configuration()));
-    a_output.append(",\"files\":[");
+    if (!a_output.append_json_string(a_name) || !a_output.append(":{\"artifactId\":") ||
+        !a_output.append_json_string(a_artifact.artifact_id()) || !a_output.append(",\"configuration\":") ||
+        !a_output.append_json_string(configuration_text(a_artifact.configuration())) ||
+        !a_output.append(",\"files\":["))
+    {
+        return false;
+    }
     for (std::size_t index = 0U; index < a_artifact.files().size(); ++index)
     {
         const cue::BuildArtifactFile &file = a_artifact.files()[index];
-        if (index > 0U)
+        if ((index > 0U && !a_output.push_back(',')) || !a_output.append("{\"path\":") ||
+            !a_output.append_json_string(file.relativePath) || !a_output.append(",\"sizeBytes\":") ||
+            !a_output.append(std::to_string(file.byteSize)) || !a_output.append(",\"contentHash\":") ||
+            !a_output.append_json_string(file.contentHash) || !a_output.push_back('}'))
         {
-            a_output.push_back(',');
+            return false;
         }
-        a_output.append("{\"path\":");
-        append_json_string(a_output, file.relativePath);
-        a_output.append(",\"sizeBytes\":");
-        a_output.append(std::to_string(file.byteSize));
-        a_output.append(",\"contentHash\":");
-        append_json_string(a_output, file.contentHash);
-        a_output.push_back('}');
     }
-    a_output.append("]}");
+    return a_output.append("]}");
 }
 
-/// @brief CurrentとLatest Successful Artifact MetadataをJSONへSerializeする
-[[nodiscard]] std::string serialize_artifacts(const cue::BuildOperationSnapshot &a_operation)
+/// @brief CurrentとLatest Successful Artifact Metadataを上限内のJSONへSerializeする
+[[nodiscard]] std::optional<std::string> serialize_artifacts(const cue::BuildOperationSnapshot &a_operation,
+                                                             std::size_t a_maximumBytes)
 {
-    std::string output = "{\n\"schemaVersion\":1,\n";
+    BoundedTextBuilder output(a_maximumBytes);
+    if (!output.append("{\n\"schemaVersion\":1,\n"))
+    {
+        return std::nullopt;
+    }
     bool needsComma = false;
     if (a_operation.artifact)
     {
-        append_artifact(output, "operationArtifact", *a_operation.artifact);
+        if (!append_artifact(output, "operationArtifact", *a_operation.artifact))
+        {
+            return std::nullopt;
+        }
         needsComma = true;
     }
     if (a_operation.latestSuccessfulArtifact)
     {
-        if (needsComma)
+        if ((needsComma && !output.append(",\n")) ||
+            !append_artifact(output, "latestSuccessfulArtifact", *a_operation.latestSuccessfulArtifact))
         {
-            output.append(",\n");
+            return std::nullopt;
         }
-        append_artifact(output, "latestSuccessfulArtifact", *a_operation.latestSuccessfulArtifact);
     }
-    output.append("\n}\n");
-    return output;
+    if (!output.append("\n}\n"))
+    {
+        return std::nullopt;
+    }
+    return std::move(output).finish();
 }
 
 /// @brief 指定Streamかつ現在Operationに属するLogをRedactして連結する
@@ -667,6 +805,618 @@ void append_artifact(std::string &a_output, std::string_view a_name, const cue::
     }
     output.append("]\n}\n");
     return output;
+}
+
+class JsonSchemaReader final
+{
+  public:
+    /// @brief 検証対象JSON全体を参照するReaderを初期化する
+    explicit JsonSchemaReader(std::string_view a_input) noexcept : m_input(a_input)
+    {
+    }
+
+    /// @brief Object開始Tokenを読み取る
+    [[nodiscard]] bool begin_object() noexcept
+    {
+        return consume('{');
+    }
+
+    /// @brief Object終了Tokenを読み取る
+    [[nodiscard]] bool end_object() noexcept
+    {
+        return consume('}');
+    }
+
+    /// @brief Array開始Tokenを読み取る
+    [[nodiscard]] bool begin_array() noexcept
+    {
+        return consume('[');
+    }
+
+    /// @brief Array終了Tokenを読み取る
+    [[nodiscard]] bool end_array() noexcept
+    {
+        return consume(']');
+    }
+
+    /// @brief 値またはMember間のSeparatorを読み取る
+    [[nodiscard]] bool comma() noexcept
+    {
+        return consume(',');
+    }
+
+    /// @brief Escapeを許可しない固定ASCII Member名とColonを読み取る
+    [[nodiscard]] bool member(std::string_view a_name) noexcept
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset] != '"')
+        {
+            return false;
+        }
+        const std::size_t required = a_name.size() + 2U;
+        if (required > m_input.size() - m_offset || m_input.substr(m_offset + 1U, a_name.size()) != a_name ||
+            m_input[m_offset + required - 1U] != '"')
+        {
+            return false;
+        }
+        m_offset += required;
+        return consume(':');
+    }
+
+    /// @brief 任意内容の妥当なJSON Stringを読み取る
+    [[nodiscard]] bool string() noexcept
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset++] != '"')
+        {
+            return false;
+        }
+        while (m_offset < m_input.size())
+        {
+            const unsigned char value = static_cast<unsigned char>(m_input[m_offset++]);
+            if (value == '"')
+            {
+                return true;
+            }
+            if (value < 0x20U)
+            {
+                return false;
+            }
+            if (value != '\\')
+            {
+                continue;
+            }
+            if (m_offset >= m_input.size())
+            {
+                return false;
+            }
+            const char escape = m_input[m_offset++];
+            if (escape == 'u')
+            {
+                for (std::size_t index = 0U; index < 4U; ++index)
+                {
+                    if (m_offset >= m_input.size() || !is_hex(m_input[m_offset++]))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else if (std::string_view("\"\\/bfnrt").find(escape) == std::string_view::npos)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// @brief Escapeなしの固定候補JSON Stringを読み取る
+    [[nodiscard]] bool string_is(std::initializer_list<std::string_view> a_values) noexcept
+    {
+        skip_whitespace();
+        for (const std::string_view value : a_values)
+        {
+            const std::size_t required = value.size() + 2U;
+            if (required <= m_input.size() - m_offset && m_input[m_offset] == '"' &&
+                m_input.substr(m_offset + 1U, value.size()) == value && m_input[m_offset + required - 1U] == '"')
+            {
+                m_offset += required;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief JSONの符号なし整数を範囲検証して読み取る
+    [[nodiscard]] bool unsigned_integer() noexcept
+    {
+        skip_whitespace();
+        const std::size_t begin = m_offset;
+        if (!consume_digits())
+        {
+            return false;
+        }
+        std::uint64_t value = 0U;
+        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset;
+    }
+
+    /// @brief JSONの符号付き整数を範囲検証して読み取る
+    [[nodiscard]] bool signed_integer() noexcept
+    {
+        skip_whitespace();
+        const std::size_t begin = m_offset;
+        if (m_offset < m_input.size() && m_input[m_offset] == '-')
+        {
+            ++m_offset;
+        }
+        if (!consume_digits())
+        {
+            return false;
+        }
+        std::int64_t value = 0;
+        const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset;
+    }
+
+    /// @brief JSONのBooleanを読み取る
+    [[nodiscard]] bool boolean() noexcept
+    {
+        return consume_word("true") || consume_word("false");
+    }
+
+    /// @brief JSONのnullを読み取る
+    [[nodiscard]] bool null_value() noexcept
+    {
+        return consume_word("null");
+    }
+
+    /// @brief Schema Version 1の固定整数を読み取る
+    [[nodiscard]] bool version_one() noexcept
+    {
+        return consume_word("1");
+    }
+
+    /// @brief 次の非Whitespace文字が指定Tokenか判定する
+    [[nodiscard]] bool next_is(char a_value) noexcept
+    {
+        skip_whitespace();
+        return m_offset < m_input.size() && m_input[m_offset] == a_value;
+    }
+
+    /// @brief 末尾Whitespace以外をすべて消費したか判定する
+    [[nodiscard]] bool finished() noexcept
+    {
+        skip_whitespace();
+        return m_offset == m_input.size();
+    }
+
+  private:
+    /// @brief JSON Whitespaceを読み飛ばす
+    void skip_whitespace() noexcept
+    {
+        while (m_offset < m_input.size() && (m_input[m_offset] == ' ' || m_input[m_offset] == '\t' ||
+                                             m_input[m_offset] == '\r' || m_input[m_offset] == '\n'))
+        {
+            ++m_offset;
+        }
+    }
+
+    /// @brief 指定する一文字Tokenを読み取る
+    [[nodiscard]] bool consume(char a_value) noexcept
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset] != a_value)
+        {
+            return false;
+        }
+        ++m_offset;
+        return true;
+    }
+
+    /// @brief 指定する固定Keywordを読み取る
+    [[nodiscard]] bool consume_word(std::string_view a_value) noexcept
+    {
+        skip_whitespace();
+        if (a_value.size() > m_input.size() - m_offset || m_input.substr(m_offset, a_value.size()) != a_value)
+        {
+            return false;
+        }
+        m_offset += a_value.size();
+        return true;
+    }
+
+    /// @brief Leading Zero規則を含む一桁以上の十進数字を読み取る
+    [[nodiscard]] bool consume_digits() noexcept
+    {
+        if (m_offset >= m_input.size() || m_input[m_offset] < '0' || m_input[m_offset] > '9')
+        {
+            return false;
+        }
+        if (m_input[m_offset] == '0')
+        {
+            ++m_offset;
+            return m_offset >= m_input.size() || m_input[m_offset] < '0' || m_input[m_offset] > '9';
+        }
+        while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+        {
+            ++m_offset;
+        }
+        return true;
+    }
+
+    /// @brief JSON Unicode Escapeで許可されるHex文字か判定する
+    [[nodiscard]] static bool is_hex(char a_value) noexcept
+    {
+        return (a_value >= '0' && a_value <= '9') || (a_value >= 'a' && a_value <= 'f') ||
+               (a_value >= 'A' && a_value <= 'F');
+    }
+
+    std::string_view m_input;
+    std::size_t m_offset = 0U;
+};
+
+/// @brief JSON ObjectのSchema Version 1 Headerを読み取る
+[[nodiscard]] bool read_schema_header(JsonSchemaReader &a_reader) noexcept
+{
+    return a_reader.begin_object() && a_reader.member("schemaVersion") && a_reader.version_one();
+}
+
+/// @brief 任意JSON Stringだけを含むArrayを読み取る
+[[nodiscard]] bool read_string_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (a_reader.string())
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Build Configuration文字列だけを含むArrayを読み取る
+[[nodiscard]] bool read_configuration_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (a_reader.string_is({"Debug", "Development", "Release"}))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Toolchain Report内のTool Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_tool(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_object() || !a_reader.member("kind") || !a_reader.unsigned_integer() || !a_reader.comma() ||
+        !a_reader.member("path") || !a_reader.string() || !a_reader.comma() || !a_reader.member("root") ||
+        !a_reader.string() || !a_reader.comma() || !a_reader.member("version"))
+    {
+        return false;
+    }
+    if (!(a_reader.next_is('n') ? a_reader.null_value() : a_reader.string()))
+    {
+        return false;
+    }
+    return a_reader.comma() && a_reader.member("architecture") && a_reader.string_is({"x64", "unknown"}) &&
+           a_reader.comma() && a_reader.member("available") && a_reader.boolean() && a_reader.end_object();
+}
+
+/// @brief Toolchain Report内のTool Arrayを固定Schemaで読み取る
+[[nodiscard]] bool read_tool_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (read_tool(a_reader))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Toolchain Report内のDiagnostic Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_environment_diagnostic(JsonSchemaReader &a_reader) noexcept
+{
+    return a_reader.begin_object() && a_reader.member("code") && a_reader.unsigned_integer() && a_reader.comma() &&
+           a_reader.member("support") && a_reader.string_is({"supported", "unsupported", "unknown"}) &&
+           a_reader.comma() && a_reader.member("path") && a_reader.string() && a_reader.comma() &&
+           a_reader.member("summary") && a_reader.string() && a_reader.comma() && a_reader.member("repairHint") &&
+           a_reader.string() && a_reader.end_object();
+}
+
+/// @brief Toolchain Report内のDiagnostic Arrayを固定Schemaで読み取る
+[[nodiscard]] bool read_environment_diagnostic_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (read_environment_diagnostic(a_reader))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Stage結果Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_stage(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_object() || !a_reader.member("stage") || !a_reader.string_is({"configure", "build"}) ||
+        !a_reader.comma() || !a_reader.member("outcome") ||
+        !a_reader.string_is({"succeeded", "failed", "cancelled", "timedOut"}) || !a_reader.comma() ||
+        !a_reader.member("exitCode"))
+    {
+        return false;
+    }
+    return (a_reader.next_is('n') ? a_reader.null_value() : a_reader.unsigned_integer()) && a_reader.end_object();
+}
+
+/// @brief Stage結果Arrayを固定Schemaで読み取る
+[[nodiscard]] bool read_stage_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (read_stage(a_reader))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Native Error Objectまたはnullを固定Schemaで読み取る
+[[nodiscard]] bool read_native_error(JsonSchemaReader &a_reader) noexcept
+{
+    if (a_reader.next_is('n'))
+    {
+        return a_reader.null_value();
+    }
+    return a_reader.begin_object() && a_reader.member("domain") && a_reader.string() && a_reader.comma() &&
+           a_reader.member("code") && a_reader.signed_integer() && a_reader.end_object();
+}
+
+/// @brief Build Result内のDiagnostic Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_result_diagnostic(JsonSchemaReader &a_reader) noexcept
+{
+    return a_reader.begin_object() && a_reader.member("domain") && a_reader.string() && a_reader.comma() &&
+           a_reader.member("code") && a_reader.signed_integer() && a_reader.comma() && a_reader.member("summary") &&
+           a_reader.string() && a_reader.comma() && a_reader.member("contexts") && read_string_array(a_reader) &&
+           a_reader.comma() && a_reader.member("nativeError") && read_native_error(a_reader) && a_reader.end_object();
+}
+
+/// @brief Build Result内のDiagnostic Arrayを固定Schemaで読み取る
+[[nodiscard]] bool read_result_diagnostic_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (read_result_diagnostic(a_reader))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Artifact File Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_artifact_file(JsonSchemaReader &a_reader) noexcept
+{
+    return a_reader.begin_object() && a_reader.member("path") && a_reader.string() && a_reader.comma() &&
+           a_reader.member("sizeBytes") && a_reader.unsigned_integer() && a_reader.comma() &&
+           a_reader.member("contentHash") && a_reader.string() && a_reader.end_object();
+}
+
+/// @brief Artifact File Arrayを固定Schemaで読み取る
+[[nodiscard]] bool read_artifact_file_array(JsonSchemaReader &a_reader) noexcept
+{
+    if (!a_reader.begin_array())
+    {
+        return false;
+    }
+    if (a_reader.next_is(']'))
+    {
+        return a_reader.end_array();
+    }
+    while (read_artifact_file(a_reader))
+    {
+        if (a_reader.next_is(']'))
+        {
+            return a_reader.end_array();
+        }
+        if (!a_reader.comma())
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// @brief Artifact Inventory Objectを固定Schemaで読み取る
+[[nodiscard]] bool read_artifact(JsonSchemaReader &a_reader) noexcept
+{
+    return a_reader.begin_object() && a_reader.member("artifactId") && a_reader.string() && a_reader.comma() &&
+           a_reader.member("configuration") && a_reader.string_is({"Debug", "Development", "Release"}) &&
+           a_reader.comma() && a_reader.member("files") && read_artifact_file_array(a_reader) && a_reader.end_object();
+}
+
+/// @brief Plan PayloadをVersion 1固定Schemaとして検証する
+[[nodiscard]] bool valid_plan_payload(std::string_view a_text) noexcept
+{
+    JsonSchemaReader reader(a_text);
+    if (!read_schema_header(reader))
+    {
+        return false;
+    }
+    constexpr std::array<std::string_view, 8U> members = {
+        "projectRoot",        "presetName",         "workspaceKey",           "binaryDirectory",
+        "candidateDirectory", "operationDirectory", "artifactStoreDirectory", "targetName"};
+    for (const std::string_view member : members)
+    {
+        if (!reader.comma() || !reader.member(member) || !reader.string())
+        {
+            return false;
+        }
+    }
+    return reader.end_object() && reader.finished();
+}
+
+/// @brief Environment PayloadをVersion 1固定Schemaとして検証する
+[[nodiscard]] bool valid_environment_payload(std::string_view a_text) noexcept
+{
+    JsonSchemaReader reader(a_text);
+    return read_schema_header(reader) && reader.comma() && reader.member("support") &&
+           reader.string_is({"supported", "unsupported", "unknown"}) && reader.comma() &&
+           reader.member("engineSourceRoot") && reader.string() && reader.comma() &&
+           reader.member("engineBinaryRoot") && reader.string() && reader.comma() &&
+           reader.member("supportedConfigurations") && read_configuration_array(reader) && reader.comma() &&
+           reader.member("selectedTools") && read_tool_array(reader) && reader.comma() &&
+           reader.member("diagnostics") && read_environment_diagnostic_array(reader) && reader.end_object() &&
+           reader.finished();
+}
+
+/// @brief Stage PayloadをVersion 1固定Schemaとして検証する
+[[nodiscard]] bool valid_stages_payload(std::string_view a_text) noexcept
+{
+    JsonSchemaReader reader(a_text);
+    return read_schema_header(reader) && reader.comma() && reader.member("stages") && read_stage_array(reader) &&
+           reader.end_object() && reader.finished();
+}
+
+/// @brief Result PayloadをVersion 1固定Schemaとして検証する
+[[nodiscard]] bool valid_result_payload(std::string_view a_text) noexcept
+{
+    JsonSchemaReader reader(a_text);
+    return read_schema_header(reader) && reader.comma() && reader.member("state") &&
+           reader.string_is({"succeeded", "failed", "cancelled", "timedOut"}) && reader.comma() &&
+           reader.member("diagnostics") && read_result_diagnostic_array(reader) && reader.end_object() &&
+           reader.finished();
+}
+
+/// @brief Artifact PayloadをVersion 1固定Schemaとして検証する
+[[nodiscard]] bool valid_artifact_payload(std::string_view a_text) noexcept
+{
+    JsonSchemaReader reader(a_text);
+    if (!read_schema_header(reader) || !reader.comma())
+    {
+        return false;
+    }
+    if (reader.member("operationArtifact"))
+    {
+        if (!read_artifact(reader))
+        {
+            return false;
+        }
+        if (reader.next_is(','))
+        {
+            if (!reader.comma() || !reader.member("latestSuccessfulArtifact") || !read_artifact(reader))
+            {
+                return false;
+            }
+        }
+    }
+    else if (!reader.member("latestSuccessfulArtifact") || !read_artifact(reader))
+    {
+        return false;
+    }
+    return reader.end_object() && reader.finished();
+}
+
+/// @brief 全収集済みJSON PayloadがPath固有のVersion 1 Schemaに一致するか検証する
+[[nodiscard]] bool valid_payload_schemas(std::span<const cue::BuildDiagnosticBundleFile> a_files) noexcept
+{
+    for (const cue::BuildDiagnosticBundleFile &file : a_files)
+    {
+        if (file.relativePath == "manifest.json" || file.relativePath == "stdout.log" ||
+            file.relativePath == "stderr.log")
+        {
+            continue;
+        }
+        const std::string text = from_bytes(file.bytes);
+        const bool valid = file.relativePath == "plan.json"          ? valid_plan_payload(text)
+                           : file.relativePath == "environment.json" ? valid_environment_payload(text)
+                           : file.relativePath == "stages.json"      ? valid_stages_payload(text)
+                           : file.relativePath == "result.json"      ? valid_result_payload(text)
+                           : file.relativePath == "artifact.json"    ? valid_artifact_payload(text)
+                                                                     : false;
+        if (!valid)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// @brief 固定Prefix直後の単純なQuoted JSON値を検証用に抽出する
@@ -901,11 +1651,32 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
             return std::nullopt;
         };
 
+        /// @brief 次のFileが使用できるFile単位とBundle全体の小さい方の上限を返す
+        const auto maximum_payload_bytes = [&]() noexcept
+        {
+            return static_cast<std::size_t>(
+                std::min(a_limits.maximumFileBytes, a_limits.maximumTotalBytes - totalBytes));
+        };
+
+        /// @brief Bounded Serializer結果を収集し上限超過種別を保持する
+        const auto collect_serialized =
+            [&](std::string a_path, std::optional<std::string> a_text) -> std::optional<BuildDiagnosticBundleError>
+        {
+            if (!a_text)
+            {
+                return maximum_payload_bytes() < a_limits.maximumFileBytes
+                           ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
+                           : BuildDiagnosticBundleError::FileSizeLimitExceeded;
+            }
+            return collect(std::move(a_path), std::move(*a_text));
+        };
+
         std::optional<BuildDiagnosticBundleError> failure =
-            collect("plan.json", serialize_plan(a_input.plan, mappings));
+            collect_serialized("plan.json", serialize_plan(a_input.plan, mappings, maximum_payload_bytes()));
         if (!failure && a_input.environment)
         {
-            failure = collect("environment.json", serialize_environment(*a_input.environment, mappings));
+            failure = collect_serialized(
+                "environment.json", serialize_environment(*a_input.environment, mappings, maximum_payload_bytes()));
         }
         else if (!a_input.environment)
         {
@@ -913,11 +1684,12 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         }
         if (!failure)
         {
-            failure = collect("stages.json", serialize_stages(a_input.operation));
+            failure = collect_serialized("stages.json", serialize_stages(a_input.operation, maximum_payload_bytes()));
         }
         if (!failure)
         {
-            failure = collect("result.json", serialize_result(a_input.operation, mappings));
+            failure = collect_serialized("result.json",
+                                         serialize_result(a_input.operation, mappings, maximum_payload_bytes()));
         }
         if (!failure)
         {
@@ -945,7 +1717,8 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         }
         if (!failure && (a_input.operation.artifact || a_input.operation.latestSuccessfulArtifact))
         {
-            failure = collect("artifact.json", serialize_artifacts(a_input.operation));
+            failure =
+                collect_serialized("artifact.json", serialize_artifacts(a_input.operation, maximum_payload_bytes()));
         }
         else if (!a_input.operation.artifact && !a_input.operation.latestSuccessfulArtifact)
         {
@@ -1205,7 +1978,7 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
             begin = end + 1U;
         }
         if (!valid_manifest_entries(entries) || manifest != serialize_manifest(*operationId, *state, entries) ||
-            !files_match_manifest(files, entries))
+            !files_match_manifest(files, entries) || !valid_payload_schemas(files))
         {
             return Result<BuildDiagnosticBundle>::failure(
                 make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidBundle,

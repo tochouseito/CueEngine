@@ -196,6 +196,10 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
                                            cue::ChildProcessStream::StandardOutput, std::string(2048U, 'z')}};
     require(!cue::create_build_diagnostic_bundle(oversizedChunkInput, expandingLimits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput oversizedMetadataInput = input;
+    oversizedMetadataInput.operation.diagnostics.front().summary = std::string(2048U, 'm');
+    require(!cue::create_build_diagnostic_bundle(oversizedMetadataInput, expandingLimits, a_assertContext).has_value());
+
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
     const std::string destinationUtf8 = generic_utf8_path(destination);
@@ -211,6 +215,37 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(reloaded.operation_id() == bundle.operation_id());
     require(reloaded.state() == bundle.state());
     require(reloaded.manifest_entries().size() == bundle.manifest_entries().size());
+
+    const auto planFile = std::find_if(bundle.files().begin(), bundle.files().end(),
+                                       /// @brief Payload Schema改変検証対象のPlan Fileを検出する
+                                       [](const auto &a_file) noexcept { return a_file.relativePath == "plan.json"; });
+    require(planFile != bundle.files().end());
+    std::string originalPlan;
+    for (const std::byte value : planFile->bytes)
+    {
+        originalPlan.push_back(static_cast<char>(std::to_integer<unsigned char>(value)));
+    }
+    /// @brief Plan Payload差替えを完了してからReaderへ渡す
+    const auto write_plan = [&destination](std::string_view a_text)
+    {
+        std::ofstream stream(destination / "plan.json", std::ios::binary | std::ios::trunc);
+        stream.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+        stream.close();
+        require(stream.good());
+    };
+    std::string unknownPlanSchema = originalPlan;
+    const std::size_t planSchema = unknownPlanSchema.find("\"schemaVersion\":1");
+    require(planSchema != std::string::npos);
+    unknownPlanSchema[planSchema + std::string_view("\"schemaVersion\":").size()] = '2';
+    write_plan(unknownPlanSchema);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::string invalidPlan = originalPlan;
+    const std::size_t projectRootMember = invalidPlan.find("\"projectRoot\"");
+    require(projectRootMember != std::string::npos);
+    invalidPlan[projectRootMember + 1U] = 'x';
+    write_plan(invalidPlan);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_plan(originalPlan);
 
     cue::BuildDiagnosticBundleLimits smallLimits = limits;
     smallLimits.maximumFileBytes = 32U;
