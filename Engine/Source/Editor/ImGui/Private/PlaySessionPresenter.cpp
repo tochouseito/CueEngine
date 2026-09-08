@@ -214,11 +214,11 @@ void PlaySessionPresenter::draw() noexcept
     {
         const bool canUseKeyboard =
             !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-        if (canUseKeyboard && ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F5))
+        if (canUseKeyboard && ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
         {
             static_cast<void>(submit(EditorPlaySessionCommand::Stop));
         }
-        else if (canUseKeyboard && ImGui::IsKeyChordPressed(ImGuiKey_F5))
+        else if (canUseKeyboard && ImGui::Shortcut(ImGuiKey_F5, ImGuiInputFlags_RouteGlobal))
         {
             static_cast<void>(submit(EditorPlaySessionCommand::Play));
         }

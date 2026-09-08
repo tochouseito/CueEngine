@@ -211,8 +211,18 @@ void test_files_presenter(const cue::AssertContext &a_context)
     input.AddKeyEvent(ImGuiKey_F5, false);
     draw_frame(presenter);
     const bool didRefresh = (*session.try_value())->files_workspace().view_model().generation() > generation;
+
+    const std::uint64_t generationBeforeShiftF5 = (*session.try_value())->files_workspace().view_model().generation();
+    input.AddKeyEvent(ImGuiMod_Shift, true);
+    input.AddKeyEvent(ImGuiKey_F5, true);
+    draw_frame(presenter);
+    input.AddKeyEvent(ImGuiKey_F5, false);
+    input.AddKeyEvent(ImGuiMod_Shift, false);
+    draw_frame(presenter);
+    const bool didIgnoreShiftF5 =
+        (*session.try_value())->files_workspace().view_model().generation() == generationBeforeShiftF5;
     ImGui::DestroyContext();
-    require(didOpenDelete && didCancelDelete && didRefresh, 16);
+    require(didOpenDelete && didCancelDelete && didRefresh && didIgnoreShiftF5, 16);
 
     require(presenter.submit({cue::editor::FilesIntentKind::Delete, "Copy.txt"}).has_value(), 17);
     const std::span<const cue::project_files::RecoveryEntry> recovery =

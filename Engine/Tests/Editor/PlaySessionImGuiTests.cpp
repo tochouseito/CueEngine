@@ -202,6 +202,7 @@ void test_play_toolbar_and_shutdown(cue::Logger &a_logger, cue::editor::EditorSe
     input.DeltaTime = 1.0F / 60.0F;
     static_cast<void>(input.Fonts->Build());
 
+    release_shortcut(*presenter);
     press_shortcut(*presenter, ImGuiKey_F5, false);
     require(presenter->state_snapshot().state == cue::editor_core::EditorPlaySessionState::Running);
     require(a_router.has_active_subscription());
