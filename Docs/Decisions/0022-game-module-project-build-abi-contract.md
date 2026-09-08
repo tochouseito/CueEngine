@@ -158,6 +158,7 @@ Project Root内の役割を次のように定める。
 | `CMakeLists.txt` | Project BuildのRoot定義 | Yes | 初回生成後はUser所有とする |
 | `CMakePresets.json` | 3構成の共有Preset定義 | Yes | Schemaを検証し、既存Fileを上書きしない |
 | `Generated/Build/<workspace-key>` | CMake Binary Tree、生成IDE Project、Compiler中間物 | No | 互換なToolchain入力では再利用する |
+| `Generated/Build/Locks/<workspace-key>.lock` | Binary TreeのProcess間Exclusive Build Lock | No | Binary Tree Cleanup対象に含めない |
 | `Generated/Build/Candidates/<operation-id>` | 成功Processから収集した未公開Artifact | No | 検証後にPublishまたは破棄できる |
 | `Saved/Build/Operations/<operation-id>` | Build Log、Plan、Environment、Result Snapshot | No | 診断Retention Policyで管理する |
 | `Generated/Artifacts/<configuration>/Versions/<artifact-id>` | M16 Publisher入力となる不変の成功Artifact集合 | No | 一意Directoryとして一度だけ公開する |
@@ -170,6 +171,16 @@ Game DLL、PDB、Build Logを置かない。Machine固有Engine Source／Binary 
 `workspace-key`はGenerator、Architecture、Toolset、Engine Build Policyの互換入力から決定的に作る。
 同じKeyのCMake Binary TreeはIncremental Buildへ再利用し、入力が変わった場合は別KeyへConfigureする。
 Operation IDをBinary TreeのIdentityにしないため、通常の再Buildで全Objectを毎回作り直さない。
+
+同じ`workspace-key`を使用するConfigure、Build、Binary Tree Cleanupは、対応するLock FileのOffset `0`、Length `1`へ
+`LockFileEx`のExclusive Lockを取得し、全Process、全Build Service Instanceで直列化する。Build OperationはConfigure開始前に取得し、
+Build Process終了後、そのOperation固有Candidate Directoryへの全Artifact Copy、Handle Close、Size／Hash取得が完了するまで保持する。
+同じKeyの別OperationはLock取得をCancel／Timeout可能な待機として扱い、Lockなしで共有Binary Treeを使用しない。異なるKeyは並行できる。
+Process CrashではOSのHandle CloseによりLockを解放するが、次のOperationは残存Binary Treeを成功済みと仮定せずConfigureから再検証する。
+Binary Tree Cleanupも同じLockを取得できなければ実行しない。
+
+Exclusive Build LeaseはCandidate Snapshot確定後に解放し、その後でCandidate検証とArtifact StoreのExclusive Mutation Leaseを取得する。
+Build LeaseとArtifact Leaseを同時保持せず、全First-party入口でこの順序を固定してProcess間Deadlockを避ける。
 
 Generatorは空Project生成時に全共有SourceとBuild定義をStaging Rootへ構築し、検証後だけProject Rootとして公開する。
 既存Projectへの不足File追加はCreate-onlyとし、File単位の存在と内容Hashを検査してから実行する。
@@ -565,6 +576,8 @@ M15で次を検証する。
 - Project ScopeとGame Module使用Sessionの全Callbackを一つのOwner Threadへ限定する
 - UIなしでBuild Request、Plan、Cancel、Retry、Artifact Publishを検証できる
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
+- 同じ`workspace-key`のConfigure、Build、Candidate収集、Binary Tree CleanupをProcess間Exclusive Build Leaseで直列化する
+- Build Lease解放後だけArtifact Leaseを取得し、二つのLeaseを同時保持しない
 - 不変Version Directory公開後に`Current.json`だけをAtomic Replaceする
 - `Current.json`の`schemaVersion == 1`だけを受理し、未知Versionを拒否して再Buildで再生成する
 - Schema v1のTop-levelとFile Entryについて、Member名、型、必須性、Artifact ID、Configuration、PathをWriterとReaderで一致させる
