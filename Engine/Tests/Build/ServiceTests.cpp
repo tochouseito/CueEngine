@@ -85,6 +85,9 @@ class ControlledRunner final : public cue::ChildProcessRunner
 struct PublisherState final
 {
     std::atomic<std::uint32_t> calls = 0U;
+    std::atomic<bool> blockUntilCancelled = false;
+    std::atomic<bool> active = false;
+    std::atomic<bool> failWithNativeError = false;
 };
 
 class TestPublisher final : public cue::BuildArtifactPublisher
@@ -96,14 +99,41 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     {
     }
 
-    /// @brief 必須Fileを含む決定的な検証用Artifact Inventoryを返す
-    [[nodiscard]] cue::Result<cue::BuildArtifactInventory> publish(const cue::BuildPlan &a_plan) noexcept override
+    /// @brief Cancel、Native Error、成功Artifactを制御可能な検証用Publish結果として返す
+    [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
+        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation) noexcept override
     {
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
-        return cue::BuildArtifactInventory::create(a_plan, "11234567-89ab-4cde-8f01-23456789abcd",
-                                                   {{"CueGameModule.dll", 256U, std::string(64U, 'a')},
-                                                    {"CueGameModule.metadata.json", 64U, std::string(64U, 'b')}},
-                                                   *m_assertContext);
+        if (m_state->blockUntilCancelled.load(std::memory_order_acquire))
+        {
+            m_state->active.store(true, std::memory_order_release);
+            while (!a_cancellation.is_cancel_requested())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            m_state->active.store(false, std::memory_order_release);
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+        }
+        if (m_state->failWithNativeError.load(std::memory_order_acquire))
+        {
+            cue::ErrorCode code =
+                cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Build.TestPublisher", 1);
+            cue::NativeError native = cue::NativeError::create(m_assertContext->fatal_handler(), "Win32", 5);
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                cue::Error::create(m_assertContext->fatal_handler(), std::move(code),
+                                   "Injected artifact publication failure", std::move(native)));
+        }
+        auto inventory =
+            cue::BuildArtifactInventory::create(a_plan, "11234567-89ab-4cde-8f01-23456789abcd",
+                                                {{"CueGameModule.dll", 256U, std::string(64U, 'a')},
+                                                 {"CueGameModule.metadata.json", 64U, std::string(64U, 'b')}},
+                                                *m_assertContext);
+        if (!inventory)
+        {
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(*inventory.try_error()));
+        }
+        return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(
+            std::optional<cue::BuildArtifactInventory>(std::move(*inventory.try_value())));
     }
 
   private:
@@ -140,6 +170,20 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     return false;
 }
 
+/// @brief 検証用Publisherが取消待機へ入るまで上限付きで待機する
+[[nodiscard]] bool wait_until_publisher_active(const PublisherState &a_state)
+{
+    for (std::uint32_t attempt = 0U; attempt < 1000U; ++attempt)
+    {
+        if (a_state.active.load(std::memory_order_acquire))
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
 /// @brief Artifact Modelが必須File、Hash、Pathと決定順を検証するか確認する
 [[nodiscard]] bool test_artifact_model(const cue::AssertContext &a_assertContext)
 {
@@ -163,10 +207,15 @@ class TestPublisher final : public cue::BuildArtifactPublisher
         *plan.try_value(), "41234567-89ab-4cde-8f01-23456789abcd",
         {{"CueGameModule.dll", 20U, std::string(64U, 'a')}, {"CueGameModule.metadata.json", 0U, std::string(64U, 'b')}},
         a_assertContext);
+    auto oversizedFile =
+        cue::BuildArtifactInventory::create(*plan.try_value(), "51234567-89ab-4cde-8f01-23456789abcd",
+                                            {{"CueGameModule.dll", 9007199254740992ULL, std::string(64U, 'a')},
+                                             {"CueGameModule.metadata.json", 10U, std::string(64U, 'b')}},
+                                            a_assertContext);
     return valid && valid.try_value()->configuration() == cue::BuildConfiguration::Release &&
            valid.try_value()->files()[0].relativePath == "CueGameModule.dll" &&
            valid.try_value()->version_directory().ends_with(valid.try_value()->artifact_id()) && !traversal &&
-           !missing && !emptyMetadata;
+           !missing && !emptyMetadata && !oversizedFile;
 }
 
 /// @brief 単一Active、Cancel、Retry、Latest成功Artifact保全をHeadless検証する
@@ -220,8 +269,24 @@ class TestPublisher final : public cue::BuildArtifactPublisher
         }
     }
 
-    runnerState.mode.store(RunnerMode::Fail, std::memory_order_release);
+    publisherState.blockUntilCancelled.store(true, std::memory_order_release);
     if (!service->start(make_request("31234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
+                        cue::CMakeConfigureMode::Required) ||
+        !wait_until_publisher_active(publisherState) || !service->request_cancel() || !service->wait_for_completion())
+    {
+        return false;
+    }
+    publisherState.blockUntilCancelled.store(false, std::memory_order_release);
+    cue::BuildOperationSnapshot publishCancelled = service->snapshot();
+    if (publishCancelled.state != cue::GameBuildOperationState::Cancelled || publishCancelled.artifact ||
+        !publishCancelled.latestSuccessfulArtifact ||
+        publishCancelled.latestSuccessfulArtifact->artifact_id() != succeeded.artifact->artifact_id())
+    {
+        return false;
+    }
+
+    runnerState.mode.store(RunnerMode::Fail, std::memory_order_release);
+    if (!service->start(make_request("41234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
                         cue::CMakeConfigureMode::Required) ||
         !service->wait_for_completion())
     {
@@ -231,7 +296,34 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     return failed.state == cue::GameBuildOperationState::Failed && !failed.artifact &&
            failed.latestSuccessfulArtifact &&
            failed.latestSuccessfulArtifact->artifact_id() == succeeded.artifact->artifact_id() &&
-           publisherState.calls == 1U;
+           publisherState.calls == 2U;
+}
+
+/// @brief Publisher由来CauseのNative Error DomainとCodeをSnapshotへ保持するか検証する
+[[nodiscard]] bool test_native_error_snapshot(const cue::AssertContext &a_assertContext)
+{
+    RunnerState runnerState;
+    runnerState.mode.store(RunnerMode::Succeed, std::memory_order_release);
+    PublisherState publisherState;
+    publisherState.failWithNativeError.store(true, std::memory_order_release);
+    auto created = cue::GameBuildService::create(make_settings(), std::make_unique<ControlledRunner>(runnerState),
+                                                 std::make_unique<TestPublisher>(publisherState, a_assertContext),
+                                                 a_assertContext);
+    if (!created)
+    {
+        return false;
+    }
+    std::unique_ptr<cue::GameBuildService> service = std::move(*created.try_value());
+    if (!service->start(make_request("51234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
+                        cue::CMakeConfigureMode::Required) ||
+        !service->wait_for_completion())
+    {
+        return false;
+    }
+    const cue::BuildOperationSnapshot failed = service->snapshot();
+    return failed.state == cue::GameBuildOperationState::Failed && failed.diagnostics.size() == 2U &&
+           !failed.diagnostics[0].nativeError && failed.diagnostics[1].nativeError &&
+           failed.diagnostics[1].nativeError->domain == "Win32" && failed.diagnostics[1].nativeError->code == 5;
 }
 
 /// @brief Service破棄が進行中ProcessへCancelを通知して完了を待つか検証する
@@ -243,7 +335,7 @@ class TestPublisher final : public cue::BuildArtifactPublisher
                                                  std::make_unique<TestPublisher>(publisherState, a_assertContext),
                                                  a_assertContext);
     std::unique_ptr<cue::GameBuildService> service = std::move(*created.try_value());
-    if (!service->start(make_request("41234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
+    if (!service->start(make_request("61234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
                         cue::CMakeConfigureMode::Required) ||
         !wait_until_running(*service))
     {
@@ -261,7 +353,8 @@ int main()
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
-    return test_artifact_model(assertContext) && test_service_lifecycle(assertContext) && test_shutdown(assertContext)
+    return test_artifact_model(assertContext) && test_service_lifecycle(assertContext) &&
+                   test_native_error_snapshot(assertContext) && test_shutdown(assertContext)
                ? 0
                : 1;
 }

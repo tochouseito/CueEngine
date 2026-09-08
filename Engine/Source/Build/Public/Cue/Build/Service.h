@@ -83,9 +83,12 @@ class BuildArtifactPublisher
 
     /// @brief Build Plan固有Candidateを検証・公開し、成功時だけInventoryを返す
     ///
-    /// Planは呼出中だけ借用する。実装は一つのGameBuildService Workerから直列に呼ばれ、返却Inventoryが全値を所有する。
-    /// 回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
-    [[nodiscard]] virtual Result<BuildArtifactInventory> publish(const BuildPlan &a_plan) noexcept = 0;
+    /// PlanとCancellationは呼出中だけ借用する。実装は一つのGameBuildService
+    /// Workerから直列に呼ばれ、返却Inventoryが全値を
+    /// 所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
+    /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
+    [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation) noexcept = 0;
 
   protected:
     /// @brief 派生Publisherを初期化する
@@ -103,6 +106,15 @@ enum class GameBuildOperationState : std::uint8_t
     TimedOut
 };
 
+/// @brief Native API固有のError DomainとCodeをUI再表示可能な所有値にした診断
+struct BuildNativeErrorSnapshot final
+{
+    /// @brief Win32等のNative診断Domain
+    std::string domain;
+    /// @brief Native Domain内の診断Code
+    std::int64_t code = 0;
+};
+
 /// @brief Foundation ErrorをUI再表示可能な所有値へ平坦化した診断
 struct BuildDiagnosticSnapshot final
 {
@@ -110,6 +122,7 @@ struct BuildDiagnosticSnapshot final
     std::int64_t code = 0;
     std::string summary;
     std::vector<std::string> contexts;
+    std::optional<BuildNativeErrorSnapshot> nativeError;
 };
 
 /// @brief OperationとStageへ関連付いた一件のCapture Log

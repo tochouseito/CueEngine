@@ -12,7 +12,10 @@
 
 namespace
 {
+/// @brief 一Artifact Versionへ記録できるFile数の上限
 constexpr std::size_t k_maximumArtifactFiles = 128U;
+/// @brief JSON整数として情報を失わず表現できるArtifact File Size上限
+constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
 
 /// @brief 回復不能なService内部例外をFatalHandlerへ通知してProcessを停止する
 [[noreturn]] void terminate_service_exception(const cue::AssertContext &a_assertContext) noexcept
@@ -129,6 +132,16 @@ constexpr std::size_t k_maximumArtifactFiles = 128U;
     return a_left.relativePath < a_right.relativePath;
 }
 
+/// @brief Native ErrorがあればUI再表示可能な所有Snapshotへ変換する
+[[nodiscard]] std::optional<cue::BuildNativeErrorSnapshot> flatten_native_error(const cue::NativeError *a_nativeError)
+{
+    if (a_nativeError == nullptr)
+    {
+        return std::nullopt;
+    }
+    return cue::BuildNativeErrorSnapshot{std::string(a_nativeError->domain()), a_nativeError->value()};
+}
+
 /// @brief 所有関係を持つError ChainをUI再表示可能な診断値へ平坦化する
 [[nodiscard]] std::vector<cue::BuildDiagnosticSnapshot> flatten_error(const cue::Error &a_error)
 {
@@ -141,7 +154,7 @@ constexpr std::size_t k_maximumArtifactFiles = 128U;
         primaryContexts.emplace_back(context.message());
     }
     diagnostics.push_back({std::string(a_error.code().domain()), a_error.code().value(), std::string(a_error.summary()),
-                           std::move(primaryContexts)});
+                           std::move(primaryContexts), flatten_native_error(a_error.try_native_error())});
     for (const cue::ErrorCause &cause : a_error.causes())
     {
         std::vector<std::string> contexts;
@@ -151,7 +164,7 @@ constexpr std::size_t k_maximumArtifactFiles = 128U;
             contexts.emplace_back(context.message());
         }
         diagnostics.push_back({std::string(cause.code().domain()), cause.code().value(), std::string(cause.summary()),
-                               std::move(contexts)});
+                               std::move(contexts), flatten_native_error(cause.try_native_error())});
     }
     return diagnostics;
 }
@@ -191,7 +204,8 @@ Result<BuildArtifactInventory> BuildArtifactInventory::create(const BuildPlan &a
                 duplicatePath = duplicatePath ||
                                 equals_path_ascii_case_insensitive(a_files[previous].relativePath, file.relativePath);
             }
-            if (!is_safe_relative_path(file.relativePath) || !has_valid_hash(file.contentHash) || duplicatePath)
+            if (!is_safe_relative_path(file.relativePath) || !has_valid_hash(file.contentHash) || duplicatePath ||
+                file.byteSize > k_maximumArtifactByteSize)
             {
                 return Result<BuildArtifactInventory>::failure(
                     make_service_error(a_assertContext, GameBuildServiceError::InvalidArtifact,
@@ -346,6 +360,24 @@ struct GameBuildService::Impl final
         }
     }
 
+    /// @brief 一致するOperationをArtifact更新なしの取消状態へ確定する
+    void finish_cancelled(std::string_view a_operationId) noexcept
+    {
+        try
+        {
+            std::scoped_lock lock(mutex);
+            if (current.state == GameBuildOperationState::Running && current.operationId == a_operationId)
+            {
+                current.activeStage.reset();
+                current.state = GameBuildOperationState::Cancelled;
+            }
+        }
+        catch (...)
+        {
+            terminate_service_exception(*assertContext);
+        }
+    }
+
     /// @brief Runner結果と公開Artifactから一致するOperationの終端状態を確定する
     void finish_result(std::string_view a_operationId, const CMakeBuildResult &a_result,
                        std::optional<BuildArtifactInventory> a_artifact) noexcept
@@ -410,7 +442,12 @@ struct GameBuildService::Impl final
             finish_result(a_operationId, *built.try_value(), std::nullopt);
             return;
         }
-        auto published = artifactPublisher->publish(a_plan);
+        if (a_cancellation.is_cancel_requested())
+        {
+            finish_cancelled(a_operationId);
+            return;
+        }
+        auto published = artifactPublisher->publish(a_plan, a_cancellation);
         if (!published)
         {
             ErrorCode code =
@@ -422,7 +459,12 @@ struct GameBuildService::Impl final
             finish_error(a_operationId, classified);
             return;
         }
-        finish_result(a_operationId, *built.try_value(), std::move(*published.try_value()));
+        if (!published.try_value()->has_value())
+        {
+            finish_cancelled(a_operationId);
+            return;
+        }
+        finish_result(a_operationId, *built.try_value(), std::move(**published.try_value()));
     }
 
     CMakeRunnerSettings settings;

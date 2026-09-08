@@ -409,6 +409,11 @@ EngineをそのToolchainで再構成、再検証してBuild Metadataを更新す
 
 Editor UIは`Cue.Build`のApplication Serviceへ型付きBuild Requestを渡すだけとする。
 ServiceはToolchain検証、Plan生成、Process実行、Stage遷移、Log、Cancel、Artifact Publishを所有する。
+`GameBuildService`は生成ThreadをOwner Threadとし、Build開始、Retry、完了待機をOwner Threadへ限定する。
+状態SnapshotとCancel要求は別Threadから利用できる。終了時は進行中OperationへCancelを通知し、WorkerとChild Processの完了を待つ。
+Artifact Publisherにも同じCancellationを借用で渡し、不可逆な`Current.json`更新前まで取消を監視させる。
+取消を受理したPublisherはArtifact Inventoryを返さず、以前のLatest Successful Artifactを維持する。
+一方、`Current.json`のCommit後に到着した取消は確定済みArtifactを巻き戻さず、そのOperationの成功を優先する。
 
 ```text
 ImGui Build UI
