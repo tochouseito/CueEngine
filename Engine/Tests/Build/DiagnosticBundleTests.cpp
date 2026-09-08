@@ -285,6 +285,16 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     unknownStateInput.operation.state = static_cast<cue::GameBuildOperationState>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownStateInput, limits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput failedWithOperationArtifactInput = input;
+    failedWithOperationArtifactInput.operation.artifact = make_artifact(plan, a_assertContext);
+    require(
+        !cue::create_build_diagnostic_bundle(failedWithOperationArtifactInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput succeededWithoutOperationArtifactInput = input;
+    succeededWithoutOperationArtifactInput.operation.state = cue::GameBuildOperationState::Succeeded;
+    require(!cue::create_build_diagnostic_bundle(succeededWithoutOperationArtifactInput, limits, a_assertContext)
+                 .has_value());
+
     cue::BuildDiagnosticBundleInput unknownStageInput = input;
     unknownStageInput.operation.stages.front().stage = static_cast<cue::BuildStage>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownStageInput, limits, a_assertContext).has_value());
@@ -529,6 +539,26 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     write_manifest(oversizedStageManifest);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
     write_stages(originalStages);
+    write_manifest(tamperedManifest);
+
+    std::string unexpectedOperationArtifact = originalArtifact;
+    const std::size_t latestArtifactMember = unexpectedOperationArtifact.find("latestSuccessfulArtifact");
+    require(latestArtifactMember != std::string::npos);
+    unexpectedOperationArtifact.replace(latestArtifactMember, std::string_view("latestSuccessfulArtifact").size(),
+                                        "operationArtifact");
+    write_artifact(unexpectedOperationArtifact);
+    std::string unexpectedArtifactManifest = tamperedManifest;
+    const std::size_t artifactEntry = unexpectedArtifactManifest.find("\"path\":\"artifact.json\"");
+    const std::size_t artifactSize = unexpectedArtifactManifest.find("\"sizeBytes\":", artifactEntry);
+    const std::size_t artifactSizeEnd = unexpectedArtifactManifest.find(',', artifactSize);
+    require(artifactEntry != std::string::npos && artifactSize != std::string::npos &&
+            artifactSizeEnd != std::string::npos);
+    const std::size_t artifactValue = artifactSize + std::string_view("\"sizeBytes\":").size();
+    unexpectedArtifactManifest.replace(artifactValue, artifactSizeEnd - artifactValue,
+                                       std::to_string(unexpectedOperationArtifact.size()));
+    write_manifest(unexpectedArtifactManifest);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_artifact(originalArtifact);
     write_manifest(tamperedManifest);
 
     std::string unknownSchema = tamperedManifest;

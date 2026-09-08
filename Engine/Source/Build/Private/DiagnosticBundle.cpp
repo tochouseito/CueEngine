@@ -12,7 +12,18 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#endif
 
 namespace
 {
@@ -245,6 +256,24 @@ constexpr std::array<std::string_view, 7U> k_manifestEntryPaths = {
     {
         return std::nullopt;
     }
+}
+
+/// @brief Native Filesystem Entryが追跡禁止のReparse Pointか属性で検証する
+[[nodiscard]] bool is_reparse_point(const std::filesystem::path &a_path, std::error_code &a_error) noexcept
+{
+    a_error.clear();
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(a_path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES)
+    {
+        a_error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+        return false;
+    }
+    return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U;
+#else
+    const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, a_error);
+    return !a_error && std::filesystem::is_symlink(status);
+#endif
 }
 
 /// @brief 任意Byte列をControl文字を含め妥当なJSON StringへEscapeして追記する
@@ -572,6 +601,12 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
 {
     return a_state == cue::GameBuildOperationState::Succeeded || a_state == cue::GameBuildOperationState::Failed ||
            a_state == cue::GameBuildOperationState::Cancelled || a_state == cue::GameBuildOperationState::TimedOut;
+}
+
+/// @brief 終端Stateと現在Operationが公開したArtifactの有無がService契約と一致するか検証する
+[[nodiscard]] bool valid_operation_artifact_state(const cue::BuildOperationSnapshot &a_operation) noexcept
+{
+    return (a_operation.state == cue::GameBuildOperationState::Succeeded) == a_operation.artifact.has_value();
 }
 
 /// @brief Stage、Outcome、Exit CodeがBuildStageResult契約と一致するか検証する
@@ -1800,17 +1835,18 @@ struct ArtifactReadState final
            read_result_diagnostic_array(reader) && reader.end_object() && reader.finished();
 }
 
-/// @brief Artifact PayloadをVersion 1固定Schemaとして検証する
-[[nodiscard]] bool valid_artifact_payload(std::string_view a_text) noexcept
+/// @brief Artifact PayloadをVersion 1固定SchemaとOperation Stateの対応付きで検証する
+[[nodiscard]] bool valid_artifact_payload(std::string_view a_text,
+                                          cue::GameBuildOperationState a_expectedState) noexcept
 {
     JsonSchemaReader reader(a_text);
     if (!read_schema_header(reader) || !reader.comma())
     {
         return false;
     }
-    if (reader.member("operationArtifact"))
+    if (a_expectedState == cue::GameBuildOperationState::Succeeded)
     {
-        if (!read_artifact(reader))
+        if (!reader.member("operationArtifact") || !read_artifact(reader))
         {
             return false;
         }
@@ -1845,7 +1881,7 @@ struct ArtifactReadState final
                            : file.relativePath == "environment.json" ? valid_environment_payload(text)
                            : file.relativePath == "stages.json"      ? valid_stages_payload(text)
                            : file.relativePath == "result.json"      ? valid_result_payload(text, a_expectedState)
-                           : file.relativePath == "artifact.json"    ? valid_artifact_payload(text)
+                           : file.relativePath == "artifact.json"    ? valid_artifact_payload(text, a_expectedState)
                                                                      : false;
         if (!valid)
         {
@@ -1941,7 +1977,8 @@ struct ArtifactReadState final
 }
 
 /// @brief Manifestが全既知項目を重複なく列挙し必須Fileを収集済みか検証する
-[[nodiscard]] bool valid_manifest_entries(std::span<const cue::BuildDiagnosticManifestEntry> a_entries) noexcept
+[[nodiscard]] bool valid_manifest_entries(std::span<const cue::BuildDiagnosticManifestEntry> a_entries,
+                                          cue::GameBuildOperationState a_state) noexcept
 {
     if (a_entries.size() != k_manifestEntryPaths.size())
     {
@@ -1955,7 +1992,8 @@ struct ArtifactReadState final
         {
             return false;
         }
-        const bool optional = path == "artifact.json" || path == "environment.json";
+        const bool optional = (path == "artifact.json" && a_state != cue::GameBuildOperationState::Succeeded) ||
+                              path == "environment.json";
         if (!optional && !entry.collected)
         {
             return false;
@@ -2027,7 +2065,8 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
                 a_assertContext, BuildDiagnosticBundleError::InvalidLimits, "Diagnostic bundle limits are invalid"));
         }
         if (!is_uuid_v4(a_input.operation.operationId) || !valid_terminal_state(a_input.operation.state) ||
-            a_input.plan.projectRoot.empty() || a_input.plan.targetName.empty())
+            !valid_operation_artifact_state(a_input.operation) || a_input.plan.projectRoot.empty() ||
+            a_input.plan.targetName.empty())
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic bundle input is invalid"));
@@ -2357,9 +2396,11 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
         }
         const auto source = filesystem_path_from_utf8(a_source);
         std::error_code error;
+        const bool sourceIsReparsePoint = source && is_reparse_point(*source, error);
         const std::filesystem::file_status sourceStatus =
-            source ? std::filesystem::symlink_status(*source, error) : std::filesystem::file_status{};
-        if (!source || !source->is_absolute() || error || !std::filesystem::is_directory(sourceStatus))
+            source && !error ? std::filesystem::symlink_status(*source, error) : std::filesystem::file_status{};
+        if (!source || !source->is_absolute() || error || sourceIsReparsePoint ||
+            !std::filesystem::is_directory(sourceStatus))
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::FilesystemFailure, "Diagnostic source is unavailable"));
@@ -2370,12 +2411,17 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
         for (std::filesystem::directory_iterator iterator(*source, error), end; iterator != end && !error;
              iterator.increment(error))
         {
+            const bool entryIsReparsePoint = is_reparse_point(iterator->path(), error);
+            if (error)
+            {
+                break;
+            }
             const std::filesystem::file_status status = iterator->symlink_status(error);
             if (error)
             {
                 break;
             }
-            if (!std::filesystem::is_regular_file(status))
+            if (entryIsReparsePoint || !std::filesystem::is_regular_file(status))
             {
                 readFailure = BuildDiagnosticBundleError::InvalidBundle;
                 break;
@@ -2485,7 +2531,7 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
             }
             begin = end + 1U;
         }
-        if (!valid_manifest_entries(entries) || manifest != serialize_manifest(*operationId, *state, entries) ||
+        if (!valid_manifest_entries(entries, *state) || manifest != serialize_manifest(*operationId, *state, entries) ||
             !files_match_manifest(files, entries) || !valid_payload_schemas(files, *state))
         {
             return Result<BuildDiagnosticBundle>::failure(
