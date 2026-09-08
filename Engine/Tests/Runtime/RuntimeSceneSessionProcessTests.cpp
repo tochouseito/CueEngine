@@ -77,17 +77,63 @@ class ProcessFatalHandler final : public cue::FatalHandler
 class ProgrammerErrorFatalHandler final : public cue::FatalHandler
 {
   public:
+    struct State final
+    {
+        bool isArmed = false;
+        bool hasExpectedDiagnostic = false;
+        std::string_view expectedMessage;
+    };
+
+    /// @brief Programmer Error検証状態を参照してHandlerを構築する
+    explicit ProgrammerErrorFatalHandler(State &a_state) noexcept : m_state(&a_state)
+    {
+    }
+
     /// @brief Assert経由のProgrammer Errorを期待Exit Codeへ変換する
     [[noreturn]] void terminate() noexcept override
     {
-        std::_Exit(k_expectedExitCode);
+        const bool isExpected = m_state->isArmed && m_state->hasExpectedDiagnostic;
+        std::_Exit(isExpected ? k_expectedExitCode : k_invalidDiagnosticExitCode);
     }
 
     /// @brief 全構成の明示Programmer Errorを期待Exit Codeへ変換する
-    [[noreturn]] void terminate(std::string_view) noexcept override
+    [[noreturn]] void terminate(std::string_view a_message) noexcept override
     {
-        std::_Exit(k_expectedExitCode);
+        const bool isExpected = m_state->isArmed && a_message == m_state->expectedMessage;
+        std::_Exit(isExpected ? k_expectedExitCode : k_invalidDiagnosticExitCode);
     }
+
+  private:
+    State *m_state;
+};
+
+class ProgrammerErrorSink final : public cue::LogSink
+{
+  public:
+    /// @brief Programmer Error検証状態を参照してSinkを構築する
+    explicit ProgrammerErrorSink(ProgrammerErrorFatalHandler::State &a_state) noexcept : m_state(&a_state)
+    {
+    }
+
+    /// @brief 対象操作が発行した期待Fatal診断だけを記録する
+    [[nodiscard]] bool write(const cue::LogRecord &a_record) override
+    {
+        if (m_state->isArmed && a_record.level() == cue::LogLevel::Fatal &&
+            a_record.message() == m_state->expectedMessage)
+        {
+            m_state->hasExpectedDiagnostic = true;
+        }
+        return true;
+    }
+
+    /// @brief 同期Process Testでは保留出力がないため成功を返す
+    [[nodiscard]] bool flush() override
+    {
+        return true;
+    }
+
+  private:
+    ProgrammerErrorFatalHandler::State *m_state;
 };
 
 class InspectingSink final : public cue::LogSink
@@ -270,8 +316,10 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
 /// @brief RuntimeSceneSession自身のOwner Threadまたはlive Destructor違反を全構成でFatal終端する
 [[noreturn]] void run_programmer_error_mode(ProcessMode a_mode) noexcept
 {
-    ProgrammerErrorFatalHandler fatalHandler;
+    ProgrammerErrorFatalHandler::State programmerErrorState;
+    ProgrammerErrorFatalHandler fatalHandler(programmerErrorState);
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
+    sinks.push_back(std::make_unique<ProgrammerErrorSink>(programmerErrorState));
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     cue::schema::SchemaRegistryIdentitySource schemaIdentitySource;
@@ -289,12 +337,17 @@ class InjectedEndOperation final : public cue::runtime::details::SceneEndOperati
 
     if (a_mode == ProcessMode::WrongThread)
     {
+        programmerErrorState.expectedMessage = "Cue.Runtime scene session API requires its owner thread";
+        programmerErrorState.isArmed = true;
         /// @brief Session Owner以外のThreadから状態取得してThread契約違反を発生させる
         std::thread foreignThread([&session]() noexcept { static_cast<void>((*session.try_value())->state()); });
         foreignThread.join();
         std::_Exit(3);
     }
 
+    programmerErrorState.expectedMessage =
+        "Cue.Runtime scene session destruction requires completed scene and world cleanup";
+    programmerErrorState.isArmed = true;
     session.try_value()->reset();
     std::_Exit(3);
 }
