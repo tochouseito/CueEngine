@@ -1,4 +1,5 @@
 #include <Cue/Runtime/Error.h>
+#include <Cue/Runtime/RuntimeApplicationSession.h>
 #include <Cue/Runtime/RuntimeSceneSession.h>
 
 /// @brief Cue.Runtime公開Headerが自己完結してCompileできることを検証する

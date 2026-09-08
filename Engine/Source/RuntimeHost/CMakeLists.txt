@@ -4,14 +4,21 @@ target_sources(
     CueRuntimeHost
     PRIVATE
         Main.cpp
+        RuntimeHostApplication.cpp
+        RuntimeHostApplication.h
 )
 
 target_link_libraries(
     CueRuntimeHost
     PRIVATE
         Cue.Foundation
+        Cue.GameCore
+        Cue.Input.Windows
         Cue.Platform.Windows
         Cue.RHI.D3D12.Windows
+        Cue.Runtime
+        Cue.Scene
+        Cue.Schema
 )
 target_compile_features(CueRuntimeHost PRIVATE cxx_std_20)
 

@@ -1,3 +1,5 @@
+#include "RuntimeHostApplication.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Capability.h>
 #include <Cue/Foundation/Error.h>
@@ -46,6 +48,9 @@ constexpr int k_presentationCreationFailed = 9;
 constexpr int k_presentationShutdownFailed = 10;
 constexpr int k_presentationFrameFailed = 11;
 constexpr int k_presentationResizeFailed = 12;
+constexpr int k_runtimeApplicationCreationFailed = 14;
+constexpr int k_runtimeApplicationFrameFailed = 15;
+constexpr int k_runtimeApplicationShutdownFailed = 16;
 #if defined(CUE_RUNTIME_RESIZE_SMOKE_SUPPORT) && CUE_RUNTIME_RESIZE_SMOKE_SUPPORT
 constexpr int k_resizeSmokeFailed = 13;
 constexpr std::uint32_t k_resizeSmokeCycleCount = 50;
@@ -66,6 +71,25 @@ struct RuntimeOptions final
 #endif
     cue::D3d12AdapterPolicy graphicsAdapterPolicy = cue::D3d12AdapterPolicy::HighPerformanceHardware;
 };
+
+/// @brief Runtime停止理由をHost診断用の安定した文字列へ変換する
+[[nodiscard]] std::string_view describe_runtime_stop_reason(
+    cue::runtime::RuntimeApplicationStopReason a_reason) noexcept
+{
+    switch (a_reason)
+    {
+    case cue::runtime::RuntimeApplicationStopReason::Requested:
+        return "Requested";
+    case cue::runtime::RuntimeApplicationStopReason::WindowClosed:
+        return "WindowClosed";
+    case cue::runtime::RuntimeApplicationStopReason::HostFailure:
+        return "HostFailure";
+    case cue::runtime::RuntimeApplicationStopReason::RuntimeFailure:
+        return "RuntimeFailure";
+    default:
+        return "None";
+    }
+}
 
 /// @brief System Architecture を Native 定数へ依存しない診断文字列へ変換する
 [[nodiscard]] std::string_view describe_system_architecture(cue::SystemArchitecture a_architecture) noexcept
@@ -155,29 +179,28 @@ template <typename Value>
 }
 
 /// @brief 現在 Machine の System Capability Snapshot を再現可能な単一診断へ記録する
-[[nodiscard]] cue::LogResult log_system_capabilities(cue::Logger &a_logger,
-                                                     const cue::AssertContext &a_assertContext)
+[[nodiscard]] cue::LogResult log_system_capabilities(cue::Logger &a_logger, const cue::AssertContext &a_assertContext)
 {
     cue::SystemCapabilityQueryReport report = cue::query_windows_system_capabilities(a_assertContext);
     const cue::SystemCapabilitySnapshot &snapshot = report.snapshot;
     const cue::CpuInstructionCapabilities &instructions = snapshot.instructions();
     std::string message =
         "System Capability Snapshot: ProcessArchitecture=" +
-        std::string(describe_system_architecture(snapshot.process_architecture())) + ", NativeArchitecture=" +
-        std::string(describe_system_architecture(snapshot.native_architecture())) + ", LogicalProcessorCount=" +
-        describe_system_value(snapshot.logical_processor_count()) + ", PhysicalMemoryBytes=" +
-        describe_system_value(snapshot.physical_memory_bytes()) + ", PageSizeBytes=" +
-        describe_system_value(snapshot.page_size_bytes()) + ", CacheLineSizeBytes=" +
-        describe_system_value(snapshot.cache_line_size_bytes()) + ", SSE2=" +
-        std::string(describe_support(instructions.sse2.support())) + ", SSE3=" +
-        std::string(describe_support(instructions.sse3.support())) + ", SSSE3=" +
-        std::string(describe_support(instructions.ssse3.support())) + ", SSE4.1=" +
-        std::string(describe_support(instructions.sse41.support())) + ", SSE4.2=" +
-        std::string(describe_support(instructions.sse42.support())) + ", AVX=" +
-        std::string(describe_support(instructions.avx.support())) + ", AVX2=" +
-        std::string(describe_support(instructions.avx2.support())) + ", FMA=" +
-        std::string(describe_support(instructions.fma.support())) + ", OsExtendedState=" +
-        std::string(describe_support(instructions.osExtendedState.support()));
+        std::string(describe_system_architecture(snapshot.process_architecture())) +
+        ", NativeArchitecture=" + std::string(describe_system_architecture(snapshot.native_architecture())) +
+        ", LogicalProcessorCount=" + describe_system_value(snapshot.logical_processor_count()) +
+        ", PhysicalMemoryBytes=" + describe_system_value(snapshot.physical_memory_bytes()) +
+        ", PageSizeBytes=" + describe_system_value(snapshot.page_size_bytes()) +
+        ", CacheLineSizeBytes=" + describe_system_value(snapshot.cache_line_size_bytes()) +
+        ", SSE2=" + std::string(describe_support(instructions.sse2.support())) +
+        ", SSE3=" + std::string(describe_support(instructions.sse3.support())) +
+        ", SSSE3=" + std::string(describe_support(instructions.ssse3.support())) +
+        ", SSE4.1=" + std::string(describe_support(instructions.sse41.support())) +
+        ", SSE4.2=" + std::string(describe_support(instructions.sse42.support())) +
+        ", AVX=" + std::string(describe_support(instructions.avx.support())) +
+        ", AVX2=" + std::string(describe_support(instructions.avx2.support())) +
+        ", FMA=" + std::string(describe_support(instructions.fma.support())) +
+        ", OsExtendedState=" + std::string(describe_support(instructions.osExtendedState.support()));
     const cue::LogResult snapshotResult = a_logger.log(cue::LogLevel::Info, message);
     return report.diagnosticResult == cue::LogResult::Success ? snapshotResult : report.diagnosticResult;
 }
@@ -616,7 +639,51 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
                                ", BufferCount=" + std::to_string(presentation->buffer_count()) +
                                ", VSync=" + (presentation->is_vsync_enabled() ? "true" : "false");
     cue::LogResult readyLogResult = a_logger.log(cue::LogLevel::Info, readyMessage);
+    cue::Result<std::unique_ptr<cue::runtime_host::RuntimeHostApplication>> applicationResult =
+        cue::runtime_host::RuntimeHostApplication::start(a_window, a_assertContext);
+    if (!applicationResult)
+    {
+        cue::Error applicationError = std::move(*applicationResult.try_error());
+        cue::Result<void> presentationShutdown = presentation->shutdown();
+        if (!presentationShutdown && presentation->state() == cue::PresentationContextState::Unavailable)
+        {
+            cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                              "Runtime Host could not cleanup Presentation after Runtime start failure",
+                              std::move(*presentationShutdown.try_error()));
+        }
+        if (!presentationShutdown)
+        {
+            add_secondary_runtime_error(applicationError, *presentationShutdown.try_error(),
+                                        "D3D12 Presentation shutdown also failed after Runtime start Error",
+                                        a_assertContext);
+        }
+        presentation.reset();
+
+        cue::Result<void> backendShutdown = backend->shutdown();
+        if (!backendShutdown && backend->state() == cue::GraphicsBackendState::Unavailable)
+        {
+            cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                              "Runtime Host could not cleanup Backend after Runtime start failure",
+                              std::move(*backendShutdown.try_error()));
+        }
+        if (!backendShutdown)
+        {
+            add_secondary_runtime_error(applicationError, *backendShutdown.try_error(),
+                                        "D3D12 Backend shutdown also failed after Runtime start Error",
+                                        a_assertContext);
+        }
+        backend.reset();
+        return report_error(a_logger, "Runtime Host failed to start Runtime Application", std::move(applicationError),
+                            k_runtimeApplicationCreationFailed);
+    }
+
+    std::unique_ptr<cue::runtime_host::RuntimeHostApplication> application = std::move(*applicationResult.try_value());
+    const cue::LogResult runtimeReadyLogResult =
+        a_logger.log(cue::LogLevel::Info,
+                     "Runtime Application Session started: Generation=" + std::to_string(application->generation()) +
+                         ", WorldId=" + std::to_string(application->world_id()));
     std::optional<cue::Error> frameError;
+    std::optional<cue::Error> applicationError;
     std::string_view loopErrorMessage = "Runtime Host rendering Frame failed";
     int loopErrorExitCode = k_presentationFrameFailed;
     std::uint64_t frameCount = 0;
@@ -634,6 +701,8 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
 #endif
     bool isMinimized = false;
     bool isShutdownRequested = false;
+    bool wasWindowCloseRequested = false;
+    bool hasRuntimeFrameFailure = false;
 
     while (!isShutdownRequested)
     {
@@ -689,6 +758,7 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
         if (*pumpResult.try_value() == cue::PumpStatus::QuitRequested)
         {
             isShutdownRequested = true;
+            wasWindowCloseRequested = true;
         }
 
         cue::WindowEvent event = {};
@@ -700,6 +770,7 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
             if (event.type == cue::WindowEventType::CloseRequested || event.type == cue::WindowEventType::Destroyed)
             {
                 isShutdownRequested = true;
+                wasWindowCloseRequested = true;
             }
             else if (event.type == cue::WindowEventType::Resized)
             {
@@ -781,6 +852,18 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
 #endif
         }
 
+        // Pumpで蓄積したPortable Inputを確定し、Clock、System、Structural Safe PointをPresentより先に実行する
+        cue::Result<void> runtimeFrame = application->advance_frame();
+        if (!runtimeFrame)
+        {
+            frameError.emplace(std::move(*runtimeFrame.try_error()));
+            hasRuntimeFrameFailure = true;
+            isShutdownRequested = true;
+            loopErrorMessage = "Runtime Host Runtime Application Frame failed";
+            loopErrorExitCode = k_runtimeApplicationFrameFailed;
+            break;
+        }
+
         if (isMinimized || presentation->is_resize_pending())
         {
 #if defined(CUE_RUNTIME_RESIZE_SMOKE_SUPPORT) && CUE_RUNTIME_RESIZE_SMOKE_SUPPORT
@@ -847,6 +930,33 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
         }
     }
 
+    const cue::runtime::RuntimeApplicationStopReason runtimeStopReason =
+        hasRuntimeFrameFailure || frameError.has_value()
+            ? cue::runtime::RuntimeApplicationStopReason::HostFailure
+            : (wasWindowCloseRequested ? cue::runtime::RuntimeApplicationStopReason::WindowClosed
+                                       : cue::runtime::RuntimeApplicationStopReason::Requested);
+    cue::Result<void> runtimeStopped = application->stop(runtimeStopReason);
+    if (!runtimeStopped && !application->is_cleanup_complete())
+    {
+        cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                          "Runtime Host could not prove safe Runtime Application shutdown",
+                          std::move(*runtimeStopped.try_error()));
+    }
+    if (!runtimeStopped)
+    {
+        applicationError.emplace(std::move(*runtimeStopped.try_error()));
+        if (!hasRuntimeFrameFailure)
+        {
+            loopErrorMessage = "Runtime Host failed to shutdown Runtime Application";
+            loopErrorExitCode = k_runtimeApplicationShutdownFailed;
+        }
+    }
+    const cue::LogResult runtimeShutdownLogResult =
+        a_logger.log(cue::LogLevel::Info, "Runtime Application Session stopped: Reason=" +
+                                              std::string(describe_runtime_stop_reason(application->stop_reason())) +
+                                              ", FrameCount=" + std::to_string(application->frame_count()));
+    application.reset();
+
     const std::uint32_t finalBackBufferIndex = presentation->current_back_buffer_index();
 
     // GPU 使用中の Presentation を先に停止し、依存先の Backend はその完了確認まで存続させる
@@ -890,6 +1000,12 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     // Render Loop 中に先行した Error を Primary とし、終了処理で増えた Error は Secondary として診断情報へ統合する
     if (frameError)
     {
+        if (applicationError)
+        {
+            add_secondary_runtime_error(*frameError, *applicationError,
+                                        "Runtime Application shutdown also reported an Error", a_assertContext);
+        }
+
         if (presentationShutdownError)
         {
             add_secondary_runtime_error(*frameError, *presentationShutdownError,
@@ -904,6 +1020,21 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
         }
 
         return report_error(a_logger, loopErrorMessage, std::move(*frameError), loopErrorExitCode);
+    }
+
+    if (applicationError)
+    {
+        if (presentationShutdownError)
+        {
+            add_secondary_runtime_error(*applicationError, *presentationShutdownError,
+                                        "D3D12 Presentation shutdown also failed after Runtime Error", a_assertContext);
+        }
+        if (backendShutdownError)
+        {
+            add_secondary_runtime_error(*applicationError, *backendShutdownError,
+                                        "D3D12 Backend shutdown also failed after Runtime Error", a_assertContext);
+        }
+        return report_error(a_logger, loopErrorMessage, std::move(*applicationError), loopErrorExitCode);
     }
 
     if (presentationShutdownError)
@@ -949,9 +1080,10 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     cue::LogResult shutdownLogResult = a_logger.log(cue::LogLevel::Info, "D3D12 Render Loop shutdown completed");
     cue::LogResult flushResult = a_logger.flush();
     return capabilityStateLogResult == cue::LogResult::Success && readyLogResult == cue::LogResult::Success &&
-                   resizeSmokeLogResult == cue::LogResult::Success &&
-                   completionLogResult == cue::LogResult::Success && shutdownLogResult == cue::LogResult::Success &&
-                   flushResult == cue::LogResult::Success
+                   runtimeReadyLogResult == cue::LogResult::Success &&
+                   runtimeShutdownLogResult == cue::LogResult::Success &&
+                   resizeSmokeLogResult == cue::LogResult::Success && completionLogResult == cue::LogResult::Success &&
+                   shutdownLogResult == cue::LogResult::Success && flushResult == cue::LogResult::Success
                ? 0
                : k_graphicsLogFailed;
 }
@@ -1044,22 +1176,65 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
         return renderResult;
     }
 
-    static_cast<void>(a_logger.log(cue::LogLevel::Info, "Runtime Host Main Loop started"));
+    cue::Result<std::unique_ptr<cue::runtime_host::RuntimeHostApplication>> applicationResult =
+        cue::runtime_host::RuntimeHostApplication::start(*window, a_assertContext);
+    if (!applicationResult)
+    {
+        cue::Error applicationError = std::move(*applicationResult.try_error());
+        cue::Result<void> destroyResult = window->destroy();
+        if (!destroyResult)
+        {
+            add_secondary_runtime_error(applicationError, *destroyResult.try_error(),
+                                        "Window destruction also failed after Runtime start Error", a_assertContext);
+        }
+        window.reset();
+        windowSystem.reset();
+        return report_error(a_logger, "Runtime Host failed to start Runtime Application", std::move(applicationError),
+                            k_runtimeApplicationCreationFailed);
+    }
 
-    // Window Smoke は生成直後から終了要求を立て、実描画なしで Event drain と破棄手順を検証する
-    bool isShutdownRequested = a_options.isSmokeTest;
+    std::unique_ptr<cue::runtime_host::RuntimeHostApplication> application = std::move(*applicationResult.try_value());
+    const cue::LogResult runtimeReadyLogResult =
+        a_logger.log(cue::LogLevel::Info,
+                     "Runtime Application Session started: Generation=" + std::to_string(application->generation()) +
+                         ", WorldId=" + std::to_string(application->world_id()));
+    const cue::LogResult loopReadyLogResult = a_logger.log(cue::LogLevel::Info, "Runtime Host Main Loop started");
+    cue::LogResult runtimeShutdownLogResult = cue::LogResult::Success;
+
+    bool isShutdownRequested = false;
+    bool wasWindowCloseRequested = false;
+    std::optional<cue::Error> hostError;
+    std::string_view hostErrorMessage = "Runtime Host Message Pump failed";
+    int hostErrorExitCode = k_messagePumpFailed;
+
+#if defined(CUE_RUNTIME_RESIZE_SMOKE_SUPPORT) && CUE_RUNTIME_RESIZE_SMOKE_SUPPORT
+    // Test Buildでは実WindowへWM_CLOSEを発行し、Window EventからRuntime停止へ到達する経路を検証する
+    cue::Result<void> closeResult = cue::issue_windows_window_lifecycle_probe_action(
+        *window, cue::WindowsWindowLifecycleProbeAction::ResizeThenClose, a_options.clientSize, a_options.clientSize,
+        a_assertContext);
+    if (!closeResult)
+    {
+        hostError.emplace(std::move(*closeResult.try_error()));
+        hostErrorMessage = "Runtime Host Window Close probe failed";
+        isShutdownRequested = true;
+    }
+#else
+    // Production BuildのSmokeはTest専用Native操作へ依存せず、明示要求として同じ停止順だけを通す
+    isShutdownRequested = true;
+#endif
 
     while (true)
     {
-        cue::Result<cue::PumpStatus> pumpResult = windowSystem->pump_events();
+        cue::Result<cue::PumpStatus> pumpResult =
+            hostError ? cue::Result<cue::PumpStatus>::success(cue::PumpStatus::Running) : windowSystem->pump_events();
 
         if (!pumpResult)
         {
-            return report_error(a_logger, "Runtime Host Message Pump failed", std::move(*pumpResult.try_error()),
-                                k_messagePumpFailed);
+            hostError.emplace(std::move(*pumpResult.try_error()));
+            isShutdownRequested = true;
         }
 
-        bool isQuitRequested = *pumpResult.try_value() == cue::PumpStatus::QuitRequested;
+        bool isQuitRequested = pumpResult && *pumpResult.try_value() == cue::PumpStatus::QuitRequested;
         bool hasEvent = false;
         cue::WindowEvent event = {};
 
@@ -1070,12 +1245,49 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
             if (event.type == cue::WindowEventType::CloseRequested || event.type == cue::WindowEventType::Destroyed)
             {
                 isShutdownRequested = true;
+                wasWindowCloseRequested = true;
             }
         }
 
         if (isQuitRequested)
         {
             isShutdownRequested = true;
+            wasWindowCloseRequested = true;
+        }
+
+        if (isShutdownRequested && application != nullptr)
+        {
+            const cue::runtime::RuntimeApplicationStopReason stopReason =
+                hostError ? cue::runtime::RuntimeApplicationStopReason::HostFailure
+                          : (wasWindowCloseRequested ? cue::runtime::RuntimeApplicationStopReason::WindowClosed
+                                                     : cue::runtime::RuntimeApplicationStopReason::Requested);
+            cue::Result<void> stopped = application->stop(stopReason);
+            if (!stopped && !application->is_cleanup_complete())
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Runtime Host could not prove safe Runtime Application shutdown",
+                                  std::move(*stopped.try_error()));
+            }
+            if (!stopped)
+            {
+                if (hostError)
+                {
+                    add_secondary_runtime_error(*hostError, *stopped.try_error(),
+                                                "Runtime Application shutdown also reported an Error", a_assertContext);
+                }
+                else
+                {
+                    hostError.emplace(std::move(*stopped.try_error()));
+                    hostErrorMessage = "Runtime Host failed to shutdown Runtime Application";
+                    hostErrorExitCode = k_runtimeApplicationShutdownFailed;
+                }
+            }
+
+            runtimeShutdownLogResult = a_logger.log(
+                cue::LogLevel::Info, "Runtime Application Session stopped: Reason=" +
+                                         std::string(describe_runtime_stop_reason(application->stop_reason())) +
+                                         ", FrameCount=" + std::to_string(application->frame_count()));
+            application.reset();
         }
 
         bool didDestroy = false;
@@ -1087,11 +1299,27 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
 
             if (!destroyResult)
             {
-                return report_error(a_logger, "Runtime Host failed to destroy Window",
-                                    std::move(*destroyResult.try_error()), k_windowDestroyFailed);
+                if (hostError)
+                {
+                    add_secondary_runtime_error(*hostError, *destroyResult.try_error(),
+                                                "Window destruction also failed during Runtime shutdown",
+                                                a_assertContext);
+                }
+                else
+                {
+                    hostError.emplace(std::move(*destroyResult.try_error()));
+                    hostErrorMessage = "Runtime Host failed to destroy Window";
+                    hostErrorExitCode = k_windowDestroyFailed;
+                }
+                break;
             }
 
             didDestroy = true;
+        }
+
+        if (hostError)
+        {
+            break;
         }
 
         if (isQuitRequested && window->state() == cue::WindowState::Destroyed && !didDestroy)
@@ -1107,9 +1335,18 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
 
     window.reset();
     windowSystem.reset();
-    static_cast<void>(a_logger.log(cue::LogLevel::Info, "Runtime Host shutdown completed"));
-    static_cast<void>(a_logger.flush());
-    return 0;
+    if (hostError)
+    {
+        return report_error(a_logger, hostErrorMessage, std::move(*hostError), hostErrorExitCode);
+    }
+
+    const cue::LogResult shutdownLogResult = a_logger.log(cue::LogLevel::Info, "Runtime Host shutdown completed");
+    const cue::LogResult flushResult = a_logger.flush();
+    return runtimeReadyLogResult == cue::LogResult::Success && loopReadyLogResult == cue::LogResult::Success &&
+                   runtimeShutdownLogResult == cue::LogResult::Success &&
+                   shutdownLogResult == cue::LogResult::Success && flushResult == cue::LogResult::Success
+               ? 0
+               : k_graphicsLogFailed;
 }
 } // namespace
 
