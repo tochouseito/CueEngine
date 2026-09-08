@@ -1,0 +1,18 @@
+#pragma once
+
+#include <cstdint>
+#include <string_view>
+
+namespace cue::build_metadata
+{
+inline constexpr std::string_view k_cmakeCommand = "@cueBuildCMakeCommand@";
+inline constexpr std::string_view k_cmakeMinimumVersion = "@cueBuildCMakeMinimumVersion@";
+inline constexpr std::string_view k_visualStudioRoot = "@cueBuildVisualStudioRoot@";
+inline constexpr std::string_view k_visualStudioMsbuild = "@cueBuildVisualStudioMsbuild@";
+inline constexpr std::uint32_t k_visualStudioMajor = @cueBuildVisualStudioMajor@U;
+inline constexpr std::string_view k_msvcCompiler = "@cueBuildMsvcCompiler@";
+inline constexpr std::string_view k_windowsSdkVersion = "@cueBuildWindowsSdkVersion@";
+inline constexpr std::string_view k_windowsSdkRoot = "@cueBuildWindowsSdkRoot@";
+inline constexpr std::string_view k_engineSourceRoot = "@cueBuildEngineSourceRoot@";
+inline constexpr std::string_view k_engineBinaryRoot = "@cueBuildEngineBinaryRoot@";
+} // namespace cue::build_metadata
