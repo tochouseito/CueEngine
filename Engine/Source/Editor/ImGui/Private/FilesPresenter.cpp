@@ -649,7 +649,7 @@ void FilesPresenter::draw_toolbar(const editor_core::FilesViewModel &a_view,
     const bool canUseShortcut =
         ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-    if (canUseShortcut && ImGui::IsKeyPressed(ImGuiKey_F5) && !a_pendingIntent.has_value())
+    if (canUseShortcut && ImGui::Shortcut(ImGuiKey_F5) && !a_pendingIntent.has_value())
     {
         a_pendingIntent = FilesIntent{FilesIntentKind::Refresh};
     }

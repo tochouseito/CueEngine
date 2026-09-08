@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         Private/Error.cpp
         Private/RuntimeApplicationSession.cpp
+        Private/RuntimeSchema.cpp
         Private/RuntimeSceneSession.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -12,6 +13,7 @@ target_sources(
         FILES
             Public/Cue/Runtime/Error.h
             Public/Cue/Runtime/RuntimeApplicationSession.h
+            Public/Cue/Runtime/RuntimeSchema.h
             Public/Cue/Runtime/RuntimeSceneSession.h
             Public/Cue/Runtime/RuntimeSystemFactory.h
 )
