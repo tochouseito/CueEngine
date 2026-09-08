@@ -24,6 +24,12 @@ if(WIN32)
     add_executable(CueProjectGeneratorWindowsTests GeneratorWindowsTests.cpp)
     target_link_libraries(CueProjectGeneratorWindowsTests PRIVATE Cue.Project Cue.IO.Windows)
     target_compile_features(CueProjectGeneratorWindowsTests PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueProjectGeneratorWindowsTests
+        PRIVATE
+            CUE_TEST_CMAKE_COMMAND="${CMAKE_COMMAND}"
+            CUE_TEST_ENGINE_ROOT="${CMAKE_SOURCE_DIR}"
+    )
 
     add_executable(CueProjectM09ProcessTests M09ProcessTests.cpp)
     target_link_libraries(CueProjectM09ProcessTests PRIVATE Cue.Project Cue.IO.Windows)

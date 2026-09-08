@@ -19,6 +19,10 @@
 
 namespace
 {
+#if !defined(CUE_TEST_CMAKE_COMMAND) || !defined(CUE_TEST_ENGINE_ROOT)
+#error Generator workspace tests require CMake command and Engine root definitions
+#endif
+
 class TestFatalHandler final : public cue::FatalHandler
 {
   public:
@@ -113,6 +117,66 @@ class TestDirectory final
            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U;
 }
 
+/// @brief Test設定のUTF-8 PathをWindows Process API用UTF-16へ変換する
+[[nodiscard]] std::wstring utf8_to_wide(std::string_view a_text)
+{
+    const int count =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a_text.data(), static_cast<int>(a_text.size()), nullptr, 0);
+    if (count <= 0)
+    {
+        return {};
+    }
+    std::wstring result(static_cast<std::size_t>(count), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a_text.data(), static_cast<int>(a_text.size()),
+                            result.data(), count) != count)
+    {
+        return {};
+    }
+    return result;
+}
+
+/// @brief Generated Projectへ渡すCMake引数を独立Processで実行する
+[[nodiscard]] bool run_cmake(const std::wstring &a_projectRoot, std::wstring_view a_arguments)
+{
+    const std::wstring cmake = utf8_to_wide(CUE_TEST_CMAKE_COMMAND);
+    if (cmake.empty())
+    {
+        return false;
+    }
+    std::wstring commandLine = L"\"" + cmake + L"\" " + std::wstring(a_arguments);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(cmake.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0U, nullptr, a_projectRoot.c_str(),
+                       &startup, &process) == FALSE)
+    {
+        return false;
+    }
+    CloseHandle(process.hThread);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 120000U);
+    DWORD exitCode = 1U;
+    const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
+    if (wait == WAIT_TIMEOUT)
+    {
+        TerminateProcess(process.hProcess, 1U);
+        WaitForSingleObject(process.hProcess, 5000U);
+    }
+    CloseHandle(process.hProcess);
+    return completed && exitCode == 0U;
+}
+
+/// @brief Generated Projectの指定PresetをConfigureする
+[[nodiscard]] bool configure_preset(const std::wstring &a_projectRoot, std::wstring_view a_preset)
+{
+    return run_cmake(a_projectRoot, L"--preset " + std::wstring(a_preset));
+}
+
+/// @brief Generated Projectの指定PresetをBuildする
+[[nodiscard]] bool build_preset(const std::wstring &a_projectRoot, std::wstring_view a_preset)
+{
+    return run_cmake(a_projectRoot, L"--build --preset " + std::wstring(a_preset) + L" --parallel");
+}
+
 /// @brief 実 Windows IO で生成・再 Open・既存先拒否を一連の Process 契約として検証する
 [[nodiscard]] bool test_windows_generation(const cue::AssertContext &a_assertContext)
 {
@@ -123,8 +187,7 @@ class TestDirectory final
     }
     auto parent = cue::create_windows_filesystem_root(directory.utf8_path(), a_assertContext);
     auto projectId = cue::ProjectId::parse("12345678-1234-4abc-8def-1234567890ab", a_assertContext);
-    cue::BlankProjectTemplate projectTemplate{
-        cue::EngineCompatibility{cue::EngineVersion{0U, 1U, 0U}, std::nullopt}};
+    cue::BlankProjectTemplate projectTemplate{cue::EngineCompatibility{cue::EngineVersion{0U, 1U, 0U}, std::nullopt}};
     if (!parent || !projectId)
     {
         return false;
@@ -136,10 +199,10 @@ class TestDirectory final
         return false;
     }
 
-    constexpr std::array paths = {std::wstring_view(L"SampleProject\\Assets\\Source"),
-                                  std::wstring_view(L"SampleProject\\Assets\\Runtime"),
-                                  std::wstring_view(L"SampleProject\\Generated"),
-                                  std::wstring_view(L"SampleProject\\Saved")};
+    constexpr std::array paths = {
+        std::wstring_view(L"SampleProject\\Assets\\Source"), std::wstring_view(L"SampleProject\\Assets\\Runtime"),
+        std::wstring_view(L"SampleProject\\Generated"), std::wstring_view(L"SampleProject\\Saved"),
+        std::wstring_view(L"SampleProject\\Source\\Game")};
     for (const std::wstring_view path : paths)
     {
         if (!is_directory(directory.child(path)))
@@ -148,17 +211,39 @@ class TestDirectory final
         }
     }
     if (!is_file(directory.child(L"SampleProject\\CueProject.json")) ||
-        GetFileAttributesW(directory.child(L"SampleProject\\CMakeLists.txt").c_str()) != INVALID_FILE_ATTRIBUTES ||
+        !is_file(directory.child(L"SampleProject\\CMakeLists.txt")) ||
+        !is_file(directory.child(L"SampleProject\\CMakePresets.json")) ||
+        !is_file(directory.child(L"SampleProject\\Source\\Game\\CMakeLists.txt")) ||
+        !is_file(directory.child(L"SampleProject\\Source\\Game\\GameModule.cpp")) ||
         GetFileAttributesW(directory.child(L"SampleProject\\DefaultScene.cue").c_str()) != INVALID_FILE_ATTRIBUTES)
     {
         return false;
     }
 
+    const std::wstring engineRoot = utf8_to_wide(CUE_TEST_ENGINE_ROOT);
+    const std::wstring projectRootPath = directory.child(L"SampleProject");
+    if (engineRoot.empty() || SetEnvironmentVariableW(L"CUE_ENGINE_ROOT", engineRoot.c_str()) == FALSE ||
+        !configure_preset(projectRootPath, L"windows-vs2026-debug") ||
+        !configure_preset(projectRootPath, L"windows-vs2026-development") ||
+        !configure_preset(projectRootPath, L"windows-vs2026-release") ||
+        !build_preset(projectRootPath, L"windows-vs2026-debug") ||
+        !build_preset(projectRootPath, L"windows-vs2026-development") ||
+        !build_preset(projectRootPath, L"windows-vs2026-release") ||
+        !is_file(directory.child(
+            L"SampleProject\\Generated\\Build\\windows-vs2026-x64-debug\\bin\\Debug\\CueGameModule.dll")) ||
+        !is_file(directory.child(L"SampleProject\\Generated\\Build\\windows-vs2026-x64-development\\bin\\"
+                                 L"Development\\CueGameModule.dll")) ||
+        !is_file(directory.child(
+            L"SampleProject\\Generated\\Build\\windows-vs2026-x64-release\\bin\\Release\\CueGameModule.dll")))
+    {
+        return false;
+    }
+
     auto projectRoot = cue::create_windows_filesystem_root(directory.utf8_path() + "/SampleProject", a_assertContext);
-    auto loaded = projectRoot ? cue::load_project_descriptor(**projectRoot.try_value(), a_assertContext)
-                              : cue::Result<cue::ProjectDescriptor>::failure(
-                                    cue::make_project_error(a_assertContext, cue::ProjectError::IoFailure,
-                                                            "Generated project root could not be opened"));
+    auto loaded =
+        projectRoot ? cue::load_project_descriptor(**projectRoot.try_value(), a_assertContext)
+                    : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
+                          a_assertContext, cue::ProjectError::IoFailure, "Generated project root could not be opened"));
     if (!loaded || !generated.try_value()->equivalent_to(*loaded.try_value()))
     {
         return false;
