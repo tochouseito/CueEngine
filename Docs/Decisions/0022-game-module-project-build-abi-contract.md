@@ -172,12 +172,43 @@ Game DLL、PDB、Build Logを置かない。Machine固有Engine Source／Binary 
 同じKeyのCMake Binary TreeはIncremental Buildへ再利用し、入力が変わった場合は別KeyへConfigureする。
 Operation IDをBinary TreeのIdentityにしないため、通常の再Buildで全Objectを毎回作り直さない。
 
+M15の初期Keyは`windows-vs2026-x64-msvc-<major>.<minor>.<patch>.<build>-policy-<version>-<configuration>`とする。
+`<version>`はGame Module ABI、C++ Language Level、Runtime Library等をまとめたEngine Build PolicyのVersionであり、初期値は`1`とする。
+Configurationは`debug`、`development`、`release`のいずれかとする。CompilerのMachine固有PathやProject RootはKeyへ含めず、
+同一Versionの互換Toolset Installation間でBinary Treeを再利用する。Keyが変わる場合は`Generated/Build/<workspace-key>`も必ず変え、
+異なるLockで同じBinary Treeを保護する状態を作らない。
+
+Project Generatorが共有`CMakePresets.json`へ記録する`binaryDir`はCommand Lineから直接Presetを使う場合の既定値であり、
+Editor Build ServiceのBinary Tree正本にはしない。CMake RunnerはConfigure時に`--preset <preset> -B <plan-binary-directory>`を渡して
+PresetのGenerator／Cache設定を使いながら出力先を必ずPlanへ一致させ、Build時はBuild Presetを使わず
+`--build <plan-binary-directory> --config <configuration> --target CueGameModule`を使用する。これによりLock、Incremental Build、
+Candidate収集が参照するTreeを一つに固定する。
+
 同じ`workspace-key`を使用するConfigure、Build、Binary Tree Cleanupは、対応するLock FileのOffset `0`、Length `1`へ
 `LockFileEx`のExclusive Lockを取得し、全Process、全Build Service Instanceで直列化する。Build OperationはConfigure開始前に取得し、
 Build Process終了後、そのOperation固有Candidate Directoryへの全Artifact Copy、Handle Close、Size／Hash取得が完了するまで保持する。
 同じKeyの別OperationはLock取得をCancel／Timeout可能な待機として扱い、Lockなしで共有Binary Treeを使用しない。異なるKeyは並行できる。
 Process CrashではOSのHandle CloseによりLockを解放するが、次のOperationは残存Binary Treeを成功済みと仮定せずConfigureから再検証する。
 Binary Tree Cleanupも同じLockを取得できなければ実行しない。
+
+### Build Profile Wire Format
+
+Build ProfileはEditor Workspaceが再利用するUser選択であり、UTF-8 JSONのVersion付き永続形式とする。初期Schemaは次の3 Memberを
+それぞれちょうど一つ要求し、Member順には依存しない。
+
+```json
+{
+  "schemaVersion": 1,
+  "configuration": "Development",
+  "target": "GameModule"
+}
+```
+
+`schemaVersion`はJSON整数`1`、`configuration`は`Debug`、`Development`、`Release`のいずれか、`target`は
+`GameModule`だけを受理する。欠落、重複、未知Member、型不一致、未知列挙値、未知または新しいSchema Versionは拒否し、推測して読まない。
+Build ProfileはBuild ArtifactやProject Sourceではなく再生成可能なUser設定であるため、v1では自動Migrationを行わない。読込み拒否時は
+既定値へ暗黙Fallbackせず、UIが再選択と明示保存を促す。将来Versionを追加する場合は、旧VersionをMigrationするか再生成させるかを
+先行ADRで決め、Writer／Reader／拒否経路のTestを同時に更新する。
 
 Exclusive Build LeaseはCandidate Snapshot確定後に解放し、その後でCandidate検証とArtifact StoreのExclusive Mutation Leaseを取得する。
 Build LeaseとArtifact Leaseを同時保持せず、全First-party入口でこの順序を固定してProcess間Deadlockを避ける。
