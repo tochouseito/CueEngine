@@ -18,6 +18,29 @@
 namespace
 {
 constexpr std::size_t k_maximumRetainedLogEntries = 4096U;
+constexpr float k_runtimeWindowWidthRatio = 0.4F;
+constexpr float k_runtimeWindowMinimumWidth = 360.0F;
+constexpr float k_runtimeWindowMaximumWidth = 640.0F;
+constexpr float k_runtimeWindowHeight = 360.0F;
+constexpr float k_runtimeWindowTop = 60.0F;
+constexpr float k_runtimeWindowRightMargin = 20.0F;
+
+/// @brief Runtime WindowをFiles初期位置と分離し表示領域内へ収めるSizeを返す
+[[nodiscard]] ImVec2 runtime_window_size(ImVec2 a_displaySize) noexcept
+{
+    const float preferredWidth = std::clamp(a_displaySize.x * k_runtimeWindowWidthRatio,
+                                            k_runtimeWindowMinimumWidth, k_runtimeWindowMaximumWidth);
+    const float availableWidth = std::max(1.0F, a_displaySize.x - (k_runtimeWindowRightMargin * 2.0F));
+    const float availableHeight = std::max(1.0F, a_displaySize.y - k_runtimeWindowTop);
+    return ImVec2(std::min(preferredWidth, availableWidth), std::min(k_runtimeWindowHeight, availableHeight));
+}
+
+/// @brief Runtime Windowを右上へ配置しEditor Shell背面への完全重複を避ける位置を返す
+[[nodiscard]] ImVec2 runtime_window_position(ImVec2 a_displaySize, ImVec2 a_windowSize) noexcept
+{
+    return ImVec2(std::max(0.0F, a_displaySize.x - a_windowSize.x - k_runtimeWindowRightMargin),
+                  std::min(k_runtimeWindowTop, std::max(0.0F, a_displaySize.y - a_windowSize.y)));
+}
 
 /// @brief Session Stateを利用者向けの短い日本語へ変換する
 [[nodiscard]] const char *state_label(cue::editor_core::EditorPlaySessionState a_state) noexcept
@@ -187,6 +210,10 @@ PlaySessionPresenter::~PlaySessionPresenter() noexcept
 
 void PlaySessionPresenter::set_active_document(std::optional<editor_core::EditorDocumentId> a_documentId) noexcept
 {
+    if (m_activeDocumentId != a_documentId)
+    {
+        m_shouldFocusWindow = a_documentId.has_value();
+    }
     m_activeDocumentId = a_documentId;
 }
 
@@ -233,6 +260,15 @@ void PlaySessionPresenter::draw() noexcept
 {
     try
     {
+        const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+        const ImVec2 windowSize = runtime_window_size(displaySize);
+        ImGui::SetNextWindowPos(runtime_window_position(displaySize, windowSize), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(windowSize, ImGuiCond_FirstUseEver);
+        if (m_shouldFocusWindow)
+        {
+            ImGui::SetNextWindowFocus();
+            m_shouldFocusWindow = false;
+        }
         if (ImGui::Begin("Runtime"))
         {
             draw_toolbar();

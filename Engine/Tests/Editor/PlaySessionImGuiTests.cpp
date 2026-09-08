@@ -77,6 +77,13 @@ class TestClock final : public cue::game_core::MonotonicClock
     bool m_shouldFail = false;
 };
 
+/// @brief Headless描画からRuntime Windowの利用者向け初期配置を保持する
+struct RuntimeWindowLayout final
+{
+    ImVec2 position{};
+    ImVec2 size{};
+};
+
 /// @brief 条件が偽なら失敗位置を保持したProcess終了へ変換する
 void require(bool a_condition, std::source_location a_location = std::source_location::current()) noexcept
 {
@@ -143,6 +150,20 @@ void release_shortcut(cue::editor::PlaySessionPresenter &a_presenter) noexcept
     ImGui::Render();
 }
 
+/// @brief Presenter初回描画後のRuntime Window位置とSizeをPublic ImGui APIから取得する
+[[nodiscard]] RuntimeWindowLayout capture_runtime_window_layout(
+    cue::editor::PlaySessionPresenter &a_presenter) noexcept
+{
+    ImGui::NewFrame();
+    a_presenter.draw();
+    const bool isVisible = ImGui::Begin("Runtime");
+    require(isVisible);
+    RuntimeWindowLayout layout{ImGui::GetWindowPos(), ImGui::GetWindowSize()};
+    ImGui::End();
+    ImGui::Render();
+    return layout;
+}
+
 /// @brief Filter、Clear、単一購読、Token破棄後配送停止を検証する
 void test_session_log_subscription(cue::Logger &a_logger, cue::editor::EditorSessionLogRouter &a_router,
                                    const cue::AssertContext &a_assertContext) noexcept
@@ -205,6 +226,12 @@ void test_play_toolbar_and_shutdown(cue::Logger &a_logger, cue::editor::EditorSe
     input.DisplaySize = ImVec2(1280.0F, 720.0F);
     input.DeltaTime = 1.0F / 60.0F;
     static_cast<void>(input.Fonts->Build());
+
+    const RuntimeWindowLayout layout = capture_runtime_window_layout(*presenter);
+    require(layout.position.x > input.DisplaySize.x * 0.5F);
+    require(layout.position.y >= 50.0F);
+    require(layout.size.x >= 480.0F);
+    require(layout.size.y >= 300.0F);
 
     release_shortcut(*presenter);
     press_shortcut(*presenter, ImGuiKey_F5, false);
