@@ -147,9 +147,8 @@ void append_json_string(std::string &a_output, std::string_view a_value)
     return a_value >= 'A' && a_value <= 'Z' ? static_cast<unsigned char>(a_value - 'A' + 'a') : a_value;
 }
 
-/// @brief ASCII大小文字を区別せず指定Offset以降のPath位置を検索する
-[[nodiscard]] std::size_t find_ascii_case_insensitive(std::string_view a_text, std::string_view a_pattern,
-                                                      std::size_t a_offset) noexcept
+/// @brief ASCII大小文字とPath Separator表記を区別せず指定Offset以降のPath位置を検索する
+[[nodiscard]] std::size_t find_path(std::string_view a_text, std::string_view a_pattern, std::size_t a_offset) noexcept
 {
     if (a_pattern.empty() || a_pattern.size() > a_text.size())
     {
@@ -160,8 +159,11 @@ void append_json_string(std::string &a_output, std::string_view a_value)
         bool equal = true;
         for (std::size_t index = 0U; index < a_pattern.size(); ++index)
         {
-            equal = equal && fold_ascii(static_cast<unsigned char>(a_text[begin + index])) ==
-                                 fold_ascii(static_cast<unsigned char>(a_pattern[index]));
+            const unsigned char textValue = static_cast<unsigned char>(a_text[begin + index]);
+            const unsigned char patternValue = static_cast<unsigned char>(a_pattern[index]);
+            const bool textSeparator = textValue == '/' || textValue == '\\';
+            const bool patternSeparator = patternValue == '/' || patternValue == '\\';
+            equal = equal && ((textSeparator && patternSeparator) || fold_ascii(textValue) == fold_ascii(patternValue));
         }
         if (equal)
         {
@@ -177,7 +179,7 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     std::size_t offset = 0U;
     while (true)
     {
-        const std::size_t found = find_ascii_case_insensitive(a_text, a_prefix, offset);
+        const std::size_t found = find_path(a_text, a_prefix, offset);
         if (found == std::string::npos)
         {
             return;
@@ -195,7 +197,7 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     std::size_t offset = 0U;
     while (true)
     {
-        const std::size_t found = find_ascii_case_insensitive(a_text, a_prefix, offset);
+        const std::size_t found = find_path(a_text, a_prefix, offset);
         if (found == std::string_view::npos)
         {
             break;
@@ -244,29 +246,18 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     }
 }
 
-/// @brief 全MappingとSeparator表現を用いてSensitive PathをToken化する
+/// @brief 全Mappingを用いて任意のSeparator表現を含むSensitive PathをToken化する
 [[nodiscard]] std::string redact(std::string a_text, const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
 {
     for (const cue::BuildDiagnosticPathMapping &mapping : a_mappings)
     {
         replace_path(a_text, mapping.nativePrefix, mapping.replacement);
-        std::string alternate = mapping.nativePrefix;
-        std::replace(alternate.begin(), alternate.end(), '\\', '/');
-        if (alternate != mapping.nativePrefix)
-        {
-            replace_path(a_text, alternate, mapping.replacement);
-        }
-        std::replace(alternate.begin(), alternate.end(), '/', '\\');
-        if (alternate != mapping.nativePrefix)
-        {
-            replace_path(a_text, alternate, mapping.replacement);
-        }
     }
     return a_text;
 }
 
-/// @brief 中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
-[[nodiscard]] std::optional<std::string> redact_bounded(std::string a_text,
+/// @brief 入力Copyと中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
+[[nodiscard]] std::optional<std::string> redact_bounded(std::string_view a_text,
                                                         const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
                                                         std::size_t a_maximumBytes)
 {
@@ -274,27 +265,15 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     {
         return std::nullopt;
     }
+    std::string redacted(a_text);
     for (const cue::BuildDiagnosticPathMapping &mapping : a_mappings)
     {
-        if (!replace_path_bounded(a_text, mapping.nativePrefix, mapping.replacement, a_maximumBytes))
-        {
-            return std::nullopt;
-        }
-        std::string alternate = mapping.nativePrefix;
-        std::replace(alternate.begin(), alternate.end(), '\\', '/');
-        if (alternate != mapping.nativePrefix &&
-            !replace_path_bounded(a_text, alternate, mapping.replacement, a_maximumBytes))
-        {
-            return std::nullopt;
-        }
-        std::replace(alternate.begin(), alternate.end(), '/', '\\');
-        if (alternate != mapping.nativePrefix &&
-            !replace_path_bounded(a_text, alternate, mapping.replacement, a_maximumBytes))
+        if (!replace_path_bounded(redacted, mapping.nativePrefix, mapping.replacement, a_maximumBytes))
         {
             return std::nullopt;
         }
     }
-    return a_text;
+    return redacted;
 }
 
 /// @brief Build Operation Stateを永続化用の安定文字列へ変換する

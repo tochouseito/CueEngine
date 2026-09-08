@@ -114,7 +114,7 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
     operation.stages = {{cue::BuildStage::Configure, cue::BuildStageOutcome::Succeeded, 0U},
                         {cue::BuildStage::Build, cue::BuildStageOutcome::Failed, 2U}};
     operation.logs = {{operation.operationId, cue::BuildStage::Configure, 0U, cue::ChildProcessStream::StandardOutput,
-                       "Configuring C:\\Users\\Tester\\CueProject\\Source\\Game\n"},
+                       "Configuring C:\\Users/Tester\\CueProject/Source\\Game\n"},
                       {operation.operationId, cue::BuildStage::Build, 1U, cue::ChildProcessStream::StandardError,
                        "C:/Users/Tester/CueProject/Source/Game/Game.cpp(1): error\n"}};
     operation.diagnostics = {
@@ -175,6 +175,7 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     const std::string allText = bundle_text(bundle);
     require(allText.find("C:/Users/Tester") == std::string::npos);
     require(allText.find("C:\\Users\\Tester") == std::string::npos);
+    require(allText.find("C:\\Users/Tester") == std::string::npos);
     require(allText.find("<PROJECT_ROOT>") != std::string::npos);
     require(allText.find("Source/Game/Game.cpp") != std::string::npos);
     require(allText.find("4.2.0.0") != std::string::npos);
@@ -189,6 +190,11 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     expandingInput.pathMappings.push_back({"x", "<EXPANDED>"});
     cue::BuildDiagnosticBundleLimits expandingLimits{16U, 1024U, 16U * 1024U};
     require(!cue::create_build_diagnostic_bundle(expandingInput, expandingLimits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput oversizedChunkInput = input;
+    oversizedChunkInput.operation.logs = {{oversizedChunkInput.operation.operationId, cue::BuildStage::Build, 0U,
+                                           cue::ChildProcessStream::StandardOutput, std::string(2048U, 'z')}};
+    require(!cue::create_build_diagnostic_bundle(oversizedChunkInput, expandingLimits, a_assertContext).has_value());
 
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
