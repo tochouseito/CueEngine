@@ -270,9 +270,14 @@ Result<void> RuntimeHostApplication::stop(runtime::RuntimeApplicationStopReason 
     }
 
     Result<void> stopped = m_state->session->stop();
-    if (!stopped)
+    std::optional<Error> completedStopFailure;
+    if (!stopped && m_state->session->state() != runtime::RuntimeApplicationSessionState::Stopped)
     {
         return stopped;
+    }
+    if (!stopped)
+    {
+        completedStopFailure.emplace(std::move(*stopped.try_error()));
     }
 
     Result<void> detached = detach_windows_message_sink(*m_state->window, *m_state->inputSink, *m_state->assertContext);
@@ -290,6 +295,10 @@ Result<void> RuntimeHostApplication::stop(runtime::RuntimeApplicationStopReason 
     if (retained.try_value()->has_value())
     {
         return Result<void>::failure(std::move(retained.try_value()->value()));
+    }
+    if (completedStopFailure.has_value())
+    {
+        return Result<void>::failure(std::move(completedStopFailure.value()));
     }
     return Result<void>::success();
 }

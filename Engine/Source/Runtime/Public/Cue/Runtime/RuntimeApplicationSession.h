@@ -144,6 +144,7 @@ class RuntimeApplicationSession final
     /// @brief 次の安全な境界で新規Frameを停止する最初のHost理由を冪等に記録する
     [[nodiscard]] Result<void> request_stop(RuntimeApplicationStopReason a_reason) noexcept;
     /// @brief System、Command、Scene、Worldを逆開始順で終了し未完了Cleanupだけを再試行する
+    /// @details Command個別失敗は全Ownerを終了してStoppedへ移った後も失敗Resultとして通知する
     [[nodiscard]] Result<void> stop() noexcept;
 
     /// @brief Native AdapterがPortable Eventを格納するSession-local FIFOを返す
