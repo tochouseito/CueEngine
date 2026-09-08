@@ -173,6 +173,58 @@ class RecordingSystem final : public cue::game_core::RuntimeSystem
     bool m_observedFocus = false;
 };
 
+class ReentrantSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief 各Lifecycle Callbackから同じRegistryへの再入を試すSystemを構築する
+    ReentrantSystem(cue::game_core::RuntimeSystemRegistry &a_registry, cue::game_core::RuntimeWorld &a_runtime) noexcept
+        : m_registry(&a_registry), m_runtime(&a_runtime)
+    {
+    }
+
+    /// @brief Start Callback中のStop再入が状態Errorとして拒否されたことを記録する
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        m_startRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Update Callback中のStop再入が状態Errorとして拒否されたことを記録する
+    [[nodiscard]] cue::Result<void> update(const cue::game_core::RuntimeSystemUpdateContext &) noexcept override
+    {
+        m_updateRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Stop Callback中のStop再入が状態Errorとして拒否されたことを記録する
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        m_stopRejected = is_reentry_rejected(m_registry->stop(*m_runtime));
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 全Lifecycle Callbackの再入が拒否された場合にtrueを返す
+    [[nodiscard]] bool rejected_all_reentry() const noexcept
+    {
+        return m_startRejected && m_updateRejected && m_stopRejected;
+    }
+
+  private:
+    /// @brief 再入ResultがRegistry状態Errorの場合にtrueを返す
+    [[nodiscard]] static bool is_reentry_rejected(const cue::Result<void> &a_result) noexcept
+    {
+        return !a_result && a_result.try_error()->code().domain() == "Cue.GameCore" &&
+               a_result.try_error()->code().value() ==
+                   static_cast<std::int64_t>(cue::game_core::GameCoreError::InvalidSystemRegistryState);
+    }
+
+    cue::game_core::RuntimeSystemRegistry *m_registry;
+    cue::game_core::RuntimeWorld *m_runtime;
+    bool m_startRejected = false;
+    bool m_updateRejected = false;
+    bool m_stopRejected = false;
+};
+
 /// @brief Test用Loggerを追加Sinkなしで生成する
 [[nodiscard]] std::unique_ptr<cue::Logger> create_logger(TestFatalHandler &a_handler)
 {
@@ -571,6 +623,50 @@ template <typename T>
                             events == expected;
     return isExpected && registry.stop(*runtime) && shutdown_runtime(*runtime);
 }
+
+/// @brief Lifecycle Callback再入拒否とStart時RuntimeWorld固定を検証する
+[[nodiscard]] bool test_reentry_and_runtime_world_binding(cue::game_core::WorldIdentitySource &a_identitySource,
+                                                          const cue::schema::SchemaRegistry &a_schemaRegistry,
+                                                          cue::schema::TypeId a_transformTypeId,
+                                                          cue::AssertContext &a_assertContext)
+{
+    std::unique_ptr<cue::game_core::RuntimeWorld> startedRuntime =
+        create_runtime(a_identitySource, a_schemaRegistry, a_transformTypeId, a_assertContext);
+    std::unique_ptr<cue::game_core::RuntimeWorld> otherRuntime =
+        create_runtime(a_identitySource, a_schemaRegistry, std::move(a_transformTypeId), a_assertContext);
+    if (startedRuntime == nullptr || otherRuntime == nullptr)
+    {
+        return false;
+    }
+
+    cue::game_core::RuntimeSystemRegistry registry(a_assertContext);
+    auto system = std::make_unique<ReentrantSystem>(registry, *startedRuntime);
+    ReentrantSystem *observedSystem = system.get();
+    if (!registry.register_system(make_descriptor("reentrant", cue::game_core::RuntimeUpdatePhase::Update, 0),
+                                  std::move(system)) ||
+        !registry.seal() || !registry.start(*startedRuntime))
+    {
+        return false;
+    }
+
+    cue::Result<cue::game_core::UpdateContext> timing = create_update_context(a_assertContext);
+    cue::InputState inputState;
+    inputState.begin_frame({});
+    if (!timing || !registry.update(*startedRuntime, *timing.try_value(), inputState.snapshot()))
+    {
+        return false;
+    }
+
+    cue::Result<void> foreignUpdate = registry.update(*otherRuntime, *timing.try_value(), inputState.snapshot());
+    cue::Result<void> foreignStop = registry.stop(*otherRuntime);
+    const bool rejectedForeignRuntime =
+        has_error_code(foreignUpdate, cue::game_core::GameCoreError::InvalidSystemRegistryState) &&
+        has_error_code(foreignStop, cue::game_core::GameCoreError::InvalidSystemRegistryState) &&
+        registry.state() == cue::game_core::RuntimeSystemRegistryState::Started && registry.active_system_count() == 1;
+
+    return rejectedForeignRuntime && registry.stop(*startedRuntime) && observedSystem->rejected_all_reentry() &&
+           shutdown_runtime(*startedRuntime) && shutdown_runtime(*otherRuntime);
+}
 } // namespace
 
 /// @brief Runtime System Registryの順序、診断、Rollback、再試行、Safe Point接続を検証する
@@ -595,7 +691,9 @@ int main()
                    test_start_failure_rollback(worldIdentitySource, *schemaRegistry, transformTypeId, assertContext) &&
                    test_stop_retry_preserves_dependencies(worldIdentitySource, *schemaRegistry, transformTypeId,
                                                           assertContext) &&
-                   test_update_failure(worldIdentitySource, *schemaRegistry, transformTypeId, assertContext)
+                   test_update_failure(worldIdentitySource, *schemaRegistry, transformTypeId, assertContext) &&
+                   test_reentry_and_runtime_world_binding(worldIdentitySource, *schemaRegistry, transformTypeId,
+                                                          assertContext)
                ? 0
                : 2;
 }

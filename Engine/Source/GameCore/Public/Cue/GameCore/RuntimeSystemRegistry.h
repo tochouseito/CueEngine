@@ -74,9 +74,9 @@ class RuntimeSystemRegistry final
 
     /// @brief 現在ThreadがRegistry Ownerであることを全構成で検証する
     void assert_owner_thread() const noexcept;
-    /// @brief RuntimeWorldが要求状態でWorld Scope参照を公開できることを検証する
-    [[nodiscard]] Result<void> validate_runtime_world(RuntimeWorld &a_runtimeWorld,
-                                                      bool a_requiresRunning) const noexcept;
+    /// @brief RuntimeWorldが要求状態と開始時Instance条件を満たしWorld Scope参照を公開できることを検証する
+    [[nodiscard]] Result<void> validate_runtime_world(RuntimeWorld &a_runtimeWorld, bool a_requiresRunning,
+                                                      const RuntimeWorld *a_expectedRuntimeWorld) const noexcept;
     /// @brief 開始済みSystemを依存先保持付きで逆順停止する
     [[nodiscard]] Result<void> stop_started(RuntimeSystemContext &a_context) noexcept;
     /// @brief 指定Systemを必要とする未停止Systemが残る場合にtrueを返す
@@ -93,7 +93,9 @@ class RuntimeSystemRegistry final
     const AssertContext *m_assertContext;
     std::thread::id m_ownerThread;
     RuntimeSystemRegistryState m_state = RuntimeSystemRegistryState::Registering;
+    RuntimeWorld *m_runtimeWorld = nullptr;
     std::vector<std::unique_ptr<Entry>> m_entries;
     std::vector<std::size_t> m_executionOrder;
+    bool m_isInvokingCallback = false;
 };
 } // namespace cue::game_core

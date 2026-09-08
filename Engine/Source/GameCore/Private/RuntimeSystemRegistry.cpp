@@ -236,22 +236,30 @@ Result<void> RuntimeSystemRegistry::seal() noexcept
 Result<void> RuntimeSystemRegistry::start(RuntimeWorld &a_runtimeWorld) noexcept
 {
     assert_owner_thread();
+    if (m_isInvokingCallback)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime system registry lifecycle API rejects callback reentry"));
+    }
     if (m_state != RuntimeSystemRegistryState::Sealed)
     {
         return Result<void>::failure(make_state_error("Runtime system start requires a sealed registry"));
     }
 
-    Result<void> validation = validate_runtime_world(a_runtimeWorld, true);
+    Result<void> validation = validate_runtime_world(a_runtimeWorld, true, nullptr);
     if (!validation)
     {
         return validation;
     }
 
+    m_runtimeWorld = &a_runtimeWorld;
     RuntimeSystemContext context = {*a_runtimeWorld.try_world(), *a_runtimeWorld.try_command_buffer()};
     for (std::size_t entryIndex : m_executionOrder)
     {
         Entry &entry = *m_entries[entryIndex];
+        m_isInvokingCallback = true;
         Result<void> result = entry.system->start(context);
+        m_isInvokingCallback = false;
         if (!result)
         {
             Error primary = reclassify_system_error(*m_assertContext, GameCoreError::SystemStartFailed,
@@ -277,12 +285,17 @@ Result<void> RuntimeSystemRegistry::update(RuntimeWorld &a_runtimeWorld, const U
                                            const FrameInputSnapshot &a_input) noexcept
 {
     assert_owner_thread();
+    if (m_isInvokingCallback)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime system registry lifecycle API rejects callback reentry"));
+    }
     if (m_state != RuntimeSystemRegistryState::Started)
     {
         return Result<void>::failure(make_state_error("Runtime system update requires a started registry"));
     }
 
-    Result<void> validation = validate_runtime_world(a_runtimeWorld, true);
+    Result<void> validation = validate_runtime_world(a_runtimeWorld, true, m_runtimeWorld);
     if (!validation)
     {
         return validation;
@@ -293,7 +306,9 @@ Result<void> RuntimeSystemRegistry::update(RuntimeWorld &a_runtimeWorld, const U
     for (std::size_t entryIndex : m_executionOrder)
     {
         Entry &entry = *m_entries[entryIndex];
+        m_isInvokingCallback = true;
         Result<void> result = entry.system->update(context);
+        m_isInvokingCallback = false;
         if (!result)
         {
             Error error = reclassify_system_error(*m_assertContext, GameCoreError::SystemUpdateFailed,
@@ -309,6 +324,11 @@ Result<void> RuntimeSystemRegistry::update(RuntimeWorld &a_runtimeWorld, const U
 Result<void> RuntimeSystemRegistry::stop(RuntimeWorld &a_runtimeWorld) noexcept
 {
     assert_owner_thread();
+    if (m_isInvokingCallback)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime system registry lifecycle API rejects callback reentry"));
+    }
     if (m_state == RuntimeSystemRegistryState::Stopped)
     {
         return Result<void>::success();
@@ -323,7 +343,7 @@ Result<void> RuntimeSystemRegistry::stop(RuntimeWorld &a_runtimeWorld) noexcept
         return Result<void>::failure(make_state_error("Runtime system stop requires a sealed or started registry"));
     }
 
-    Result<void> validation = validate_runtime_world(a_runtimeWorld, false);
+    Result<void> validation = validate_runtime_world(a_runtimeWorld, false, m_runtimeWorld);
     if (!validation)
     {
         return validation;
@@ -362,9 +382,15 @@ void RuntimeSystemRegistry::assert_owner_thread() const noexcept
     }
 }
 
-Result<void> RuntimeSystemRegistry::validate_runtime_world(RuntimeWorld &a_runtimeWorld,
-                                                           bool a_requiresRunning) const noexcept
+Result<void> RuntimeSystemRegistry::validate_runtime_world(RuntimeWorld &a_runtimeWorld, bool a_requiresRunning,
+                                                           const RuntimeWorld *a_expectedRuntimeWorld) const noexcept
 {
+    if (a_expectedRuntimeWorld != nullptr && a_expectedRuntimeWorld != &a_runtimeWorld)
+    {
+        return Result<void>::failure(
+            make_state_error("Runtime system registry requires the RuntimeWorld used for start"));
+    }
+
     const RuntimeWorldState worldState = a_runtimeWorld.state();
     const bool isAllowed =
         a_requiresRunning ? worldState == RuntimeWorldState::Running
@@ -392,7 +418,9 @@ Result<void> RuntimeSystemRegistry::stop_started(RuntimeSystemContext &a_context
         }
 
         entry.state = Entry::State::StopPending;
+        m_isInvokingCallback = true;
         Result<void> result = entry.system->stop(a_context);
+        m_isInvokingCallback = false;
         if (result)
         {
             entry.state = Entry::State::Stopped;
@@ -408,6 +436,7 @@ Result<void> RuntimeSystemRegistry::stop_started(RuntimeSystemContext &a_context
     if (count_active_systems() == 0U)
     {
         m_state = RuntimeSystemRegistryState::Stopped;
+        m_runtimeWorld = nullptr;
         return Result<void>::success();
     }
 
