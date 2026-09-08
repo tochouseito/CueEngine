@@ -351,6 +351,13 @@ Artifact ID、相対Path、Size、Hashを持つ小さい`Current.json`だけをA
 `Current.json`はMilestone間で共有するVersion付き永続Manifestであり、初期`schemaVersion`を`1`とする。Readerは
 `schemaVersion == 1`だけを受理し、未知Version、新しいVersion、欠落Versionを推測して読まない。`Current.json`は再生成可能な
 Build出力なので、互換性のないVersionをIn-place Migrationせず、対応するEngineとConfigurationでGame Moduleを再Buildして再生成する。
+
+Schema v1の各Inventory Entryは、Project Root相対のUTF-8 Path、`sizeBytes`、`hashAlgorithm`、`contentHash`を持つ。
+`hashAlgorithm`は文字列`sha256`だけを許可し、`contentHash`はFileの先頭から末尾までの未変換Byte列に対するSHA-256 Digestを
+小文字64桁のHexで表す。改行、BOM、Text Encodingを正規化しない。Pathは`/`区切りの正規化済み相対Pathとし、`..`、絶対Path、
+重複Entry、WindowsのCase-insensitive比較で衝突するEntryを拒否する。InventoryはPathのUTF-8 Byte列による昇順で保存する。
+Windows実装はOSのCNGを利用できるが、Manifest上のAlgorithmとByte表現を変更しない。
+
 M16 Publisherは後述のRead Leaseを取得して`Current.json`を一度読み、指定Version Directoryだけを入力にし、全HashとSizeを
 再検証してCopy完了までLeaseを保持する。
 このVersion Snapshotは再生成可能なPublisher入力であり、RuntimeがProjectのGenerated Rootから直接Loadする契約ではない。
@@ -371,12 +378,18 @@ M16 Publisherへ渡すには、再度Read Leaseを取得して同じ検証を通
 Artifact Retention、古いBinary Tree削除、Diagnostic Bundle上限は後続Issueで決めるが、User SourceとLatest Successful Artifactを
 Cleanup対象へ含めない。
 
-Build Publish、Cleanup、M16 Publisher読取りは、ConfigurationごとのArtifact Storeが発行するProject Scope Leaseを必須とする。
+Build Publish、Cleanup、M16 Publisher読取りは、Project IdentityとConfigurationごとのArtifact Storeが発行するProcess間共有の
+Project Scope Leaseを必須とする。Windows実装は`Generated/Artifacts/<configuration>/Access.lock`の固定Byte Rangeに対する
+`LockFileEx`を使用し、Shared Read LockまたはExclusive Mutation Lockを全Process、全Artifact Store Instanceで共有する。
+Lock FileはVersion Cleanup対象にせず、Process終了時はOSによるHandle CloseでLockを解放する。
 Version Directory公開から`Current.json`更新とOutcome再検証までは一つのExclusive Mutation Leaseで直列化する。Cleanupも同じ
 Exclusive Mutation Leaseを取得し、Current参照先を削除しない。PublisherはShared Read Leaseを`Current.json`読取り前に取得し、
 参照先のHash検証とPackage CandidateへのCopyが完了するまで保持する。Exclusive Mutation Leaseは既存Read Leaseの終了を待つため、
 読取り中のVersionをCleanupできない。Directory公開直後の未参照VersionもPublish Lease中はCleanupから保護される。
 全First-party Build／Publisher入口はこのArtifact Storeを経由し、Lease取得失敗時に同期なしのFilesystem操作へFallbackしない。
+CleanupはExclusive Mutation Lease取得後に`Current.json`のSchema、全Field、参照先Inventoryを完全検証する。ManifestがMissing、
+読取り不能、破損、未知Version、参照先不一致のいずれかなら、公開済みVersion Directoryを一つも削除せずFail-closedで終了する。
+`Current.json`がMissingかつVersionsが空の場合だけ、削除なしの成功とする。
 CleanupはBuild成功条件にせず、失敗しても成功Artifactの正本を失わせない。
 
 ### Error and Diagnostic Contract
@@ -478,9 +491,12 @@ M15で次を検証する。
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
 - 不変Version Directory公開後に`Current.json`だけをAtomic Replaceする
 - `Current.json`の`schemaVersion == 1`だけを受理し、未知Versionを拒否して再Buildで再生成する
+- Schema v1のInventory Hashを、未変換File Byte列に対する小文字64桁SHA-256としてWriterとReaderで一致させる
 - `NotPublished`では以前のCurrentが変わらず、`PublishedButDurabilityUnknown`では可視Manifestを再読込・再検証して
   Current選択とBuild失敗診断を一致させる
-- PublishとCleanupをExclusive Mutation Leaseで直列化し、M16 PublisherのRead Lease中は参照Versionを削除しない
+- 複数Process、複数Artifact Store Instance間でPublishとCleanupをExclusive Mutation Leaseにより直列化し、M16 Publisherの
+  Shared Read Lease中は参照Versionを削除しない
+- `Current.json`を完全検証できないCleanupは全Versionを保持してFail-closedで終了する
 - Runtime、Game Module、Build CoreからEditor／ImGuiへの逆依存がない
 - M15差分にAsset Pipeline、Hot Reload、ECS Storage改良が含まれない
 
