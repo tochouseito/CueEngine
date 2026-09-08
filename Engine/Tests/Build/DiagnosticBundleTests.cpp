@@ -485,6 +485,23 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
         stream.close();
         require(stream.good());
     };
+    std::string oversizedStageCode = originalStages;
+    const std::size_t failedExitCode = oversizedStageCode.find("\"exitCode\":2");
+    require(failedExitCode != std::string::npos);
+    oversizedStageCode.replace(failedExitCode + std::string_view("\"exitCode\":").size(), 1U, "4294967296");
+    write_stages(oversizedStageCode);
+    std::string oversizedStageManifest = tamperedManifest;
+    const std::size_t stageEntry = oversizedStageManifest.find("\"path\":\"stages.json\"");
+    const std::size_t stageSize = oversizedStageManifest.find("\"sizeBytes\":", stageEntry);
+    const std::size_t stageSizeEnd = oversizedStageManifest.find(',', stageSize);
+    require(stageEntry != std::string::npos && stageSize != std::string::npos && stageSizeEnd != std::string::npos);
+    const std::size_t stageValue = stageSize + std::string_view("\"sizeBytes\":").size();
+    oversizedStageManifest.replace(stageValue, stageSizeEnd - stageValue, std::to_string(oversizedStageCode.size()));
+    write_manifest(oversizedStageManifest);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    write_stages(originalStages);
+    write_manifest(tamperedManifest);
+
     std::string unknownSchema = tamperedManifest;
     const std::size_t schemaValue = unknownSchema.find("\"schemaVersion\":1");
     require(schemaValue != std::string::npos);

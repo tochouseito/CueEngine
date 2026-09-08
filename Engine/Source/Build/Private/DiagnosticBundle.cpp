@@ -1190,7 +1190,8 @@ class JsonSchemaReader final
     }
 
     /// @brief JSONの0以外の符号なし整数を読み取る
-    [[nodiscard]] bool positive_unsigned_integer() noexcept
+    [[nodiscard]] bool positive_unsigned_integer(
+        std::uint64_t a_maximum = std::numeric_limits<std::uint64_t>::max()) noexcept
     {
         skip_whitespace();
         const std::size_t begin = m_offset;
@@ -1200,7 +1201,7 @@ class JsonSchemaReader final
         }
         std::uint64_t value = 0U;
         const auto parsed = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, value);
-        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value > 0U;
+        return parsed.ec == std::errc{} && parsed.ptr == m_input.data() + m_offset && value > 0U && value <= a_maximum;
     }
 
     /// @brief JSONの符号付き整数を範囲検証して読み取る
@@ -1496,9 +1497,10 @@ class JsonSchemaReader final
     {
         return false;
     }
-    const bool validExitCode = requirement == ExitCodeRequirement::Zero       ? a_reader.unsigned_integer(0U)
-                               : requirement == ExitCodeRequirement::Positive ? a_reader.positive_unsigned_integer()
-                                                                              : a_reader.null_value();
+    const bool validExitCode = requirement == ExitCodeRequirement::Zero ? a_reader.unsigned_integer(0U)
+                               : requirement == ExitCodeRequirement::Positive
+                                   ? a_reader.positive_unsigned_integer(std::numeric_limits<std::uint32_t>::max())
+                                   : a_reader.null_value();
     return validExitCode && a_reader.end_object();
 }
 

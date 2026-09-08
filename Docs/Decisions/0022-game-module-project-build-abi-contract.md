@@ -565,7 +565,7 @@ Environment診断は`code`、任意`tool`、`support`、`path`、`summary`、`re
 `tool`がない診断はJSON `null`とする。Build Operation `state`は`Succeeded`、`Failed`、`Cancelled`、`TimedOut`に対応する
 `succeeded`、`failed`、`cancelled`、`timedOut`だけを許可し、実行中または未知値を保存しない。
 Stageは`configure`または`build`、Outcomeは`succeeded`、`failed`、`cancelled`、`timedOut`だけを許可する。
-成功はExit Code 0、失敗は0以外を必須とし、CancelとTimeoutはExit Codeを持たない。
+成功はExit Code 0、失敗は1から4294967295までを必須とし、CancelとTimeoutはExit Codeを持たない。
 
 絶対PathはProject Root、Engine Root、選択Tool、Environment診断、およびCallerが明示したMappingをTokenへ置換する。
 未Mappingの絶対Pathを暗黙に追加せず、MappingのNative Prefixは4,096 byte、Tokenは64 byteを上限とする。NUL、Path区切りを含む
