@@ -4,6 +4,7 @@ target_sources(
     Cue.Build
     PRIVATE
         Private/CMakeRunner.cpp
+        Private/DiagnosticBundle.cpp
         Private/Plan.cpp
         Private/Service.cpp
         Private/Toolchain.cpp
@@ -12,6 +13,7 @@ target_sources(
         BASE_DIRS Public
         FILES
             Public/Cue/Build/CMakeRunner.h
+            Public/Cue/Build/DiagnosticBundle.h
             Public/Cue/Build/Plan.h
             Public/Cue/Build/Service.h
             Public/Cue/Build/Toolchain.h

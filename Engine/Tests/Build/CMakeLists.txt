@@ -14,13 +14,17 @@ add_executable(CueBuildServiceTests ServiceTests.cpp)
 target_link_libraries(CueBuildServiceTests PRIVATE Cue.Build)
 target_compile_features(CueBuildServiceTests PRIVATE cxx_std_20)
 
+add_executable(CueBuildDiagnosticBundleTests DiagnosticBundleTests.cpp)
+target_link_libraries(CueBuildDiagnosticBundleTests PRIVATE Cue.Build)
+target_compile_features(CueBuildDiagnosticBundleTests PRIVATE cxx_std_20)
+
 add_executable(CueBuildPublicHeaderTest CMakeRunnerHeaderCompile.cpp PlanHeaderCompile.cpp PublicHeaderCompile.cpp
                                         ServiceHeaderCompile.cpp)
 target_link_libraries(CueBuildPublicHeaderTest PRIVATE Cue.Build)
 target_compile_features(CueBuildPublicHeaderTest PRIVATE cxx_std_20)
 
 set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildCMakeRunnerTests CueBuildServiceTests
-                        CueBuildPublicHeaderTest)
+                        CueBuildDiagnosticBundleTests CueBuildPublicHeaderTest)
 if(WIN32)
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
@@ -71,6 +75,9 @@ set_tests_properties(Cue.Build.CMakeRunner PROPERTIES LABELS Build TIMEOUT 20)
 
 add_test(NAME Cue.Build.Service COMMAND CueBuildServiceTests)
 set_tests_properties(Cue.Build.Service PROPERTIES LABELS Build TIMEOUT 30)
+
+add_test(NAME Cue.Build.DiagnosticBundle COMMAND CueBuildDiagnosticBundleTests $<TARGET_FILE_DIR:CueBuildDiagnosticBundleTests>)
+set_tests_properties(Cue.Build.DiagnosticBundle PROPERTIES LABELS Build TIMEOUT 30)
 
 add_test(NAME Cue.Build.PublicHeaders COMMAND CueBuildPublicHeaderTest)
 set_tests_properties(Cue.Build.PublicHeaders PROPERTIES LABELS Build TIMEOUT 10)

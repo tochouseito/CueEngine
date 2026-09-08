@@ -532,6 +532,63 @@ CleanupはExclusive Mutation Lease取得後に`Current.json`のSchema、全Field
 `Current.json`がMissingかつVersionsが空の場合だけ、削除なしの成功とする。
 CleanupはBuild成功条件にせず、失敗しても成功Artifactの正本を失わせない。
 
+### Build Diagnostic Bundle Wire Format
+
+Build Diagnostic Bundleは、Build失敗を再現・共有するための再生成可能な診断Snapshotである。Project Source、Credential、
+永続User設定の正本ではない。Directory名は任意だが、Directory全体をSibling Stagingへ完成させてから一度だけRenameし、
+部分Bundleを最終Destinationとして公開しない。同じDestinationを上書きせず、失敗時は呼出しが所有するStagingだけをRollbackする。
+
+Schema v1はUTF-8、BOMなし、LF、末尾改行ありのJSONとLog Fileで構成する。Writerは次の固定Member順でCanonical JSONを出力し、
+Readerは各Memberの欠落、重複、未知Member、型不一致、未知列挙値、末尾Dataを拒否する。`manifest.json`はFile名、収集状態、
+Byte数、欠損理由を含み、Canonical表現とのByte完全一致を要求する。収集済みPayloadはManifestのByte数と実Fileを照合した後、
+個別Schemaも検証する。`entries`は`artifact.json`、`environment.json`、`plan.json`、`result.json`、`stages.json`、
+`stderr.log`、`stdout.log`のPath昇順へ固定し、位置ごとの一致も検証する。
+
+| File | Schema v1の必須内容 |
+| --- | --- |
+| `manifest.json` | `schemaVersion`、`operationId`、終端`state`、固定順の`entries`。各Entryは`path`、`collected`、`sizeBytes`、`missingReason` |
+| `plan.json` | `schemaVersion`、`projectRoot`、`presetName`、`workspaceKey`、`binaryDirectory`、`candidateDirectory`、`operationDirectory`、`artifactStoreDirectory`、`targetName` |
+| `environment.json` | `schemaVersion`、`support`、Engine Source／Binary Root、対応Configuration列、選択Tool列、診断列 |
+| `stages.json` | `schemaVersion`と、`stage`、`outcome`、任意`exitCode`からなる完了Stage列 |
+| `result.json` | `schemaVersion`、Manifestと一致する終端`state`、Domain／Code／Context／任意Native Errorを持つ診断列 |
+| `artifact.json` | `schemaVersion`と、Operation ArtifactまたはLatest Successful Artifact。各ArtifactはID、Configuration、File Path／Size／Hashを持つ |
+| `stdout.log` | Redaction済み標準出力Chunkの連結Byte列 |
+| `stderr.log` | Redaction済み標準エラーChunkの連結Byte列 |
+
+`environment.json`の選択Toolは`kind`、`path`、`root`、任意`version`、`architecture`、`available`を持つ。
+Environment診断は`code`、任意`tool`、`support`、`path`、`summary`、`repairHint`を持つ。`kind`と`tool`は
+`CMake = 0`、`VisualStudio = 1`、`MsvcCompiler = 2`、`WindowsSdk = 3`の安定した数値値だけを許可する。
+`code`は`UnsupportedHostArchitecture = 0`、`MissingTool = 1`、`UnknownToolIdentity = 2`、`UnsupportedTool = 3`、
+`AmbiguousTool = 4`、`MissingEngineSource = 5`、`MissingEngineBinary = 6`だけを許可する。
+`support`は`supported`、`unsupported`、`unknown`、`architecture`は`unknown`、`x64`、`x86`、`arm64`、
+対応Configurationは`Debug`、`Development`、`Release`の既知値だけを許可する。
+`tool`がない診断はJSON `null`とする。Build Operation `state`は`Succeeded`、`Failed`、`Cancelled`、`TimedOut`に対応する
+`succeeded`、`failed`、`cancelled`、`timedOut`だけを許可し、実行中または未知値を保存しない。
+Stageは`configure`または`build`、Outcomeは`succeeded`、`failed`、`cancelled`、`timedOut`だけを許可する。
+成功はExit Code 0、失敗は1から4294967295までを必須とし、CancelとTimeoutはExit Codeを持たない。
+Artifact Snapshotは`BuildArtifactInventory`と同じlowercase UUID v4、Configuration、安全な相対Path、64文字lowercase
+SHA-256、File Size上限、Path昇順、ASCII case-insensitive重複拒否、必須DLL／Metadata非空制約をReaderにも適用する。
+`operationArtifact`はOperation Stateが`succeeded`の場合だけ必須とし、それ以外では禁止する。過去に成功した
+`latestSuccessfulArtifact`は現在Operationの終端Stateに関係なく任意とする。
+
+絶対PathはProject Root、Engine Root、選択Tool、Environment診断、およびCallerが明示したMappingをTokenへ置換する。
+未Mappingの絶対Pathを暗黙に追加せず、MappingのNative Prefixは4,096 byte、Tokenは64 byteを上限とする。NUL、Path区切りを含む
+Token、空Prefixを拒否し、借用入力を所有BufferへCopyする前に検証する。Credential名やEnvironment全体は収集しない。
+明示Mappingと自動Mapping候補の合計件数は設定上限を所有Vector確保前に適用する。各File数、File単位Byte数、Bundle総Byte数を
+Serialization前から適用し、上限超過時に部分出力を公開しない。
+JSONとLogを含む全FileはStrict UTF-8として生成前と読込時に検証し、Overlong Encoding、Surrogate、範囲外Scalar、
+不完全Sequenceを拒否する。LogはOS Read Chunk境界ではなく同じStreamの連結後Byte列を検証・Token化する。Native Tool
+出力がUTF-8でない場合は推測変換せず、そのBundle Exportを失敗として報告する。
+Log先頭のUTF-8 BOMは除去し、CRLFと単独CRはLFへ正規化し、空Logを含め末尾LFを保証する。ReaderはBOM、CR、
+末尾LF欠落を拒否する。Bundle Source Directory自身と配下Entryは、WindowsではExtended-length Native Pathへ
+変換して`FILE_ATTRIBUTE_REPARSE_POINT`を明示検査し、Tagの種類に関係なく追跡せず拒否する。列挙とFile読込も
+同じNative Pathを使用し、WriterのDestination／Stagingも含め`MAX_PATH`を超える有効な絶対Pathを短いPathと同じ契約で扱う。
+
+`schemaVersion`は全JSONで整数`1`だけを受理する。v1 Bundleは診断用Snapshotであり、Readerは未知Versionを推測読込または
+In-place Migrationしない。Schema追加、Member意味変更、列挙値変更、Redaction契約変更は先行ADRで新Versionと互換性方針を決め、
+Writer、全Payload Reader、Canonical Manifest、拒否経路Testを同時に更新する。旧Bundleの利用が必要なら、元Engine Versionで読込み、
+新Versionへ明示Exportする別Toolを設計し、通常Readerへ暗黙Migrationを入れない。
+
 ### Error and Diagnostic Contract
 
 Game Module ABIは安定数値ResultとUTF-8診断だけを返す。HostはModule Errorを`Cue.Foundation`のErrorへ変換し、

@@ -328,6 +328,7 @@ struct GameBuildService::Impl final
             {
                 return;
             }
+            current.stages.push_back({a_record.result.stage(), a_record.result.outcome(), a_record.result.exit_code()});
             for (const ChildProcessOutputChunk &chunk : a_record.output)
             {
                 current.logs.push_back(

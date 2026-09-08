@@ -257,7 +257,8 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     }
     cue::BuildOperationSnapshot succeeded = service->snapshot();
     if (succeeded.state != cue::GameBuildOperationState::Succeeded || !succeeded.artifact ||
-        !succeeded.latestSuccessfulArtifact || succeeded.logs.size() != 2U || publisherState.calls != 1U)
+        !succeeded.latestSuccessfulArtifact || succeeded.stages.size() != 2U || succeeded.logs.size() != 2U ||
+        publisherState.calls != 1U)
     {
         return false;
     }
