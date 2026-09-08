@@ -373,22 +373,6 @@ void rollback_staging(cue::FilesystemRoot &a_filesystem, cue::StagingArea &a_sta
            a_error.code().value() == static_cast<std::int64_t>(cue::IoError::DurabilityUnknown);
 }
 
-/// @brief この呼出が作成した Game Workspace File だけを逆順で削除する
-void rollback_created_files(cue::FilesystemRoot &a_filesystem, std::span<const cue::RelativePath> a_paths,
-                            std::span<const std::size_t> a_createdIndexes, cue::Error &a_primary,
-                            const cue::AssertContext &a_assertContext) noexcept
-{
-    for (auto index = a_createdIndexes.rbegin(); index != a_createdIndexes.rend(); ++index)
-    {
-        auto removed = a_filesystem.remove_file(a_paths[*index]);
-        if (!removed)
-        {
-            a_primary.append_secondary_diagnostics(a_assertContext, *removed.try_error(),
-                                                   "Project workspace file rollback failed", "Rollback");
-        }
-    }
-}
-
 /// @brief Byte 列を Copy せず Descriptor Parser へ渡せる UTF-8 View へ変換する
 [[nodiscard]] std::string_view bytes_as_string(std::span<const std::byte> a_bytes) noexcept
 {
@@ -730,7 +714,6 @@ Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
             createIndexes.push_back(index);
         }
 
-        std::size_t createdCount = 0U;
         for (std::size_t offset = 0U; offset < createIndexes.size(); ++offset)
         {
             const std::size_t index = createIndexes[offset];
@@ -740,18 +723,9 @@ Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
                 std::as_bytes(characters));
             if (!written)
             {
-                const bool durabilityUnknown = is_durability_unknown(*written.try_error());
-                Error primary = reclassify_io_error(a_assertContext, "Project workspace file write failed",
-                                                    std::move(*written.try_error()));
-                if (!durabilityUnknown)
-                {
-                    rollback_created_files(a_projectFilesystem, paths,
-                                           std::span<const std::size_t>(createIndexes.data(), createdCount), primary,
-                                           a_assertContext);
-                }
-                return Result<void>::failure(std::move(primary));
+                return Result<void>::failure(reclassify_io_error(
+                    a_assertContext, "Project workspace file write failed", std::move(*written.try_error())));
             }
-            ++createdCount;
 
             auto bytes = a_projectFilesystem.read_file(paths[index], k_maximumGeneratedFileBytes);
             if (!bytes || bytes_as_string(*bytes.try_value()) != files[index].contents)
@@ -761,9 +735,6 @@ Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
                                                          "Generated project workspace file changed during verification")
                                     : reclassify_io_error(a_assertContext, "Project workspace verification read failed",
                                                           std::move(*bytes.try_error()));
-                rollback_created_files(a_projectFilesystem, paths,
-                                       std::span<const std::size_t>(createIndexes.data(), createdCount), primary,
-                                       a_assertContext);
                 return Result<void>::failure(std::move(primary));
             }
         }

@@ -29,8 +29,8 @@ struct BlankProjectTemplate final
 /// @brief 既存 Project に不足する Game Source と CMake Workspace File だけを追加する
 ///
 /// CueProject.json が期待 Descriptor と一致する場合だけ処理する。既存 File が Generator Template と一致すれば保持し、
-/// 内容が異なる場合は一切上書きせず失敗する。通常の失敗ではこの呼出が作成した File を Rollback する。
-/// Atomic Publish 後の DurabilityUnknown では再 Open による確認が必要で、自動 Rollback しない。
+/// 内容が異なる場合は一切上書きせず失敗する。初回 Publish 後は User 所有となるため、途中失敗でも作成済み File を
+/// 自動削除しない。再実行は一致済み File を保持して不足分だけを作成する。
 [[nodiscard]] Result<void> ensure_project_game_workspace(FilesystemRoot &a_projectFilesystem,
                                                          const ProjectDescriptor &a_expectedDescriptor,
                                                          const AssertContext &a_assertContext) noexcept;
