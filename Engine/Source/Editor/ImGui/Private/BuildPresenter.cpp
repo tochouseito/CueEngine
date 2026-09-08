@@ -432,7 +432,7 @@ bool BuildPresenter::respond_to_editor_shutdown(EditorBuildShutdownDecision a_de
     if (m_current.state != GameBuildOperationState::Running)
     {
         mark_shutdown_ready();
-        return true;
+        return take_shutdown_ready();
     }
     if (!m_isShutdownWaitingForCancel && !submit(EditorBuildCommand::Cancel))
     {
@@ -440,13 +440,13 @@ bool BuildPresenter::respond_to_editor_shutdown(EditorBuildShutdownDecision a_de
         if (m_current.state != GameBuildOperationState::Running)
         {
             mark_shutdown_ready();
-            return true;
+            return take_shutdown_ready();
         }
         return false;
     }
     m_isShutdownWaitingForCancel = true;
     refresh();
-    return m_isShutdownReady;
+    return take_shutdown_ready();
 }
 
 bool BuildPresenter::take_shutdown_ready() noexcept
@@ -821,7 +821,10 @@ void BuildPresenter::draw_shutdown_confirmation() noexcept
     ImGui::BeginDisabled(m_isShutdownWaitingForCancel);
     if (ImGui::Button("Buildをキャンセルして終了"))
     {
-        static_cast<void>(respond_to_editor_shutdown(EditorBuildShutdownDecision::CancelBuildAndClose));
+        if (respond_to_editor_shutdown(EditorBuildShutdownDecision::CancelBuildAndClose))
+        {
+            m_isShutdownReady = true;
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Editorへ戻る"))

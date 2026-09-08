@@ -244,6 +244,8 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     require(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
     runnerState.mode.store(RunnerMode::Succeed, std::memory_order_release);
     require(service->wait_for_completion().has_value());
+    require(presenter->respond_to_editor_shutdown(cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose));
+    require(!presenter->take_shutdown_ready());
     require(presenter->begin_editor_shutdown());
     require(!presenter->is_shutdown_confirmation_pending());
     draw_frame(*presenter);
@@ -276,8 +278,8 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     {
         require(service->wait_for_completion().has_value());
         presenter->refresh();
+        require(presenter->take_shutdown_ready());
     }
-    require(presenter->take_shutdown_ready());
     require(!presenter->take_shutdown_ready());
     presenter.reset();
 }

@@ -92,7 +92,7 @@ class BuildPresenter final
 
     /// @brief Build中なら終了確認を開始し、停止済みなら即時終了可能を返す
     [[nodiscard]] bool begin_editor_shutdown() noexcept;
-    /// @brief 終了確認判断を適用し、Cancel完了後に終了可能通知を予約する
+    /// @brief 終了確認判断を適用し、同期完了はtrue、後続Frameでの完了は終了可能通知として返す
     [[nodiscard]] bool respond_to_editor_shutdown(EditorBuildShutdownDecision a_decision) noexcept;
     /// @brief UIで確定した終了可能通知を一度だけ返す
     [[nodiscard]] bool take_shutdown_ready() noexcept;
