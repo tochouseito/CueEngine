@@ -849,7 +849,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         constexpr ImGuiWindowFlags k_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoCollapse |
-                                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+                                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                             ImGuiWindowFlags_NoBringToFrontOnFocus;
         std::optional<PendingTransition> transition;
         if (ImGui::Begin("CueEngine Editor", nullptr, k_flags))
         {
