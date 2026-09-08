@@ -3,6 +3,8 @@ add_library(Cue.GameCore STATIC)
 target_sources(
     Cue.GameCore
     PRIVATE
+        Private/Clock.cpp
+        Private/ClockInternals.h
         Private/CommandBuffer.cpp
         Private/Error.cpp
         Private/RuntimeWorld.cpp
@@ -11,10 +13,12 @@ target_sources(
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
+            Public/Cue/GameCore/Clock.h
             Public/Cue/GameCore/CommandBuffer.h
             Public/Cue/GameCore/Entity.h
             Public/Cue/GameCore/Error.h
             Public/Cue/GameCore/RuntimeWorld.h
+            Public/Cue/GameCore/UpdateContext.h
             Public/Cue/GameCore/World.h
 )
 

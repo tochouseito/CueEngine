@@ -202,6 +202,32 @@ Native AdapterとFrame構築の間は固定容量`InputEventQueue`で分離す�
 左右のShift、Control、Altは別のPortable Keyとして保持し、一方のKey Upで他方の押下状態を失わない。
 Gamepad、IME、Text入力、Raw Input、Input Mapping、Rebindingは#209で追加しない。
 
+### Game Clock and Update Context Amendment
+
+#210では、Wall ClockやPlatform型を保持しない単調時間境界`MonotonicClock`、標準Libraryの
+`std::chrono::steady_clock`を接続する`SteadyMonotonicClock`、Session-local状態Ownerの`GameClock`を
+`Cue.GameCore`へ追加する。Clock境界は任意Epochからの経過時間を符号付き64-bit整数ナノ秒で返す。
+負値、前回より小さいSample、整数表現不能、Frame IndexまたはSimulation TimeのOverflowを
+`Cue.GameCore`の安定したError Categoryで診断し、失敗したFrameではClock状態を変更しない。
+
+`GameClock`は一つの`MonotonicClock`と`AssertContext`を非所有参照し、Runtime Session Owner Threadだけが操作する。
+同じSession内のClock Sourceは`GameClock`より長く生存させ、MutableなTest Clockを複数Sessionで共有しない。
+Session開始時の`reset`は現在SampleをFrame基準として保存し、Simulation Timeと次のFrame Indexを0にする。
+各`advance_frame`は前回Sampleとの差を観測Deltaとして保持し、実行中は構成済みの正の最大DeltaへClampした値だけを
+Simulation Deltaへ使用する。成功したFrameへ0から単調増加するIndexを割り当てる。
+
+Pause中のFrameは観測Deltaを診断用に保持するが、Simulation Deltaを0としてSimulation Timeを進めない。
+`resume`は現在Sampleを新しい基準へ置き換えてからPauseを解除し、Pause中またはResume直前までの経過を
+次Frameへ混入させない。`pause`、`resume`、`advance_frame`は`reset`成功前に使用できない。
+初期化済みClockの再`reset`でも現在基準より小さいSampleを拒否し、既存状態を維持する。
+`GameClock`のmoveはClock Sourceを消費できる権限を移動先だけに残し、移動元を再`reset`不能な未初期化状態にする。
+
+Frameごとの`UpdateContext`は検証済み`FrameTiming`を値で自己所有し、Clock、Renderer、Audio、Native API、
+Runtime WorldへのPointerを保持しない。System Registryは#211でこのContextと必要なWorld／Input参照を明示引数として受け、
+Context内にService Locatorを追加しない。秒単位の値は整数ナノ秒から利用時に変換し、NaNやInfinityを正本状態へ保存しない。
+`UpdateContext`の生成権限は`GameClock`に限定し、外部利用者が未検証の`FrameTiming`から直接構築できない。
+Time Scale、Physics Fixed Step、Replay Time Serialization、Network Time、Frame Pacingは#210で追加しない。
+
 ### Runtime Application Session Ownership
 
 `RuntimeApplicationSession`は一回のGame実行を表すcopy不可のOwnerとする。

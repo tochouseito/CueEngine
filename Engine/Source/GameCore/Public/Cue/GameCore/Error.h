@@ -24,7 +24,11 @@ enum class GameCoreError : std::int64_t
     InvalidQuery = 7,
     DependencyFailed = 8,
     InvalidCommandBuffer = 9,
-    InvalidRuntimeState = 10
+    InvalidRuntimeState = 10,
+    InvalidClockConfiguration = 11,
+    InvalidClockState = 12,
+    InvalidClockSample = 13,
+    ClockOverflow = 14
 };
 
 /// @brief GameCore Error を診断 Summary と共に生成する
