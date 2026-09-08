@@ -135,6 +135,14 @@ struct BuildLogSnapshot final
     std::string bytes;
 };
 
+/// @brief 完了したBuild StageのBundle化可能な値Snapshot
+struct BuildStageSnapshot final
+{
+    BuildStage stage = BuildStage::Configure;
+    BuildStageOutcome outcome = BuildStageOutcome::Failed;
+    std::optional<std::uint32_t> exitCode;
+};
+
 /// @brief LockなしでUIが保持できる一時点のBuild状態
 struct BuildOperationSnapshot final
 {
@@ -142,6 +150,7 @@ struct BuildOperationSnapshot final
     std::string operationId;
     std::optional<BuildProfile> profile;
     std::optional<BuildStage> activeStage;
+    std::vector<BuildStageSnapshot> stages;
     std::vector<BuildLogSnapshot> logs;
     std::vector<BuildDiagnosticSnapshot> diagnostics;
     std::optional<BuildArtifactInventory> artifact;
