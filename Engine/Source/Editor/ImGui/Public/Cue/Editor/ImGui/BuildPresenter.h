@@ -98,12 +98,18 @@ class BuildPresenter final
     [[nodiscard]] bool take_shutdown_ready() noexcept;
 
     /// @brief 現在のService Operation Snapshotを返す
+    ///
+    /// 返却参照は次に非const Member Functionを呼ぶまで有効であり、BuildPresenterの寿命を超えて保持しない。
     [[nodiscard]] const BuildOperationSnapshot &current_snapshot() const noexcept;
     /// @brief Session内に保持した完了Operationを古い順で返す
+    ///
+    /// 返却spanと各要素参照は次に非const Member Functionを呼ぶまで有効であり、BuildPresenterの寿命を超えて保持しない。
     [[nodiscard]] std::span<const BuildOperationSnapshot> saved_operations() const noexcept;
     /// @brief ConsoleとArtifactに表示するOperationをIdentityで選択する
     [[nodiscard]] bool select_operation(std::string_view a_operationId) noexcept;
     /// @brief 現在表示対象のOperation Snapshotを返す
+    ///
+    /// 返却参照は次に非const Member Functionを呼ぶまで有効であり、BuildPresenterの寿命を超えて保持しない。
     [[nodiscard]] const BuildOperationSnapshot &displayed_snapshot() const noexcept;
     /// @brief 現在表示対象でOperation Identityが一致するLog件数を返す
     [[nodiscard]] std::size_t displayed_log_count() const noexcept;
