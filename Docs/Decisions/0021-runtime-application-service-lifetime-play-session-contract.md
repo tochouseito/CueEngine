@@ -499,6 +499,11 @@ StandaloneとEditor Playは同じRuntime Session APIとStart／Stop順を使用�
 StandaloneはWindows Message Loop、Editor PlayはEditor Host Frameから一回ずつRuntime Frameを駆動する。
 Runtime Session内部にWindow Message LoopまたはEditor Main Loopを埋め込まない。
 
+M14のStandaloneとEditor Playは`Cue.Runtime`が公開する`RuntimeSchemaTypeIds`と
+`add_runtime_schema_types`を共通のCore Schema構成入口として使用する。TransformとSceneObjectStateのStable Type IDを
+各Composition Rootへ重複記述せず、Project固有Schemaを追加する前の未Seal `SchemaRegistryBuilder`へ登録する。
+Editor UIはこれらのType IDまたはSchema Builderを操作せず、Composition Rootが構成済みControllerだけを渡す。
+
 ### Error and Diagnostic Contract
 
 公開Lifecycle操作は回復可能な結果を`Result`で返し、Invalid State、Identity不一致、Snapshot／Instantiation失敗、

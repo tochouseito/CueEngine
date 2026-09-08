@@ -1,17 +1,23 @@
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
+#include <Cue/Editor/ImGui/PlaySessionPresenter.h>
+#include <Cue/Editor/ImGui/SessionLog.h>
 #include <Cue/Editor/Windows/EditorSession.h>
-#include <Cue/EditorCore/Error.h>
 #include <Cue/EditorCore/EditorIntent.h>
+#include <Cue/EditorCore/Error.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 #include <Cue/Foundation/NumberParsing.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
+#include <Cue/GameCore/Clock.h>
+#include <Cue/GameCore/World.h>
 #include <Cue/IO/RelativePath.h>
 #include <Cue/Project/Compatibility.h>
+#include <Cue/Runtime/RuntimeSchema.h>
 #include <Cue/Scene/Serialization.h>
+#include <Cue/Schema/Registry.h>
 #include <Cue/ToolHost/WindowsD3D12/ToolHost.h>
 
 #include <algorithm>
@@ -34,6 +40,8 @@ constexpr int k_invalidArguments = 64;
 constexpr int k_sessionInitializationFailed = 1;
 constexpr int k_toolHostFailed = 2;
 constexpr int k_processTestFailed = 3;
+constexpr std::uint64_t k_firstEditorPlayGeneration = 1U;
+constexpr std::int64_t k_maximumEditorPlayDeltaNanoseconds = 100'000'000;
 
 /// @brief Editor ToolのCommand Line値と重複検査状態を保持する
 struct EditorToolOptions final
@@ -188,8 +196,8 @@ enum class PendingTransition : std::uint8_t
                 const std::optional<std::uint64_t> frameCount = cue::parse_unsigned_decimal<std::uint64_t>(value);
                 if (options.hasMaximumFrameCount || !frameCount.has_value())
                 {
-                    return cue::Result<EditorToolOptions>::failure(make_tool_error(
-                        a_context, k_invalidArguments, "Maximum frame count is duplicated or invalid"));
+                    return cue::Result<EditorToolOptions>::failure(
+                        make_tool_error(a_context, k_invalidArguments, "Maximum frame count is duplicated or invalid"));
                 }
                 options.maximumFrameCount = *frameCount;
                 options.hasMaximumFrameCount = true;
@@ -223,10 +231,8 @@ enum class PendingTransition : std::uint8_t
         }
         if (options.hasProcessTestAction &&
             (!options.hasInitialScene || !options.hasMaximumFrameCount ||
-             (*options.processTestAction != "autosave-recovery" &&
-              *options.processTestAction != "autosave-new-scene" &&
-              *options.processTestAction != "edit-close-save" &&
-              *options.processTestAction != "files-workflow")))
+             (*options.processTestAction != "autosave-recovery" && *options.processTestAction != "autosave-new-scene" &&
+              *options.processTestAction != "edit-close-save" && *options.processTestAction != "files-workflow")))
         {
             return cue::Result<EditorToolOptions>::failure(make_tool_error(
                 a_context, k_invalidArguments,
@@ -263,11 +269,53 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
 {
   public:
     /// @brief Sessionと診断ContextをClient全寿命へ関連付ける
-    EditorToolClient(cue::editor::WindowsEditorSession &a_session, const cue::AssertContext &a_assertContext) noexcept
+    EditorToolClient(cue::editor::WindowsEditorSession &a_session, cue::Logger &a_logger,
+                     cue::editor::EditorSessionLogRouter &a_logRouter,
+                     const cue::AssertContext &a_assertContext) noexcept
         : m_session(&a_session), m_assertContext(&a_assertContext)
     {
         try
         {
+            cue::schema::SchemaRegistryBuilder schemaBuilder(m_runtimeSchemaIdentitySource, a_assertContext);
+            cue::Result<void> addedRuntimeSchema =
+                cue::runtime::add_runtime_schema_types(schemaBuilder, a_assertContext);
+            if (!addedRuntimeSchema)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Runtime Schema initialization failed",
+                                  std::move(*addedRuntimeSchema.try_error()));
+            }
+            cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>> runtimeSchema = schemaBuilder.seal();
+            if (!runtimeSchema)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(), "Editor Runtime Schema sealing failed",
+                                  std::move(*runtimeSchema.try_error()));
+            }
+            m_runtimeSchema = std::move(*runtimeSchema.try_value());
+
+            cue::Result<cue::runtime::RuntimeSchemaTypeIds> typeIds =
+                cue::runtime::make_runtime_schema_type_ids(a_assertContext);
+            if (!typeIds)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Runtime Schema identity initialization failed",
+                                  std::move(*typeIds.try_error()));
+            }
+            cue::Result<std::unique_ptr<cue::editor_core::EditorPlaySessionController>> playController =
+                cue::editor_core::EditorPlaySessionController::create(
+                    a_session.controller().session(), m_worldIdentitySource, m_clock, *m_runtimeSchema, {},
+                    std::move(typeIds.try_value()->transform), std::move(typeIds.try_value()->sceneObjectState),
+                    k_firstEditorPlayGeneration, k_maximumEditorPlayDeltaNanoseconds, a_assertContext);
+            if (!playController)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Play Session Controller initialization failed",
+                                  std::move(*playController.try_error()));
+            }
+            m_playController = std::move(*playController.try_value());
+
+            m_playPresenter =
+                cue::editor::PlaySessionPresenter::create(*m_playController, a_logger, a_logRouter, a_assertContext);
             m_filesPresenter =
                 std::make_unique<cue::editor::FilesPresenter>(a_session.files_workspace(), a_assertContext);
             refresh_recovery_candidates();
@@ -281,14 +329,29 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
 
     EditorToolClient(const EditorToolClient &) = delete;
     EditorToolClient &operator=(const EditorToolClient &) = delete;
-    /// @brief PresenterとRecovery SnapshotをSessionより先に破棄する
-    ~EditorToolClient() override = default;
+    /// @brief Runtimeを停止してからPresenter、購読Token、ControllerをSessionより先に破棄する
+    ~EditorToolClient() override
+    {
+        const cue::editor_core::EditorPlaySessionState state = m_playPresenter->state_snapshot().state;
+        if (state != cue::editor_core::EditorPlaySessionState::Idle &&
+            state != cue::editor_core::EditorPlaySessionState::Stopped)
+        {
+            static_cast<void>(m_playPresenter->begin_editor_shutdown());
+            if (!m_playPresenter->respond_to_editor_shutdown(cue::editor::EditorPlayShutdownDecision::StopAndClose))
+            {
+                m_assertContext->fatal_handler().terminate(
+                    "Editor Tool destruction requires completed Play Session cleanup");
+            }
+        }
+    }
 
     /// @brief Project-onlyまたはActive Scene UIを描画しFrame末尾でWorkflowを進める
     void draw_frame() noexcept override
     {
         try
         {
+            m_playPresenter->set_active_document(m_session->active_document_id());
+            m_playPresenter->advance_runtime();
             if (m_presenter != nullptr)
             {
                 m_presenter->draw();
@@ -301,6 +364,11 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             else
             {
                 draw_project_shell();
+            }
+            m_playPresenter->draw();
+            if (m_playPresenter->take_shutdown_ready())
+            {
+                begin_transition(PendingTransition::CloseProject);
             }
             m_filesPresenter->draw();
             draw_locator_dialog();
@@ -320,7 +388,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     {
         if (!m_shouldClose && m_pendingTransition == PendingTransition::None)
         {
-            begin_transition(PendingTransition::CloseProject);
+            request_project_close();
         }
     }
 
@@ -474,7 +542,14 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
         if (transition.has_value())
         {
-            begin_transition(*transition);
+            if (*transition == PendingTransition::CloseProject)
+            {
+                request_project_close();
+            }
+            else
+            {
+                begin_transition(*transition);
+            }
         }
     }
 
@@ -499,8 +574,21 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             begin_transition(PendingTransition::ReloadScene);
             break;
         case cue::editor::EditorWorkflowRequest::CloseProject:
-            begin_transition(PendingTransition::CloseProject);
+            request_project_close();
             break;
+        }
+    }
+
+    /// @brief Play中なら停止確認を先行し、停止済みの場合だけProject Closeへ進む
+    void request_project_close() noexcept
+    {
+        if (m_pendingTransition != PendingTransition::None || m_shouldClose)
+        {
+            return;
+        }
+        if (m_playPresenter->begin_editor_shutdown())
+        {
+            begin_transition(PendingTransition::CloseProject);
         }
     }
 
@@ -523,8 +611,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                     : (a_transition == PendingTransition::SaveSceneAs && document != nullptr
                            ? document->scene_locator().text()
                            : "Scenes/Main.cuescene");
-            std::copy_n(initial.begin(), std::min(initial.size(), m_sceneLocator.size() - 1U),
-                        m_sceneLocator.begin());
+            std::copy_n(initial.begin(), std::min(initial.size(), m_sceneLocator.size() - 1U), m_sceneLocator.begin());
             m_openLocatorDialog = true;
             return;
         }
@@ -800,8 +887,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             perform_reload();
             return;
         }
-        if (m_pendingTransition == PendingTransition::NewScene ||
-            m_pendingTransition == PendingTransition::OpenScene)
+        if (m_pendingTransition == PendingTransition::NewScene || m_pendingTransition == PendingTransition::OpenScene)
         {
             if (!m_session->has_prepared_scene())
             {
@@ -812,8 +898,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             {
                 return;
             }
-            cue::Result<cue::editor_core::DocumentCloseState> state =
-                m_session->request_activate_prepared_scene();
+            cue::Result<cue::editor_core::DocumentCloseState> state = m_session->request_activate_prepared_scene();
             if (!state)
             {
                 report_error(*state.try_error());
@@ -900,13 +985,11 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     [[nodiscard]] bool save_scene_as(cue::RelativePath a_locator, bool a_allowExistingDestination) noexcept
     {
         cue::Result<cue::scene::SceneSaveOutcome> saved =
-            a_allowExistingDestination
-                ? m_session->save_active_scene_as_overwriting(std::move(a_locator))
-                : m_session->save_active_scene_as_new(std::move(a_locator));
+            a_allowExistingDestination ? m_session->save_active_scene_as_overwriting(std::move(a_locator))
+                                       : m_session->save_active_scene_as_new(std::move(a_locator));
         if (!saved)
         {
-            const bool destinationConflict =
-                !a_allowExistingDestination && is_destination_conflict(*saved.try_error());
+            const bool destinationConflict = !a_allowExistingDestination && is_destination_conflict(*saved.try_error());
             report_error(*saved.try_error());
             m_openUncertainSaveDialog = active_save_is_uncertain();
             m_openOverwriteDialog = destinationConflict && !m_openUncertainSaveDialog;
@@ -928,8 +1011,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     [[nodiscard]] bool is_new_destination_conflict(const cue::Error &a_error) const noexcept
     {
         const cue::editor_core::EditorDocument *document = active_document();
-        return document != nullptr && !document->has_saved_destination() &&
-               is_destination_conflict(a_error);
+        return document != nullptr && !document->has_saved_destination() && is_destination_conflict(a_error);
     }
 
     /// @brief 保存先Entryの存在または外部変更競合か判定する
@@ -1126,6 +1208,12 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
 
     cue::editor::WindowsEditorSession *m_session;
     const cue::AssertContext *m_assertContext;
+    cue::schema::SchemaRegistryIdentitySource m_runtimeSchemaIdentitySource;
+    cue::game_core::WorldIdentitySource m_worldIdentitySource;
+    cue::game_core::SteadyMonotonicClock m_clock;
+    std::unique_ptr<cue::schema::SchemaRegistry> m_runtimeSchema;
+    std::unique_ptr<cue::editor_core::EditorPlaySessionController> m_playController;
+    std::unique_ptr<cue::editor::PlaySessionPresenter> m_playPresenter;
     std::unique_ptr<cue::editor::EditorPresenter> m_presenter;
     std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;
@@ -1153,9 +1241,9 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
 }
 
 /// @brief Process Test専用Actionを実Editor Session内で実行する
-[[nodiscard]] cue::Result<void> apply_process_test_action(
-    const std::optional<std::string> &a_action, cue::editor::WindowsEditorSession &a_session,
-    const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> apply_process_test_action(const std::optional<std::string> &a_action,
+                                                          cue::editor::WindowsEditorSession &a_session,
+                                                          const cue::AssertContext &a_assertContext) noexcept
 {
     if (!a_action.has_value())
     {
@@ -1170,11 +1258,9 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     {
         cue::editor::FilesPresenter presenter(a_session.files_workspace(), a_assertContext);
         /// @brief 一つのFiles操作をPresentation Adapter経由で同期実行する
-        const auto submit = [&presenter](cue::editor::FilesIntentKind a_kind, std::string a_source,
-                                         std::string a_destination) noexcept
-        {
-            return presenter.submit({a_kind, std::move(a_source), std::move(a_destination)}).has_value();
-        };
+        const auto submit =
+            [&presenter](cue::editor::FilesIntentKind a_kind, std::string a_source, std::string a_destination) noexcept
+        { return presenter.submit({a_kind, std::move(a_source), std::move(a_destination)}).has_value(); };
         if (!submit(cue::editor::FilesIntentKind::CreateFolder, {}, "FilesWorkflow") ||
             !submit(cue::editor::FilesIntentKind::CreateEmptyFile, {}, "Draft.txt") ||
             !submit(cue::editor::FilesIntentKind::Rename, "Draft.txt", "Renamed.txt") ||
@@ -1251,8 +1337,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     }
     if (*state.try_value() != cue::editor_core::DocumentCloseState::AwaitingDecision)
     {
-        return cue::Result<void>::failure(make_tool_error(
-            a_assertContext, k_processTestFailed, "Process test edit did not require a close decision"));
+        return cue::Result<void>::failure(make_tool_error(a_assertContext, k_processTestFailed,
+                                                          "Process test edit did not require a close decision"));
     }
     state = a_session.respond_to_close(cue::editor_core::CloseDecision::Save);
     if (!state)
@@ -1275,6 +1361,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
 
 /// @brief Editor SessionとTool Hostを寿命順に構築してUI Loopを実行する
 [[nodiscard]] int run(EditorToolOptions a_options, cue::Logger &a_logger,
+                      cue::editor::EditorSessionLogRouter &a_logRouter,
                       const cue::AssertContext &a_assertContext) noexcept
 {
     cue::Result<cue::editor::WindowsEditorEngineConfiguration> configuration =
@@ -1298,9 +1385,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         return report_error(a_logger, "Editor process test action failed", std::move(*processTest.try_error()),
                             k_processTestFailed);
     }
-    EditorToolClient client(**session.try_value(), a_assertContext);
-    const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Editor", {1440U, 900U},
-                                                         a_options.maximumFrameCount};
+    EditorToolClient client(**session.try_value(), a_logger, a_logRouter, a_assertContext);
+    const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Editor", {1440U, 900U}, a_options.maximumFrameCount};
     cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
     if (!hosted)
     {
@@ -1318,6 +1404,10 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     {
         std::vector<std::unique_ptr<cue::LogSink>> sinks;
         sinks.push_back(std::make_unique<cue::ConsoleLogSink>());
+        std::unique_ptr<cue::editor::EditorSessionLogRouter> logRouter =
+            std::make_unique<cue::editor::EditorSessionLogRouter>();
+        cue::editor::EditorSessionLogRouter *logRouterReference = logRouter.get();
+        sinks.push_back(std::move(logRouter));
         cue::Logger logger(fatalHandler, std::move(sinks));
         cue::AssertContext assertContext(logger, fatalHandler);
         cue::Result<EditorToolOptions> options = parse_options(a_argumentCount, a_arguments, assertContext);
@@ -1330,7 +1420,7 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
             return report_error(logger, "Editor command line is invalid", std::move(*options.try_error()),
                                 k_invalidArguments);
         }
-        return run(std::move(*options.try_value()), logger, assertContext);
+        return run(std::move(*options.try_value()), logger, *logRouterReference, assertContext);
     }
     catch (...)
     {

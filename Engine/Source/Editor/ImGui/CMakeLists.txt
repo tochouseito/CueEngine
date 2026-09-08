@@ -5,12 +5,16 @@ target_sources(
     PRIVATE
         Private/EditorPresenter.cpp
         Private/FilesPresenter.cpp
+        Private/PlaySessionPresenter.cpp
+        Private/SessionLog.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
             Public/Cue/Editor/ImGui/EditorPresenter.h
             Public/Cue/Editor/ImGui/FilesPresenter.h
+            Public/Cue/Editor/ImGui/PlaySessionPresenter.h
+            Public/Cue/Editor/ImGui/SessionLog.h
 )
 
 target_link_libraries(

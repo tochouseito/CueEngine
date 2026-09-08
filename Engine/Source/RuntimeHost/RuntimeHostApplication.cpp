@@ -7,84 +7,31 @@
 #include <Cue/Input/Windows/WindowsInputMessageSink.h>
 #include <Cue/Platform/Windows/WindowsMessageSink.h>
 #include <Cue/Runtime/Error.h>
+#include <Cue/Runtime/RuntimeSchema.h>
 #include <Cue/Scene/Instantiation.h>
-#include <Cue/Schema/Descriptor.h>
 #include <Cue/Schema/Registry.h>
-#include <Cue/Schema/Types.h>
 
 #include <exception>
 #include <new>
 #include <optional>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace
 {
-constexpr std::string_view k_transformTypeId = "50000000-0000-4000-8000-000000000005";
-constexpr std::string_view k_sceneObjectStateTypeId = "10000000-0000-4000-8000-000000000001";
 constexpr std::string_view k_startupSceneAssetId = "70000000-0000-4000-8000-000000000001";
 constexpr std::uint64_t k_sessionGeneration = 1U;
 constexpr std::int64_t k_maxDeltaNanoseconds = 100'000'000;
-
-/// @brief Canonical UUIDをStandalone Runtime用Schema Typeへ変換する
-[[nodiscard]] cue::Result<cue::schema::TypeId> parse_type_id(std::string_view a_text,
-                                                             const cue::AssertContext &a_assertContext) noexcept
-{
-    return cue::schema::TypeId::parse(a_text, a_assertContext);
-}
-
-/// @brief Fieldを持たないM14 Core Type Descriptorを生成する
-[[nodiscard]] cue::Result<cue::schema::TypeDescriptor> make_type_descriptor(
-    std::string_view a_typeId, std::string_view a_name, const cue::AssertContext &a_assertContext) noexcept
-{
-    cue::Result<cue::schema::TypeId> typeId = parse_type_id(a_typeId, a_assertContext);
-    if (!typeId)
-    {
-        return cue::Result<cue::schema::TypeDescriptor>::failure(std::move(*typeId.try_error()));
-    }
-    cue::Result<cue::schema::SchemaVersion> version = cue::schema::SchemaVersion::create(1U, a_assertContext);
-    if (!version)
-    {
-        return cue::Result<cue::schema::TypeDescriptor>::failure(std::move(*version.try_error()));
-    }
-
-    std::vector<cue::schema::FieldDescriptor> fields;
-    std::vector<cue::schema::FieldId> reserved;
-    return cue::schema::create_type_descriptor(std::move(*typeId.try_value()), a_name, std::move(*version.try_value()),
-                                               std::move(fields), std::move(reserved), a_assertContext);
-}
 
 /// @brief Standalone RuntimeのTransformとSceneObjectStateを持つ不変Registryを生成する
 [[nodiscard]] cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>> make_schema_registry(
     cue::schema::SchemaRegistryIdentitySource &a_identitySource, const cue::AssertContext &a_assertContext) noexcept
 {
     cue::schema::SchemaRegistryBuilder builder(a_identitySource, a_assertContext);
-    cue::Result<cue::schema::TypeDescriptor> transform =
-        make_type_descriptor(k_transformTypeId, "Cue.Core.Transform", a_assertContext);
-    if (!transform)
+    cue::Result<void> added = cue::runtime::add_runtime_schema_types(builder, a_assertContext);
+    if (!added)
     {
-        return cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>>::failure(std::move(*transform.try_error()));
-    }
-    cue::Result<void> addedTransform = builder.add_type(std::move(*transform.try_value()));
-    if (!addedTransform)
-    {
-        return cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>>::failure(
-            std::move(*addedTransform.try_error()));
-    }
-
-    cue::Result<cue::schema::TypeDescriptor> sceneObjectState =
-        make_type_descriptor(k_sceneObjectStateTypeId, "Cue.Scene.SceneObjectState", a_assertContext);
-    if (!sceneObjectState)
-    {
-        return cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>>::failure(
-            std::move(*sceneObjectState.try_error()));
-    }
-    cue::Result<void> addedSceneObjectState = builder.add_type(std::move(*sceneObjectState.try_value()));
-    if (!addedSceneObjectState)
-    {
-        return cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>>::failure(
-            std::move(*addedSceneObjectState.try_error()));
+        return cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>>::failure(std::move(*added.try_error()));
     }
     return builder.seal();
 }
@@ -175,19 +122,17 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
                          "Runtime Host could not create its fixed startup Scene after attaching Input",
                          std::move(*snapshot.try_error()));
         }
-        Result<schema::TypeId> transformTypeId = parse_type_id(k_transformTypeId, a_assertContext);
-        Result<schema::TypeId> sceneObjectStateTypeId = parse_type_id(k_sceneObjectStateTypeId, a_assertContext);
-        if (!transformTypeId || !sceneObjectStateTypeId)
+        Result<runtime::RuntimeSchemaTypeIds> schemaTypeIds = runtime::make_runtime_schema_type_ids(a_assertContext);
+        if (!schemaTypeIds)
         {
             report_fatal(a_assertContext.logger(), a_assertContext.fatal_handler(),
                          "Runtime Host fixed Schema Type parsing failed after attaching Input",
-                         transformTypeId ? std::move(*sceneObjectStateTypeId.try_error())
-                                         : std::move(*transformTypeId.try_error()));
+                         std::move(*schemaTypeIds.try_error()));
         }
 
         Result<void> started = application->m_state->session->start(
             *snapshot.try_value(), application->m_state->worldIdentitySource, *application->m_state->schemaRegistry,
-            std::move(*transformTypeId.try_value()), std::move(*sceneObjectStateTypeId.try_value()));
+            std::move(schemaTypeIds.try_value()->transform), std::move(schemaTypeIds.try_value()->sceneObjectState));
         if (!started)
         {
             if (application->m_state->session->state() == runtime::RuntimeApplicationSessionState::CleanupFailed)
