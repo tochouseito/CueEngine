@@ -188,7 +188,7 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     auto operationIds = std::make_unique<TestOperationIdSource>(
         std::vector<std::string>{"", "01234567-89ab-4cde-8f01-23456789abcd", "11234567-89ab-4cde-8f01-23456789abcd",
                                  "21234567-89ab-4cde-8f01-23456789abcd", "31234567-89ab-4cde-8f01-23456789abcd",
-                                 "41234567-89ab-4cde-8f01-23456789abcd"});
+                                 "41234567-89ab-4cde-8f01-23456789abcd", "51234567-89ab-4cde-8f01-23456789abcd"});
     std::unique_ptr<cue::editor::BuildPresenter> presenter =
         cue::editor::BuildPresenter::create(*service, std::filesystem::current_path().generic_string(),
                                             k_workspaceCompatibility, std::move(operationIds), a_assertContext);
@@ -244,9 +244,24 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     require(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
     runnerState.mode.store(RunnerMode::Succeed, std::memory_order_release);
     require(service->wait_for_completion().has_value());
-    require(presenter->respond_to_editor_shutdown(cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose));
+    require(presenter->begin_editor_shutdown());
+    require(!presenter->is_shutdown_confirmation_pending());
     draw_frame(*presenter);
     require(!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
+    require(!presenter->take_shutdown_ready());
+
+    runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
+    press_build_shortcut(*presenter);
+    require(presenter->current_snapshot().state == cue::GameBuildOperationState::Running);
+    require(!presenter->begin_editor_shutdown());
+    const bool firstImmediatelyReady =
+        presenter->respond_to_editor_shutdown(cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose);
+    if (!firstImmediatelyReady)
+    {
+        require(service->wait_for_completion().has_value());
+        presenter->refresh();
+    }
+    draw_frame(*presenter);
 
     runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
     press_build_shortcut(*presenter);

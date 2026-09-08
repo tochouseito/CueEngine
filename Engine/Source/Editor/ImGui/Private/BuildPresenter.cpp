@@ -401,6 +401,11 @@ bool BuildPresenter::begin_editor_shutdown() noexcept
     refresh();
     if (m_current.state != GameBuildOperationState::Running)
     {
+        m_openShutdownConfirmation = false;
+        m_closeShutdownConfirmation = true;
+        m_isShutdownConfirmationPending = false;
+        m_isShutdownWaitingForCancel = false;
+        m_isShutdownReady = false;
         return true;
     }
     m_closeShutdownConfirmation = false;
