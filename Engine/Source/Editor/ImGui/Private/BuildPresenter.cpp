@@ -397,6 +397,7 @@ bool BuildPresenter::set_force_configure(bool a_forceConfigure) noexcept
 
 bool BuildPresenter::begin_editor_shutdown() noexcept
 {
+    m_isShutdownReady = false;
     refresh();
     if (m_current.state != GameBuildOperationState::Running)
     {
