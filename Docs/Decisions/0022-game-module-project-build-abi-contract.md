@@ -160,7 +160,7 @@ Project Root内の役割を次のように定める。
 | `Generated/Build/<workspace-key>` | CMake Binary Tree、生成IDE Project、Compiler中間物 | No | 互換なToolchain入力では再利用する |
 | `Generated/Build/Candidates/<operation-id>` | 成功Processから収集した未公開Artifact | No | 検証後にPublishまたは破棄できる |
 | `Saved/Build/Operations/<operation-id>` | Build Log、Plan、Environment、Result Snapshot | No | 診断Retention Policyで管理する |
-| `Saved/Build/Artifacts/<configuration>` | 検証済み成功Artifact Snapshot | No | 新しい成功ArtifactのPublish時だけ置換する |
+| `Generated/Artifacts/<configuration>` | M16 Publisher入力となる検証済み成功Artifact Snapshot | No | 新しい成功ArtifactのPublish時だけ置換する |
 
 `Assets/Source`はAsset Authoring用であり、C++ Sourceを置かない。`Assets/Runtime`はAsset Pipeline出力用であり、
 Game DLL、PDB、Build Logを置かない。Machine固有Engine Source／Binary LocationはCMake引数またはUser Workspace設定から渡し、
@@ -198,7 +198,11 @@ Module API TableはDLLが所有し、HostはDLL Load中だけ借用する。Host
 Function PointerをDLL Unload後に呼ばない。v1はGame ModuleからHost機能を任意に呼ぶHost API Tableを公開しない。
 後続のGameplay APIは必要機能だけを列挙したVersion付きTableとして追加し、既存v1構造体の予約領域へ暗黙追加しない。
 
-全ABI関数は安定した数値Resultを返す。詳細診断はUTF-8の借用Viewとして同じ呼出中だけ返し、Hostが即時Copyする。
+生成、登録、Start、Update、Stop等の失敗可能なABI関数は安定した数値Resultを返す。
+System StateとModule Handleの破棄Callbackだけは戻り値を持たない失敗不能操作とし、同じ入力へ一度だけ呼ぶ。
+破棄Callbackは所有物を完全に解放して正常復帰するか、契約違反を検出したModule自身がProcessをFail-fast終了する。
+Exception、部分解放状態、再試行要求をHostへ返してはならず、Hostは破棄失敗を回復可能Errorへ変換してDLLをUnloadしない。
+詳細診断はUTF-8の借用Viewとして同じ呼出中だけ返し、Hostが即時Copyする。
 Game Module内のAllocationはGame Moduleが解放し、Host内のAllocationはHostが解放する。片側で生成したObject、Buffer、
 String、Array、File Handleを他方の`free`、`delete`、Destructorで破棄しない。
 
@@ -225,8 +229,9 @@ Component StorageやSerializationを追加しない。
 
 System登録はStable UTF-8 ID、`PreUpdate`／`Update`／`PostUpdate`、`int32_t` Order、Dependency ID Array、
 System State生成／破棄、Start／Update／Stop Callbackを渡す。HostはDescriptorを即時Copyし、CallbackとModule Handleを保持する
-First-party FactoryをProject Scopeへ構築する。FactoryはSessionごとにDLL側System Stateを一つ生成し、Host側
-`RuntimeSystem` AdapterがそのStateを一意に参照する。Stateの破棄は必ずDLL側破棄Callbackで行う。
+First-party FactoryをProject Scopeへ構築する。FactoryはSessionごとにHost側`RuntimeSystem` Adapterを一つ生成する。
+AdapterがDLL側System Stateを一意所有し、Adapterの破棄処理が失敗不能なDLL側破棄Callbackの一回実行を包含する。
+System StateをAdapterと別のOwnerへ置かず、Adapterより先に独立破棄しない。
 
 Game System ABI v1のStart／StopはSystem Stateだけを受け、UpdateはFrame Indexと符号付き64-bit NanosecondのTiming値だけを値で受ける。
 `World`、`RuntimeWorld`、`StructuralCommandBuffer`、Entity Pointer、Component Pointer、Service Locatorを公開しない。
@@ -237,9 +242,9 @@ Start／Update／Stopを通した任意ECS操作とGameplay APIはM16 Gateの条
 
 Standalone ProcessとEditor Processは一つのProjectだけをGame Moduleへ接続する。順序は次のとおりとする。
 
-1. ManifestまたはBuild Artifact MetadataからPath、Hash、Size、Architecture、Configuration、ABI Versionを検証する
+1. ManifestまたはBuild Artifact MetadataからPath、Hash、Size、Architecture、Configuration、ABI VersionをLoad前に検証する
 2. Windows Loader AdapterがDLLをLoadし、固定Entry Symbolだけを解決する
-3. EntryへHost ABI Versionを渡し、Module API TableとProject Identityを検証する
+3. EntryへHost ABI Versionを渡し、Module自己報告値、Module API Table、Project Identityを登録前に検証する
 4. Project ScopeのModule Handleを生成する
 5. Engine Core Schemaを`SchemaRegistryBuilder`へ登録する
 6. Game ModuleのSchema、Tombstone、Component宣言を登録する
@@ -247,15 +252,22 @@ Standalone ProcessとEditor Processは一つのProjectだけをGame Moduleへ接
 8. Game ModuleのSystem Factory定義を登録順でProject ScopeへCopyする
 9. Runtime Application SessionごとにFactoryからSystem StateとHost Adapterを生成する
 10. 既存規則どおりRegistryをSealし、Phase、Order、登録順でStart／Update／逆順Stopする
-11. 全SessionのStop完了後にSystem State、Adapter、Factoryをこの順で破棄する
+11. 全SessionのStop完了後に各Adapterを破棄し、その処理内で所有System Stateを破棄した後、Factoryを破棄する
 12. Project ScopeのModule HandleをDLL側Callbackで破棄し、最後にDLLをUnloadする
 
 Schema Registry Seal失敗またはSystem Factory登録失敗ではSessionを開始しない。途中まで生成したHost所有値とModule Handleを
 逆順で破棄し、DLLをUnloadする。System Start失敗以降はADR-0021のSession RollbackとCleanup契約へ従う。
 
-Module DLLはModule Handle、Factory、System State、Callbackのいずれかが生存する間Unloadしない。
-CallbackはRuntime Application SessionのOwner Threadだけで呼ぶ。ModuleはCallback Context、借用String、借用Array、
-HostのOpaque ContextをCallback終了後に保持しない。M15／M16ではBackground ThreadをGame Module ABIから開始しない。
+Module DLLはModule Handle、Factory、Adapter、System State、Callbackのいずれかが生存する間Unloadしない。
+Game Moduleを接続するComposition RootのThreadをProject Scope Owner Threadとする。DLL Load、Query、Module Handle生成、
+Schema／Component／Factory登録、Module Handle破棄、DLL UnloadはこのThreadだけで行う。Game Module ABI v1を使用する
+Runtime Application Sessionは同じProject Scope Owner Threadで生成、更新、停止、破棄し、System Lifecycle Callbackも同Threadだけで呼ぶ。
+Game Moduleを使用しないSessionにはこの追加制約を適用せず、ADR-0021のOwner Thread契約に従う。
+
+ModuleはCallback Context、借用String、借用Array、HostのOpaque ContextをCallback終了後に保持しない。
+M15／M16ではBackground ThreadをGame Module ABIから開始しない。`DllMain`とC++静的初期化では、Thread生成、File IO、
+Engine Callback、Module外Resource取得、永続Mutable状態の公開を行わない。外部Metadata不一致はDLL Load前に拒否するが、
+Module自己報告値だけの不一致はDLL初期化後、Module Handle生成と登録の前に拒否し、即座にUnloadする。
 
 ### Toolchain, Runtime Library, and Configuration Compatibility
 
@@ -324,7 +336,9 @@ CandidateはProcess成功だけで公開せず、次をすべて検証する。
 - ABI、Project、Engine Compatibility、Toolset Metadataが一致する
 - Artifact InventoryのFile名、相対Path、Size、Hashが確定している
 
-検証成功後、StorageのAtomic Replace契約で`Latest Successful Artifact` Snapshotを更新する。
+検証成功後、StorageのAtomic Replace契約で`Generated/Artifacts/<configuration>`の
+`Latest Successful Artifact` Snapshotを更新する。このSnapshotは再生成可能なM16 Publisher入力であり、
+RuntimeがProjectのGenerated Rootから直接Loadする契約ではない。
 失敗、Cancel、Timeout、Editor終了、Metadata不一致ではCandidateを成功として公開せず、以前の成功SnapshotとInventoryを保持する。
 失敗OperationのLog、Plan、Environment Report、Stage Resultは`Saved/Build/Operations/<operation-id>`へ診断可能な範囲で残す。
 
@@ -415,11 +429,14 @@ M15で次を検証する。
 - 生成ProjectをDebug／Development／ReleaseでConfigure、Buildできる
 - C11とC++20のTranslation UnitがABI Headerを単体Includeできる
 - ABI Public HeaderがSTL、Exception、C++ Class、Windows型を公開しない
-- 誤ABI Version、Project ID、Architecture、Configuration、Toolset Metadataを副作用前に拒否する
+- 誤った外部MetadataのProject ID、Architecture、Configuration、ToolsetをDLL Load前に拒否する
+- Module自己報告のABI Version、Project ID、Configuration不一致をModule Handle生成と登録の前に拒否する
 - Schema、Component宣言、System Factoryを固定順で登録し、失敗時に逆順Cleanupする
 - 二つのSessionが別のDLL側System Stateを持ち、片方の停止が他方へ影響しない
 - System StateとModule Handleを生成したDLL側Callbackで一度だけ破棄する
+- Adapter破棄がSystem State破棄を包含し、失敗不能破棄Callback以外の経路で解放しない
 - Callback、Factory、System State生存中にDLLをUnloadしない
+- Project ScopeとGame Module使用Sessionの全Callbackを一つのOwner Threadへ限定する
 - UIなしでBuild Request、Plan、Cancel、Retry、Artifact Publishを検証できる
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
 - 失敗Build後も以前の成功Artifact HashとInventoryが変わらない
