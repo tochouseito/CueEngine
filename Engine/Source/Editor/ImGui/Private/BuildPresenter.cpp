@@ -248,8 +248,7 @@ void BuildPresenter::refresh() noexcept
                 return;
             }
             m_isShutdownWaitingForCancel = false;
-            m_isShutdownConfirmationPending = false;
-            m_isShutdownReady = true;
+            mark_shutdown_ready();
         }
     }
     catch (...)
@@ -424,14 +423,17 @@ bool BuildPresenter::respond_to_editor_shutdown(EditorBuildShutdownDecision a_de
     refresh();
     if (m_current.state != GameBuildOperationState::Running)
     {
-        m_openShutdownConfirmation = false;
-        m_isShutdownConfirmationPending = false;
-        m_isShutdownWaitingForCancel = false;
-        m_isShutdownReady = true;
+        mark_shutdown_ready();
         return true;
     }
     if (!m_isShutdownWaitingForCancel && !submit(EditorBuildCommand::Cancel))
     {
+        refresh();
+        if (m_current.state != GameBuildOperationState::Running)
+        {
+            mark_shutdown_ready();
+            return true;
+        }
         return false;
     }
     m_isShutdownWaitingForCancel = true;
@@ -596,6 +598,11 @@ void BuildPresenter::set_error(const Error &a_error, std::string_view a_operatio
             m_message.push_back(':');
             m_message.append(std::to_string(native->value()));
         }
+        for (const ErrorContext &context : cause.contexts())
+        {
+            m_message.append("\n");
+            m_message.append(context.message());
+        }
     }
     m_hasError = true;
 }
@@ -732,17 +739,15 @@ void BuildPresenter::draw_console()
             {
                 continue;
             }
-            ImGui::PushID(static_cast<int>(log.sequence));
             ImGui::TextDisabled("[%s] [%s]", stage_label(log.stage), stream_label(log.stream));
             ImGui::SameLine();
             const std::string visible = make_visible_log_text(log.bytes);
-            if (ImGui::Selectable(visible.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick) &&
-                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            ImGui::TextUnformatted(visible.data(), visible.data() + visible.size());
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             {
                 ImGui::SetClipboardText(visible.c_str());
                 set_status("選択したLogをClipboardへコピーしました。");
             }
-            ImGui::PopID();
         }
     }
     ImGui::EndChild();
@@ -807,6 +812,14 @@ void BuildPresenter::draw_shutdown_confirmation() noexcept
     }
     ImGui::EndDisabled();
     ImGui::EndPopup();
+}
+
+void BuildPresenter::mark_shutdown_ready() noexcept
+{
+    m_openShutdownConfirmation = false;
+    m_isShutdownConfirmationPending = false;
+    m_isShutdownWaitingForCancel = false;
+    m_isShutdownReady = true;
 }
 
 [[noreturn]] void BuildPresenter::terminate_exception() const noexcept

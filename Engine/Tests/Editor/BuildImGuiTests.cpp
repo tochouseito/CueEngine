@@ -86,7 +86,7 @@ class ControlledRunner final : public cue::ChildProcessRunner
         }
         const std::uint32_t exitCode = m_state->mode.load(std::memory_order_acquire) == RunnerMode::Fail ? 2U : 0U;
         return cue::Result<cue::ChildProcessResult>::success(cue::ChildProcessResult::exited(
-            exitCode, {{sequence, cue::ChildProcessStream::StandardOutput, "build-log\n" + std::string("\xC3", 1U)}}));
+            exitCode, {{sequence, cue::ChildProcessStream::StandardOutput, "build##log\n" + std::string("\xC3", 1U)}}));
     }
 
   private:

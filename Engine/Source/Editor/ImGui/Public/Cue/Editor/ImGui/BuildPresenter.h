@@ -144,6 +144,8 @@ class BuildPresenter final
     void draw_artifacts() noexcept;
     /// @brief Build中のEditor終了確認とCancel待ちを描画する
     void draw_shutdown_confirmation() noexcept;
+    /// @brief Build終了確認を解除して一回のClose Ready通知を確定する
+    void mark_shutdown_ready() noexcept;
     /// @brief 予期しない例外をFatalHandlerへ渡す
     [[noreturn]] void terminate_exception() const noexcept;
 
