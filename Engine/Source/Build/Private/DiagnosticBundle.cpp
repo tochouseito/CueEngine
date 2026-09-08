@@ -650,6 +650,17 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
            (a_stage.outcome != cue::BuildStageOutcome::Failed || a_stage.exitCode != 0U);
 }
 
+/// @brief 成功OperationがBuild Stage成功まで完了したSnapshotか検証する
+[[nodiscard]] bool valid_succeeded_operation_stages(const cue::BuildOperationSnapshot &a_operation) noexcept
+{
+    if (a_operation.state != cue::GameBuildOperationState::Succeeded)
+    {
+        return true;
+    }
+    return !a_operation.stages.empty() && a_operation.stages.back().stage == cue::BuildStage::Build &&
+           a_operation.stages.back().outcome == cue::BuildStageOutcome::Succeeded;
+}
+
 /// @brief 現在Operationへ属するLogのStream種別を検証する
 [[nodiscard]] bool valid_operation_logs(const cue::BuildOperationSnapshot &a_operation) noexcept
 {
@@ -1643,11 +1654,27 @@ class JsonSchemaReader final
     return false;
 }
 
-/// @brief Stage結果Objectを固定Schemaで読み取る
-[[nodiscard]] bool read_stage(JsonSchemaReader &a_reader) noexcept
+/// @brief Stage結果Objectを固定Schemaで読み取りStageとOutcomeを返す
+[[nodiscard]] bool read_stage(JsonSchemaReader &a_reader, cue::BuildStage &a_stage,
+                              cue::BuildStageOutcome &a_outcome) noexcept
 {
-    if (!a_reader.begin_object() || !a_reader.member("stage") || !a_reader.string_is({"configure", "build"}) ||
-        !a_reader.comma() || !a_reader.member("outcome"))
+    if (!a_reader.begin_object() || !a_reader.member("stage"))
+    {
+        return false;
+    }
+    if (a_reader.string_is({"configure"}))
+    {
+        a_stage = cue::BuildStage::Configure;
+    }
+    else if (a_reader.string_is({"build"}))
+    {
+        a_stage = cue::BuildStage::Build;
+    }
+    else
+    {
+        return false;
+    }
+    if (!a_reader.comma() || !a_reader.member("outcome"))
     {
         return false;
     }
@@ -1660,13 +1687,23 @@ class JsonSchemaReader final
     ExitCodeRequirement requirement = ExitCodeRequirement::Null;
     if (a_reader.string_is({"succeeded"}))
     {
+        a_outcome = cue::BuildStageOutcome::Succeeded;
         requirement = ExitCodeRequirement::Zero;
     }
     else if (a_reader.string_is({"failed"}))
     {
+        a_outcome = cue::BuildStageOutcome::Failed;
         requirement = ExitCodeRequirement::Positive;
     }
-    else if (!a_reader.string_is({"cancelled", "timedOut"}))
+    else if (a_reader.string_is({"cancelled"}))
+    {
+        a_outcome = cue::BuildStageOutcome::Cancelled;
+    }
+    else if (a_reader.string_is({"timedOut"}))
+    {
+        a_outcome = cue::BuildStageOutcome::TimedOut;
+    }
+    else
     {
         return false;
     }
@@ -1681,9 +1718,11 @@ class JsonSchemaReader final
     return validExitCode && a_reader.end_object();
 }
 
-/// @brief Stage結果Arrayを固定Schemaで読み取る
-[[nodiscard]] bool read_stage_array(JsonSchemaReader &a_reader) noexcept
+/// @brief Stage結果Arrayを固定Schemaで読み取り要素数と最終結果を返す
+[[nodiscard]] bool read_stage_array(JsonSchemaReader &a_reader, std::size_t &a_count, cue::BuildStage &a_lastStage,
+                                    cue::BuildStageOutcome &a_lastOutcome) noexcept
 {
+    a_count = 0U;
     if (!a_reader.begin_array())
     {
         return false;
@@ -1692,8 +1731,13 @@ class JsonSchemaReader final
     {
         return a_reader.end_array();
     }
-    while (read_stage(a_reader))
+    cue::BuildStage stage = cue::BuildStage::Configure;
+    cue::BuildStageOutcome outcome = cue::BuildStageOutcome::Failed;
+    while (read_stage(a_reader, stage, outcome))
     {
+        ++a_count;
+        a_lastStage = stage;
+        a_lastOutcome = outcome;
         if (a_reader.next_is(']'))
         {
             return a_reader.end_array();
@@ -1864,12 +1908,19 @@ struct ArtifactReadState final
            reader.finished();
 }
 
-/// @brief Stage PayloadをVersion 1固定Schemaとして検証する
-[[nodiscard]] bool valid_stages_payload(std::string_view a_text) noexcept
+/// @brief Stage PayloadをVersion 1固定Schemaと成功Operationの終端条件で検証する
+[[nodiscard]] bool valid_stages_payload(std::string_view a_text, cue::GameBuildOperationState a_expectedState) noexcept
 {
     JsonSchemaReader reader(a_text);
-    return read_schema_header(reader) && reader.comma() && reader.member("stages") && read_stage_array(reader) &&
-           reader.end_object() && reader.finished();
+    std::size_t count = 0U;
+    cue::BuildStage lastStage = cue::BuildStage::Configure;
+    cue::BuildStageOutcome lastOutcome = cue::BuildStageOutcome::Failed;
+    const bool validSchema = read_schema_header(reader) && reader.comma() && reader.member("stages") &&
+                             read_stage_array(reader, count, lastStage, lastOutcome) && reader.end_object() &&
+                             reader.finished();
+    return validSchema &&
+           (a_expectedState != cue::GameBuildOperationState::Succeeded ||
+            (count > 0U && lastStage == cue::BuildStage::Build && lastOutcome == cue::BuildStageOutcome::Succeeded));
 }
 
 /// @brief Result PayloadをVersion 1固定Schemaとして検証する
@@ -1925,7 +1976,7 @@ struct ArtifactReadState final
         const std::string text = from_bytes(file.bytes);
         const bool valid = file.relativePath == "plan.json"          ? valid_plan_payload(text)
                            : file.relativePath == "environment.json" ? valid_environment_payload(text)
-                           : file.relativePath == "stages.json"      ? valid_stages_payload(text)
+                           : file.relativePath == "stages.json"      ? valid_stages_payload(text, a_expectedState)
                            : file.relativePath == "result.json"      ? valid_result_payload(text, a_expectedState)
                            : file.relativePath == "artifact.json"    ? valid_artifact_payload(text, a_expectedState)
                                                                      : false;
@@ -2047,6 +2098,44 @@ struct ArtifactReadState final
     }
     return true;
 }
+
+/// @brief Writerへ渡されたBundle全体が構築時と同じ公開契約を満たすか検証する
+[[nodiscard]] bool valid_bundle_for_write(const cue::BuildDiagnosticBundle &a_bundle)
+{
+    if (!is_uuid_v4(a_bundle.operation_id()) || !valid_terminal_state(a_bundle.state()) ||
+        !valid_manifest_entries(a_bundle.manifest_entries(), a_bundle.state()))
+    {
+        return false;
+    }
+    const auto files = a_bundle.files();
+    const std::size_t collectedFileCount =
+        static_cast<std::size_t>(std::count_if(a_bundle.manifest_entries().begin(), a_bundle.manifest_entries().end(),
+                                               /// @brief 収集済みManifest Entryを数える
+                                               [](const auto &a_entry) noexcept { return a_entry.collected; }));
+    if (files.size() != collectedFileCount + 1U)
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < files.size(); ++index)
+    {
+        if (!known_bundle_path(files[index].relativePath) || !valid_bundle_text(files[index].bytes) ||
+            (index > 0U && files[index - 1U].relativePath >= files[index].relativePath))
+        {
+            return false;
+        }
+    }
+    const auto manifestFile =
+        std::find_if(files.begin(), files.end(),
+                     /// @brief Writer検証対象のManifest Fileを検出する
+                     [](const auto &a_file) noexcept { return a_file.relativePath == "manifest.json"; });
+    if (manifestFile == files.end())
+    {
+        return false;
+    }
+    return from_bytes(manifestFile->bytes) ==
+               serialize_manifest(a_bundle.operation_id(), a_bundle.state(), a_bundle.manifest_entries()) &&
+           files_match_manifest(files, a_bundle.manifest_entries()) && valid_payload_schemas(files, a_bundle.state());
+}
 } // namespace
 
 namespace cue
@@ -2127,6 +2216,12 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic stages are inconsistent"));
+        }
+        if (!valid_succeeded_operation_stages(a_input.operation))
+        {
+            return Result<BuildDiagnosticBundle>::failure(
+                make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                  "Successful diagnostic operation did not complete the build stage"));
         }
         if (!valid_operation_logs(a_input.operation))
         {
@@ -2346,6 +2441,11 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
 {
     try
     {
+        if (!valid_bundle_for_write(a_bundle))
+        {
+            return Result<void>::failure(make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidBundle,
+                                                           "Diagnostic bundle is invalid"));
+        }
         const auto destination = filesystem_path_from_utf8(a_destination);
         if (!destination || !destination->is_absolute())
         {

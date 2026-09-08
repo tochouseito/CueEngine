@@ -316,6 +316,18 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(!cue::create_build_diagnostic_bundle(succeededWithoutOperationArtifactInput, limits, a_assertContext)
                  .has_value());
 
+    cue::BuildDiagnosticBundleInput successfulInput = input;
+    successfulInput.operation.state = cue::GameBuildOperationState::Succeeded;
+    successfulInput.operation.stages.back() = {cue::BuildStage::Build, cue::BuildStageOutcome::Succeeded, 0U};
+    successfulInput.operation.artifact = successfulInput.operation.latestSuccessfulArtifact;
+    cue::BuildDiagnosticBundleInput succeededWithoutStagesInput = successfulInput;
+    succeededWithoutStagesInput.operation.stages.clear();
+    require(!cue::create_build_diagnostic_bundle(succeededWithoutStagesInput, limits, a_assertContext).has_value());
+    cue::BuildDiagnosticBundleInput succeededWithFailedStageInput = successfulInput;
+    succeededWithFailedStageInput.operation.stages.back() = {cue::BuildStage::Build, cue::BuildStageOutcome::Failed,
+                                                             2U};
+    require(!cue::create_build_diagnostic_bundle(succeededWithFailedStageInput, limits, a_assertContext).has_value());
+
     cue::BuildDiagnosticBundleInput unknownStageInput = input;
     unknownStageInput.operation.stages.front().stage = static_cast<cue::BuildStage>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownStageInput, limits, a_assertContext).has_value());
@@ -349,6 +361,26 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     staging += ".staging-" + std::string(bundle.operation_id());
     std::filesystem::remove_all(destination, cleanupError);
     require(!cleanupError);
+
+    const std::filesystem::path movedDestination = destination.parent_path() / "CueBuildDiagnosticBundleMovedFrom";
+    std::filesystem::path movedStaging = movedDestination;
+    movedStaging += ".staging-";
+    std::filesystem::remove_all(movedDestination, cleanupError);
+    require(!cleanupError);
+    std::filesystem::remove_all(movedStaging, cleanupError);
+    require(!cleanupError);
+    cue::BuildDiagnosticBundle movedFrom =
+        take_value(cue::create_build_diagnostic_bundle(successfulInput, limits, a_assertContext));
+    cue::BuildDiagnosticBundle movedOwner = std::move(movedFrom);
+    require(!movedOwner.files().empty());
+    auto movedWrite =
+        cue::write_build_diagnostic_bundle_directory(movedFrom, generic_utf8_path(movedDestination), a_assertContext);
+    require(!movedWrite.has_value());
+    require(movedWrite.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::BuildDiagnosticBundleError::InvalidBundle));
+    require(!std::filesystem::exists(movedDestination));
+    require(!std::filesystem::exists(movedStaging));
+
     require(cue::write_build_diagnostic_bundle_directory(bundle, destinationUtf8, a_assertContext).has_value());
     require(!std::filesystem::exists(staging));
     require(!cue::write_build_diagnostic_bundle_directory(bundle, destinationUtf8, a_assertContext).has_value());
@@ -357,6 +389,37 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(reloaded.operation_id() == bundle.operation_id());
     require(reloaded.state() == bundle.state());
     require(reloaded.manifest_entries().size() == bundle.manifest_entries().size());
+
+    cue::BuildDiagnosticBundle successfulBundle =
+        take_value(cue::create_build_diagnostic_bundle(successfulInput, limits, a_assertContext));
+    const std::filesystem::path successfulDestination =
+        destination.parent_path() / "CueBuildDiagnosticBundleSuccessful";
+    std::filesystem::remove_all(successfulDestination, cleanupError);
+    require(!cleanupError);
+    require(cue::write_build_diagnostic_bundle_directory(successfulBundle, generic_utf8_path(successfulDestination),
+                                                         a_assertContext)
+                .has_value());
+    const cue::BuildDiagnosticBundleFile *successfulStagesFile = find_file(successfulBundle, "stages.json");
+    require(successfulStagesFile != nullptr);
+    std::string mismatchedSuccessfulStages = file_text(*successfulStagesFile);
+    const std::string_view successfulOutcome = "\"outcome\":\"succeeded\",\"exitCode\":0";
+    const std::size_t lastSuccessfulOutcome = mismatchedSuccessfulStages.rfind(successfulOutcome);
+    require(lastSuccessfulOutcome != std::string::npos);
+    mismatchedSuccessfulStages.replace(lastSuccessfulOutcome, successfulOutcome.size(),
+                                       "\"outcome\":\"failed\",\"exitCode\":2   ");
+    require(mismatchedSuccessfulStages.size() == successfulStagesFile->bytes.size());
+    {
+        std::ofstream stream(successfulDestination / "stages.json", std::ios::binary | std::ios::trunc);
+        stream.write(mismatchedSuccessfulStages.data(),
+                     static_cast<std::streamsize>(mismatchedSuccessfulStages.size()));
+        stream.close();
+        require(stream.good());
+    }
+    require(
+        !cue::read_build_diagnostic_bundle_directory(generic_utf8_path(successfulDestination), limits, a_assertContext)
+             .has_value());
+    std::filesystem::remove_all(successfulDestination, cleanupError);
+    require(!cleanupError);
 
 #if defined(_WIN32)
     std::filesystem::path longDestination = destination.parent_path();
