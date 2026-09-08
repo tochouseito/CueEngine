@@ -352,10 +352,33 @@ Artifact ID、相対Path、Size、Hashを持つ小さい`Current.json`だけをA
 `schemaVersion == 1`だけを受理し、未知Version、新しいVersion、欠落Versionを推測して読まない。`Current.json`は再生成可能な
 Build出力なので、互換性のないVersionをIn-place Migrationせず、対応するEngineとConfigurationでGame Moduleを再Buildして再生成する。
 
-Schema v1の各Inventory Entryは、Project Root相対のUTF-8 Path、`sizeBytes`、`hashAlgorithm`、`contentHash`を持つ。
+Schema v1のWire形式は次のJSON Objectへ固定する。例示値を除くMember名、型、必須性はこの形を正本とする。
+
+```json
+{
+  "schemaVersion": 1,
+  "artifactId": "01234567-89ab-4cde-8f01-23456789abcd",
+  "configuration": "Debug",
+  "files": [
+    {
+      "path": "CueGameModule.dll",
+      "sizeBytes": 123456,
+      "hashAlgorithm": "sha256",
+      "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+全Memberを必須かつNon-nullとし、Top-levelとFile Entryの未知Member、重複Key、空の`files`を拒否する。
+`schemaVersion`はJSON整数`1`、`artifactId`は小文字Canonical UUID v4文字列で、参照先Version Directory名と完全一致させる。
+`configuration`は`Debug`、`Development`、`Release`のいずれかで、Artifact StoreのDirectory名と一致させる。
+`files`はInventory Entry Objectの配列である。`path`はVersion Directory相対のUTF-8文字列、`sizeBytes`は
+`0`以上`9007199254740991`以下のJSON整数とする。Game Module DLL自身の`sizeBytes`は`0`を拒否する。
 `hashAlgorithm`は文字列`sha256`だけを許可し、`contentHash`はFileの先頭から末尾までの未変換Byte列に対するSHA-256 Digestを
-小文字64桁のHexで表す。改行、BOM、Text Encodingを正規化しない。Pathは`/`区切りの正規化済み相対Pathとし、`..`、絶対Path、
-重複Entry、WindowsのCase-insensitive比較で衝突するEntryを拒否する。InventoryはPathのUTF-8 Byte列による昇順で保存する。
+小文字64桁のHexで表す。改行、BOM、Text Encodingを正規化しない。`path`は`/`区切りの正規化済み相対Pathとし、`..`、絶対Path、
+重複Entry、WindowsのCase-insensitive比較で衝突するEntryを拒否する。`files`は`path`のUTF-8 Byte列による昇順で保存する。
+Writerは上記Member順のUTF-8、BOMなし、LF、末尾改行ありで出力する。ReaderはJSONのMember順と意味を持たない空白には依存しない。
 Windows実装はOSのCNGを利用できるが、Manifest上のAlgorithmとByte表現を変更しない。
 
 M16 Publisherは後述のRead Leaseを取得して`Current.json`を一度読み、指定Version Directoryだけを入力にし、全HashとSizeを
@@ -381,6 +404,8 @@ Cleanup対象へ含めない。
 Build Publish、Cleanup、M16 Publisher読取りは、Project IdentityとConfigurationごとのArtifact Storeが発行するProcess間共有の
 Project Scope Leaseを必須とする。Windows実装は`Generated/Artifacts/<configuration>/Access.lock`の固定Byte Rangeに対する
 `LockFileEx`を使用し、Shared Read LockまたはExclusive Mutation Lockを全Process、全Artifact Store Instanceで共有する。
+全実装がLockする範囲はOffset `0`、Length `1`の先頭1 byteとし、Shared Readでは`LOCKFILE_EXCLUSIVE_LOCK`を指定せず、
+Exclusive Mutationでは指定する。同じPathをCreate-or-openしてHandle生存中はFileを置換または削除しない。
 Lock FileはVersion Cleanup対象にせず、Process終了時はOSによるHandle CloseでLockを解放する。
 Version Directory公開から`Current.json`更新とOutcome再検証までは一つのExclusive Mutation Leaseで直列化する。Cleanupも同じ
 Exclusive Mutation Leaseを取得し、Current参照先を削除しない。PublisherはShared Read Leaseを`Current.json`読取り前に取得し、
@@ -491,11 +516,13 @@ M15で次を検証する。
 - CancelとTimeoutを区別し、Process TreeとHandleを残さない
 - 不変Version Directory公開後に`Current.json`だけをAtomic Replaceする
 - `Current.json`の`schemaVersion == 1`だけを受理し、未知Versionを拒否して再Buildで再生成する
+- Schema v1のTop-levelとFile Entryについて、Member名、型、必須性、Artifact ID、Configuration、PathをWriterとReaderで一致させる
 - Schema v1のInventory Hashを、未変換File Byte列に対する小文字64桁SHA-256としてWriterとReaderで一致させる
 - `NotPublished`では以前のCurrentが変わらず、`PublishedButDurabilityUnknown`では可視Manifestを再読込・再検証して
   Current選択とBuild失敗診断を一致させる
 - 複数Process、複数Artifact Store Instance間でPublishとCleanupをExclusive Mutation Leaseにより直列化し、M16 Publisherの
   Shared Read Lease中は参照Versionを削除しない
+- 全Windows実装が同じ`Access.lock`のOffset `0`、Length `1`を`LockFileEx`でLockする
 - `Current.json`を完全検証できないCleanupは全Versionを保持してFail-closedで終了する
 - Runtime、Game Module、Build CoreからEditor／ImGuiへの逆依存がない
 - M15差分にAsset Pipeline、Hot Reload、ECS Storage改良が含まれない
