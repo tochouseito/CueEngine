@@ -93,16 +93,39 @@ struct PublisherState final
 class TestPublisher final : public cue::BuildArtifactPublisher
 {
   public:
+    class TestLease final : public cue::BuildWorkspaceLease
+    {
+      public:
+        /// @brief 検証用Leaseの生存期間だけを表す
+        TestLease() noexcept = default;
+        /// @brief Native Resourceを持たない検証用Leaseを破棄する
+        ~TestLease() override = default;
+    };
+
     /// @brief Publish回数とAssert境界を借用して検証用Publisherを構築する
     TestPublisher(PublisherState &a_state, const cue::AssertContext &a_assertContext) noexcept
         : m_state(&a_state), m_assertContext(&a_assertContext)
     {
     }
 
+    /// @brief 取消前ならBuild Workerへ検証用Exclusive Leaseを返す
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
+        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+    {
+        if (a_cancellation.is_cancel_requested())
+        {
+            return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(std::nullopt);
+        }
+        return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(
+            std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>(std::make_unique<TestLease>()));
+    }
+
     /// @brief Cancel、Native Error、成功Artifactを制御可能な検証用Publish結果として返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
-        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
     {
+        static_cast<void>(a_buildLease);
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
         if (m_state->blockUntilCancelled.load(std::memory_order_acquire))
         {

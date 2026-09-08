@@ -24,6 +24,16 @@
 
 namespace
 {
+#if CUE_TEST_BUILD_CONFIGURATION == 1
+constexpr std::string_view k_buildWorkflowAction = "build-workflow-debug";
+#elif CUE_TEST_BUILD_CONFIGURATION == 2
+constexpr std::string_view k_buildWorkflowAction = "build-workflow-development";
+#elif CUE_TEST_BUILD_CONFIGURATION == 3
+constexpr std::string_view k_buildWorkflowAction = "build-workflow-release";
+#else
+#error CUE_TEST_BUILD_CONFIGURATION must identify a supported configuration
+#endif
+
 /// @brief Test内のFatalを固定Exit Codeへ変換する
 class TestFatalHandler final : public cue::FatalHandler
 {
@@ -48,9 +58,8 @@ class TestDirectory final
     /// @brief Temporary Root下へProcess固有Directoryを作成する
     TestDirectory()
     {
-        m_path =
-            std::filesystem::temp_directory_path() /
-            (L"CueEditorWorkflow-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        m_path = std::filesystem::temp_directory_path() /
+                 (L"CEW-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(m_path);
     }
 
@@ -124,8 +133,8 @@ class TestDirectory final
 {
     const std::filesystem::path descriptorPath = a_projectPath / L"CueProject.json";
     std::wstring commandLine = L"\"" + a_editorExecutable.native() + L"\" --protocol-version " +
-                               std::to_wstring(cue::k_editorLaunchProtocolVersion) +
-                               L" --project-descriptor \"" + descriptorPath.native() +
+                               std::to_wstring(cue::k_editorLaunchProtocolVersion) + L" --project-descriptor \"" +
+                               descriptorPath.native() +
                                L"\" --expected-project-id 00000000-0000-4000-8000-000000000901" +
                                L" --engine-compatibility-id \"cue-engine:[1.0.0,2.0.0)\"" +
                                L" --initial-scene Scenes/Main.cuescene --maximum-frame-count 1";
@@ -147,6 +156,18 @@ class TestDirectory final
         {
             commandLine.append(L" --process-test-action play-repeated-workflow");
         }
+        else if (*a_processTestAction == "build-workflow-debug")
+        {
+            commandLine.append(L" --process-test-action build-workflow-debug");
+        }
+        else if (*a_processTestAction == "build-workflow-development")
+        {
+            commandLine.append(L" --process-test-action build-workflow-development");
+        }
+        else if (*a_processTestAction == "build-workflow-release")
+        {
+            commandLine.append(L" --process-test-action build-workflow-release");
+        }
         else
         {
             commandLine.append(L" --process-test-action edit-close-save");
@@ -161,7 +182,9 @@ class TestDirectory final
         return false;
     }
     CloseHandle(process.hThread);
-    const DWORD wait = WaitForSingleObject(process.hProcess, 30000U);
+    const DWORD timeout =
+        a_processTestAction.has_value() && a_processTestAction->starts_with("build-workflow-") ? 600000U : 30000U;
+    const DWORD wait = WaitForSingleObject(process.hProcess, timeout);
     DWORD exitCode = 1U;
     const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
     if (!completed)
@@ -174,8 +197,7 @@ class TestDirectory final
 }
 
 /// @brief Project生成からScene保存、実Editor再起動、Stable ID再Openまでを検証する
-void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
-                             const cue::AssertContext &a_context)
+void test_process_round_trip(const std::filesystem::path &a_editorExecutable, const cue::AssertContext &a_context)
 {
     TestDirectory directory;
     auto parent = cue::create_windows_filesystem_root(to_utf8(directory.path(), a_context.fatal_handler()), a_context);
@@ -185,14 +207,14 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     {
         std::_Exit(4);
     }
-    auto generated = cue::generate_blank_project(**parent.try_value(), "WorkflowProject", "Workflow Project",
+    auto generated = cue::generate_blank_project(**parent.try_value(), "Project", "Workflow Project",
                                                  *projectId.try_value(), {engineCompatibility}, a_context);
     if (!generated)
     {
         std::_Exit(5);
     }
 
-    const std::filesystem::path projectPath = directory.path() / L"WorkflowProject";
+    const std::filesystem::path projectPath = directory.path() / L"Project";
     auto session = cue::editor::WindowsEditorSession::create(
         make_parameters(projectPath, projectId.try_value()->text(), engineCompatibility, a_context),
         make_configuration(a_context), a_context);
@@ -250,7 +272,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         std::_Exit(21);
     }
     cue::editor_core::RenameObjectIntent dirtyBeforeSwitch{document->scene_document().objects().front().id(),
-                                                            "Dirty Before Switch"};
+                                                           "Dirty Before Switch"};
     auto dirtied = (*session.try_value())
                        ->controller()
                        .execute_intent(*documentId.try_value(), std::move(dirtyBeforeSwitch),
@@ -295,8 +317,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     auto cleanLocator = cue::RelativePath::parse("Scenes/CleanSwitch.cuescene", a_context);
     auto cleanCandidate = (*session.try_value())->prepare_new_scene(std::move(*cleanLocator.try_value()));
     auto cleanSwitch = (*session.try_value())->request_activate_prepared_scene();
-    if (!cleanCandidate || !cleanSwitch ||
-        *cleanSwitch.try_value() != cue::editor_core::DocumentCloseState::Closed ||
+    if (!cleanCandidate || !cleanSwitch || *cleanSwitch.try_value() != cue::editor_core::DocumentCloseState::Closed ||
         (*session.try_value())->active_document_id() != std::optional(*cleanCandidate.try_value()))
     {
         std::_Exit(27);
@@ -350,8 +371,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
                                 : nullptr;
     if (!cleanRecoveryDocumentId || cleanRecoveryDocument == nullptr ||
         cleanRecoveryDocument->scene_locator().text() != "Scenes/Child-Unedited.cuescene" ||
-        cleanRecoveryDocument->scene_document().object_count() != 0U ||
-        cleanRecoveryDocument->has_saved_destination())
+        cleanRecoveryDocument->scene_document().object_count() != 0U || cleanRecoveryDocument->has_saved_destination())
     {
         std::_Exit(48);
     }
@@ -373,14 +393,12 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     {
         std::_Exit(31);
     }
-    auto recoveryDocumentId = (*recoverySession.try_value())
-                                  ->open_recovery_scene(std::string_view(sceneText.data(), sceneText.size()));
+    auto recoveryDocumentId =
+        (*recoverySession.try_value())->open_recovery_scene(std::string_view(sceneText.data(), sceneText.size()));
     const cue::editor_core::EditorDocument *recoveryDocument =
-        recoveryDocumentId ? (*recoverySession.try_value())
-                                 ->controller()
-                                 .session()
-                                 .find_document(*recoveryDocumentId.try_value())
-                           : nullptr;
+        recoveryDocumentId
+            ? (*recoverySession.try_value())->controller().session().find_document(*recoveryDocumentId.try_value())
+            : nullptr;
     bool foundRecoveryChild = false;
     if (recoveryDocument != nullptr)
     {
@@ -433,9 +451,8 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         for (const cue::scene::SceneObject &object : reopenedDocument->scene_document().objects())
         {
             foundSavedChild = foundSavedChild || object.name() == "Child Process Saved";
-            foundOriginalObject =
-                foundOriginalObject ||
-                (object.name() == "Persistent Root" && object.id().canonical_text() == objectText);
+            foundOriginalObject = foundOriginalObject ||
+                                  (object.name() == "Persistent Root" && object.id().canonical_text() == objectText);
         }
     }
     if (reopenedDocument == nullptr)
@@ -463,7 +480,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         std::_Exit(44);
     }
     cue::editor_core::RenameObjectIntent renameObject{reopenedDocument->scene_document().objects().front().id(),
-                                                       "Dirty Root"};
+                                                      "Dirty Root"};
     auto renamed = (*reopened.try_value())
                        ->controller()
                        .execute_intent(*(*reopened.try_value())->active_document_id(), std::move(renameObject),
@@ -473,10 +490,8 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     {
         std::_Exit(36);
     }
-    auto savedAs =
-        (*reopened.try_value())->save_active_scene_as_new(std::move(*saveAsLocator.try_value()));
-    if (!renamed || !savedAs ||
-        savedAs.try_value()->status() != cue::scene::SceneSaveStatus::Committed ||
+    auto savedAs = (*reopened.try_value())->save_active_scene_as_new(std::move(*saveAsLocator.try_value()));
+    if (!renamed || !savedAs || savedAs.try_value()->status() != cue::scene::SceneSaveStatus::Committed ||
         read_file(savedScenePath) != childSavedSceneBytes)
     {
         std::_Exit(36);
@@ -488,14 +503,13 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         std::_Exit(37);
     }
     cue::editor_core::RenameObjectIntent dirtyCopy{reopenedDocument->scene_document().objects().front().id(),
-                                                    "Dirty Copy"};
+                                                   "Dirty Copy"};
     auto copiedRename = (*reopened.try_value())
                             ->controller()
                             .execute_intent(*(*reopened.try_value())->active_document_id(), std::move(dirtyCopy),
                                             (*reopened.try_value())->identity_source(), {});
     auto awaiting = (*reopened.try_value())->request_close();
-    if (!copiedRename || !awaiting ||
-        *awaiting.try_value() != cue::editor_core::DocumentCloseState::AwaitingDecision)
+    if (!copiedRename || !awaiting || *awaiting.try_value() != cue::editor_core::DocumentCloseState::AwaitingDecision)
     {
         std::_Exit(14);
     }
@@ -543,6 +557,10 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         read_file(savedScenePath) != childSavedSceneBytes)
     {
         std::_Exit(50);
+    }
+    if (!run_editor_process(a_editorExecutable, projectPath, k_buildWorkflowAction))
+    {
+        std::_Exit(51);
     }
 }
 } // namespace

@@ -56,11 +56,13 @@ add_library(Cue.Build.Windows STATIC)
 target_sources(
     Cue.Build.Windows
     PRIVATE
+        Private/WindowsArtifactPublisher.cpp
         Private/WindowsToolchain.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
         FILES
+            Public/Cue/Build/Windows/WindowsArtifactPublisher.h
             Public/Cue/Build/Windows/WindowsToolchain.h
 )
 
@@ -70,6 +72,9 @@ target_link_libraries(
         Cue.Build
     PRIVATE
         Cue.Foundation.Windows
+        Cue.GameModule.Abi
+        Cue.Project
+        bcrypt
         version
 )
 target_compile_features(Cue.Build.Windows PUBLIC cxx_std_20)

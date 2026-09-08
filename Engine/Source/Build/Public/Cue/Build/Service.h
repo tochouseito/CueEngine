@@ -34,6 +34,22 @@ struct BuildArtifactFile final
     std::string contentHash;
 };
 
+/// @brief 一つのBuild WorkspaceをProcess間で排他的に保護するRAII Token
+class BuildWorkspaceLease
+{
+  public:
+    /// @brief Process間排他所有権のCopy構築を禁止する
+    BuildWorkspaceLease(const BuildWorkspaceLease &) = delete;
+    /// @brief Process間排他所有権のCopy代入を禁止する
+    BuildWorkspaceLease &operator=(const BuildWorkspaceLease &) = delete;
+    /// @brief 派生Leaseを通してNative Lockを解放する
+    virtual ~BuildWorkspaceLease() = default;
+
+  protected:
+    /// @brief 派生Leaseだけに構築を許可する
+    BuildWorkspaceLease() noexcept = default;
+};
+
 /// @brief Publish済み不変Game Module Artifact集合
 class BuildArtifactInventory final
 {
@@ -81,14 +97,23 @@ class BuildArtifactPublisher
     /// @brief 派生Publisherを正しく破棄する
     virtual ~BuildArtifactPublisher() = default;
 
+    /// @brief Configure開始前にPlan固有Build WorkspaceのExclusive Leaseを取得する
+    ///
+    /// PlanとCancellationは呼出中だけ借用する。取消要求を観測した場合は成功のnulloptを返す。成功Leaseは同じWorker上で
+    /// Publishへ移すか破棄し、Build ProcessとCandidate確定が終わるまで保持する。回復可能なLock失敗はErrorを返す。
+    [[nodiscard]] virtual Result<std::optional<std::unique_ptr<BuildWorkspaceLease>>> acquire_build_lease(
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation) noexcept = 0;
+
     /// @brief Build Plan固有Candidateを検証・公開し、成功時だけInventoryを返す
     ///
-    /// PlanとCancellationは呼出中だけ借用する。実装は一つのGameBuildService
-    /// Workerから直列に呼ばれ、返却Inventoryが全値を
-    /// 所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
+    /// PlanとCancellationは呼出中だけ借用し、Build Leaseの所有権を取得する。実装はCandidate Snapshot確定後にBuild
+    /// Leaseを解放してから Artifact Mutation Leaseを取得し、二つのLeaseを同時保持しない。一つのGameBuildService
+    /// Workerから直列に呼ばれ、返却Inventoryが
+    /// 全値を所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
     /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
     [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
-        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation) noexcept = 0;
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
+        std::unique_ptr<BuildWorkspaceLease> a_buildLease) noexcept = 0;
 
   protected:
     /// @brief 派生Publisherを初期化する

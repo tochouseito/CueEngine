@@ -96,15 +96,38 @@ class ControlledRunner final : public cue::ChildProcessRunner
 class TestPublisher final : public cue::BuildArtifactPublisher
 {
   public:
+    class TestLease final : public cue::BuildWorkspaceLease
+    {
+      public:
+        /// @brief 検証用Leaseの生存期間だけを表す
+        TestLease() noexcept = default;
+        /// @brief Native Resourceを持たない検証用Leaseを破棄する
+        ~TestLease() override = default;
+    };
+
     /// @brief Assert境界を借用して検証用Publisherを構築する
     explicit TestPublisher(const cue::AssertContext &a_assertContext) noexcept : m_assertContext(&a_assertContext)
     {
     }
 
+    /// @brief 取消前ならBuild Workerへ検証用Exclusive Leaseを返す
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
+        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+    {
+        if (a_cancellation.is_cancel_requested())
+        {
+            return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(std::nullopt);
+        }
+        return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(
+            std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>(std::make_unique<TestLease>()));
+    }
+
     /// @brief Cancel前だけ必須Fileを含む決定的な検証用Artifact Inventoryを返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
-        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
     {
+        static_cast<void>(a_buildLease);
         if (a_cancellation.is_cancel_requested())
         {
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);

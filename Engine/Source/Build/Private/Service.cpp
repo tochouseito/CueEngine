@@ -431,6 +431,18 @@ struct GameBuildService::Impl final
                  ChildProcessCancellation &a_cancellation) noexcept
     {
         Observer observer(*this, a_operationId);
+        auto acquired = artifactPublisher->acquire_build_lease(a_plan, a_cancellation);
+        if (!acquired)
+        {
+            finish_error(a_operationId, *acquired.try_error());
+            return;
+        }
+        if (!acquired.try_value()->has_value())
+        {
+            finish_cancelled(a_operationId);
+            return;
+        }
+        std::unique_ptr<BuildWorkspaceLease> buildLease = std::move(**acquired.try_value());
         auto built = run_cmake_build(a_plan, settings, a_configureMode, *processRunner, a_cancellation, observer,
                                      *assertContext);
         if (!built)
@@ -448,7 +460,7 @@ struct GameBuildService::Impl final
             finish_cancelled(a_operationId);
             return;
         }
-        auto published = artifactPublisher->publish(a_plan, a_cancellation);
+        auto published = artifactPublisher->publish(a_plan, a_cancellation, std::move(buildLease));
         if (!published)
         {
             ErrorCode code =
