@@ -95,6 +95,10 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
     environment.selectedTools.push_back({cue::BuildToolKind::CMake, "C:/Program Files/CMake/bin/cmake.exe",
                                          "C:/Program Files/CMake", cue::BuildToolVersion{4U, 2U, 0U, 0U},
                                          cue::BuildArchitecture::X64, true});
+    environment.diagnostics.push_back({cue::BuildEnvironmentDiagnosticCode::UnsupportedTool,
+                                       cue::BuildEnvironmentSupport::Unsupported, cue::BuildToolKind::MsvcCompiler,
+                                       "D:/Internal/Toolchain/cl.exe", "Unsupported compiler",
+                                       "Install a compatible compiler"});
     environment.supportedConfigurations = {cue::BuildConfiguration::Debug};
     return environment;
 }
@@ -176,13 +180,25 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(allText.find("4.2.0.0") != std::string::npos);
     require(allText.find("supportedConfigurations") != std::string::npos);
     require(allText.find("\"nativeError\":{\"domain\":\"Win32\",\"code\":5}") != std::string::npos);
+    require(allText.find("D:/Internal/Toolchain/cl.exe") == std::string::npos);
+    require(allText.find("<DIAGNOSTIC_PATH_0>") != std::string::npos);
+
+    cue::BuildDiagnosticBundleInput expandingInput = input;
+    expandingInput.operation.logs = {{expandingInput.operation.operationId, cue::BuildStage::Build, 0U,
+                                      cue::ChildProcessStream::StandardOutput, std::string(1024U, 'x')}};
+    expandingInput.pathMappings.push_back({"x", "<EXPANDED>"});
+    cue::BuildDiagnosticBundleLimits expandingLimits{16U, 1024U, 16U * 1024U};
+    require(!cue::create_build_diagnostic_bundle(expandingInput, expandingLimits, a_assertContext).has_value());
 
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
     const std::string destinationUtf8 = generic_utf8_path(destination);
+    std::filesystem::path staging = destination;
+    staging += ".staging-" + std::string(bundle.operation_id());
     std::filesystem::remove_all(destination, cleanupError);
     require(!cleanupError);
     require(cue::write_build_diagnostic_bundle_directory(bundle, destinationUtf8, a_assertContext).has_value());
+    require(!std::filesystem::exists(staging));
     require(!cue::write_build_diagnostic_bundle_directory(bundle, destinationUtf8, a_assertContext).has_value());
     cue::BuildDiagnosticBundle reloaded =
         take_value(cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext));
@@ -211,15 +227,47 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     {
         tamperedManifest.push_back(static_cast<char>(std::to_integer<unsigned char>(value)));
     }
+    /// @brief Manifest差替えを完了してからReaderへ渡す
+    const auto write_manifest = [&destination](std::string_view a_text)
+    {
+        std::ofstream stream(destination / "manifest.json", std::ios::binary | std::ios::trunc);
+        stream.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+        stream.close();
+        require(stream.good());
+    };
+    std::string unknownSchema = tamperedManifest;
+    const std::size_t schemaValue = unknownSchema.find("\"schemaVersion\":1");
+    require(schemaValue != std::string::npos);
+    unknownSchema.insert(schemaValue + std::string_view("\"schemaVersion\":1").size(), "0");
+    write_manifest(unknownSchema);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+
+    std::string runningManifest = tamperedManifest;
+    const std::size_t failedState = runningManifest.find("\"state\":\"failed\"");
+    require(failedState != std::string::npos);
+    runningManifest.replace(failedState, std::string_view("\"state\":\"failed\"").size(), "\"state\":\"running\"");
+    write_manifest(runningManifest);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+
     const std::size_t entryBegin = tamperedManifest.find("{\"path\":");
     const std::size_t entryEnd = tamperedManifest.find('\n', entryBegin);
     require(entryBegin != std::string::npos && entryEnd != std::string::npos);
     tamperedManifest.insert(entryEnd + 1U, tamperedManifest.substr(entryBegin, entryEnd - entryBegin + 1U));
-    std::ofstream manifestStream(destination / "manifest.json", std::ios::binary | std::ios::trunc);
-    manifestStream.write(tamperedManifest.data(), static_cast<std::streamsize>(tamperedManifest.size()));
-    manifestStream.close();
-    require(manifestStream.good());
+    write_manifest(tamperedManifest);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+
+    const std::filesystem::path blockedDestination = destination.parent_path() / "CueBuildDiagnosticBundleBlocked";
+    std::filesystem::path blockedStaging = blockedDestination;
+    blockedStaging += ".staging-" + std::string(bundle.operation_id());
+    std::filesystem::remove_all(blockedDestination, cleanupError);
+    require(!cleanupError);
+    std::filesystem::remove_all(blockedStaging, cleanupError);
+    require(!cleanupError && std::filesystem::create_directory(blockedStaging));
+    require(
+        !cue::write_build_diagnostic_bundle_directory(bundle, generic_utf8_path(blockedDestination), a_assertContext)
+             .has_value());
+    require(!std::filesystem::exists(blockedDestination));
+    require(std::filesystem::remove(blockedStaging));
 
     input.environment.reset();
     input.operation.latestSuccessfulArtifact.reset();

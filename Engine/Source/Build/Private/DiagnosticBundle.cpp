@@ -187,6 +187,34 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     }
 }
 
+/// @brief 置換後も指定上限内に収まることを確認してSensitive PathをToken化する
+[[nodiscard]] bool replace_path_bounded(std::string &a_text, std::string_view a_prefix, std::string_view a_replacement,
+                                        std::size_t a_maximumBytes)
+{
+    std::size_t count = 0U;
+    std::size_t offset = 0U;
+    while (true)
+    {
+        const std::size_t found = find_ascii_case_insensitive(a_text, a_prefix, offset);
+        if (found == std::string_view::npos)
+        {
+            break;
+        }
+        ++count;
+        offset = found + a_prefix.size();
+    }
+    if (a_replacement.size() > a_prefix.size())
+    {
+        const std::size_t growth = a_replacement.size() - a_prefix.size();
+        if (a_text.size() > a_maximumBytes || count > (a_maximumBytes - a_text.size()) / growth)
+        {
+            return false;
+        }
+    }
+    replace_path(a_text, a_prefix, a_replacement);
+    return a_text.size() <= a_maximumBytes;
+}
+
 /// @brief Path Redaction規則がBoundedで安全なToken形式か検証する
 [[nodiscard]] bool valid_mapping(const cue::BuildDiagnosticPathMapping &a_mapping) noexcept
 {
@@ -237,6 +265,38 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
     return a_text;
 }
 
+/// @brief 中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
+[[nodiscard]] std::optional<std::string> redact_bounded(std::string a_text,
+                                                        const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+                                                        std::size_t a_maximumBytes)
+{
+    if (a_text.size() > a_maximumBytes)
+    {
+        return std::nullopt;
+    }
+    for (const cue::BuildDiagnosticPathMapping &mapping : a_mappings)
+    {
+        if (!replace_path_bounded(a_text, mapping.nativePrefix, mapping.replacement, a_maximumBytes))
+        {
+            return std::nullopt;
+        }
+        std::string alternate = mapping.nativePrefix;
+        std::replace(alternate.begin(), alternate.end(), '\\', '/');
+        if (alternate != mapping.nativePrefix &&
+            !replace_path_bounded(a_text, alternate, mapping.replacement, a_maximumBytes))
+        {
+            return std::nullopt;
+        }
+        std::replace(alternate.begin(), alternate.end(), '/', '\\');
+        if (alternate != mapping.nativePrefix &&
+            !replace_path_bounded(a_text, alternate, mapping.replacement, a_maximumBytes))
+        {
+            return std::nullopt;
+        }
+    }
+    return a_text;
+}
+
 /// @brief Build Operation Stateを永続化用の安定文字列へ変換する
 [[nodiscard]] const char *state_text(cue::GameBuildOperationState a_state) noexcept
 {
@@ -261,8 +321,7 @@ void add_mapping(std::vector<cue::BuildDiagnosticPathMapping> &a_mappings, std::
 /// @brief 永続化済みState文字列をBuild Operation Stateへ検証変換する
 [[nodiscard]] std::optional<cue::GameBuildOperationState> parse_state(std::string_view a_value) noexcept
 {
-    constexpr std::array states = {cue::GameBuildOperationState::Idle,      cue::GameBuildOperationState::Running,
-                                   cue::GameBuildOperationState::Succeeded, cue::GameBuildOperationState::Failed,
+    constexpr std::array states = {cue::GameBuildOperationState::Succeeded, cue::GameBuildOperationState::Failed,
                                    cue::GameBuildOperationState::Cancelled, cue::GameBuildOperationState::TimedOut};
     for (const cue::GameBuildOperationState state : states)
     {
@@ -560,16 +619,23 @@ void append_artifact(std::string &a_output, std::string_view a_name, const cue::
 }
 
 /// @brief 指定Streamかつ現在Operationに属するLogをRedactして連結する
-[[nodiscard]] std::string serialize_log(const cue::BuildOperationSnapshot &a_operation,
-                                        cue::ChildProcessStream a_stream,
-                                        const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings)
+[[nodiscard]] std::optional<std::string> serialize_log(const cue::BuildOperationSnapshot &a_operation,
+                                                       cue::ChildProcessStream a_stream,
+                                                       const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
+                                                       std::size_t a_maximumBytes)
 {
     std::string output;
     for (const cue::BuildLogSnapshot &log : a_operation.logs)
     {
         if (log.operationId == a_operation.operationId && log.stream == a_stream)
         {
-            output.append(redact(log.bytes, a_mappings));
+            const std::size_t remaining = a_maximumBytes - output.size();
+            std::optional<std::string> redacted = redact_bounded(log.bytes, a_mappings, remaining);
+            if (!redacted)
+            {
+                return std::nullopt;
+            }
+            output.append(*redacted);
         }
     }
     return output;
@@ -822,6 +888,13 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
             {
                 add_mapping(mappings, a_input.environment->selectedTools[index].installationRoot,
                             "<TOOL_ROOT_" + std::to_string(index) + ">");
+                add_mapping(mappings, a_input.environment->selectedTools[index].nativePath,
+                            "<TOOL_PATH_" + std::to_string(index) + ">");
+            }
+            for (std::size_t index = 0U; index < a_input.environment->diagnostics.size(); ++index)
+            {
+                add_mapping(mappings, a_input.environment->diagnostics[index].nativePath,
+                            "<DIAGNOSTIC_PATH_" + std::to_string(index) + ">");
             }
         }
         if (!std::all_of(mappings.begin(), mappings.end(), valid_mapping))
@@ -869,13 +942,27 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
         }
         if (!failure)
         {
-            failure =
-                collect("stdout.log", serialize_log(a_input.operation, ChildProcessStream::StandardOutput, mappings));
+            const std::uint64_t maximumBytes =
+                std::min(a_limits.maximumFileBytes, a_limits.maximumTotalBytes - totalBytes);
+            std::optional<std::string> output = serialize_log(a_input.operation, ChildProcessStream::StandardOutput,
+                                                              mappings, static_cast<std::size_t>(maximumBytes));
+            failure = output ? collect("stdout.log", std::move(*output))
+                             : std::optional<BuildDiagnosticBundleError>(
+                                   maximumBytes < a_limits.maximumFileBytes
+                                       ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
+                                       : BuildDiagnosticBundleError::FileSizeLimitExceeded);
         }
         if (!failure)
         {
-            failure =
-                collect("stderr.log", serialize_log(a_input.operation, ChildProcessStream::StandardError, mappings));
+            const std::uint64_t maximumBytes =
+                std::min(a_limits.maximumFileBytes, a_limits.maximumTotalBytes - totalBytes);
+            std::optional<std::string> output = serialize_log(a_input.operation, ChildProcessStream::StandardError,
+                                                              mappings, static_cast<std::size_t>(maximumBytes));
+            failure = output ? collect("stderr.log", std::move(*output))
+                             : std::optional<BuildDiagnosticBundleError>(
+                                   maximumBytes < a_limits.maximumFileBytes
+                                       ? BuildDiagnosticBundleError::TotalSizeLimitExceeded
+                                       : BuildDiagnosticBundleError::FileSizeLimitExceeded);
         }
         if (!failure && (a_input.operation.artifact || a_input.operation.latestSuccessfulArtifact))
         {
@@ -931,29 +1018,71 @@ Result<void> write_build_diagnostic_bundle_directory(const BuildDiagnosticBundle
                                                                  : BuildDiagnosticBundleError::DestinationAlreadyExists,
                                                            "Diagnostic destination is unavailable"));
         }
-        if (!std::filesystem::create_directories(*destination, error) || error)
+        const std::filesystem::path parent = destination->parent_path();
+        const std::filesystem::path name = destination->filename();
+        if (parent.empty() || name.empty())
+        {
+            return Result<void>::failure(make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
+                                                           "Diagnostic destination has no parent or name"));
+        }
+        std::filesystem::create_directories(parent, error);
+        if (error)
         {
             return Result<void>::failure(make_bundle_error(a_assertContext,
                                                            BuildDiagnosticBundleError::FilesystemFailure,
-                                                           "Diagnostic destination could not be created"));
+                                                           "Diagnostic destination parent could not be created"));
         }
+        const auto stagingSuffix = filesystem_path_from_utf8(".staging-" + std::string(a_bundle.operation_id()));
+        if (!stagingSuffix)
+        {
+            return Result<void>::failure(make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidBundle,
+                                                           "Diagnostic bundle operation ID is invalid"));
+        }
+        std::filesystem::path staging = parent / name;
+        staging += *stagingSuffix;
+        if (std::filesystem::exists(staging, error) || error || !std::filesystem::create_directory(staging, error) ||
+            error)
+        {
+            return Result<void>::failure(make_bundle_error(a_assertContext,
+                                                           BuildDiagnosticBundleError::FilesystemFailure,
+                                                           "Diagnostic staging destination is unavailable"));
+        }
+        bool stagingOwned = true;
+        /// @brief この呼出しが所有するStagingだけをRollbackして失敗を返す
+        const auto fail = [&](BuildDiagnosticBundleError a_code, std::string_view a_summary)
+        {
+            std::error_code cleanupError;
+            if (stagingOwned)
+            {
+                std::filesystem::remove_all(staging, cleanupError);
+            }
+            return Result<void>::failure(make_bundle_error(a_assertContext, a_code, a_summary));
+        };
         for (const BuildDiagnosticBundleFile &file : a_bundle.files())
         {
             if (!known_bundle_path(file.relativePath))
             {
-                return Result<void>::failure(make_bundle_error(
-                    a_assertContext, BuildDiagnosticBundleError::InvalidBundle, "Diagnostic bundle path is invalid"));
+                return fail(BuildDiagnosticBundleError::InvalidBundle, "Diagnostic bundle path is invalid");
             }
-            std::ofstream stream(*destination / file.relativePath, std::ios::binary | std::ios::trunc);
+            std::ofstream stream(staging / file.relativePath, std::ios::binary | std::ios::trunc);
             stream.write(reinterpret_cast<const char *>(file.bytes.data()),
                          static_cast<std::streamsize>(file.bytes.size()));
             stream.flush();
             if (!stream)
             {
-                return Result<void>::failure(make_bundle_error(
-                    a_assertContext, BuildDiagnosticBundleError::FilesystemFailure, "Diagnostic file write failed"));
+                return fail(BuildDiagnosticBundleError::FilesystemFailure, "Diagnostic file write failed");
             }
         }
+        std::filesystem::rename(staging, *destination, error);
+        if (error)
+        {
+            std::error_code destinationError;
+            const bool destinationExists = std::filesystem::exists(*destination, destinationError);
+            return fail(destinationExists && !destinationError ? BuildDiagnosticBundleError::DestinationAlreadyExists
+                                                               : BuildDiagnosticBundleError::FilesystemFailure,
+                        "Diagnostic destination could not be published");
+        }
+        stagingOwned = false;
         return Result<void>::success();
     }
     catch (...)
@@ -1096,7 +1225,8 @@ Result<BuildDiagnosticBundle> read_build_diagnostic_bundle_directory(std::string
             }
             begin = end + 1U;
         }
-        if (!valid_manifest_entries(entries) || !files_match_manifest(files, entries))
+        if (!valid_manifest_entries(entries) || manifest != serialize_manifest(*operationId, *state, entries) ||
+            !files_match_manifest(files, entries))
         {
             return Result<BuildDiagnosticBundle>::failure(
                 make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidBundle,
