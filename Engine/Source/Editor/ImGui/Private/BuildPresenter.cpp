@@ -402,6 +402,7 @@ bool BuildPresenter::begin_editor_shutdown() noexcept
     {
         return true;
     }
+    m_closeShutdownConfirmation = false;
     m_openShutdownConfirmation = true;
     m_isShutdownConfirmationPending = true;
     return false;
@@ -416,6 +417,7 @@ bool BuildPresenter::respond_to_editor_shutdown(EditorBuildShutdownDecision a_de
     if (a_decision == EditorBuildShutdownDecision::KeepEditorOpen)
     {
         m_openShutdownConfirmation = false;
+        m_closeShutdownConfirmation = true;
         m_isShutdownConfirmationPending = false;
         m_isShutdownWaitingForCancel = false;
         return false;
@@ -784,13 +786,24 @@ void BuildPresenter::draw_artifacts() noexcept
 
 void BuildPresenter::draw_shutdown_confirmation() noexcept
 {
+    constexpr const char *shutdownPopupName = "Build中のEditor終了";
     if (m_openShutdownConfirmation)
     {
-        ImGui::OpenPopup("Build中のEditor終了");
+        ImGui::OpenPopup(shutdownPopupName);
         m_openShutdownConfirmation = false;
     }
+    if (m_closeShutdownConfirmation)
+    {
+        if (ImGui::BeginPopupModal(shutdownPopupName, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        m_closeShutdownConfirmation = false;
+        return;
+    }
     if (!m_isShutdownConfirmationPending ||
-        !ImGui::BeginPopupModal("Build中のEditor終了", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        !ImGui::BeginPopupModal(shutdownPopupName, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         return;
     }
@@ -817,6 +830,7 @@ void BuildPresenter::draw_shutdown_confirmation() noexcept
 void BuildPresenter::mark_shutdown_ready() noexcept
 {
     m_openShutdownConfirmation = false;
+    m_closeShutdownConfirmation = true;
     m_isShutdownConfirmationPending = false;
     m_isShutdownWaitingForCancel = false;
     m_isShutdownReady = true;

@@ -240,10 +240,14 @@ void test_build_workflow(const cue::AssertContext &a_assertContext)
     runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
     require(presenter->submit(cue::editor::EditorBuildCommand::Start));
     require(!presenter->begin_editor_shutdown());
+    draw_frame(*presenter);
+    require(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
     runnerState.mode.store(RunnerMode::Succeed, std::memory_order_release);
     require(service->wait_for_completion().has_value());
     require(presenter->respond_to_editor_shutdown(cue::editor::EditorBuildShutdownDecision::CancelBuildAndClose));
     require(presenter->take_shutdown_ready());
+    draw_frame(*presenter);
+    require(!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
 
     runnerState.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
     press_build_shortcut(*presenter);

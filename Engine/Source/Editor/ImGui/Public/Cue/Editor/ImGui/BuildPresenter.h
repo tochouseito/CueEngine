@@ -169,6 +169,7 @@ class BuildPresenter final
     bool m_forceConfigure = true;
     bool m_hasError = false;
     bool m_openShutdownConfirmation = false;
+    bool m_closeShutdownConfirmation = false;
     bool m_isShutdownConfirmationPending = false;
     bool m_isShutdownWaitingForCancel = false;
     bool m_isShutdownReady = false;
