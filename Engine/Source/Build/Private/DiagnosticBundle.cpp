@@ -394,6 +394,13 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
     return true;
 }
 
+/// @brief Diagnostic Bundleへ永続化できる終端Build Operation Stateか検証する
+[[nodiscard]] bool valid_terminal_state(cue::GameBuildOperationState a_state) noexcept
+{
+    return a_state == cue::GameBuildOperationState::Succeeded || a_state == cue::GameBuildOperationState::Failed ||
+           a_state == cue::GameBuildOperationState::Cancelled || a_state == cue::GameBuildOperationState::TimedOut;
+}
+
 /// @brief 入力Copyと中間置換を含め指定上限を超えない場合だけSensitive PathをToken化する
 [[nodiscard]] std::optional<std::string> redact_bounded(std::string_view a_text,
                                                         const std::vector<cue::BuildDiagnosticPathMapping> &a_mappings,
@@ -620,8 +627,22 @@ void replace_path(std::string &a_text, std::string_view a_prefix, std::string_vi
                 ? "supported"
                 : (diagnostic.support == cue::BuildEnvironmentSupport::Unsupported ? "unsupported" : "unknown");
         if ((index > 0U && !output.push_back(',')) || !output.append("{\"code\":") ||
-            !output.append(std::to_string(static_cast<std::uint32_t>(diagnostic.code))) ||
-            !output.append(",\"support\":") || !output.append_json_string(diagnosticSupport) ||
+            !output.append(std::to_string(static_cast<std::uint32_t>(diagnostic.code))) || !output.append(",\"tool\":"))
+        {
+            return std::nullopt;
+        }
+        if (diagnostic.tool)
+        {
+            if (!output.append(std::to_string(static_cast<std::uint32_t>(*diagnostic.tool))))
+            {
+                return std::nullopt;
+            }
+        }
+        else if (!output.append("null"))
+        {
+            return std::nullopt;
+        }
+        if (!output.append(",\"support\":") || !output.append_json_string(diagnosticSupport) ||
             !output.append(",\"path\":") || !append_redacted_json(output, diagnostic.nativePath, a_mappings) ||
             !output.append(",\"summary\":") || !append_redacted_json(output, diagnostic.summary, a_mappings) ||
             !output.append(",\"repairHint\":") || !append_redacted_json(output, diagnostic.repairHint, a_mappings) ||
@@ -1202,10 +1223,20 @@ class JsonSchemaReader final
 /// @brief Toolchain Report内のDiagnostic Objectを固定Schemaで読み取る
 [[nodiscard]] bool read_environment_diagnostic(JsonSchemaReader &a_reader) noexcept
 {
-    return a_reader.begin_object() && a_reader.member("code") &&
-           a_reader.unsigned_integer(
-               static_cast<std::uint64_t>(cue::BuildEnvironmentDiagnosticCode::MissingEngineBinary)) &&
-           a_reader.comma() && a_reader.member("support") &&
+    if (!a_reader.begin_object() || !a_reader.member("code") ||
+        !a_reader.unsigned_integer(
+            static_cast<std::uint64_t>(cue::BuildEnvironmentDiagnosticCode::MissingEngineBinary)) ||
+        !a_reader.comma() || !a_reader.member("tool"))
+    {
+        return false;
+    }
+    if (!(a_reader.next_is('n')
+              ? a_reader.null_value()
+              : a_reader.unsigned_integer(static_cast<std::uint64_t>(cue::BuildToolKind::WindowsSdk))))
+    {
+        return false;
+    }
+    return a_reader.comma() && a_reader.member("support") &&
            a_reader.string_is({"supported", "unsupported", "unknown"}) && a_reader.comma() && a_reader.member("path") &&
            a_reader.string() && a_reader.comma() && a_reader.member("summary") && a_reader.string() &&
            a_reader.comma() && a_reader.member("repairHint") && a_reader.string() && a_reader.end_object();
@@ -1648,9 +1679,8 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidLimits, "Diagnostic bundle limits are invalid"));
         }
-        if (!is_uuid_v4(a_input.operation.operationId) || a_input.operation.state == GameBuildOperationState::Idle ||
-            a_input.operation.state == GameBuildOperationState::Running || a_input.plan.projectRoot.empty() ||
-            a_input.plan.targetName.empty())
+        if (!is_uuid_v4(a_input.operation.operationId) || !valid_terminal_state(a_input.operation.state) ||
+            a_input.plan.projectRoot.empty() || a_input.plan.targetName.empty())
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
                 a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic bundle input is invalid"));
@@ -1661,7 +1691,17 @@ Result<BuildDiagnosticBundle> create_build_diagnostic_bundle(const BuildDiagnost
                 make_bundle_error(a_assertContext, BuildDiagnosticBundleError::InvalidInput,
                                   "Diagnostic environment contains unknown values"));
         }
-        std::vector<BuildDiagnosticPathMapping> mappings = a_input.pathMappings;
+        std::vector<BuildDiagnosticPathMapping> mappings;
+        mappings.reserve(a_input.pathMappings.size());
+        for (const BuildDiagnosticPathMapping &mapping : a_input.pathMappings)
+        {
+            if (!valid_mapping(mapping))
+            {
+                return Result<BuildDiagnosticBundle>::failure(make_bundle_error(
+                    a_assertContext, BuildDiagnosticBundleError::InvalidInput, "Diagnostic path mapping is invalid"));
+            }
+            mappings.push_back(mapping);
+        }
         if (!add_mapping(mappings, a_input.plan.projectRoot, "<PROJECT_ROOT>"))
         {
             return Result<BuildDiagnosticBundle>::failure(make_bundle_error(

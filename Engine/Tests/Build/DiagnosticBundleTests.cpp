@@ -183,6 +183,7 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(allText.find("\"nativeError\":{\"domain\":\"Win32\",\"code\":5}") != std::string::npos);
     require(allText.find("D:/Internal/Toolchain/cl.exe") == std::string::npos);
     require(allText.find("<DIAGNOSTIC_PATH_0>") != std::string::npos);
+    require(allText.find("\"tool\":2") != std::string::npos);
 
     cue::BuildDiagnosticBundleInput expandingInput = input;
     expandingInput.operation.logs = {{expandingInput.operation.operationId, cue::BuildStage::Build, 0U,
@@ -204,6 +205,10 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     oversizedAutomaticPathInput.environment->engineSourceRoot = std::string(4097U, 'p');
     require(!cue::create_build_diagnostic_bundle(oversizedAutomaticPathInput, limits, a_assertContext).has_value());
 
+    cue::BuildDiagnosticBundleInput oversizedExplicitMappingInput = input;
+    oversizedExplicitMappingInput.pathMappings.front().nativePrefix = std::string(4097U, 'p');
+    require(!cue::create_build_diagnostic_bundle(oversizedExplicitMappingInput, limits, a_assertContext).has_value());
+
     cue::BuildDiagnosticBundleInput unknownToolKindInput = input;
     unknownToolKindInput.environment->selectedTools.front().kind = static_cast<cue::BuildToolKind>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownToolKindInput, limits, a_assertContext).has_value());
@@ -212,6 +217,14 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     unknownDiagnosticCodeInput.environment->diagnostics.front().code =
         static_cast<cue::BuildEnvironmentDiagnosticCode>(255U);
     require(!cue::create_build_diagnostic_bundle(unknownDiagnosticCodeInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownDiagnosticToolInput = input;
+    unknownDiagnosticToolInput.environment->diagnostics.front().tool = static_cast<cue::BuildToolKind>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownDiagnosticToolInput, limits, a_assertContext).has_value());
+
+    cue::BuildDiagnosticBundleInput unknownStateInput = input;
+    unknownStateInput.operation.state = static_cast<cue::GameBuildOperationState>(255U);
+    require(!cue::create_build_diagnostic_bundle(unknownStateInput, limits, a_assertContext).has_value());
 
     const std::filesystem::path destination =
         std::filesystem::path(a_testRoot) / L"CueBuildDiagnosticBundleTests-\u8A3A\u65AD-01234567";
@@ -289,6 +302,12 @@ void test_diagnostic_bundle(std::string_view a_testRoot, const cue::AssertContex
     require(diagnosticCode != std::string::npos);
     unknownDiagnosticCode[diagnosticCode + std::string_view("\"code\":").size()] = '9';
     write_environment(unknownDiagnosticCode);
+    require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
+    std::string unknownDiagnosticTool = originalEnvironment;
+    const std::size_t diagnosticTool = unknownDiagnosticTool.find("\"tool\":2");
+    require(diagnosticTool != std::string::npos);
+    unknownDiagnosticTool[diagnosticTool + std::string_view("\"tool\":").size()] = '9';
+    write_environment(unknownDiagnosticTool);
     require(!cue::read_build_diagnostic_bundle_directory(destinationUtf8, limits, a_assertContext).has_value());
     write_environment(originalEnvironment);
 
