@@ -4,7 +4,9 @@
 #include <Cue/Editor/ImGui/SessionLog.h>
 #include <Cue/Editor/Windows/EditorSession.h>
 #include <Cue/EditorCore/EditorIntent.h>
+#include <Cue/EditorCore/EditorPlaySessionController.h>
 #include <Cue/EditorCore/Error.h>
+#include <Cue/EditorCore/SceneCommand.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
 #include <Cue/Foundation/Fatal.h>
@@ -12,10 +14,13 @@
 #include <Cue/Foundation/NumberParsing.h>
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/GameCore/Clock.h>
+#include <Cue/GameCore/RuntimeSystem.h>
 #include <Cue/GameCore/World.h>
 #include <Cue/IO/RelativePath.h>
 #include <Cue/Project/Compatibility.h>
 #include <Cue/Runtime/RuntimeSchema.h>
+#include <Cue/Runtime/RuntimeSystemFactory.h>
+#include <Cue/Scene/Error.h>
 #include <Cue/Scene/Serialization.h>
 #include <Cue/Schema/Registry.h>
 #include <Cue/ToolHost/WindowsD3D12/ToolHost.h>
@@ -42,6 +47,7 @@ constexpr int k_toolHostFailed = 2;
 constexpr int k_processTestFailed = 3;
 constexpr std::uint64_t k_firstEditorPlayGeneration = 1U;
 constexpr std::int64_t k_maximumEditorPlayDeltaNanoseconds = 100'000'000;
+constexpr std::size_t k_processTestPlayCycleCount = 12U;
 
 /// @brief Editor ToolのCommand Line値と重複検査状態を保持する
 struct EditorToolOptions final
@@ -69,12 +75,184 @@ enum class PendingTransition : std::uint8_t
     CloseProject,
 };
 
+/// @brief Process TestのRuntime生成、入力観測、停止済み所有数をProcess Scopeで保持する
+struct PlayWorkflowProbe final
+{
+    std::size_t createdSystemCount = 0U;
+    std::size_t destroyedSystemCount = 0U;
+    std::size_t startedSystemCount = 0U;
+    std::size_t updateCount = 0U;
+    std::size_t inputUpdateCount = 0U;
+    std::size_t stoppedSystemCount = 0U;
+    std::size_t activeSystemCount = 0U;
+    std::size_t injectedStartFailureCount = 0U;
+    bool shouldFailNextStart = false;
+};
+
+/// @brief Process Test中のRuntime CallbackとPortable Input順を外部Probeへ記録する
+class PlayWorkflowSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief Session-local SystemをProcess Scope Probeへ関連付ける
+    PlayWorkflowSystem(PlayWorkflowProbe &a_probe, const cue::AssertContext &a_assertContext) noexcept
+        : m_probe(&a_probe), m_assertContext(&a_assertContext)
+    {
+    }
+
+    /// @brief System Instanceの破棄をProcess Scope Probeへ記録する
+    ~PlayWorkflowSystem() noexcept override
+    {
+        ++m_probe->destroyedSystemCount;
+    }
+
+    /// @brief 指定時だけ副作用なしのStart失敗を注入し成功Session数を記録する
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        if (m_probe->shouldFailNextStart)
+        {
+            m_probe->shouldFailNextStart = false;
+            ++m_probe->injectedStartFailureCount;
+            cue::ErrorCode code =
+                cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.EditorTool.PlayWorkflowTest", 1);
+            return cue::Result<void>::failure(cue::Error::create(
+                m_assertContext->fatal_handler(), std::move(code), "Injected process workflow system start failure"));
+        }
+        m_isStarted = true;
+        ++m_probe->startedSystemCount;
+        ++m_probe->activeSystemCount;
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Input SnapshotがUpdate前にKeyDownを反映した回数を記録する
+    [[nodiscard]] cue::Result<void> update(
+        const cue::game_core::RuntimeSystemUpdateContext &a_context) noexcept override
+    {
+        ++m_probe->updateCount;
+        if (a_context.input.was_key_pressed(cue::InputKey::A))
+        {
+            ++m_probe->inputUpdateCount;
+        }
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 成功Start済みSystemだけを一度停止して残留数を減らす
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        if (m_isStarted)
+        {
+            m_isStarted = false;
+            ++m_probe->stoppedSystemCount;
+            --m_probe->activeSystemCount;
+        }
+        return cue::Result<void>::success();
+    }
+
+  private:
+    PlayWorkflowProbe *m_probe;
+    const cue::AssertContext *m_assertContext;
+    bool m_isStarted = false;
+};
+
+/// @brief 各Play Sessionへ独立したProcess Test Systemを生成する
+class PlayWorkflowSystemFactory final : public cue::runtime::RuntimeSystemFactory
+{
+  public:
+    /// @brief Project Scope FactoryをProcess Scope Probeへ関連付ける
+    explicit PlayWorkflowSystemFactory(PlayWorkflowProbe &a_probe) noexcept : m_probe(&a_probe)
+    {
+    }
+
+    /// @brief Callback順を観測するSession-local Systemと固定Descriptorを返す
+    [[nodiscard]] cue::Result<cue::runtime::RuntimeSystemRegistration> create_system(
+        const cue::AssertContext &a_assertContext) const noexcept override
+    {
+        ++m_probe->createdSystemCount;
+        cue::runtime::RuntimeSystemRegistration registration{
+            {"Editor.Play.ProcessWorkflow", cue::game_core::RuntimeUpdatePhase::Update, 0, {}},
+            std::make_unique<PlayWorkflowSystem>(*m_probe, a_assertContext)};
+        return cue::Result<cue::runtime::RuntimeSystemRegistration>::success(std::move(registration));
+    }
+
+  private:
+    PlayWorkflowProbe *m_probe;
+};
+
+/// @brief Play前後で維持すべきAuthoring Documentの所有値Snapshotを保持する
+struct PlayWorkflowDocumentState final
+{
+    std::string serializedScene;
+    std::vector<std::string> selection;
+    std::optional<std::string> primarySelection;
+    std::uint64_t currentState = 0U;
+    std::uint64_t savedState = 0U;
+    std::size_t historyEntryCount = 0U;
+    bool isDirty = false;
+};
+
 /// @brief Editor Tool失敗をProcess Rootの安定Domainへ分類する
 [[nodiscard]] cue::Error make_tool_error(const cue::AssertContext &a_context, std::int64_t a_code,
                                          std::string_view a_summary) noexcept
 {
     cue::ErrorCode code = cue::ErrorCode::create(a_context.fatal_handler(), "Cue.EditorTool", a_code);
     return cue::Error::create(a_context.fatal_handler(), std::move(code), a_summary);
+}
+
+/// @brief Authoring SceneとEditor固有状態をPlay前後比較用の所有値へ複製する
+[[nodiscard]] cue::Result<PlayWorkflowDocumentState> capture_play_workflow_document_state(
+    const cue::editor_core::EditorDocument &a_document, const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        cue::Result<std::string> serialized =
+            cue::scene::serialize_scene_document(a_document.scene_document(), a_assertContext);
+        if (!serialized)
+        {
+            return cue::Result<PlayWorkflowDocumentState>::failure(std::move(*serialized.try_error()));
+        }
+        PlayWorkflowDocumentState state;
+        state.serializedScene = std::move(*serialized.try_value());
+        state.currentState = a_document.current_state_id().value();
+        state.savedState = a_document.saved_state_id().value();
+        state.historyEntryCount = a_document.history_entry_count();
+        state.isDirty = a_document.is_dirty();
+        state.selection.reserve(a_document.selection().size());
+        for (const cue::scene::ObjectId &objectId : a_document.selection())
+        {
+            const cue::scene::IdentityText identity = objectId.canonical_text();
+            state.selection.emplace_back(identity.data(), identity.size());
+        }
+        if (const cue::scene::ObjectId *primary = a_document.try_primary_selection(); primary != nullptr)
+        {
+            const cue::scene::IdentityText identity = primary->canonical_text();
+            state.primarySelection.emplace(identity.data(), identity.size());
+        }
+        return cue::Result<PlayWorkflowDocumentState>::success(std::move(state));
+    }
+    catch (...)
+    {
+        a_assertContext.fatal_handler().terminate("Editor Play workflow state capture failed unexpectedly");
+        std::abort();
+    }
+}
+
+/// @brief 現在DocumentがPlay前に取得したAuthoring状態と一致するか検証する
+[[nodiscard]] bool matches_play_workflow_document_state(
+    const cue::editor_core::EditorDocument &a_document, const PlayWorkflowDocumentState &a_expected,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    cue::Result<PlayWorkflowDocumentState> current =
+        capture_play_workflow_document_state(a_document, a_assertContext);
+    if (!current)
+    {
+        return false;
+    }
+    return current.try_value()->serializedScene == a_expected.serializedScene &&
+           current.try_value()->selection == a_expected.selection &&
+           current.try_value()->primarySelection == a_expected.primarySelection &&
+           current.try_value()->currentState == a_expected.currentState &&
+           current.try_value()->savedState == a_expected.savedState &&
+           current.try_value()->historyEntryCount == a_expected.historyEntryCount &&
+           current.try_value()->isDirty == a_expected.isDirty;
 }
 
 /// @brief UI Composition中の予期しない例外をFatal境界へ渡す
@@ -232,7 +410,8 @@ enum class PendingTransition : std::uint8_t
         if (options.hasProcessTestAction &&
             (!options.hasInitialScene || !options.hasMaximumFrameCount ||
              (*options.processTestAction != "autosave-recovery" && *options.processTestAction != "autosave-new-scene" &&
-              *options.processTestAction != "edit-close-save" && *options.processTestAction != "files-workflow")))
+              *options.processTestAction != "edit-close-save" && *options.processTestAction != "files-workflow" &&
+              *options.processTestAction != "play-repeated-workflow")))
         {
             return cue::Result<EditorToolOptions>::failure(make_tool_error(
                 a_context, k_invalidArguments,
@@ -271,6 +450,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     /// @brief Sessionと診断ContextをClient全寿命へ関連付ける
     EditorToolClient(cue::editor::WindowsEditorSession &a_session, cue::Logger &a_logger,
                      cue::editor::EditorSessionLogRouter &a_logRouter,
+                     std::span<const cue::runtime::RuntimeSystemFactory *const> a_systemFactories,
                      const cue::AssertContext &a_assertContext) noexcept
         : m_session(&a_session), m_assertContext(&a_assertContext)
     {
@@ -303,7 +483,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             }
             cue::Result<std::unique_ptr<cue::editor_core::EditorPlaySessionController>> playController =
                 cue::editor_core::EditorPlaySessionController::create(
-                    a_session.controller().session(), m_worldIdentitySource, m_clock, *m_runtimeSchema, {},
+                    a_session.controller().session(), m_worldIdentitySource, m_clock, *m_runtimeSchema, a_systemFactories,
                     std::move(typeIds.try_value()->transform), std::move(typeIds.try_value()->sceneObjectState),
                     k_firstEditorPlayGeneration, k_maximumEditorPlayDeltaNanoseconds, a_assertContext);
             if (!playController)
@@ -342,6 +522,224 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 m_assertContext->fatal_handler().terminate(
                     "Editor Tool destruction requires completed Play Session cleanup");
             }
+        }
+    }
+
+    /// @brief 実Editor Process内で反復Play、失敗復旧、終了時Cleanupの統合契約を検証する
+    [[nodiscard]] cue::Result<void> run_play_workflow_process_test(PlayWorkflowProbe &a_probe) noexcept
+    {
+        try
+        {
+            /// @brief Workflow不変条件違反をProcess Test用Errorへ変換する
+            const auto fail = [this](std::string_view a_summary) noexcept
+            {
+                return cue::Result<void>::failure(
+                    make_tool_error(*m_assertContext, k_processTestFailed, a_summary));
+            };
+
+            if (!m_session->active_document_id().has_value())
+            {
+                return fail("Play workflow requires an active scene");
+            }
+            const cue::editor_core::EditorDocumentId documentId = *m_session->active_document_id();
+            const cue::editor_core::EditorDocument *document =
+                m_session->controller().session().find_document(documentId);
+            if (document == nullptr || document->scene_document().objects().empty())
+            {
+                return fail("Play workflow requires an authoring object");
+            }
+            const cue::scene::ObjectId objectId = document->scene_document().objects().front().id();
+            cue::editor_core::RenameObjectIntent renameBefore{objectId, "Process Play Source"};
+            cue::Result<void> renamedBefore = m_session->controller().execute_intent(
+                documentId, std::move(renameBefore), m_session->identity_source(), {});
+            const std::array selection{objectId};
+            cue::Result<void> selected = m_session->controller().set_selection(documentId, selection, &objectId);
+            if (!renamedBefore || !selected)
+            {
+                return fail("Play workflow could not prepare dirty authoring state and selection");
+            }
+            document = m_session->controller().session().find_document(documentId);
+            if (document == nullptr)
+            {
+                return fail("Play workflow lost the prepared Editor document");
+            }
+            cue::Result<PlayWorkflowDocumentState> captured =
+                capture_play_workflow_document_state(*document, *m_assertContext);
+            if (!captured)
+            {
+                return cue::Result<void>::failure(std::move(*captured.try_error()));
+            }
+            PlayWorkflowDocumentState expected = std::move(*captured.try_value());
+            std::vector<std::uint64_t> worldIds;
+            worldIds.reserve(k_processTestPlayCycleCount);
+
+            for (std::size_t cycle = 0U; cycle < k_processTestPlayCycleCount; ++cycle)
+            {
+                cue::Result<void> started = m_playController->start(documentId);
+                const cue::editor_core::EditorPlaySessionSnapshot running = m_playController->state_snapshot();
+                if (!started || running.state != cue::editor_core::EditorPlaySessionState::Running ||
+                    running.worldId == 0U || a_probe.activeSystemCount != 1U ||
+                    std::find(worldIds.begin(), worldIds.end(), running.worldId) != worldIds.end())
+                {
+                    return fail("Repeated Play did not create one independent Runtime session");
+                }
+                worldIds.push_back(running.worldId);
+
+                const std::size_t updateCount = a_probe.updateCount;
+                const std::size_t inputUpdateCount = a_probe.inputUpdateCount;
+                cue::Result<bool> pushed =
+                    m_playController->push_input_event({cue::InputEventType::KeyDown, cue::InputKey::A});
+                cue::Result<void> advanced = m_playController->advance_frame({});
+                if (!pushed || !*pushed.try_value() || !advanced || a_probe.updateCount != updateCount + 1U ||
+                    a_probe.inputUpdateCount != inputUpdateCount + 1U)
+                {
+                    return fail("Runtime Update did not observe the queued Input in the same frame");
+                }
+                cue::Result<void> requested = m_playController->request_stop();
+                cue::Result<void> stopped = m_playController->stop();
+                const cue::editor_core::EditorPlaySessionSnapshot stoppedState = m_playController->state_snapshot();
+                document = m_session->controller().session().find_document(documentId);
+                if (!requested || !stopped || stoppedState.state != cue::editor_core::EditorPlaySessionState::Stopped ||
+                    a_probe.activeSystemCount != 0U || a_probe.createdSystemCount != a_probe.destroyedSystemCount ||
+                    document == nullptr ||
+                    !matches_play_workflow_document_state(*document, expected, *m_assertContext))
+                {
+                    return fail("Stop left Runtime ownership or changed the Authoring document");
+                }
+
+                if (cycle == 0U)
+                {
+                    cue::editor_core::RenameObjectIntent renameAfter{objectId, "Process Play Re-edited"};
+                    cue::Result<void> renamedAfter = m_session->controller().execute_intent(
+                        documentId, std::move(renameAfter), m_session->identity_source(), {});
+                    document = m_session->controller().session().find_document(documentId);
+                    if (!renamedAfter || document == nullptr)
+                    {
+                        return fail("Authoring edit after Stop failed");
+                    }
+                    captured = capture_play_workflow_document_state(*document, *m_assertContext);
+                    if (!captured)
+                    {
+                        return cue::Result<void>::failure(std::move(*captured.try_error()));
+                    }
+                    expected = std::move(*captured.try_value());
+                }
+            }
+
+            cue::Result<cue::runtime::RuntimeSchemaTypeIds> runtimeTypeIds =
+                cue::runtime::make_runtime_schema_type_ids(*m_assertContext);
+            cue::Result<cue::scene::ComponentInstanceId> opaqueComponentId = cue::scene::ComponentInstanceId::parse(
+                "00000000-0000-4000-8000-000000000216", *m_assertContext);
+            cue::Result<cue::schema::SchemaVersion> futureVersion =
+                cue::schema::SchemaVersion::create(2U, *m_assertContext);
+            if (!runtimeTypeIds || !opaqueComponentId || !futureVersion)
+            {
+                return fail("Scene load failure input could not be constructed");
+            }
+            const cue::scene::ComponentInstanceId retainedOpaqueComponentId = *opaqueComponentId.try_value();
+            cue::Result<cue::scene::OpaqueComponentData> opaqueComponent = cue::scene::OpaqueComponentData::create(
+                std::move(*opaqueComponentId.try_value()), runtimeTypeIds.try_value()->transform,
+                std::move(*futureVersion.try_value()), "{\"future\":true}", *m_runtimeSchema, *m_assertContext);
+            if (!opaqueComponent)
+            {
+                return cue::Result<void>::failure(std::move(*opaqueComponent.try_error()));
+            }
+            const cue::scene::SceneAssetId sceneAssetId = document->scene_document().scene_asset_id();
+            cue::Result<cue::editor_core::DocumentStateId> addedOpaque =
+                m_session->controller().execute_command(cue::editor_core::SceneCommandRequest{
+                    documentId, sceneAssetId,
+                    cue::editor_core::AddComponentCommand{
+                        objectId, cue::scene::SceneComponent::opaque(std::move(*opaqueComponent.try_value()))}});
+            document = m_session->controller().session().find_document(documentId);
+            if (!addedOpaque || document == nullptr)
+            {
+                return fail("Scene load failure component could not be added to the Authoring document");
+            }
+            captured = capture_play_workflow_document_state(*document, *m_assertContext);
+            if (!captured)
+            {
+                return cue::Result<void>::failure(std::move(*captured.try_error()));
+            }
+            const PlayWorkflowDocumentState unsupportedSceneState = std::move(*captured.try_value());
+            const std::size_t createdBeforeLoadFailure = a_probe.createdSystemCount;
+            const std::size_t destroyedBeforeLoadFailure = a_probe.destroyedSystemCount;
+            cue::Result<void> failedSceneLoad = m_playController->start(documentId);
+            const cue::editor_core::EditorPlaySessionSnapshot failedLoadState = m_playController->state_snapshot();
+            document = m_session->controller().session().find_document(documentId);
+            if (failedSceneLoad || failedLoadState.state != cue::editor_core::EditorPlaySessionState::Stopped ||
+                !failedLoadState.hasFailure || failedSceneLoad.try_error()->root_code().value() !=
+                                                   static_cast<std::int64_t>(
+                                                       cue::scene::SceneError::UnsupportedRuntimeComponent) ||
+                a_probe.createdSystemCount != createdBeforeLoadFailure + 1U ||
+                a_probe.destroyedSystemCount != destroyedBeforeLoadFailure + 1U ||
+                a_probe.activeSystemCount != 0U || document == nullptr ||
+                !matches_play_workflow_document_state(*document, unsupportedSceneState, *m_assertContext))
+            {
+                return fail("Scene instantiation failure did not roll back without changing Editor state");
+            }
+            cue::Result<cue::editor_core::DocumentStateId> removedOpaque =
+                m_session->controller().execute_command(cue::editor_core::SceneCommandRequest{
+                    documentId, sceneAssetId,
+                    cue::editor_core::RemoveComponentCommand{objectId, retainedOpaqueComponentId}});
+            document = m_session->controller().session().find_document(documentId);
+            if (!removedOpaque || document == nullptr)
+            {
+                return fail("Authoring recovery edit after Scene load failure failed");
+            }
+            captured = capture_play_workflow_document_state(*document, *m_assertContext);
+            if (!captured || captured.try_value()->serializedScene != expected.serializedScene ||
+                captured.try_value()->selection != expected.selection ||
+                captured.try_value()->primarySelection != expected.primarySelection)
+            {
+                return fail("Scene load failure recovery did not restore Authoring contents and selection");
+            }
+            expected = std::move(*captured.try_value());
+
+            a_probe.shouldFailNextStart = true;
+            cue::Result<void> failedStart = m_playController->start(documentId);
+            const cue::editor_core::EditorPlaySessionSnapshot failedState = m_playController->state_snapshot();
+            document = m_session->controller().session().find_document(documentId);
+            if (failedStart || failedState.state != cue::editor_core::EditorPlaySessionState::Stopped ||
+                !failedState.hasFailure || a_probe.injectedStartFailureCount != 1U ||
+                a_probe.activeSystemCount != 0U || a_probe.createdSystemCount != a_probe.destroyedSystemCount ||
+                document == nullptr ||
+                !matches_play_workflow_document_state(*document, expected, *m_assertContext) ||
+                !m_playController->stop())
+            {
+                return fail("System Start failure did not roll back without changing Editor state");
+            }
+
+            const std::size_t recoveryUpdateCount = a_probe.updateCount;
+            const std::size_t recoveryInputCount = a_probe.inputUpdateCount;
+            cue::Result<void> recoveredStart = m_playController->start(documentId);
+            cue::Result<bool> recoveredInput =
+                m_playController->push_input_event({cue::InputEventType::KeyDown, cue::InputKey::A});
+            cue::Result<void> recoveredUpdate = m_playController->advance_frame({});
+            cue::Result<void> recoveredStop = m_playController->stop();
+            if (!recoveredStart || !recoveredInput || !*recoveredInput.try_value() || !recoveredUpdate ||
+                !recoveredStop || a_probe.updateCount != recoveryUpdateCount + 1U ||
+                a_probe.inputUpdateCount != recoveryInputCount + 1U || a_probe.activeSystemCount != 0U ||
+                a_probe.createdSystemCount != a_probe.destroyedSystemCount)
+            {
+                return fail("Play could not recover after the injected Start failure");
+            }
+            document = m_session->controller().session().find_document(documentId);
+            if (document == nullptr || !matches_play_workflow_document_state(*document, expected, *m_assertContext))
+            {
+                return fail("Recovered Play changed the Authoring document");
+            }
+
+            cue::Result<void> finalStart = m_playController->start(documentId);
+            if (!finalStart || a_probe.activeSystemCount != 1U ||
+                a_probe.createdSystemCount != a_probe.destroyedSystemCount + 1U)
+            {
+                return fail("Editor close cleanup test could not leave one active child session");
+            }
+            return cue::Result<void>::success();
+        }
+        catch (...)
+        {
+            terminate_tool_exception(*m_assertContext);
         }
     }
 
@@ -1255,6 +1653,10 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         return cue::Result<void>::failure(
             make_tool_error(a_assertContext, k_processTestFailed, "Process test action requires an active scene"));
     }
+    if (*a_action == "play-repeated-workflow")
+    {
+        return cue::Result<void>::success();
+    }
     if (*a_action == "files-workflow")
     {
         cue::editor::FilesPresenter presenter(a_session.files_workspace(), a_assertContext);
@@ -1386,12 +1788,44 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         return report_error(a_logger, "Editor process test action failed", std::move(*processTest.try_error()),
                             k_processTestFailed);
     }
-    EditorToolClient client(**session.try_value(), a_logger, a_logRouter, a_assertContext);
-    const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Editor", {1440U, 900U}, a_options.maximumFrameCount};
-    cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
-    if (!hosted)
+    const bool isPlayWorkflowTest =
+        a_options.processTestAction.has_value() && *a_options.processTestAction == "play-repeated-workflow";
+    PlayWorkflowProbe playWorkflowProbe;
+    PlayWorkflowSystemFactory playWorkflowFactory(playWorkflowProbe);
+    const std::array<const cue::runtime::RuntimeSystemFactory *, 1U> playWorkflowFactories{&playWorkflowFactory};
+    std::span<const cue::runtime::RuntimeSystemFactory *const> systemFactories;
+    if (isPlayWorkflowTest)
     {
-        return report_error(a_logger, "Editor Tool Host failed", std::move(*hosted.try_error()), k_toolHostFailed);
+        systemFactories = playWorkflowFactories;
+    }
+    {
+        EditorToolClient client(**session.try_value(), a_logger, a_logRouter, systemFactories, a_assertContext);
+        if (isPlayWorkflowTest)
+        {
+            cue::Result<void> workflow = client.run_play_workflow_process_test(playWorkflowProbe);
+            if (!workflow)
+            {
+                return report_error(a_logger, "Editor Play process workflow failed",
+                                    std::move(*workflow.try_error()), k_processTestFailed);
+            }
+        }
+        const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Editor", {1440U, 900U},
+                                                             a_options.maximumFrameCount};
+        cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
+        if (!hosted)
+        {
+            return report_error(a_logger, "Editor Tool Host failed", std::move(*hosted.try_error()), k_toolHostFailed);
+        }
+    }
+    if (isPlayWorkflowTest &&
+        (playWorkflowProbe.activeSystemCount != 0U ||
+         playWorkflowProbe.startedSystemCount != playWorkflowProbe.stoppedSystemCount ||
+         playWorkflowProbe.createdSystemCount != playWorkflowProbe.destroyedSystemCount))
+    {
+        return report_error(a_logger, "Editor close left a child Play session",
+                            make_tool_error(a_assertContext, k_processTestFailed,
+                                            "Editor destruction did not release every started Runtime system"),
+                            k_processTestFailed);
     }
     return 0;
 }
