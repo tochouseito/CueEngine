@@ -114,6 +114,22 @@ foreach(requiredMessage IN ITEMS
     endif()
 endforeach()
 
+set(unicodePackageRoot "${TEST_ROOT}/RelocatedPackage-日本語-😀")
+file(RENAME "${packageRoot}" "${unicodePackageRoot}")
+execute_process(
+    COMMAND "${unicodePackageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE unicodePackageResult
+    OUTPUT_VARIABLE unicodePackageOutput
+    ERROR_VARIABLE unicodePackageError
+    TIMEOUT 15
+)
+if(NOT unicodePackageResult EQUAL 0)
+    message(FATAL_ERROR
+        "Runtime Package failed from a non-ACP Unicode path\n${unicodePackageOutput}\n${unicodePackageError}")
+endif()
+file(RENAME "${unicodePackageRoot}" "${packageRoot}")
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=reserved-api-tail"
         "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
@@ -129,6 +145,40 @@ string(FIND "${reservedApiCombined}" "Game Module API identity or lifecycle is i
 if(reservedApiResult EQUAL 0 OR reservedApiMessagePosition EQUAL -1)
     message(FATAL_ERROR "Non-zero Game Module API reserved tail was accepted\n${reservedApiCombined}")
 endif()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=reserved-query-output"
+        "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE reservedQueryResult
+    OUTPUT_VARIABLE reservedQueryOutput
+    ERROR_VARIABLE reservedQueryError
+    TIMEOUT 15
+)
+set(reservedQueryCombined "${reservedQueryOutput}\n${reservedQueryError}")
+string(FIND "${reservedQueryCombined}" "Game Module rejected the RuntimeHost ABI" reservedQueryMessagePosition)
+if(reservedQueryResult EQUAL 0 OR reservedQueryMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-zero Game Module Query Output reserved field was accepted\n${reservedQueryCombined}")
+endif()
+
+foreach(queryOutputMode IN ITEMS query-output-size query-output-version)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=${queryOutputMode}"
+            "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE invalidQueryOutputResult
+        OUTPUT_VARIABLE invalidQueryOutputOutput
+        ERROR_VARIABLE invalidQueryOutputError
+        TIMEOUT 15
+    )
+    set(invalidQueryOutputCombined "${invalidQueryOutputOutput}\n${invalidQueryOutputError}")
+    string(FIND "${invalidQueryOutputCombined}" "Game Module rejected the RuntimeHost ABI"
+        invalidQueryOutputMessagePosition)
+    if(invalidQueryOutputResult EQUAL 0 OR invalidQueryOutputMessagePosition EQUAL -1)
+        message(FATAL_ERROR
+            "Invalid Game Module Query Output ${queryOutputMode} was accepted\n${invalidQueryOutputCombined}")
+    endif()
+endforeach()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=invalid-system-id"
@@ -256,6 +306,24 @@ write_package_manifest("${packageRoot}" "" "")
 
 set(packageScenePath "${packageRoot}/${sceneRelativePath}")
 file(READ "${packageScenePath}" validScene)
+foreach(invalidNumber IN ITEMS "01" ".5" "1." "1e")
+    file(WRITE "${packageScenePath}"
+        "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[${invalidNumber},0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}]}\n")
+    write_package_manifest("${packageRoot}" "" "")
+    execute_process(
+        COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE invalidNumberResult
+        OUTPUT_VARIABLE invalidNumberOutput
+        ERROR_VARIABLE invalidNumberError
+        TIMEOUT 15
+    )
+    set(invalidNumberCombined "${invalidNumberOutput}\n${invalidNumberError}")
+    string(FIND "${invalidNumberCombined}" "Runtime Scene object values are invalid" invalidNumberMessagePosition)
+    if(invalidNumberResult EQUAL 0 OR invalidNumberMessagePosition EQUAL -1)
+        message(FATAL_ERROR "Invalid JSON number ${invalidNumber} was accepted\n${invalidNumberCombined}")
+    endif()
+endforeach()
 file(WRITE "${packageScenePath}"
     "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"71234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]},{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}]}\n")
 write_package_manifest("${packageRoot}" "" "")
