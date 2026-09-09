@@ -1050,7 +1050,7 @@ Result<PackageFileEntry> PackageFileEntry::create(PackageFileRole a_role, std::s
         return Result<PackageFileEntry>::failure(
             manifest_error(a_assertContext, PackageError::InvalidPackagePath, "Package relative path is invalid"));
     }
-    if (a_byteSize == 0U || a_byteSize > k_maximumPackagedFileBytes)
+    if (a_byteSize > k_maximumPackagedFileBytes)
     {
         return Result<PackageFileEntry>::failure(
             manifest_error(a_assertContext, PackageError::PackageManifestResourceLimitExceeded,
@@ -1198,8 +1198,7 @@ Result<PackageManifest> PackageManifest::create(std::string a_projectId, EngineV
             const std::size_t roleIndex = static_cast<std::size_t>(file.role()) - 1U;
             const std::string caseKey = ascii_case_key(file.relative_path());
             if (roleIndex >= roleCounts.size() || !is_valid_package_path(file.relative_path()) ||
-                !is_valid_sha256(file.sha256()) || file.byte_size() == 0U ||
-                file.byte_size() > k_maximumPackagedFileBytes ||
+                !is_valid_sha256(file.sha256()) || file.byte_size() > k_maximumPackagedFileBytes ||
                 !role_matches_path(file.role(), file.relative_path(), expectedScenePath) ||
                 is_pdb_path(file.relative_path()) ||
                 std::find(caseKeys.begin(), caseKeys.end(), caseKey) != caseKeys.end() ||

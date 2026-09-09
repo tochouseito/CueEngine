@@ -25,7 +25,9 @@ enum class PackageError : std::int64_t
     InvalidPackagePath = 8,
     PackageManifestResourceLimitExceeded = 9,
     PackageFileMissing = 10,
-    PackageFileMismatch = 11
+    PackageFileMismatch = 11,
+    InvalidPortableExecutable = 12,
+    RuntimeDependencyViolation = 13
 };
 
 /// @brief Package Domainの回復可能Errorを生成する

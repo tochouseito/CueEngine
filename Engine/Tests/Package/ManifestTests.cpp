@@ -9,6 +9,7 @@
 #include <Windows.h>
 #endif
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -114,6 +115,103 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
     }
 }
 
+/// @brief Test PEへLittle-endian 16-bit値を書き込む
+void write_u16(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint16_t a_value) noexcept
+{
+    a_bytes[a_offset] = static_cast<std::byte>(a_value & 0xffU);
+    a_bytes[a_offset + 1U] = static_cast<std::byte>((a_value >> 8U) & 0xffU);
+}
+
+/// @brief Test PEへLittle-endian 32-bit値を書き込む
+void write_u32(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint32_t a_value) noexcept
+{
+    for (std::size_t index = 0U; index < 4U; ++index)
+    {
+        a_bytes[a_offset + index] = static_cast<std::byte>((a_value >> (index * 8U)) & 0xffU);
+    }
+}
+
+/// @brief Test PEのSection内へNUL終端ASCII文字列を書き込む
+void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::string_view a_text) noexcept
+{
+    for (std::size_t index = 0U; index < a_text.size(); ++index)
+    {
+        a_bytes[a_offset + index] = static_cast<std::byte>(a_text[index]);
+    }
+    a_bytes[a_offset + a_text.size()] = std::byte{0U};
+}
+
+/// @brief 指定Import、Delay Import、Forwarderを持つ最小x64 PE Test Imageを生成する
+[[nodiscard]] std::vector<std::byte> make_test_pe(std::span<const std::string_view> a_imports,
+                                                  std::span<const std::string_view> a_delayImports,
+                                                  bool a_hasForwarder = false)
+{
+    std::vector<std::byte> bytes(0x1000U, std::byte{0U});
+    write_u16(bytes, 0U, 0x5a4dU);
+    write_u32(bytes, 0x3cU, 0x80U);
+    write_u32(bytes, 0x80U, 0x00004550U);
+    write_u16(bytes, 0x84U, 0x8664U);
+    write_u16(bytes, 0x86U, 1U);
+    write_u16(bytes, 0x94U, 240U);
+    constexpr std::size_t optional = 0x98U;
+    write_u16(bytes, optional, 0x020bU);
+    write_u32(bytes, optional + 60U, 0x200U);
+    write_u32(bytes, optional + 108U, 16U);
+    constexpr std::size_t section = 0x188U;
+    write_u32(bytes, section + 8U, 0x0e00U);
+    write_u32(bytes, section + 12U, 0x1000U);
+    write_u32(bytes, section + 16U, 0x0e00U);
+    write_u32(bytes, section + 20U, 0x200U);
+
+    if (!a_imports.empty())
+    {
+        write_u32(bytes, optional + 120U, 0x1000U);
+        write_u32(bytes, optional + 124U,
+                  static_cast<std::uint32_t>((a_imports.size() + 1U) * 20U));
+        std::size_t nameOffset = 0x300U;
+        for (std::size_t index = 0U; index < a_imports.size(); ++index)
+        {
+            write_u32(bytes, 0x200U + index * 20U + 12U,
+                      0x1000U + static_cast<std::uint32_t>(nameOffset - 0x200U));
+            write_ascii(bytes, nameOffset, a_imports[index]);
+            nameOffset += a_imports[index].size() + 1U;
+        }
+    }
+    if (!a_delayImports.empty())
+    {
+        write_u32(bytes, optional + 216U, 0x1200U);
+        write_u32(bytes, optional + 220U,
+                  static_cast<std::uint32_t>((a_delayImports.size() + 1U) * 32U));
+        std::size_t nameOffset = 0x500U;
+        for (std::size_t index = 0U; index < a_delayImports.size(); ++index)
+        {
+            write_u32(bytes, 0x400U + index * 32U, 1U);
+            write_u32(bytes, 0x400U + index * 32U + 4U,
+                      0x1200U + static_cast<std::uint32_t>(nameOffset - 0x400U));
+            write_ascii(bytes, nameOffset, a_delayImports[index]);
+            nameOffset += a_delayImports[index].size() + 1U;
+        }
+    }
+    if (a_hasForwarder)
+    {
+        write_u32(bytes, optional + 112U, 0x1400U);
+        write_u32(bytes, optional + 116U, 0x100U);
+        write_u32(bytes, 0x600U + 20U, 1U);
+        write_u32(bytes, 0x600U + 28U, 0x1450U);
+        write_u32(bytes, 0x650U, 0x1470U);
+    }
+    return bytes;
+}
+
+/// @brief 最初に一致するManifest Tokenを指定Byte列へ置換する
+[[nodiscard]] std::string replace_first(std::string a_text, std::string_view a_from, std::string_view a_to)
+{
+    const std::size_t position = a_text.find(a_from);
+    require(position != std::string::npos);
+    a_text.replace(position, a_from.size(), a_to);
+    return a_text;
+}
+
 /// @brief Canonical直列化、再解析、未知SchemaとResource Limit拒否を検証する
 [[nodiscard]] bool test_manifest_wire_contract(const cue::AssertContext &a_assertContext)
 {
@@ -154,10 +252,26 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
 
     const std::string oversized(cue::package::k_maximumPackageManifestBytes + 1U, ' ');
     auto overLimit = cue::package::parse_package_manifest(oversized, a_assertContext);
+    auto zeroSize = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":0"), a_assertContext);
+    auto maximumSize = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":8589934592"), a_assertContext);
+    auto negativeSize = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":-1"), a_assertContext);
+    auto fractionalSize = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":1.0"), a_assertContext);
+    auto exponentialSize = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":1e0"), a_assertContext);
+    auto oversizedFile = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"sizeBytes\":1", "\"sizeBytes\":8589934593"), a_assertContext);
     return is_package_error(unsupported, cue::package::PackageError::UnsupportedPackageManifestVersion) &&
            is_package_error(unknown, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(invalidRole, cue::package::PackageError::InvalidPackageManifest) &&
-           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded);
+           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
+           zeroSize && maximumSize && is_package_error(negativeSize, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(fractionalSize, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(exponentialSize, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(oversizedFile, cue::package::PackageError::PackageManifestResourceLimitExceeded);
 }
 
 /// @brief Path、Hash、必須Role、case alias、PDBの不正Inventory拒否を検証する
@@ -206,7 +320,7 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
 
     return is_package_error(absolute, cue::package::PackageError::InvalidPackagePath) &&
            is_package_error(invalidHash, cue::package::PackageError::InvalidPackageManifest) &&
-           is_package_error(zeroSize, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
+           zeroSize && zeroSize.try_value()->byte_size() == 0U &&
            is_package_error(missing, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(duplicate, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(alias, cue::package::PackageError::InvalidPackageManifest) &&
@@ -275,6 +389,68 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
            is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded);
 }
 
+/// @brief x64 PE通常／Delay Import閉包、構成Allowlist、未登録／未到達、Forwarder拒否を検証する
+[[nodiscard]] bool test_runtime_dependency_closure(const cue::AssertContext &a_assertContext)
+{
+    constexpr std::array hostImports = {std::string_view("KERNEL32.dll"), std::string_view("VCRUNTIME140D.dll")};
+    constexpr std::array gameImports = {std::string_view("kernel32.dll"), std::string_view("LocalA.dll")};
+    constexpr std::array localADelayImports = {std::string_view("LocalB.dll")};
+    constexpr std::array localBImports = {std::string_view("api-ms-win-crt-runtime-l1-1-0.dll")};
+    const std::vector<std::byte> host = make_test_pe(hostImports, {});
+    const std::vector<std::byte> game = make_test_pe(gameImports, {});
+    const std::vector<std::byte> localA = make_test_pe({}, localADelayImports);
+    const std::vector<std::byte> localB = make_test_pe(localBImports, {});
+    const std::array dependencies = {
+        cue::package::RuntimePeImageView{"LocalA.dll", localA},
+        cue::package::RuntimePeImageView{"LocalB.dll", localB}};
+    auto valid = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, dependencies,
+        a_assertContext);
+
+    constexpr std::array missingImports = {std::string_view("Missing.dll")};
+    const std::vector<std::byte> missingGame = make_test_pe(missingImports, {});
+    auto missing = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", missingGame}, {},
+        a_assertContext);
+
+    constexpr std::array releaseRuntime = {std::string_view("msvcp140.dll")};
+    const std::vector<std::byte> mixedGame = make_test_pe(releaseRuntime, {});
+    auto mixed = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", mixedGame}, {},
+        a_assertContext);
+
+    constexpr std::array hostLocalImport = {std::string_view("LocalA.dll")};
+    const std::vector<std::byte> invalidHost = make_test_pe(hostLocalImport, {});
+    auto hostBoundary = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", invalidHost}, {"CueGameModule.dll", game}, dependencies,
+        a_assertContext);
+
+    const std::vector<std::byte> noImports = make_test_pe({}, {});
+    const std::array unreachableDependencies = {
+        cue::package::RuntimePeImageView{"LocalA.dll", noImports},
+        cue::package::RuntimePeImageView{"LocalB.dll", noImports}};
+    auto unreachable = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
+        unreachableDependencies, a_assertContext);
+
+    const std::vector<std::byte> forwarded = make_test_pe({}, {}, true);
+    const std::array forwardedDependency = {cue::package::RuntimePeImageView{"LocalA.dll", forwarded}};
+    auto forwarder = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
+        forwardedDependency, a_assertContext);
+
+    const std::vector<std::byte> malformed(128U, std::byte{0U});
+    auto invalidPe = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", malformed}, {"CueGameModule.dll", game}, dependencies,
+        a_assertContext);
+    return valid && is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(hostBoundary, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(unreachable, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(forwarder, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable);
+}
+
 /// @brief Package Root上の存在、Size、SHA-256照合と欠落検出を検証する
 [[nodiscard]] bool test_file_verification(const std::filesystem::path &a_testRoot,
                                           const cue::AssertContext &a_assertContext)
@@ -324,7 +500,8 @@ int main(int a_argumentCount, char **a_arguments)
     cue::AssertContext assertContext(logger, fatalHandler);
     const std::filesystem::path testRoot = std::filesystem::path(a_arguments[1]) / "CuePackageManifestTests";
     return test_manifest_wire_contract(assertContext) && test_manifest_validation(assertContext) &&
-                   test_runtime_dependency_inventory(assertContext) && test_file_verification(testRoot, assertContext)
+                   test_runtime_dependency_inventory(assertContext) &&
+                   test_runtime_dependency_closure(assertContext) && test_file_verification(testRoot, assertContext)
                ? 0
                : 1;
 }

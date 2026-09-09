@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         Private/Error.cpp
         Private/Manifest.cpp
+        Private/PeDependency.cpp
         Private/RuntimeData.cpp
         Private/Sha256.cpp
         Private/Sha256.h

@@ -26,6 +26,7 @@ inline constexpr std::size_t k_maximumPackageRelativePathBytes = 1024U;
 inline constexpr std::size_t k_maximumPackagePathSegments = 32U;
 inline constexpr std::uint64_t k_maximumPackagedFileBytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t k_maximumPackageInventoryBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::string_view k_windowsSystemImportAllowlistVersion = "windows-10-1903-x64-v1";
 
 /// @brief Package Manifestで一Fileの用途を固定するRole
 enum class PackageFileRole : std::uint8_t
@@ -96,6 +97,21 @@ struct RuntimeDependencyCandidate final
 [[nodiscard]] Result<std::vector<PackageFileEntry>> validate_runtime_dependency_inventory(
     BuildConfiguration a_expectedConfiguration, std::vector<RuntimeDependencyCandidate> a_candidates,
     const AssertContext &a_assertContext) noexcept;
+
+/// @brief 検証対象PE Imageの論理File名と不変Byte Snapshot
+struct RuntimePeImageView final
+{
+    std::string_view fileName;
+    std::span<const std::byte> bytes;
+};
+
+/// @brief Runtime Host、Game Module、App-local DLLのx64 PE Import閉包を固定Allowlistへ照合する
+///
+/// 通常ImportとDelay-load Importを再帰検査する。Hostの非System Import、構成違いMSVC Runtime、未登録／未到達
+/// App-local DLL、不正PE、Export ForwarderをPublish前に拒否する。全Viewは呼出中だけ借用する。
+[[nodiscard]] Result<void> validate_runtime_dependency_closure(
+    BuildConfiguration a_configuration, RuntimePeImageView a_runtimeHost, RuntimePeImageView a_gameModule,
+    std::span<const RuntimePeImageView> a_appLocalDependencies, const AssertContext &a_assertContext) noexcept;
 
 /// @brief Standalone Runtime PackageのVersion付きIdentityと完全File Inventory
 class PackageManifest final
