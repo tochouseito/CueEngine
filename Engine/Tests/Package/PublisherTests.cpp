@@ -394,11 +394,12 @@ void test_reproducible_publication(const std::filesystem::path &a_root,
         take_value(cue::RelativePath::parse("ReproduciblePackageA", a_assertContext));
     cue::RelativePath secondDestination =
         take_value(cue::RelativePath::parse("ReproduciblePackageB", a_assertContext));
-    cue::package::PackageCancellation cancellation;
+    cue::package::PackageCancellation firstCancellation;
+    cue::package::PackageCancellation secondCancellation;
     const cue::package::PackagePublishReport first = cue::package::publish_runtime_package(
-        *filesystem, firstDestination, a_manifest, a_payloads, cancellation, a_assertContext);
+        *filesystem, firstDestination, a_manifest, a_payloads, firstCancellation, a_assertContext);
     const cue::package::PackagePublishReport second = cue::package::publish_runtime_package(
-        *filesystem, secondDestination, a_manifest, a_payloads, cancellation, a_assertContext);
+        *filesystem, secondDestination, a_manifest, a_payloads, secondCancellation, a_assertContext);
     require(first.succeeded() && second.succeeded());
 
     const std::filesystem::path firstRoot = a_root / "ReproduciblePackageA";
