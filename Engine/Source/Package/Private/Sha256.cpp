@@ -1,9 +1,12 @@
 #include "Sha256.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <span>
 
 namespace
@@ -77,44 +80,86 @@ void compress_block(std::array<std::uint32_t, 8U> &a_state, std::span<const std:
 
 namespace cue::package_private
 {
-Sha256Digest compute_sha256(std::span<const std::byte> a_bytes) noexcept
+Sha256::Sha256() noexcept
+    : m_state{0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU, 0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U}
 {
-    std::array<std::uint32_t, 8U> state = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
-                                           0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+}
+
+bool Sha256::update(std::span<const std::byte> a_bytes) noexcept
+{
+    constexpr std::uint64_t maximumBytes = std::numeric_limits<std::uint64_t>::max() / 8U;
+    if (m_finished || a_bytes.size() > maximumBytes - m_totalBytes)
+    {
+        return false;
+    }
+    m_totalBytes += static_cast<std::uint64_t>(a_bytes.size());
     std::size_t offset = 0U;
+    if (m_bufferSize > 0U)
+    {
+        const std::size_t copied = std::min(m_buffer.size() - m_bufferSize, a_bytes.size());
+        std::copy_n(a_bytes.data(), copied, m_buffer.data() + m_bufferSize);
+        m_bufferSize += copied;
+        offset += copied;
+        if (m_bufferSize == m_buffer.size())
+        {
+            compress_block(m_state, std::span<const std::byte, 64U>(m_buffer));
+            m_bufferSize = 0U;
+        }
+    }
     while (a_bytes.size() - offset >= 64U)
     {
-        compress_block(state, std::span<const std::byte, 64U>(a_bytes.data() + offset, 64U));
+        compress_block(m_state, std::span<const std::byte, 64U>(a_bytes.data() + offset, 64U));
         offset += 64U;
     }
-
-    std::array<std::byte, 128U> tail{};
     const std::size_t remaining = a_bytes.size() - offset;
-    for (std::size_t index = 0U; index < remaining; ++index)
+    if (remaining > 0U)
     {
-        tail[index] = a_bytes[offset + index];
+        std::copy_n(a_bytes.data() + offset, remaining, m_buffer.data());
+        m_bufferSize = remaining;
     }
-    tail[remaining] = std::byte{0x80U};
-    const std::size_t tailSize = remaining < 56U ? 64U : 128U;
-    const std::uint64_t bitLength = static_cast<std::uint64_t>(a_bytes.size()) * 8U;
+    return true;
+}
+
+Sha256Digest Sha256::finish() noexcept
+{
+    if (m_finished)
+    {
+        std::abort();
+    }
+    m_finished = true;
+    std::array<std::byte, 128U> tail{};
+    std::copy_n(m_buffer.data(), m_bufferSize, tail.data());
+    tail[m_bufferSize] = std::byte{0x80U};
+    const std::size_t tailSize = m_bufferSize < 56U ? 64U : 128U;
+    const std::uint64_t bitLength = m_totalBytes * 8U;
     for (std::size_t index = 0U; index < 8U; ++index)
     {
         tail[tailSize - 1U - index] = static_cast<std::byte>(bitLength >> (index * 8U));
     }
-    compress_block(state, std::span<const std::byte, 64U>(tail.data(), 64U));
+    compress_block(m_state, std::span<const std::byte, 64U>(tail.data(), 64U));
     if (tailSize == 128U)
     {
-        compress_block(state, std::span<const std::byte, 64U>(tail.data() + 64U, 64U));
+        compress_block(m_state, std::span<const std::byte, 64U>(tail.data() + 64U, 64U));
     }
 
     Sha256Digest digest{};
-    for (std::size_t index = 0U; index < state.size(); ++index)
+    for (std::size_t index = 0U; index < m_state.size(); ++index)
     {
-        digest[index * 4U] = static_cast<std::uint8_t>(state[index] >> 24U);
-        digest[index * 4U + 1U] = static_cast<std::uint8_t>(state[index] >> 16U);
-        digest[index * 4U + 2U] = static_cast<std::uint8_t>(state[index] >> 8U);
-        digest[index * 4U + 3U] = static_cast<std::uint8_t>(state[index]);
+        digest[index * 4U] = static_cast<std::uint8_t>(m_state[index] >> 24U);
+        digest[index * 4U + 1U] = static_cast<std::uint8_t>(m_state[index] >> 16U);
+        digest[index * 4U + 2U] = static_cast<std::uint8_t>(m_state[index] >> 8U);
+        digest[index * 4U + 3U] = static_cast<std::uint8_t>(m_state[index]);
     }
     return digest;
+}
+
+Sha256Digest compute_sha256(std::span<const std::byte> a_bytes) noexcept
+{
+    Sha256 state;
+    if (!state.update(a_bytes))
+    {
+        std::abort();
+    }
+    return state.finish();
 }
 } // namespace cue::package_private

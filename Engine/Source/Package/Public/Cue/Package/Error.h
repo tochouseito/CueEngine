@@ -19,7 +19,15 @@ enum class PackageError : std::int64_t
     StartupSceneIdentityMismatch = 2,
     UnsupportedRuntimeSceneData = 3,
     RuntimeDataResourceLimitExceeded = 4,
-    InvalidRuntimeData = 5
+    InvalidRuntimeData = 5,
+    InvalidPackageManifest = 6,
+    UnsupportedPackageManifestVersion = 7,
+    InvalidPackagePath = 8,
+    PackageManifestResourceLimitExceeded = 9,
+    PackageFileMissing = 10,
+    PackageFileMismatch = 11,
+    InvalidPortableExecutable = 12,
+    RuntimeDependencyViolation = 13
 };
 
 /// @brief Package Domainの回復可能Errorを生成する
