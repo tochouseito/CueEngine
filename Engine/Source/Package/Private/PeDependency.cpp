@@ -42,6 +42,7 @@ struct PeLayout final
     std::span<const std::byte> bytes;
     std::size_t sectionTableOffset = 0U;
     std::uint16_t sectionCount = 0U;
+    std::uint32_t sizeOfImage = 0U;
     std::uint32_t sizeOfHeaders = 0U;
     PeDirectory exportDirectory;
     PeDirectory importDirectory;
@@ -151,10 +152,13 @@ struct ThunkValidationContext final
     }
     const std::size_t optionalOffset = peOffset + 24U;
     std::uint16_t magic = 0U;
+    std::uint32_t sizeOfImage = 0U;
     std::uint32_t sizeOfHeaders = 0U;
     std::uint32_t directoryCount = 0U;
     if (!read_u16(a_bytes, optionalOffset, magic) || magic != k_pe32PlusMagic ||
+        !read_u32(a_bytes, optionalOffset + 56U, sizeOfImage) || sizeOfImage == 0U ||
         !read_u32(a_bytes, optionalOffset + 60U, sizeOfHeaders) || sizeOfHeaders > a_bytes.size() ||
+        sizeOfHeaders > sizeOfImage ||
         !read_u32(a_bytes, optionalOffset + 108U, directoryCount) || directoryCount < 14U)
     {
         return false;
@@ -174,7 +178,7 @@ struct ThunkValidationContext final
     {
         return false;
     }
-    a_output = {a_bytes, sectionTableOffset, sectionCount, sizeOfHeaders, exportDirectory, importDirectory,
+    a_output = {a_bytes, sectionTableOffset, sectionCount, sizeOfImage, sizeOfHeaders, exportDirectory, importDirectory,
                 delayImportDirectory};
     return true;
 }
@@ -183,6 +187,10 @@ struct ThunkValidationContext final
 [[nodiscard]] std::optional<std::size_t> rva_to_offset(const PeLayout &a_layout, std::uint32_t a_rva,
                                                        std::size_t a_requiredBytes) noexcept
 {
+    if (a_rva >= a_layout.sizeOfImage || a_requiredBytes > a_layout.sizeOfImage - a_rva)
+    {
+        return std::nullopt;
+    }
     if (a_rva < a_layout.sizeOfHeaders)
     {
         if (a_requiredBytes <= a_layout.sizeOfHeaders - a_rva && a_rva <= a_layout.bytes.size() &&
