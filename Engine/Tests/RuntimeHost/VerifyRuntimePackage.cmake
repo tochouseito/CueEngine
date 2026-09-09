@@ -88,13 +88,7 @@ endfunction()
 write_package_manifest("${stagingRoot}" "")
 
 file(RENAME "${stagingRoot}" "${packageRoot}")
-if(CONFIGURATION STREQUAL "Debug")
-    file(WRITE "${packageRoot}/vcruntime140d.dll" "unverified app-local runtime")
-    file(WRITE "${packageRoot}/msvcp140d.dll" "unverified app-local runtime")
-else()
-    file(WRITE "${packageRoot}/vcruntime140.dll" "unverified app-local runtime")
-    file(WRITE "${packageRoot}/msvcp140.dll" "unverified app-local runtime")
-endif()
+file(WRITE "${packageRoot}/bcrypt.dll" "unverified app-local system dependency")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"
