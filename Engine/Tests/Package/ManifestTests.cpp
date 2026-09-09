@@ -5,6 +5,10 @@
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 
+#if defined(_WIN32)
+#include <Windows.h>
+#endif
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -276,6 +280,16 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
     const cue::package::PackageManifest manifest = make_manifest(a_assertContext);
     write_manifest_files(a_testRoot, manifest);
     auto verified = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+#if defined(_WIN32)
+    const std::filesystem::path guardedPath = a_testRoot / "Game/CueGameModule.dll";
+    const HANDLE writer = CreateFileW(guardedPath.c_str(), GENERIC_WRITE,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(writer != nullptr && writer != INVALID_HANDLE_VALUE);
+    auto writeShared =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(CloseHandle(writer) != FALSE);
+#endif
     write_file(a_testRoot, "Game/CueGameModule.dll", "y");
     auto mismatched =
         cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
@@ -283,7 +297,11 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
     require(std::filesystem::remove(a_testRoot / "Data/CueProject.runtime.json", error) && !error);
     auto missing = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
     std::filesystem::remove_all(a_testRoot, error);
-    return verified && is_package_error(mismatched, cue::package::PackageError::PackageFileMismatch) &&
+    return verified &&
+#if defined(_WIN32)
+           is_package_error(writeShared, cue::package::PackageError::PackageFileMissing) &&
+#endif
+           is_package_error(mismatched, cue::package::PackageError::PackageFileMismatch) &&
            is_package_error(missing, cue::package::PackageError::PackageFileMissing) && !error;
 }
 } // namespace

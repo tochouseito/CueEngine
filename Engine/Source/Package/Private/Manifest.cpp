@@ -32,6 +32,73 @@ namespace
 constexpr std::size_t k_maximumJsonNodes = 4096U;
 constexpr std::size_t k_hashBufferBytes = 64U * 1024U;
 
+#if defined(_WIN32)
+class UniqueHandle final
+{
+  public:
+    /// @brief 無効なNative Handleを所有する
+    UniqueHandle() noexcept = default;
+
+    /// @brief 指定されたNative Handleの所有権を引き受ける
+    explicit UniqueHandle(HANDLE a_handle) noexcept : m_handle(a_handle)
+    {
+    }
+
+    /// @brief Native Handleの共有所有を禁止する
+    UniqueHandle(const UniqueHandle &) = delete;
+
+    /// @brief Native Handleの共有所有を禁止する
+    UniqueHandle &operator=(const UniqueHandle &) = delete;
+
+    /// @brief Native Handleの所有権を移動する
+    UniqueHandle(UniqueHandle &&a_other) noexcept : m_handle(std::exchange(a_other.m_handle, INVALID_HANDLE_VALUE))
+    {
+    }
+
+    /// @brief 既存Handleを閉じてNative Handleの所有権を移動する
+    UniqueHandle &operator=(UniqueHandle &&a_other) noexcept
+    {
+        if (this != &a_other)
+        {
+            reset();
+            m_handle = std::exchange(a_other.m_handle, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+
+    /// @brief 所有するNative Handleを閉じる
+    ~UniqueHandle() noexcept
+    {
+        reset();
+    }
+
+    /// @brief 所有中のNative Handleを返す
+    [[nodiscard]] HANDLE get() const noexcept
+    {
+        return m_handle;
+    }
+
+    /// @brief Native Handleが有効か返す
+    [[nodiscard]] bool is_valid() const noexcept
+    {
+        return m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE;
+    }
+
+  private:
+    /// @brief 所有するNative Handleを閉じて無効化する
+    void reset() noexcept
+    {
+        if (is_valid())
+        {
+            CloseHandle(m_handle);
+        }
+        m_handle = INVALID_HANDLE_VALUE;
+    }
+
+    HANDLE m_handle = INVALID_HANDLE_VALUE;
+};
+#endif
+
 /// @brief Manifest処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_manifest_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -892,6 +959,69 @@ void append_engine_version(std::string &a_output, const cue::EngineVersion &a_ve
     return !a_error && std::filesystem::is_symlink(status);
 #endif
 }
+
+#if defined(_WIN32)
+enum class DirectoryChainResult
+{
+    Success,
+    Missing,
+    Indirect
+};
+
+/// @brief 対象Directoryまでの各Componentを固定しPathの差し替えを防ぐ
+[[nodiscard]] DirectoryChainResult lock_directory_chain(const std::filesystem::path &a_directory,
+                                                        std::vector<UniqueHandle> &a_handles) noexcept
+{
+    if (!a_directory.is_absolute())
+    {
+        return DirectoryChainResult::Missing;
+    }
+    std::filesystem::path current = a_directory.root_path();
+    for (const std::filesystem::path &segment : a_directory.relative_path())
+    {
+        current /= segment;
+        UniqueHandle handle(CreateFileW(native_inspection_path(current).c_str(), FILE_READ_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        if (!handle.is_valid())
+        {
+            return DirectoryChainResult::Missing;
+        }
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        if (!GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U)
+        {
+            return DirectoryChainResult::Missing;
+        }
+        if ((attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return DirectoryChainResult::Indirect;
+        }
+        a_handles.push_back(std::move(handle));
+    }
+    return a_handles.empty() ? DirectoryChainResult::Missing : DirectoryChainResult::Success;
+}
+
+/// @brief 固定済み親Directory内の通常Fileを同一Handleで検証できる状態にする
+[[nodiscard]] UniqueHandle open_guarded_regular_file(const std::filesystem::path &a_path) noexcept
+{
+    UniqueHandle handle(CreateFileW(native_inspection_path(a_path).c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!handle.is_valid())
+    {
+        return {};
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U || GetFileType(handle.get()) != FILE_TYPE_DISK)
+    {
+        return {};
+    }
+    return handle;
+}
+#endif
 } // namespace
 
 namespace cue::package
@@ -1298,6 +1428,14 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
     try
     {
         const std::filesystem::path root = native_path(a_packageRoot);
+#if defined(_WIN32)
+        std::vector<UniqueHandle> rootHandles;
+        if (lock_directory_chain(root, rootHandles) != DirectoryChainResult::Success)
+        {
+            return Result<void>::failure(manifest_error(a_assertContext, PackageError::InvalidPackagePath,
+                                                        "Package Root is unavailable or indirect"));
+        }
+#else
         std::error_code error;
         const std::filesystem::file_status rootStatus =
             std::filesystem::symlink_status(native_inspection_path(root), error);
@@ -1309,9 +1447,31 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
             return Result<void>::failure(manifest_error(a_assertContext, PackageError::InvalidPackagePath,
                                                         "Package Root is unavailable or indirect"));
         }
+#endif
         for (const PackageFileEntry &expected : a_manifest.files())
         {
             const std::filesystem::path relative = native_path(expected.relative_path());
+#if defined(_WIN32)
+            std::vector<UniqueHandle> parentHandles;
+            const DirectoryChainResult parentResult =
+                lock_directory_chain(root / relative.parent_path(), parentHandles);
+            if (parentResult == DirectoryChainResult::Indirect)
+            {
+                return Result<void>::failure(manifest_error(a_assertContext, PackageError::InvalidPackagePath,
+                                                            "Package entry traverses an indirect path"));
+            }
+            if (parentResult != DirectoryChainResult::Success)
+            {
+                return Result<void>::failure(manifest_error(a_assertContext, PackageError::PackageFileMissing,
+                                                            "Required Package parent directory is missing"));
+            }
+            UniqueHandle input = open_guarded_regular_file(root / relative);
+            if (!input.is_valid())
+            {
+                return Result<void>::failure(manifest_error(a_assertContext, PackageError::PackageFileMissing,
+                                                            "Required Package file is missing"));
+            }
+#else
             std::filesystem::path current = root;
             for (const std::filesystem::path &segment : relative.parent_path())
             {
@@ -1349,9 +1509,34 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
                 return Result<void>::failure(manifest_error(a_assertContext, PackageError::PackageFileMissing,
                                                             "Required Package file could not be opened"));
             }
+#endif
             package_private::Sha256 sha256;
             std::array<std::byte, k_hashBufferBytes> buffer{};
             std::uint64_t actualSize = 0U;
+#if defined(_WIN32)
+            for (;;)
+            {
+                DWORD read = 0U;
+                if (!ReadFile(input.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr))
+                {
+                    return Result<void>::failure(
+                        manifest_error(a_assertContext, PackageError::PackageFileMismatch, "Package file read failed"));
+                }
+                if (read == 0U)
+                {
+                    break;
+                }
+                const std::uint64_t count = read;
+                if (actualSize > k_maximumPackagedFileBytes - count ||
+                    !sha256.update(std::span(buffer.data(), static_cast<std::size_t>(read))))
+                {
+                    return Result<void>::failure(
+                        manifest_error(a_assertContext, PackageError::PackageManifestResourceLimitExceeded,
+                                       "Package file exceeds the supported verification size"));
+                }
+                actualSize += count;
+            }
+#else
             for (;;)
             {
                 input.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
@@ -1378,6 +1563,7 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
                         manifest_error(a_assertContext, PackageError::PackageFileMismatch, "Package file read failed"));
                 }
             }
+#endif
             const std::string actualHash = digest_text(sha256.finish());
             if (actualSize != expected.byte_size() || actualHash != expected.sha256())
             {
