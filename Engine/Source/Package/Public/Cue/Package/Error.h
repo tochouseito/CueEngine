@@ -27,7 +27,8 @@ enum class PackageError : std::int64_t
     PackageFileMissing = 10,
     PackageFileMismatch = 11,
     InvalidPortableExecutable = 12,
-    RuntimeDependencyViolation = 13
+    RuntimeDependencyViolation = 13,
+    PackageCancelled = 14
 };
 
 /// @brief Package Domainの回復可能Errorを生成する

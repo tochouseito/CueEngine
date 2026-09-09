@@ -322,11 +322,42 @@ struct NativePublishOutcome final
 {
     bool isPublished;
     DWORD nativeCode;
+    bool authorizationRejected = false;
 };
 
-/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と Destination から公開状態を分類する
+/// @brief Destinationが期待したNative Directory Objectを指す場合だけtrueを返す
+[[nodiscard]] bool matches_directory_identity(const std::wstring &a_destination,
+                                              const cue::windows_io::NativeFilesystemIdentity &a_expected,
+                                              const cue::AssertContext &a_context) noexcept
+{
+    UniqueHandle destination(CreateFileW(a_destination.c_str(), FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                         OPEN_EXISTING,
+                                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!destination.is_valid())
+    {
+        return false;
+    }
+
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(destination.get(), &information) == FALSE ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    {
+        return false;
+    }
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> actual =
+        cue::windows_io::inspect_native_filesystem_identity(destination.get(), a_context);
+    return actual && actual.try_value()->volumeHigh == a_expected.volumeHigh &&
+           actual.try_value()->volumeLow == a_expected.volumeLow &&
+           actual.try_value()->entryHigh == a_expected.entryHigh &&
+           actual.try_value()->entryLow == a_expected.entryLow;
+}
+
+/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と Destination の可視状態から公開状態を分類する
 [[nodiscard]] NativePublishOutcome publish_with_durability(const std::wstring &a_source,
-                                                           const std::wstring &a_destination, DWORD a_flags) noexcept
+                                                            const std::wstring &a_destination,
+                                                            DWORD a_flags) noexcept
 {
     if (MoveFileExW(a_source.c_str(), a_destination.c_str(), a_flags | MOVEFILE_WRITE_THROUGH) != FALSE)
     {
@@ -340,6 +371,51 @@ struct NativePublishOutcome final
     const bool isSourceMissing = sourceAttributes == INVALID_FILE_ATTRIBUTES &&
                                  (sourceCode == ERROR_FILE_NOT_FOUND || sourceCode == ERROR_PATH_NOT_FOUND);
     return NativePublishOutcome{isSourceMissing && destinationAttributes != INVALID_FILE_ATTRIBUTES, publishCode};
+}
+
+/// @brief 固定済みDirectory Handleを置換なしでRenameし失敗後はDestination Identityから公開状態を分類する
+[[nodiscard]] NativePublishOutcome publish_handle_with_durability(
+    HANDLE a_source, const std::wstring &a_destination,
+    const cue::windows_io::NativeFilesystemIdentity &a_expectedIdentity,
+    const cue::StagingPublishAuthorization *a_authorization,
+    const cue::AssertContext &a_context) noexcept
+{
+    constexpr std::size_t headerSize = offsetof(FILE_RENAME_INFO, FileName);
+    constexpr std::size_t maxFileNameBytes =
+        std::numeric_limits<DWORD>::max() - headerSize - sizeof(wchar_t);
+    if (a_destination.size() > maxFileNameBytes / sizeof(wchar_t))
+    {
+        return NativePublishOutcome{false, ERROR_FILENAME_EXCED_RANGE};
+    }
+
+    const DWORD fileNameBytes = static_cast<DWORD>(a_destination.size() * sizeof(wchar_t));
+    std::vector<std::byte> storage;
+    try
+    {
+        storage.resize(headerSize + fileNameBytes + sizeof(wchar_t));
+    }
+    catch (...)
+    {
+        terminate_allocation(a_context);
+    }
+    FILE_RENAME_INFO *rename = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+    rename->ReplaceIfExists = FALSE;
+    rename->RootDirectory = nullptr;
+    rename->FileNameLength = fileNameBytes;
+    std::copy(a_destination.begin(), a_destination.end(), rename->FileName);
+
+    if (a_authorization != nullptr && !a_authorization->try_authorize())
+    {
+        return NativePublishOutcome{false, ERROR_OPERATION_ABORTED, true};
+    }
+    if (SetFileInformationByHandle(a_source, FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE)
+    {
+        return NativePublishOutcome{true, ERROR_SUCCESS};
+    }
+
+    const DWORD publishCode = GetLastError();
+    return NativePublishOutcome{
+        matches_directory_identity(a_destination, a_expectedIdentity, a_context), publishCode};
 }
 
 /// @brief UTF-8 を Strict UTF-16 へ変換して IO Error として失敗を返す
@@ -915,8 +991,9 @@ class WindowsFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<cue::StagingArea> create_staging_area(
         const cue::RelativePath &a_destination) noexcept override;
     /// @brief Token が一致する Staging を既存 Destination へ上書きせず公開する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &a_destination) noexcept override;
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override;
     /// @brief Token が一致する未公開 Staging だけを再帰削除する
     [[nodiscard]] cue::Result<void> rollback_staging_area(cue::StagingArea &&a_staging) noexcept override;
 
@@ -927,9 +1004,7 @@ class WindowsFilesystemRoot final : public cue::FilesystemRoot
         std::string path;
         std::string destinationKey;
         UniqueHandle handle;
-        DWORD volumeSerial;
-        DWORD fileIndexHigh;
-        DWORD fileIndexLow;
+        cue::windows_io::NativeFilesystemIdentity identity;
     };
 
     /// @brief Root Absolute Path と検証済み Relative Path を Extended Windows Path へ結合する
@@ -1750,9 +1825,10 @@ cue::Result<cue::StagingArea> WindowsFilesystemRoot::create_staging_area(
         if (CreateDirectoryW(full.try_value()->c_str(), nullptr) != FALSE)
         {
             UniqueHandle stagingHandle(
-                CreateFileW(full.try_value()->c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                CreateFileW(full.try_value()->c_str(), DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+                            nullptr));
             if (!stagingHandle.is_valid())
             {
                 const DWORD code = GetLastError();
@@ -1771,6 +1847,14 @@ cue::Result<cue::StagingArea> WindowsFilesystemRoot::create_staging_area(
                 return cue::Result<cue::StagingArea>::failure(
                     remove_staging_after_creation_failure(*m_assertContext, *full.try_value(), std::move(primary)));
             }
+            cue::Result<cue::windows_io::NativeFilesystemIdentity> nativeIdentity =
+                cue::windows_io::inspect_native_filesystem_identity(stagingHandle.get(), *m_assertContext);
+            if (!nativeIdentity)
+            {
+                stagingHandle.reset();
+                return cue::Result<cue::StagingArea>::failure(remove_staging_after_creation_failure(
+                    *m_assertContext, *full.try_value(), std::move(*nativeIdentity.try_error())));
+            }
             std::uint64_t token = m_nextToken++;
             if (token == 0)
             {
@@ -1780,8 +1864,7 @@ cue::Result<cue::StagingArea> WindowsFilesystemRoot::create_staging_area(
             {
                 m_stagingPaths.emplace(token,
                                        StagingRecord{relativeText, a_destination.comparison_key(*m_assertContext),
-                                                     std::move(stagingHandle), information.dwVolumeSerialNumber,
-                                                     information.nFileIndexHigh, information.nFileIndexLow});
+                                                     std::move(stagingHandle), *nativeIdentity.try_value()});
             }
             catch (...)
             {
@@ -1842,10 +1925,18 @@ cue::Result<void> WindowsFilesystemRoot::validate_staging_identity(std::uint64_t
         return cue::Result<void>::failure(
             cue::make_io_error(*m_assertContext, cue::IoError::UnsupportedEntry, "Staging root is a reparse point"));
     }
+    cue::Result<cue::windows_io::NativeFilesystemIdentity> nativeIdentity =
+        cue::windows_io::inspect_native_filesystem_identity(current.get(), *m_assertContext);
+    if (!nativeIdentity)
+    {
+        return cue::Result<void>::failure(std::move(*nativeIdentity.try_error()));
+    }
+    const cue::windows_io::NativeFilesystemIdentity &expected = found->second.identity;
     if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        information.dwVolumeSerialNumber != found->second.volumeSerial ||
-        information.nFileIndexHigh != found->second.fileIndexHigh ||
-        information.nFileIndexLow != found->second.fileIndexLow)
+        nativeIdentity.try_value()->volumeHigh != expected.volumeHigh ||
+        nativeIdentity.try_value()->volumeLow != expected.volumeLow ||
+        nativeIdentity.try_value()->entryHigh != expected.entryHigh ||
+        nativeIdentity.try_value()->entryLow != expected.entryLow)
     {
         return cue::Result<void>::failure(
             cue::make_io_error(*m_assertContext, cue::IoError::OutsideRoot, "Staging directory identity changed"));
@@ -1853,8 +1944,9 @@ cue::Result<void> WindowsFilesystemRoot::validate_staging_identity(std::uint64_t
     return cue::Result<void>::success();
 }
 
-cue::Result<void> WindowsFilesystemRoot::publish_staging_area(cue::StagingArea &&a_staging,
-                                                              const cue::RelativePath &a_destination) noexcept
+cue::Result<void> WindowsFilesystemRoot::publish_staging_area(
+    cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+    const cue::StagingPublishAuthorization *a_authorization) noexcept
 {
     if (!owns_staging(a_staging))
     {
@@ -1897,8 +1989,15 @@ cue::Result<void> WindowsFilesystemRoot::publish_staging_area(cue::StagingArea &
     {
         return validation;
     }
-    const NativePublishOutcome publish =
-        publish_with_durability(*stagingPath.try_value(), *destinationPath.try_value(), 0);
+    const NativePublishOutcome publish = publish_handle_with_durability(
+        record->second.handle.get(), *destinationPath.try_value(), record->second.identity, a_authorization,
+        *m_assertContext);
+    if (publish.authorizationRejected)
+    {
+        return cue::Result<void>::failure(cue::make_io_error(
+            *m_assertContext, cue::IoError::PreconditionFailed,
+            "Staging directory publish authorization was rejected"));
+    }
     if (!publish.isPublished)
     {
         return cue::Result<void>::failure(

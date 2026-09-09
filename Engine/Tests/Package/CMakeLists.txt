@@ -15,7 +15,18 @@ add_executable(CuePackageManifestTests ManifestTests.cpp)
 target_link_libraries(CuePackageManifestTests PRIVATE Cue.Package)
 target_compile_features(CuePackageManifestTests PRIVATE cxx_std_20)
 
-set(cuePackageTestTargets CuePackageRuntimeDataTests CuePackageManifestTests CuePackagePublicHeaderTest)
+set(cuePackageTestTargets
+    CuePackageRuntimeDataTests
+    CuePackageManifestTests
+    CuePackagePublicHeaderTest
+)
+
+if(WIN32)
+    add_executable(CuePackagePublisherTests PublisherTests.cpp)
+    target_link_libraries(CuePackagePublisherTests PRIVATE Cue.Package Cue.IO.Windows)
+    target_compile_features(CuePackagePublisherTests PRIVATE cxx_std_20)
+    list(APPEND cuePackageTestTargets CuePackagePublisherTests)
+endif()
 
 foreach(testTarget IN LISTS cuePackageTestTargets)
     set_target_properties(
@@ -55,3 +66,8 @@ set_tests_properties(
         LABELS Package
         TIMEOUT 10
 )
+
+if(WIN32)
+    add_test(NAME Cue.Package.Publisher COMMAND CuePackagePublisherTests "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(Cue.Package.Publisher PROPERTIES LABELS Package TIMEOUT 10)
+endif()

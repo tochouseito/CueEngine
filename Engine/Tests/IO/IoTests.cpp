@@ -10,6 +10,7 @@
 #include <ShlObj.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -38,6 +39,77 @@ class TestFatalHandler final : public cue::FatalHandler
     {
         std::_Exit(91);
     }
+};
+
+/// @brief Publish Authorizationが呼ばれた事実だけを記録するTest Double
+class RecordingPublishAuthorization final : public cue::StagingPublishAuthorization
+{
+  public:
+    /// @brief 未呼出状態を構築する
+    RecordingPublishAuthorization() noexcept = default;
+    /// @brief 記録状態を解放する
+    ~RecordingPublishAuthorization() override = default;
+
+    /// @brief 呼出しを記録してPublishを許可する
+    [[nodiscard]] bool try_authorize() const noexcept override
+    {
+        m_called.store(true, std::memory_order_release);
+        return true;
+    }
+
+    /// @brief Authorizationが呼ばれた場合だけtrueを返す
+    [[nodiscard]] bool was_called() const noexcept
+    {
+        return m_called.load(std::memory_order_acquire);
+    }
+
+  private:
+    mutable std::atomic_bool m_called = false;
+};
+
+/// @brief Tree検証完了後のAuthorization境界でPublish Threadを停止するTest Double
+class BlockingPublishAuthorization final : public cue::StagingPublishAuthorization
+{
+  public:
+    /// @brief 未到達かつ停止状態を構築する
+    BlockingPublishAuthorization() noexcept = default;
+    /// @brief 同期状態を解放する
+    ~BlockingPublishAuthorization() override = default;
+
+    /// @brief Authorization境界への到達を通知し、Test Threadの許可を待つ
+    [[nodiscard]] bool try_authorize() const noexcept override
+    {
+        m_entered.store(true, std::memory_order_release);
+        while (!m_allowed.load(std::memory_order_acquire))
+        {
+            SwitchToThread();
+        }
+        return true;
+    }
+
+    /// @brief Authorization境界へ到達するまで期限付きで待機する
+    [[nodiscard]] bool wait_until_entered() const noexcept
+    {
+        for (std::size_t attempt = 0U; attempt < 5000U; ++attempt)
+        {
+            if (m_entered.load(std::memory_order_acquire))
+            {
+                return true;
+            }
+            Sleep(1U);
+        }
+        return m_entered.load(std::memory_order_acquire);
+    }
+
+    /// @brief 待機中のAuthorizationを完了させる
+    void allow() noexcept
+    {
+        m_allowed.store(true, std::memory_order_release);
+    }
+
+  private:
+    mutable std::atomic_bool m_entered = false;
+    mutable std::atomic_bool m_allowed = false;
 };
 
 /// @brief Test 専用 Root Directory を一意 Path へ作成して終了時に限定 Cleanup する
@@ -414,13 +486,20 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     }
 
     /// @brief Staging 検証から耐久性確認までの Publish Failure Point を一度だけ再現する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
         if (consume(FailurePoint::ValidateStaged) || consume(FailurePoint::PrePublishReparseValidation) ||
             consume(FailurePoint::Publish))
         {
             return cue::Result<void>::failure(make_failure());
+        }
+
+        if (a_authorization != nullptr && !a_authorization->try_authorize())
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::PreconditionFailed, "Publish authorization was rejected"));
         }
 
         m_hasStaging = false;
@@ -871,6 +950,197 @@ template <typename T> [[nodiscard]] bool has_io_error(cue::Result<T> &a_result, 
            a_filesystem.rollback_staging_area(std::move(*boundStaging.try_value()));
 }
 
+/// @brief Tree検証後のAuthorization順序とAmbiguous Rename時のDestination Identity照合を検証する
+[[nodiscard]] bool test_staging_publish_authorization(cue::FilesystemRoot &a_filesystem,
+                                                       const TestDirectory &a_directory,
+                                                       const cue::AssertContext &a_assertContext)
+{
+    auto validationDestination = cue::RelativePath::parse("AuthorizationValidation", a_assertContext);
+    if (!validationDestination)
+    {
+        return false;
+    }
+    auto validationStaging = a_filesystem.create_staging_area(*validationDestination.try_value());
+    if (!validationStaging)
+    {
+        return false;
+    }
+
+    const std::wstring validationStagingPath =
+        a_directory.child_path(widen_ascii(validationStaging.try_value()->path().text()));
+    const std::wstring reparseChild = validationStagingPath + L"\\ReparseChild";
+    const BOOL reparseCreated = CreateSymbolicLinkW(
+        reparseChild.c_str(), a_directory.outside_path().c_str(),
+        SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
+    if (reparseCreated != FALSE)
+    {
+        RecordingPublishAuthorization recording;
+        auto rejected = a_filesystem.publish_staging_area(std::move(*validationStaging.try_value()),
+                                                           *validationDestination.try_value(), &recording);
+        const bool rejectedBeforeAuthorization = has_io_error(rejected, cue::IoError::UnsupportedEntry) &&
+                                                 !recording.was_called();
+        if (RemoveDirectoryW(reparseChild.c_str()) == FALSE || !rejectedBeforeAuthorization ||
+            !a_filesystem.rollback_staging_area(std::move(*validationStaging.try_value())))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        const DWORD code = GetLastError();
+        if (code != ERROR_PRIVILEGE_NOT_HELD && code != ERROR_INVALID_PARAMETER && code != ERROR_NOT_SUPPORTED)
+        {
+            return false;
+        }
+        if (!a_filesystem.rollback_staging_area(std::move(*validationStaging.try_value())))
+        {
+            return false;
+        }
+    }
+
+    auto racedDestination = cue::RelativePath::parse("AuthorizationIdentityRace", a_assertContext);
+    if (!racedDestination)
+    {
+        return false;
+    }
+    auto racedStaging = a_filesystem.create_staging_area(*racedDestination.try_value());
+    if (!racedStaging)
+    {
+        return false;
+    }
+    const std::wstring racedStagingPath =
+        a_directory.child_path(widen_ascii(racedStaging.try_value()->path().text()));
+    const std::wstring displacedPath = racedStagingPath + L"-Displaced";
+    const std::wstring destinationPath = a_directory.child_path(L"AuthorizationIdentityRace");
+    BlockingPublishAuthorization blocking;
+    std::unique_ptr<cue::Result<void>> publishResult;
+    std::thread publishThread(
+        [&]()
+        {
+            publishResult = std::make_unique<cue::Result<void>>(a_filesystem.publish_staging_area(
+                std::move(*racedStaging.try_value()), *racedDestination.try_value(), &blocking));
+        });
+
+    const bool entered = blocking.wait_until_entered();
+    const bool displaced = entered && MoveFileExW(racedStagingPath.c_str(), displacedPath.c_str(), 0U) != FALSE;
+    const bool replacementCreated = displaced && CreateDirectoryW(destinationPath.c_str(), nullptr) != FALSE;
+    blocking.allow();
+    publishThread.join();
+    if (!entered || !displaced || !replacementCreated || publishResult == nullptr || publishResult->has_value())
+    {
+        return false;
+    }
+
+    const bool replacementRemoved = RemoveDirectoryW(destinationPath.c_str()) != FALSE;
+    const bool originalRestored = replacementRemoved &&
+                                  MoveFileExW(displacedPath.c_str(), racedStagingPath.c_str(), 0U) != FALSE;
+    if (!originalRestored ||
+        !a_filesystem.rollback_staging_area(std::move(*racedStaging.try_value())).has_value())
+    {
+        return false;
+    }
+
+    auto sourceSwapDestination = cue::RelativePath::parse("AuthorizationSourceSwap", a_assertContext);
+    if (!sourceSwapDestination)
+    {
+        return false;
+    }
+    auto sourceSwapStaging = a_filesystem.create_staging_area(*sourceSwapDestination.try_value());
+    if (!sourceSwapStaging)
+    {
+        return false;
+    }
+    const std::wstring sourceSwapStagingPath =
+        a_directory.child_path(widen_ascii(sourceSwapStaging.try_value()->path().text()));
+    const std::wstring sourceSwapDisplacedPath = sourceSwapStagingPath + L"-Displaced";
+    const std::wstring sourceSwapDestinationPath = a_directory.child_path(L"AuthorizationSourceSwap");
+    const std::wstring ownedMarker = sourceSwapStagingPath + L"\\OwnedMarker";
+    if (CreateDirectoryW(ownedMarker.c_str(), nullptr) == FALSE)
+    {
+        return false;
+    }
+    BlockingPublishAuthorization sourceSwapBlocking;
+    std::unique_ptr<cue::Result<void>> sourceSwapResult;
+    std::thread sourceSwapThread(
+        [&]()
+        {
+            sourceSwapResult = std::make_unique<cue::Result<void>>(a_filesystem.publish_staging_area(
+                std::move(*sourceSwapStaging.try_value()), *sourceSwapDestination.try_value(), &sourceSwapBlocking));
+        });
+
+    const bool sourceSwapEntered = sourceSwapBlocking.wait_until_entered();
+    const bool sourceSwapDisplaced =
+        sourceSwapEntered && MoveFileExW(sourceSwapStagingPath.c_str(), sourceSwapDisplacedPath.c_str(), 0U) != FALSE;
+    const bool sourceSwapReplacementCreated =
+        sourceSwapDisplaced && CreateDirectoryW(sourceSwapStagingPath.c_str(), nullptr) != FALSE;
+    const std::wstring replacementMarker = sourceSwapStagingPath + L"\\ReplacementMarker";
+    const bool replacementMarkerCreated =
+        sourceSwapReplacementCreated && CreateDirectoryW(replacementMarker.c_str(), nullptr) != FALSE;
+    sourceSwapBlocking.allow();
+    sourceSwapThread.join();
+    const DWORD ownedMarkerAttributes =
+        GetFileAttributesW((sourceSwapDestinationPath + L"\\OwnedMarker").c_str());
+    const DWORD replacementMarkerAttributes = GetFileAttributesW(replacementMarker.c_str());
+    const DWORD displacedAttributes = GetFileAttributesW(sourceSwapDisplacedPath.c_str());
+    if (!sourceSwapEntered || !sourceSwapDisplaced || !sourceSwapReplacementCreated || !replacementMarkerCreated ||
+        sourceSwapResult == nullptr || !sourceSwapResult->has_value() ||
+        ownedMarkerAttributes == INVALID_FILE_ATTRIBUTES ||
+        replacementMarkerAttributes == INVALID_FILE_ATTRIBUTES || displacedAttributes != INVALID_FILE_ATTRIBUTES)
+    {
+        return false;
+    }
+
+    auto alreadyPublishedDestination =
+        cue::RelativePath::parse("AuthorizationAlreadyPublished", a_assertContext);
+    if (!alreadyPublishedDestination)
+    {
+        return false;
+    }
+    auto alreadyPublishedStaging = a_filesystem.create_staging_area(*alreadyPublishedDestination.try_value());
+    if (!alreadyPublishedStaging)
+    {
+        return false;
+    }
+    const std::wstring alreadyPublishedStagingPath =
+        a_directory.child_path(widen_ascii(alreadyPublishedStaging.try_value()->path().text()));
+    const std::wstring alreadyPublishedDestinationPath =
+        a_directory.child_path(L"AuthorizationAlreadyPublished");
+    const std::wstring alreadyPublishedMarker = alreadyPublishedStagingPath + L"\\OwnedMarker";
+    if (CreateDirectoryW(alreadyPublishedMarker.c_str(), nullptr) == FALSE)
+    {
+        return false;
+    }
+    BlockingPublishAuthorization alreadyPublishedBlocking;
+    std::unique_ptr<cue::Result<void>> alreadyPublishedResult;
+    std::thread alreadyPublishedThread(
+        [&]()
+        {
+            alreadyPublishedResult = std::make_unique<cue::Result<void>>(a_filesystem.publish_staging_area(
+                std::move(*alreadyPublishedStaging.try_value()), *alreadyPublishedDestination.try_value(),
+                &alreadyPublishedBlocking));
+        });
+
+    const bool alreadyPublishedEntered = alreadyPublishedBlocking.wait_until_entered();
+    const bool movedToDestination =
+        alreadyPublishedEntered &&
+        MoveFileExW(alreadyPublishedStagingPath.c_str(), alreadyPublishedDestinationPath.c_str(), 0U) != FALSE;
+    const bool reusedSourceName =
+        movedToDestination && CreateDirectoryW(alreadyPublishedStagingPath.c_str(), nullptr) != FALSE;
+    alreadyPublishedBlocking.allow();
+    alreadyPublishedThread.join();
+    const bool publishedOutcome = alreadyPublishedResult != nullptr &&
+                                  (alreadyPublishedResult->has_value() ||
+                                   has_io_error(*alreadyPublishedResult, cue::IoError::DurabilityUnknown));
+    auto publishedRollback =
+        a_filesystem.rollback_staging_area(std::move(*alreadyPublishedStaging.try_value()));
+    const DWORD destinationMarkerAttributes =
+        GetFileAttributesW((alreadyPublishedDestinationPath + L"\\OwnedMarker").c_str());
+    const DWORD reusedSourceAttributes = GetFileAttributesW(alreadyPublishedStagingPath.c_str());
+    return alreadyPublishedEntered && movedToDestination && reusedSourceName && publishedOutcome &&
+           has_io_error(publishedRollback, cue::IoError::OutsideRoot) &&
+           destinationMarkerAttributes != INVALID_FILE_ATTRIBUTES && reusedSourceAttributes != INVALID_FILE_ATTRIBUTES;
+}
+
 /// @brief 利用可能な Windows 環境で Reparse Point を Unsupported Entry として拒否することを検証する
 [[nodiscard]] bool test_reparse_rejection(cue::FilesystemRoot &a_filesystem, const TestDirectory &a_directory,
                                           const cue::AssertContext &a_assertContext)
@@ -1118,6 +1388,10 @@ int main()
     if (!test_windows_staging(**filesystem.try_value(), assertContext))
     {
         return 4;
+    }
+    if (!test_staging_publish_authorization(**filesystem.try_value(), directory, assertContext))
+    {
+        return 9;
     }
     if (!test_reparse_rejection(**filesystem.try_value(), directory, assertContext))
     {
