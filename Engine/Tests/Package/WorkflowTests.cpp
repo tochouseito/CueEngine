@@ -178,6 +178,9 @@ void write_u32(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint3
     write_u16(bytes, 0x94U, 240U);
     constexpr std::size_t optional = 0x98U;
     write_u16(bytes, optional, 0x020bU);
+    write_u32(bytes, optional + 32U, 0x1000U);
+    write_u32(bytes, optional + 36U, 0x200U);
+    write_u32(bytes, optional + 56U, 0x2000U);
     write_u32(bytes, optional + 60U, 0x200U);
     write_u32(bytes, optional + 108U, 16U);
     constexpr std::size_t section = 0x188U;
