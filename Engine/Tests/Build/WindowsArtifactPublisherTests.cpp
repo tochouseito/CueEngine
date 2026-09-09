@@ -133,9 +133,11 @@ void require(bool a_condition, const std::source_location a_location = std::sour
 }
 
 /// @brief Result成功値を所有値として取得する
-template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexcept
+template <typename T>
+[[nodiscard]] T take_value(cue::Result<T> a_result,
+                           const std::source_location a_location = std::source_location::current()) noexcept
 {
-    require(a_result.has_value());
+    require(a_result.has_value(), a_location);
     return std::move(*a_result.try_value());
 }
 
