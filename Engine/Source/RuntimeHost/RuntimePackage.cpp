@@ -131,6 +131,13 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
     return true;
 }
 
+/// @brief Filesystem PathをEngine内部契約のUTF-8表現へ変換する
+[[nodiscard]] std::string path_to_utf8(const std::filesystem::path &a_path)
+{
+    const std::u8string text = a_path.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(text.data()), text.size());
+}
+
 /// @brief Runtime Package処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_package_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -337,20 +344,62 @@ class JsonCursor final
     {
         skip_whitespace();
         const std::size_t begin = m_offset;
-        while (m_offset < m_input.size())
+        if (m_offset < m_input.size() && m_input[m_offset] == '-')
         {
-            const char value = m_input[m_offset];
-            if ((value >= '0' && value <= '9') || value == '-' || value == '+' || value == '.' || value == 'e' ||
-                value == 'E')
-            {
-                ++m_offset;
-                continue;
-            }
-            break;
+            ++m_offset;
         }
-        if (begin == m_offset)
+        if (m_offset >= m_input.size())
         {
             return false;
+        }
+        if (m_input[m_offset] == '0')
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                return false;
+            }
+        }
+        else if (m_input[m_offset] >= '1' && m_input[m_offset] <= '9')
+        {
+            do
+            {
+                ++m_offset;
+            } while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9');
+        }
+        else
+        {
+            return false;
+        }
+        if (m_offset < m_input.size() && m_input[m_offset] == '.')
+        {
+            ++m_offset;
+            const std::size_t fractionBegin = m_offset;
+            while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                ++m_offset;
+            }
+            if (fractionBegin == m_offset)
+            {
+                return false;
+            }
+        }
+        if (m_offset < m_input.size() && (m_input[m_offset] == 'e' || m_input[m_offset] == 'E'))
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() && (m_input[m_offset] == '+' || m_input[m_offset] == '-'))
+            {
+                ++m_offset;
+            }
+            const std::size_t exponentBegin = m_offset;
+            while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                ++m_offset;
+            }
+            if (exponentBegin == m_offset)
+            {
+                return false;
+            }
         }
         const auto converted = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_output,
                                                std::chars_format::general);
@@ -1482,7 +1531,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             return Result<LoadedRuntimePackage>::failure(std::move(*executable.try_error()));
         }
         const std::filesystem::path root = executable.try_value()->parent_path();
-        auto filesystem = create_windows_filesystem_root(root.generic_string(), a_assertContext);
+        const std::string rootUtf8 = path_to_utf8(root);
+        auto filesystem = create_windows_filesystem_root(rootUtf8, a_assertContext);
         if (!filesystem)
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*filesystem.try_error()));
@@ -1546,8 +1596,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 a_assertContext, package::PackageError::InvalidPackagePath,
                 "Running RuntimeHost executable does not match the Manifest role"));
         }
-        auto inventory = package::verify_package_manifest_files(root.generic_string(), *manifest.try_value(),
-                                                                 a_assertContext);
+        auto inventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
         if (!inventory)
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*inventory.try_error()));
@@ -1631,8 +1680,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
         }
-        auto guardedInventory = package::verify_package_manifest_files(root.generic_string(), *manifest.try_value(),
-                                                                        a_assertContext);
+        auto guardedInventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
         auto guardedRuntimeInventory = guardedInventory
                                            ? validate_runtime_dependency_inventory(
                                                  root, *manifest.try_value(), a_assertContext)
@@ -1690,7 +1738,9 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                                              {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
                                               nullptr, 0U}};
         if (query(CUE_GAME_MODULE_ABI_VERSION_1, &queryOutput, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS ||
-            queryOutput.api == nullptr || queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
+            queryOutput.structSize != sizeof(CueGameModuleQueryOutputV1) ||
+            queryOutput.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || queryOutput.api == nullptr ||
+            queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
         {
             FreeLibrary(library);
             if (runtimeCookie != nullptr)
@@ -1768,7 +1818,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             return Result<LoadedRuntimePackage>::failure(std::move(*systems.try_error()));
         }
         return Result<LoadedRuntimePackage>::success(LoadedRuntimePackage(
-            root.generic_string(), std::string(manifest.try_value()->project_id()), std::move(module),
+            rootUtf8, std::string(manifest.try_value()->project_id()), std::move(module),
             std::move(*registry.try_value()), std::move(*startupScene.try_value()),
             std::move(*systems.try_value())));
     }
