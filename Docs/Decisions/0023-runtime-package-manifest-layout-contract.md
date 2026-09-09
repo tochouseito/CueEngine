@@ -85,7 +85,8 @@ Sources:
 
 ### Scope and Source of Truth
 
-M16 Packageは次の五つを一つの自己完結Directoryへ配置する。
+M16 PackageはProject所有の入力について自己完結する次の五つを一つのDirectoryへ配置する。OSとToolchain Runtimeの実行前提は
+後述のRuntime Dependency Inventoryに従う。
 
 1. EngineがBuildした共通`CueRuntimeHost.exe`
 2. ADR-0022の現在の成功`CueGameModule.dll`
@@ -172,7 +173,8 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
 - `translation`、`rotation`、`scale`はそれぞれ3、4、3個の有限JSON numberとする。Writerはlocale非依存の最短round-trip表現を使用する
 - `schemaVersion`と`fieldId`は正のJSON整数とし、それぞれComponent Schema Version、Field Identityを表す
 - `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
-- `assetReference`の`value`はM16ではPublisherが理解できる登録済みTokenだけを許可する。一般Asset DatabaseのIdentity契約は確定しない
+- `assetReference`はM16では解決可能なRuntime RegistryとPackage Inventoryが存在しないため、値にかかわらず
+  `UnsupportedRuntimeSceneData`で拒否する。一般Asset DatabaseのIdentity契約は確定しない
 - RuntimeHost v1が登録していないComponent Type、Schema Version、Field、Asset Referenceを含む場合、WriterまたはReaderは省略せず`UnsupportedRuntimeSceneData`で拒否する
 
 Runtime Data WriterはRaw Source Byte列をCopyせず、検証済みProject Modelと`SceneDocumentSnapshot`から新しいWire表現を生成する。
@@ -253,7 +255,7 @@ ReaderはMember順と意味を持たない空白には依存しないが、必�
 | `gameModuleMetadata` | exactly 1 | `Game/CueGameModule.metadata.json` |
 | `projectRuntimeData` | exactly 1 | `Data/CueProject.runtime.json` |
 | `startupSceneRuntimeData` | exactly 1 | `startupScene.runtimeDataPath`と一致 |
-| `runtimeDependency` | zero or more | `Runtime`直下または子Directory |
+| `runtimeDependency` | zero or more | `Runtime`直下 |
 
 Entryは`path`のUTF-8 Byte昇順で整列する。同一Pathの重複、ASCII case-insensitive Alias、同一必須Roleの重複を拒否する。
 `sizeBytes`はCopy後Fileの未変換Byte数、`sha256`は同じByte列に対する64文字lowercase SHA-256とする。
@@ -302,12 +304,22 @@ Publisherは入力Fileを開いたHandleからSizeとHashを測定し、検証�
 Runtime Dependency Collectorは`CueRuntimeHost.exe`とGame ModuleのBuild Metadata、およびM16で明示的に登録したApp-local Runtime Fileを
 入力にする。Project Directory、`PATH`全体、Windows System Directory、Visual Studio Installation、vcpkg Install Treeを再帰探索しない。
 
-OSが提供するSystem DLLはPackage Entryにしない。App-local DLLが必要な場合は、Build時の正本PathからStagingへCopyし、
-`runtimeDependency`としてHash／Sizeを記録する。未知または不足したDependencyを起動時のOS Search Pathへ委ねず、Publish前に失敗する。
-Debugと非DebugのRuntime Libraryを同じManifestへ混在させない。
+OSが提供するSystem DLLと、下記のMSVC Runtime前提はPackage Entryにしない。Game ModuleのApp-local DLLが必要な場合は、
+Build時の正本PathからStagingへCopyし、`runtimeDependency`としてHash／Sizeを記録する。M16ではWindows DLL Loaderが再帰探索しない
+ことと検索境界を一致させるため、`runtimeDependency`は`Runtime/`直下の一File Nameだけを許可し、子Directoryを拒否する。
+未知または不足したDependencyを起動時のOS Search Pathへ委ねず、Publish前に失敗する。Debugと非DebugのRuntime Libraryを同じManifestへ
+混在させない。
 
-`CueRuntimeHost.exe`のLoad-time ImportはWindows System DLLだけに限定する。Host自身がApp-local DLLを直接Importしている場合、
-Windows LoaderはManifest検証や`Runtime` Directory登録より前に解決を要求するため、M16 Publisherはその構成をPackageせず失敗させる。
+現行BuildはCMake／MSVC既定のDynamic Runtimeを使用するため、`CueRuntimeHost.exe`のLoad-time ImportはWindows System DLLに加え、
+使用Compilerに対応するMicrosoft Visual C++ Runtimeを許可する。Development／Release Packageの実行Hostには対応するx64
+Visual C++ Redistributable、Debug Packageの実行Hostには対応するVisual Studio C++ Debug Runtimeを前提とする。これらはToolchainの
+実行前提でありPackageへCopyせず、Debug Packageを配布物として扱わない。M16のStandaloneはProject SourceやBuild Treeからの独立を
+意味し、OS／Toolchain RuntimeまでDirectory内へ複製するInstaller契約は含まない。Production配布でのStatic Runtimeまたは
+Redistributable Installer方針は別ADRで決定する。
+
+M16 PublisherのHost Import検証は、Windows System DLLと上記MSVC Runtimeの既知Import名だけを許可する。Host自身がそれ以外の
+App-local DLLを直接Importしている場合、Windows LoaderはManifest検証や`Runtime` Directory登録より前に解決を要求するため、
+M16 Publisherはその構成をPackageせず失敗させる。
 Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryをProcess-localな
 DLL検索Directoryへ登録する。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
 静的Bootstrapを別ADRで決定する。
