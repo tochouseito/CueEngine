@@ -5,7 +5,6 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Package/Error.h>
 
-#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -16,7 +15,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace
 {
@@ -154,95 +152,6 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
     a_output.append("]}");
 }
 
-/// @brief Field Valueの明示Kind名を返す
-[[nodiscard]] std::string_view field_kind_name(cue::scene::FieldValueKind a_kind) noexcept
-{
-    switch (a_kind)
-    {
-    case cue::scene::FieldValueKind::Boolean:
-        return "boolean";
-    case cue::scene::FieldValueKind::SignedInteger:
-        return "signedInteger";
-    case cue::scene::FieldValueKind::UnsignedInteger:
-        return "unsignedInteger";
-    case cue::scene::FieldValueKind::FloatingPoint:
-        return "floatingPoint";
-    case cue::scene::FieldValueKind::String:
-        return "string";
-    case cue::scene::FieldValueKind::AssetReference:
-        return "assetReference";
-    }
-    return {};
-}
-
-/// @brief 検証済みField ValueをKindに対応するRuntime JSON Valueへ追加する
-[[nodiscard]] bool append_field_value(std::string &a_output, const cue::scene::FieldValue &a_value)
-{
-    if (!cue::scene::is_valid_field_value(a_value))
-    {
-        return false;
-    }
-    switch (a_value.kind())
-    {
-    case cue::scene::FieldValueKind::Boolean:
-        a_output.append(*a_value.try_boolean() ? "true" : "false");
-        break;
-    case cue::scene::FieldValueKind::SignedInteger:
-        append_number(a_output, *a_value.try_signed_integer());
-        break;
-    case cue::scene::FieldValueKind::UnsignedInteger:
-        append_number(a_output, *a_value.try_unsigned_integer());
-        break;
-    case cue::scene::FieldValueKind::FloatingPoint:
-        append_number(a_output, *a_value.try_floating_point());
-        break;
-    case cue::scene::FieldValueKind::String:
-        append_json_string(a_output, *a_value.try_string());
-        break;
-    case cue::scene::FieldValueKind::AssetReference:
-        return false;
-    }
-    return true;
-}
-
-/// @brief 既知Componentを未知Fieldを省略せず固定Runtime JSONへ追加する
-[[nodiscard]] bool append_component(std::string &a_output, const cue::scene::SceneComponent &a_component)
-{
-    const cue::scene::KnownComponentData *known = a_component.try_known();
-    if (known == nullptr || !known->unknown_fields().empty())
-    {
-        return false;
-    }
-    a_output.append("{\"componentInstanceId\":");
-    append_uuid(a_output, known->instance_id().bytes());
-    a_output.append(",\"typeId\":");
-    append_uuid(a_output, known->type_id().bytes());
-    a_output.append(",\"schemaVersion\":");
-    append_number(a_output, known->schema_version().value());
-    a_output.append(",\"fields\":[");
-    bool first = true;
-    for (const cue::scene::KnownFieldData &field : known->known_fields())
-    {
-        if (!first)
-        {
-            a_output.push_back(',');
-        }
-        first = false;
-        a_output.append("{\"fieldId\":");
-        append_number(a_output, field.id().value());
-        a_output.append(",\"kind\":");
-        append_json_string(a_output, field_kind_name(field.value().kind()));
-        a_output.append(",\"value\":");
-        if (!append_field_value(a_output, field.value()))
-        {
-            return false;
-        }
-        a_output.push_back('}');
-    }
-    a_output.append("]}");
-    return true;
-}
-
 /// @brief Project DescriptorからCanonical Runtime Project Dataを生成する
 [[nodiscard]] std::string make_project_data(const cue::ProjectDescriptor &a_descriptor, std::string_view a_sceneAssetId)
 {
@@ -285,6 +194,12 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
         bool firstObject = true;
         for (const cue::scene::SceneObject &object : a_scene.objects())
         {
+            if (!object.components().empty())
+            {
+                return cue::Result<std::string>::failure(cue::package::make_package_error(
+                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                    "Runtime Scene v1 does not support Component Data"));
+            }
             if (!firstObject)
             {
                 output.push_back(',');
@@ -305,33 +220,7 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
             output.append(object.is_active() ? "true" : "false");
             output.append(",\"transform\":");
             append_transform(output, object.transform());
-            output.append(",\"components\":[");
-            bool firstComponent = true;
-            std::vector<cue::schema::TypeId> componentTypes;
-            for (const cue::scene::SceneComponent &component : object.components())
-            {
-                const cue::scene::KnownComponentData *known = component.try_known();
-                if (known == nullptr ||
-                    std::find(componentTypes.begin(), componentTypes.end(), known->type_id()) != componentTypes.end())
-                {
-                    return cue::Result<std::string>::failure(cue::package::make_package_error(
-                        a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
-                        "Runtime Scene contains an opaque or duplicate Component Type"));
-                }
-                componentTypes.push_back(known->type_id());
-                if (!firstComponent)
-                {
-                    output.push_back(',');
-                }
-                firstComponent = false;
-                if (!append_component(output, component))
-                {
-                    return cue::Result<std::string>::failure(cue::package::make_package_error(
-                        a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
-                        "Runtime Scene contains an opaque Component or unknown Field"));
-                }
-            }
-            output.append("]}");
+            output.append(",\"components\":[]}");
             if (output.size() > cue::package::k_maximumRuntimeSceneDataBytes)
             {
                 return cue::Result<std::string>::failure(cue::package::make_package_error(
