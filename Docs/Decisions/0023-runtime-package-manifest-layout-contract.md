@@ -168,8 +168,9 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
 
 - `sceneAssetId`、`objectId`、`componentInstanceId`、`typeId`はlowercase UUID v4とし、nilを拒否する
 - `objects`は`ObjectId`のByte辞書順、`components`は`ComponentInstanceId`順、`fields`は符号なし`fieldId`昇順とする
-- `objectId`はScene内、`componentInstanceId`はScene内、`fieldId`は同一Component内で一意とする。各配列は同値を許さない
-  strict ascending orderとし、重複をReader／Writerとも`UnsupportedRuntimeSceneData`で拒否する
+- `objectId`はScene内、`componentInstanceId`はScene内、`fieldId`は同一Component内で一意とする。加えて、同一Object内で
+  `typeId`を重複させない。各配列は同値を許さないstrict ascending orderとし、IdentityまたはComponent Typeの重複を
+  Reader／Writerとも`UnsupportedRuntimeSceneData`で拒否する
 - `parentObjectId`は同じ`objects`内の別Object IDまたは`null`とし、循環、自己Parent、欠損Parentを拒否する
 - `active`はJSON booleanとする
 - `translation`、`rotation`、`scale`はそれぞれ3、4、3個の、有限IEEE 754 binary32へround-trip可能なJSON numberとする。
@@ -361,8 +362,9 @@ RuntimeHostはPackage Rootを確定した後、次の順序でFail-closedに起�
 5. Runtime Project DataとStartup Scene Runtime DataをParseし、IdentityとCompatibilityを照合する
 6. Game ModuleをLoadし、Schema、Component、System Factoryを一時Registrationへ登録する
 7. 登録済みの不変System Factory集合からRuntime Application Project Scopeを構築する
-8. Startup Sceneを新しいRuntime Worldへ実体化する
-9. Runtime Application SessionをStartし、Loopへ入る
+8. Runtime Application Sessionを構築し、Project ScopeのSystem集合を登録する
+9. Startup Scene Snapshotを渡して`RuntimeApplicationSession::start`を一度だけ呼び、Session所有の新しいRuntime Worldへの
+   Scene実体化とSystem開始を完了してLoopへ入る
 
 失敗時は完了済みStepだけを逆順で終了し、部分World、System State、Module Handle、DLL Handleを残さない。
 Game ModuleのStopと全State破棄が完了する前にDLLをUnloadしない。Owner Thread契約はADR-0021とADR-0022を維持する。
