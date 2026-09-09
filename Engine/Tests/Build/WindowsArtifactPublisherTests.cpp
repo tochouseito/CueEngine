@@ -13,12 +13,14 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <source_location>
 #include <string>
 #include <thread>
 #include <utility>
@@ -121,10 +123,11 @@ class TestFatalHandler final : public cue::FatalHandler
 };
 
 /// @brief 条件違反時にTest Processを失敗終了する
-void require(bool a_condition) noexcept
+void require(bool a_condition, const std::source_location a_location = std::source_location::current()) noexcept
 {
     if (!a_condition)
     {
+        std::fprintf(stderr, "Requirement failed at %s:%u\n", a_location.file_name(), a_location.line());
         std::abort();
     }
 }
