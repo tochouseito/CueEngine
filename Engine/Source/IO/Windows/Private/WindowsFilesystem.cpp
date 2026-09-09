@@ -322,6 +322,7 @@ struct NativePublishOutcome final
 {
     bool isPublished;
     DWORD nativeCode;
+    bool authorizationRejected = false;
 };
 
 /// @brief Destinationが期待したNative Directory Objectを指す場合だけtrueを返す
@@ -376,6 +377,7 @@ struct NativePublishOutcome final
 [[nodiscard]] NativePublishOutcome publish_handle_with_durability(
     HANDLE a_source, const std::wstring &a_destination,
     const cue::windows_io::NativeFilesystemIdentity &a_expectedIdentity,
+    const cue::StagingPublishAuthorization *a_authorization,
     const cue::AssertContext &a_context) noexcept
 {
     constexpr std::size_t headerSize = offsetof(FILE_RENAME_INFO, FileName);
@@ -402,6 +404,10 @@ struct NativePublishOutcome final
     rename->FileNameLength = fileNameBytes;
     std::copy(a_destination.begin(), a_destination.end(), rename->FileName);
 
+    if (a_authorization != nullptr && !a_authorization->try_authorize())
+    {
+        return NativePublishOutcome{false, ERROR_OPERATION_ABORTED, true};
+    }
     if (SetFileInformationByHandle(a_source, FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE)
     {
         return NativePublishOutcome{true, ERROR_SUCCESS};
@@ -1983,14 +1989,15 @@ cue::Result<void> WindowsFilesystemRoot::publish_staging_area(
     {
         return validation;
     }
-    if (a_authorization != nullptr && !a_authorization->try_authorize())
+    const NativePublishOutcome publish = publish_handle_with_durability(
+        record->second.handle.get(), *destinationPath.try_value(), record->second.identity, a_authorization,
+        *m_assertContext);
+    if (publish.authorizationRejected)
     {
         return cue::Result<void>::failure(cue::make_io_error(
             *m_assertContext, cue::IoError::PreconditionFailed,
             "Staging directory publish authorization was rejected"));
     }
-    const NativePublishOutcome publish = publish_handle_with_durability(
-        record->second.handle.get(), *destinationPath.try_value(), record->second.identity, *m_assertContext);
     if (!publish.isPublished)
     {
         return cue::Result<void>::failure(
