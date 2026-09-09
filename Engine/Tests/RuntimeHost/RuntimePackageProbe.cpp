@@ -231,5 +231,17 @@ cue_game_module_query(uint32_t a_requestedAbiVersion, CueGameModuleQueryOutputV1
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
     }
     a_output->api = is_probe_mode("reserved-api-tail") ? &k_apiWithReservedTail : &k_api;
+    if (is_probe_mode("query-output-size"))
+    {
+        a_output->structSize = 0U;
+    }
+    if (is_probe_mode("query-output-version"))
+    {
+        a_output->version = CUE_GAME_MODULE_STRUCTURE_VERSION_1 + 1U;
+    }
+    if (is_probe_mode("reserved-query-output"))
+    {
+        a_output->reserved[1] = 1U;
+    }
     return CUE_GAME_MODULE_RESULT_SUCCESS;
 }
