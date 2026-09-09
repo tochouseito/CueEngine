@@ -285,6 +285,7 @@ schema version 1はParseまたはMemory確保前に可能な限り次を適用�
 | Path segments | 32 |
 | One packaged file | 8 GiB |
 | Sum of listed files | 16 GiB |
+| Game Module Metadata | 64 KiB |
 | Runtime Project Data | 1 MiB |
 | Runtime Scene Data | 64 MiB |
 | Runtime Scene objects | 1,000,000 |
@@ -374,6 +375,9 @@ Pointや子Directoryがないこと、各File NameのASCII case-insensitive集�
 検証する。未列挙File、欠損Entry、Alias、列挙失敗が一つでもあればDirectoryを登録せず起動を拒否する。Manifestに
 `runtimeDependency`がない場合は`Runtime/`が存在しないか空であることを要求する。これにより、Package公開後に追加された未検証DLLを
 Windows Loaderの候補へ含めない。
+
+Game Moduleと`Runtime`直下の依存DLLはWrite／Delete共有なしのHandleで固定し、固定後にManifestのSize／Hashと
+Runtime Directory Inventoryを再検証してからLoadする。固定Handleは少なくともDLL Load完了まで保持する。
 
 新しい第三者LibraryをRuntime Dependencyへ追加またはVersion更新する場合は、AGENTS.mdの承認、vcpkg Manifest、License、Notice契約を
 別Issueで満たす。本ADRは新しい外部Library導入を承認しない。
