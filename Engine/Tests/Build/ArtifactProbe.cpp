@@ -1,6 +1,6 @@
 #include <Cue/GameModule/GameModuleAbi.h>
 
-#if defined(CUE_TEST_CRASH_QUERY) || defined(CUE_TEST_HANG_QUERY)
+#if defined(CUE_TEST_CRASH_QUERY) || defined(CUE_TEST_HANG_QUERY) || defined(CUE_TEST_EXIT_ZERO_QUERY)
 #include <Windows.h>
 #endif
 
@@ -80,7 +80,13 @@ cue_game_module_query(uint32_t a_requestedAbiVersion, CueGameModuleQueryOutputV1
 {
     static_cast<void>(a_requestedAbiVersion);
     static_cast<void>(a_output);
-#if defined(CUE_TEST_CRASH_QUERY)
+#if defined(CUE_TEST_EXIT_ZERO_QUERY)
+    static_cast<void>(TerminateProcess(GetCurrentProcess(), 0U));
+    for (;;)
+    {
+        Sleep(1000U);
+    }
+#elif defined(CUE_TEST_CRASH_QUERY)
     static_cast<void>(TerminateProcess(GetCurrentProcess(), 0xc0000409U));
     for (;;)
     {

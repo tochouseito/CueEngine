@@ -120,6 +120,18 @@ int wmain(int a_count, wchar_t **a_arguments)
         Sleep(100U);
         return write_stream(STD_OUTPUT_HANDLE, "OUT-2\n") ? 7 : 93;
     }
+    if (mode == L"spam")
+    {
+        const std::string block(4096U, 'X');
+        for (std::uint32_t index = 0U; index < 512U; ++index)
+        {
+            if (!write_stream(STD_OUTPUT_HANDLE, block) || !write_stream(STD_ERROR_HANDLE, block))
+            {
+                return 99;
+            }
+        }
+        return 7;
+    }
     if (mode == L"echo")
     {
         for (int index = 2; index < a_count; ++index)

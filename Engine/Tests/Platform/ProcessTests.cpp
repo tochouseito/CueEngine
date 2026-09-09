@@ -58,7 +58,7 @@ int main()
                                      std::chrono::seconds(2));
     if (request.executable() != "C:/Tools/tool.exe" || request.arguments().size() != 2U ||
         request.working_directory() != "C:/Project" || request.environment_allowlist().size() != 1U ||
-        request.timeout() != std::chrono::seconds(2))
+        request.timeout() != std::chrono::seconds(2) || request.maximum_captured_output_bytes().has_value())
     {
         return 1;
     }

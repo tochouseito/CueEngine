@@ -7,6 +7,7 @@
 #include <bit>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace
@@ -19,8 +20,52 @@ enum class ProbeExitCode : int
     ModuleLoadFailed,
     EntryPointMissing,
     QueryRejected,
-    ContractMismatch
+    ContractMismatch,
+    CompletionMarkerFailed
 };
+
+constexpr std::string_view k_completionMarker = "CueGameModuleProbe:v1\n";
+
+/// @brief Absolute Windows Pathを長いPathでもNative APIが受理できる形式へ変換する
+[[nodiscard]] std::wstring to_extended_windows_path(std::wstring_view a_path)
+{
+    std::wstring normalized(a_path);
+    std::replace(normalized.begin(), normalized.end(), L'/', L'\\');
+    if (normalized.starts_with(L"\\\\?\\"))
+    {
+        return normalized;
+    }
+    if (normalized.starts_with(L"\\\\"))
+    {
+        return L"\\\\?\\UNC\\" + normalized.substr(2U);
+    }
+    return L"\\\\?\\" + normalized;
+}
+
+/// @brief ABI検証とDLL解放を完了した事実を親Processへ永続通知する
+[[nodiscard]] bool write_completion_marker(const wchar_t *a_path) noexcept
+{
+    const std::wstring extendedPath = to_extended_windows_path(a_path);
+    const HANDLE marker =
+        CreateFileW(extendedPath.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (marker == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    DWORD written = 0U;
+    const bool isWritten =
+        WriteFile(marker, k_completionMarker.data(), static_cast<DWORD>(k_completionMarker.size()), &written, nullptr) !=
+            FALSE &&
+        written == k_completionMarker.size();
+    const bool isFlushed = isWritten && FlushFileBuffers(marker) != FALSE;
+    const bool isClosed = CloseHandle(marker) != FALSE;
+    if (!isFlushed || !isClosed)
+    {
+        static_cast<void>(DeleteFileW(extendedPath.c_str()));
+        return false;
+    }
+    return true;
+}
 
 /// @brief lower-case UUID Hex文字を4-bit値へ変換する
 [[nodiscard]] std::optional<std::uint8_t> parse_nibble(wchar_t a_value) noexcept
@@ -105,7 +150,7 @@ enum class ProbeExitCode : int
 /// @brief Game ModuleをEditor外の短命ProcessへLoadしてABI契約を検証する
 int wmain(int a_argumentCount, wchar_t **a_arguments)
 {
-    if (a_argumentCount != 4)
+    if (a_argumentCount != 5)
     {
         return static_cast<int>(ProbeExitCode::InvalidArguments);
     }
@@ -146,6 +191,11 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
         return static_cast<int>(ProbeExitCode::QueryRejected);
     }
     const bool valid = validate_api(*output.api, *configuration, *projectId);
-    FreeLibrary(module);
-    return static_cast<int>(valid ? ProbeExitCode::Success : ProbeExitCode::ContractMismatch);
+    const bool unloaded = FreeLibrary(module) != FALSE;
+    if (!valid || !unloaded)
+    {
+        return static_cast<int>(ProbeExitCode::ContractMismatch);
+    }
+    return static_cast<int>(write_completion_marker(a_arguments[4]) ? ProbeExitCode::Success
+                                                                    : ProbeExitCode::CompletionMarkerFailed);
 }

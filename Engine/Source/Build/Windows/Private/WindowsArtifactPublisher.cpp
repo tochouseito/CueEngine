@@ -28,6 +28,7 @@ namespace
 constexpr std::size_t k_hashBlockBytes = 64U * 1024U;
 constexpr std::size_t k_sha256Bytes = 32U;
 constexpr DWORD k_lockRetryMilliseconds = 10U;
+constexpr std::string_view k_probeCompletionMarker = "CueGameModuleProbe:v1\n";
 
 /// @brief Windows Artifact処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_artifact_exception(const cue::AssertContext &a_assertContext) noexcept
@@ -627,9 +628,45 @@ enum class ModuleProbeStatus : std::uint8_t
     return std::max(remaining, std::chrono::milliseconds(1));
 }
 
+/// @brief 前回Probeの完了Markerを除去し新しい検証との混同を防ぐ
+[[nodiscard]] cue::Result<void> remove_probe_marker(const std::filesystem::path &a_path,
+                                                    const cue::AssertContext &a_assertContext) noexcept
+{
+    std::error_code error;
+    static_cast<void>(std::filesystem::remove(a_path, error));
+    if (error)
+    {
+        return cue::Result<void>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch,
+            static_cast<DWORD>(error.value()), "Game Module ABI probe completion marker could not be removed"));
+    }
+    return cue::Result<void>::success();
+}
+
+/// @brief Probeが全検証後に作成した固定内容のRegular Fileだけを完了通知として認める
+[[nodiscard]] bool probe_marker_matches(const std::filesystem::path &a_path) noexcept
+{
+    std::error_code statusError;
+    const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, statusError);
+    if (statusError || !std::filesystem::is_regular_file(status))
+    {
+        return false;
+    }
+    std::error_code sizeError;
+    if (std::filesystem::file_size(a_path, sizeError) != k_probeCompletionMarker.size() || sizeError)
+    {
+        return false;
+    }
+    std::ifstream input(a_path, std::ios::binary);
+    std::array<char, k_probeCompletionMarker.size()> bytes{};
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return input && std::string_view(bytes.data(), bytes.size()) == k_probeCompletionMarker;
+}
+
 /// @brief Candidate DLLの公開ABIを取消／Timeout可能な別Processで検証する
 [[nodiscard]] cue::Result<ModuleProbeStatus> validate_module(const std::filesystem::path &a_path,
                                                              const cue::BuildPlan &a_plan, std::string_view a_projectId,
+                                                             const std::filesystem::path &a_markerDirectory,
                                                              std::string_view a_probeExecutable,
                                                              cue::ChildProcessRunner &a_processRunner,
                                                              const cue::ChildProcessCancellation &a_cancellation,
@@ -641,22 +678,46 @@ enum class ModuleProbeStatus : std::uint8_t
     {
         return cue::Result<ModuleProbeStatus>::failure(make_module_probe_timeout_error(a_assertContext));
     }
+    const std::filesystem::path marker = a_markerDirectory / ".probe-complete";
+    cue::Result<void> staleMarkerRemoved = remove_probe_marker(marker, a_assertContext);
+    if (!staleMarkerRemoved)
+    {
+        return cue::Result<ModuleProbeStatus>::failure(std::move(*staleMarkerRemoved.try_error()));
+    }
+    /// @brief Probe失敗へMarker Cleanup診断を追加して返す
+    const auto failProbe = [&](cue::Error a_error) -> cue::Result<ModuleProbeStatus>
+    {
+        cue::Result<void> markerRemoved = remove_probe_marker(marker, a_assertContext);
+        if (!markerRemoved)
+        {
+            a_error.append_secondary_diagnostics(a_assertContext, *markerRemoved.try_error(),
+                                                 "Probe completion marker cleanup failed", "Probe cleanup");
+        }
+        return cue::Result<ModuleProbeStatus>::failure(std::move(a_error));
+    };
     cue::ChildProcessRequest request(std::string(a_probeExecutable),
                                      {path_to_utf8(a_path),
                                       std::string(configuration_name(a_plan.profile().configuration())),
-                                      std::string(a_projectId)},
-                                     path_to_utf8(a_path.parent_path()), {}, timeout);
+                                      std::string(a_projectId), path_to_utf8(marker)},
+                                     path_to_utf8(a_path.parent_path()), {}, timeout, 0U);
     auto process = a_processRunner.run(request, a_cancellation);
     if (!process)
     {
-        return cue::Result<ModuleProbeStatus>::failure(std::move(*process.try_error()));
+        return failProbe(std::move(*process.try_error()));
     }
     switch (process.try_value()->outcome())
     {
     case cue::ChildProcessOutcome::Cancelled:
+    {
+        cue::Result<void> markerRemoved = remove_probe_marker(marker, a_assertContext);
+        if (!markerRemoved)
+        {
+            return cue::Result<ModuleProbeStatus>::failure(std::move(*markerRemoved.try_error()));
+        }
         return cue::Result<ModuleProbeStatus>::success(ModuleProbeStatus::Cancelled);
+    }
     case cue::ChildProcessOutcome::TimedOut:
-        return cue::Result<ModuleProbeStatus>::failure(make_module_probe_timeout_error(a_assertContext));
+        return failProbe(make_module_probe_timeout_error(a_assertContext));
     case cue::ChildProcessOutcome::Exited:
         break;
     }
@@ -668,8 +729,25 @@ enum class ModuleProbeStatus : std::uint8_t
             summary.append(" with exit code ");
             summary.append(std::to_string(*process.try_value()->exit_code()));
         }
-        return cue::Result<ModuleProbeStatus>::failure(
+        return failProbe(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
+    }
+    const bool isComplete = probe_marker_matches(marker);
+    cue::Result<void> markerRemoved = remove_probe_marker(marker, a_assertContext);
+    if (!isComplete)
+    {
+        cue::Error error = make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch,
+                                      "Game Module ABI probe exited without a valid completion marker");
+        if (!markerRemoved)
+        {
+            error.append_secondary_diagnostics(a_assertContext, *markerRemoved.try_error(),
+                                               "Probe completion marker cleanup failed", "Probe cleanup");
+        }
+        return cue::Result<ModuleProbeStatus>::failure(std::move(error));
+    }
+    if (!markerRemoved)
+    {
+        return cue::Result<ModuleProbeStatus>::failure(std::move(*markerRemoved.try_error()));
     }
     return cue::Result<ModuleProbeStatus>::success(ModuleProbeStatus::Valid);
 }
@@ -971,7 +1049,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
             }
             cue::Result<ModuleProbeStatus> validated =
-                validate_module(candidateModule, a_plan, m_projectId, m_probeExecutable, *m_processRunner,
+                validate_module(candidateModule, a_plan, m_projectId, candidate, m_probeExecutable, *m_processRunner,
                                 a_cancellation, a_deadline, *m_assertContext);
             if (!validated)
             {
@@ -1125,7 +1203,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                         verify_inventory_files(version, *inventory.try_value(), *m_assertContext);
                     cue::ChildProcessCancellation validationCancellation;
                     cue::Result<ModuleProbeStatus> moduleVerified =
-                        validate_module(version / "CueGameModule.dll", a_plan, m_projectId, m_probeExecutable,
+                        validate_module(version / "CueGameModule.dll", a_plan, m_projectId, store, m_probeExecutable,
                                         *m_processRunner, validationCancellation, a_deadline, *m_assertContext);
                     if (inventoryVerified && moduleVerified && *moduleVerified.try_value() == ModuleProbeStatus::Valid)
                     {

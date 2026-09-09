@@ -136,6 +136,14 @@ int main(int a_count, char **a_arguments)
         return 124;
     }
 
+    cue::ChildProcessCancellation discardedCancellation;
+    cue::ChildProcessRequest discardedRequest(probe, {"spam"}, workingDirectory, {}, std::chrono::seconds(5), 0U);
+    auto discarded = runner->run(discardedRequest, discardedCancellation);
+    if (!discarded || discarded.try_value()->exit_code() != 7U || !discarded.try_value()->output().empty())
+    {
+        return 125;
+    }
+
     cue::ChildProcessCancellation quoteCancellation;
     cue::ChildProcessRequest quoteRequest(probe, {"echo", "a b", "quote\"tail\\", "& echo injected"}, workingDirectory,
                                           {}, std::chrono::seconds(5));

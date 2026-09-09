@@ -77,6 +77,19 @@ if(WIN32)
             $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
     )
 
+    add_library(CueBuildZeroExitArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildZeroExitArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildZeroExitArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildZeroExitArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_EXIT_ZERO_QUERY=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
 
@@ -113,6 +126,7 @@ if(WIN32)
         CueBuildInvalidArtifactProbe
         CueBuildCrashingArtifactProbe
         CueBuildHangingArtifactProbe
+        CueBuildZeroExitArtifactProbe
         CueBuildWindowsArtifactPublisherTests
     )
 endif()
@@ -174,6 +188,6 @@ if(WIN32)
     add_test(NAME Cue.Build.Windows.ArtifactPublisher
              COMMAND CueBuildWindowsArtifactPublisherTests $<TARGET_FILE:CueBuildArtifactProbe>
                      $<TARGET_FILE:CueBuildInvalidArtifactProbe> $<TARGET_FILE:CueBuildCrashingArtifactProbe>
-                     $<TARGET_FILE:CueBuildHangingArtifactProbe>)
+                     $<TARGET_FILE:CueBuildHangingArtifactProbe> $<TARGET_FILE:CueBuildZeroExitArtifactProbe>)
     set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
 endif()

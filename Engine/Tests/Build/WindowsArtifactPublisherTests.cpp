@@ -103,6 +103,7 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
 void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const std::filesystem::path &a_invalidProbe,
                                      const std::filesystem::path &a_crashingProbe,
                                      const std::filesystem::path &a_hangingProbe,
+                                     const std::filesystem::path &a_zeroExitProbe,
                                      const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path projectRoot =
@@ -209,6 +210,15 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(read_text(currentPath) == current);
     require(!std::filesystem::exists(std::filesystem::path(crashingPlan.candidate_directory())));
 
+    cue::BuildPlan zeroExitPlan = make_plan(projectRoot, "81234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto zeroExitLease = take_value(publisher->acquire_build_lease(zeroExitPlan, cancellation, std::nullopt));
+    require(zeroExitLease.has_value());
+    require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
+    require(std::filesystem::copy_file(a_zeroExitProbe, outputDirectory / "CueGameModule.dll"));
+    require(!publisher->publish(zeroExitPlan, cancellation, std::move(*zeroExitLease), std::nullopt).has_value());
+    require(read_text(currentPath) == current);
+    require(!std::filesystem::exists(std::filesystem::path(zeroExitPlan.candidate_directory())));
+
     cue::BuildPlan hangingPlan = make_plan(projectRoot, "61234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     auto hangingLease = take_value(publisher->acquire_build_lease(hangingPlan, cancellation, std::nullopt));
     require(hangingLease.has_value());
@@ -257,13 +267,13 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
 /// @brief Windows Artifact PublisherのProcess間契約とAtomic Current保全を検証する
 int main(int a_argumentCount, char **a_arguments)
 {
-    require(a_argumentCount == 5);
+    require(a_argumentCount == 6);
     TestFatalHandler fatalHandler;
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), std::filesystem::path(a_arguments[2]),
                                     std::filesystem::path(a_arguments[3]), std::filesystem::path(a_arguments[4]),
-                                    assertContext);
+                                    std::filesystem::path(a_arguments[5]), assertContext);
     return 0;
 }
