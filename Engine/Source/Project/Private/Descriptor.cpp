@@ -25,7 +25,7 @@ namespace
 constexpr std::size_t k_maximumDescriptorBytes = 1024U * 1024U;
 constexpr std::size_t k_maximumStringBytes = 256U * 1024U;
 constexpr std::size_t k_maximumNestingDepth = 32U;
-constexpr std::uint32_t k_supportedSchemaVersion = 1U;
+constexpr std::uint32_t k_oldestSupportedSchemaVersion = 1U;
 
 /// @brief Project 処理中の予期しない例外を追加 Allocation なしで Fatal 境界へ渡す
 [[noreturn]] void terminate_project_exception(const cue::AssertContext &a_assertContext) noexcept
@@ -36,6 +36,29 @@ constexpr std::uint32_t k_supportedSchemaVersion = 1U;
 
 using cue::project_private::JsonType;
 using cue::project_private::JsonValue;
+
+/// @brief lowercase canonical UUID Version 4文字列か判定する
+[[nodiscard]] bool is_canonical_uuid_v4(std::string_view a_text) noexcept
+{
+    if (a_text.size() != 36U || a_text[8] != '-' || a_text[13] != '-' || a_text[18] != '-' || a_text[23] != '-' ||
+        a_text[14] != '4' || (a_text[19] != '8' && a_text[19] != '9' && a_text[19] != 'a' && a_text[19] != 'b'))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < a_text.size(); ++index)
+    {
+        if (index == 8U || index == 13U || index == 18U || index == 23U)
+        {
+            continue;
+        }
+        const char character = a_text[index];
+        if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 /// @brief UTF-8 の先頭 Byte から Scalar と消費 Byte 数を厳密に復号する
 [[nodiscard]] bool decode_utf8_scalar(std::string_view a_text, std::size_t a_offset, std::uint32_t &a_scalar,
@@ -701,10 +724,10 @@ void append_json_value(std::string &a_output, const JsonValue &a_value)
 /// @brief 4 種 Root が Portable Comparison 上で重複も親子関係も持たないか検証する
 [[nodiscard]] bool validate_roots(const cue::ProjectRoots &a_roots, const cue::AssertContext &a_assertContext) noexcept
 {
-    const std::array<std::string, 4U> keys = {
-        a_roots.source_assets().comparison_key(a_assertContext),
-        a_roots.runtime_assets().comparison_key(a_assertContext),
-        a_roots.generated().comparison_key(a_assertContext), a_roots.saved().comparison_key(a_assertContext)};
+    const std::array<std::string, 4U> keys = {a_roots.source_assets().comparison_key(a_assertContext),
+                                              a_roots.runtime_assets().comparison_key(a_assertContext),
+                                              a_roots.generated().comparison_key(a_assertContext),
+                                              a_roots.saved().comparison_key(a_assertContext)};
     for (const std::string &key : keys)
     {
         const std::size_t separator = key.find('/');
@@ -798,25 +821,10 @@ ProjectId::ProjectId(std::string &&a_text) noexcept : m_text(std::move(a_text))
 
 Result<ProjectId> ProjectId::parse(std::string_view a_text, const AssertContext &a_assertContext) noexcept
 {
-    if (a_text.size() != 36U || a_text[8] != '-' || a_text[13] != '-' || a_text[18] != '-' || a_text[23] != '-' ||
-        a_text[14] != '4' || (a_text[19] != '8' && a_text[19] != '9' && a_text[19] != 'a' && a_text[19] != 'b'))
+    if (!is_canonical_uuid_v4(a_text))
     {
         return Result<ProjectId>::failure(make_project_error(a_assertContext, ProjectError::InvalidProjectId,
                                                              "ProjectId is not a canonical UUID version 4"));
-    }
-    for (std::size_t index = 0U; index < a_text.size(); ++index)
-    {
-        if (index == 8U || index == 13U || index == 18U || index == 23U)
-        {
-            continue;
-        }
-        const char character = a_text[index];
-        if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')))
-        {
-            return Result<ProjectId>::failure(
-                make_project_error(a_assertContext, ProjectError::InvalidProjectId,
-                                   "ProjectId contains a non-lowercase hexadecimal digit"));
-        }
     }
     try
     {
@@ -860,18 +868,39 @@ const RelativePath &ProjectRoots::saved() const noexcept
     return m_saved;
 }
 
-ProjectDescriptor::ProjectDescriptor(ProjectId &&a_projectId, std::string &&a_displayName,
-                                     EngineCompatibility a_engineCompatibility, ProjectRoots &&a_roots,
+StartupSceneReference::StartupSceneReference(std::string &&a_sceneAssetId, RelativePath &&a_sourceLocator) noexcept
+    : m_sceneAssetId(std::move(a_sceneAssetId)), m_sourceLocator(std::move(a_sourceLocator))
+{
+}
+
+std::string_view StartupSceneReference::scene_asset_id() const noexcept
+{
+    return m_sceneAssetId;
+}
+
+const RelativePath &StartupSceneReference::source_locator() const noexcept
+{
+    return m_sourceLocator;
+}
+
+bool StartupSceneReference::equivalent_to(const StartupSceneReference &a_other) const noexcept
+{
+    return m_sceneAssetId == a_other.m_sceneAssetId && m_sourceLocator.text() == a_other.m_sourceLocator.text();
+}
+
+ProjectDescriptor::ProjectDescriptor(std::uint32_t a_schemaVersion, ProjectId &&a_projectId,
+                                     std::string &&a_displayName, EngineCompatibility a_engineCompatibility,
+                                     ProjectRoots &&a_roots, std::optional<StartupSceneReference> &&a_defaultScene,
                                      std::string &&a_extensionsJson) noexcept
-    : m_projectId(std::move(a_projectId)), m_displayName(std::move(a_displayName)),
+    : m_schemaVersion(a_schemaVersion), m_projectId(std::move(a_projectId)), m_displayName(std::move(a_displayName)),
       m_engineCompatibility(a_engineCompatibility), m_roots(std::move(a_roots)),
-      m_extensionsJson(std::move(a_extensionsJson))
+      m_defaultScene(std::move(a_defaultScene)), m_extensionsJson(std::move(a_extensionsJson))
 {
 }
 
 std::uint32_t ProjectDescriptor::schema_version() const noexcept
 {
-    return k_supportedSchemaVersion;
+    return m_schemaVersion;
 }
 
 const ProjectId &ProjectDescriptor::project_id() const noexcept
@@ -894,6 +923,11 @@ const ProjectRoots &ProjectDescriptor::roots() const noexcept
     return m_roots;
 }
 
+const std::optional<StartupSceneReference> &ProjectDescriptor::default_scene() const noexcept
+{
+    return m_defaultScene;
+}
+
 std::string_view ProjectDescriptor::extensions_json() const noexcept
 {
     return m_extensionsJson;
@@ -901,18 +935,22 @@ std::string_view ProjectDescriptor::extensions_json() const noexcept
 
 bool ProjectDescriptor::equivalent_to(const ProjectDescriptor &a_other) const noexcept
 {
-    return m_projectId == a_other.m_projectId && m_displayName == a_other.m_displayName &&
-           m_engineCompatibility == a_other.m_engineCompatibility &&
+    const bool sameDefaultScene = (!m_defaultScene.has_value() && !a_other.m_defaultScene.has_value()) ||
+                                  (m_defaultScene.has_value() && a_other.m_defaultScene.has_value() &&
+                                   m_defaultScene->equivalent_to(*a_other.m_defaultScene));
+    return m_schemaVersion == a_other.m_schemaVersion && m_projectId == a_other.m_projectId &&
+           m_displayName == a_other.m_displayName && m_engineCompatibility == a_other.m_engineCompatibility &&
            m_roots.source_assets().text() == a_other.m_roots.source_assets().text() &&
            m_roots.runtime_assets().text() == a_other.m_roots.runtime_assets().text() &&
            m_roots.generated().text() == a_other.m_roots.generated().text() &&
-           m_roots.saved().text() == a_other.m_roots.saved().text() && m_extensionsJson == a_other.m_extensionsJson;
+           m_roots.saved().text() == a_other.m_roots.saved().text() && sameDefaultScene &&
+           m_extensionsJson == a_other.m_extensionsJson;
 }
 
-Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &a_projectId,
-                                                           std::string_view a_displayName,
-                                                           EngineCompatibility a_engineCompatibility,
-                                                           const AssertContext &a_assertContext) noexcept
+Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &a_projectId, std::string_view a_displayName,
+                                                          EngineCompatibility a_engineCompatibility,
+                                                          std::string_view a_defaultSceneAssetId,
+                                                          const AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -941,15 +979,28 @@ Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &a_pro
         auto saved = RelativePath::parse("Saved", a_assertContext);
         if (!sourceAssets || !runtimeAssets || !generated || !saved)
         {
-            return Result<ProjectDescriptor>::failure(
-                make_project_error(a_assertContext, ProjectError::InvalidRoots,
-                                   "Blank project template contains an invalid root"));
+            return Result<ProjectDescriptor>::failure(make_project_error(
+                a_assertContext, ProjectError::InvalidRoots, "Blank project template contains an invalid root"));
         }
 
         ProjectRoots roots(std::move(*sourceAssets.try_value()), std::move(*runtimeAssets.try_value()),
                            std::move(*generated.try_value()), std::move(*saved.try_value()));
-        ProjectDescriptor descriptor(std::move(*projectId.try_value()), std::string(a_displayName),
-                                     a_engineCompatibility, std::move(roots), std::string("{}"));
+        if (!is_canonical_uuid_v4(a_defaultSceneAssetId))
+        {
+            return Result<ProjectDescriptor>::failure(
+                make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                   "Blank project default SceneAssetId is not a canonical UUID version 4"));
+        }
+        auto sourceLocator = RelativePath::parse("Scenes/Default.cuescene", a_assertContext);
+        if (!sourceLocator)
+        {
+            return Result<ProjectDescriptor>::failure(std::move(*sourceLocator.try_error()));
+        }
+        StartupSceneReference startupScene(std::string(a_defaultSceneAssetId), std::move(*sourceLocator.try_value()));
+        std::optional<StartupSceneReference> defaultScene(std::move(startupScene));
+        ProjectDescriptor descriptor(k_currentProjectDescriptorSchemaVersion, std::move(*projectId.try_value()),
+                                     std::string(a_displayName), a_engineCompatibility, std::move(roots),
+                                     std::move(defaultScene), std::string("{}"));
         return Result<ProjectDescriptor>::success(std::move(descriptor));
     }
     catch (...)
@@ -996,7 +1047,8 @@ Result<ProjectDescriptor> parse_project_descriptor(std::string_view a_json,
                 make_project_error(a_assertContext, ProjectError::InvalidFormat,
                                    "schemaVersion is missing or is not a canonical positive uint32"));
         }
-        if (parsedSchemaVersion != k_supportedSchemaVersion)
+        if (parsedSchemaVersion < k_oldestSupportedSchemaVersion ||
+            parsedSchemaVersion > k_currentProjectDescriptorSchemaVersion)
         {
             return Result<ProjectDescriptor>::failure(
                 make_project_error(a_assertContext, ProjectError::UnsupportedSchemaVersion,
@@ -1105,14 +1157,63 @@ Result<ProjectDescriptor> parse_project_descriptor(std::string_view a_json,
                                    "root roles overlap, nest, or collide with CueProject.json"));
         }
 
-        const JsonValue &defaultScene = *find_member(root, "defaultScene");
+        const JsonValue &defaultSceneValue = *find_member(root, "defaultScene");
         const JsonValue &requiredCapabilities = *find_member(root, "requiredCapabilities");
-        if (defaultScene.type != JsonType::Null || requiredCapabilities.type != JsonType::Array ||
-            !requiredCapabilities.elements.empty())
+        if (requiredCapabilities.type != JsonType::Array || !requiredCapabilities.elements.empty())
+        {
+            return Result<ProjectDescriptor>::failure(
+                make_project_error(a_assertContext, ProjectError::InvalidFormat,
+                                   "Project descriptor requires an empty requiredCapabilities array"));
+        }
+
+        std::optional<StartupSceneReference> defaultScene;
+        if (parsedSchemaVersion == 1U)
+        {
+            if (defaultSceneValue.type != JsonType::Null)
+            {
+                return Result<ProjectDescriptor>::failure(
+                    make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                       "Project descriptor schema version 1 requires null defaultScene"));
+            }
+        }
+        else if (defaultSceneValue.type == JsonType::Object)
+        {
+            constexpr std::array defaultSceneNames = {std::string_view("sceneAssetId"),
+                                                      std::string_view("sourceLocator")};
+            if (!has_exact_members(defaultSceneValue, defaultSceneNames))
+            {
+                return Result<ProjectDescriptor>::failure(make_project_error(
+                    a_assertContext, ProjectError::InvalidDefaultScene, "defaultScene has missing or unknown members"));
+            }
+            const JsonValue &sceneAssetIdValue = *find_member(defaultSceneValue, "sceneAssetId");
+            const JsonValue &sourceLocatorValue = *find_member(defaultSceneValue, "sourceLocator");
+            if (sceneAssetIdValue.type != JsonType::String || !is_canonical_uuid_v4(sceneAssetIdValue.text))
+            {
+                return Result<ProjectDescriptor>::failure(
+                    make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                       "defaultScene.sceneAssetId must be a canonical UUID version 4"));
+            }
+            if (sourceLocatorValue.type != JsonType::String)
+            {
+                return Result<ProjectDescriptor>::failure(
+                    make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                       "defaultScene.sourceLocator must be a JSON string"));
+            }
+            auto sourceLocator = RelativePath::parse(sourceLocatorValue.text, a_assertContext);
+            if (!sourceLocator)
+            {
+                return Result<ProjectDescriptor>::failure(
+                    make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                       "defaultScene.sourceLocator must be a portable Source Asset relative path"));
+            }
+            StartupSceneReference parsedDefaultScene(std::string(sceneAssetIdValue.text),
+                                                     std::move(*sourceLocator.try_value()));
+            defaultScene.emplace(std::move(parsedDefaultScene));
+        }
+        else if (defaultSceneValue.type != JsonType::Null)
         {
             return Result<ProjectDescriptor>::failure(make_project_error(
-                a_assertContext, ProjectError::InvalidFormat,
-                "schema version 1 requires null defaultScene and an empty requiredCapabilities array"));
+                a_assertContext, ProjectError::InvalidDefaultScene, "defaultScene must be an object or null"));
         }
         const JsonValue &extensions = *find_member(root, "extensions");
         if (extensions.type != JsonType::Object)
@@ -1123,9 +1224,9 @@ Result<ProjectDescriptor> parse_project_descriptor(std::string_view a_json,
         std::string extensionsJson;
         append_json_value(extensionsJson, extensions);
 
-        return Result<ProjectDescriptor>::success(ProjectDescriptor(std::move(*projectIdResult.try_value()),
-                                                                    std::string(displayName.text), engineCompatibility,
-                                                                    std::move(roots), std::move(extensionsJson)));
+        return Result<ProjectDescriptor>::success(ProjectDescriptor(
+            parsedSchemaVersion, std::move(*projectIdResult.try_value()), std::string(displayName.text),
+            engineCompatibility, std::move(roots), std::move(defaultScene), std::move(extensionsJson)));
     }
     catch (...)
     {
@@ -1138,6 +1239,12 @@ Result<void> validate_project_descriptor(const ProjectDescriptor &a_descriptor,
 {
     try
     {
+        if (a_descriptor.schema_version() < k_oldestSupportedSchemaVersion ||
+            a_descriptor.schema_version() > k_currentProjectDescriptorSchemaVersion)
+        {
+            return Result<void>::failure(make_project_error(a_assertContext, ProjectError::UnsupportedSchemaVersion,
+                                                            "Descriptor schemaVersion is unsupported"));
+        }
         auto projectId = ProjectId::parse(a_descriptor.project_id().text(), a_assertContext);
         if (!projectId)
         {
@@ -1158,6 +1265,20 @@ Result<void> validate_project_descriptor(const ProjectDescriptor &a_descriptor,
         {
             return Result<void>::failure(make_project_error(a_assertContext, ProjectError::InvalidRoots,
                                                             "Descriptor root roles overlap or nest"));
+        }
+        if (a_descriptor.schema_version() == 1U && a_descriptor.default_scene().has_value())
+        {
+            return Result<void>::failure(make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                                            "Descriptor version 1 cannot reference a default scene"));
+        }
+        if (a_descriptor.default_scene().has_value())
+        {
+            const StartupSceneReference &defaultScene = *a_descriptor.default_scene();
+            if (!is_canonical_uuid_v4(defaultScene.scene_asset_id()) || defaultScene.source_locator().text().empty())
+            {
+                return Result<void>::failure(make_project_error(a_assertContext, ProjectError::InvalidDefaultScene,
+                                                                "Descriptor default scene reference is invalid"));
+            }
         }
 
         JsonValue extensions;
@@ -1187,7 +1308,9 @@ Result<std::string> serialize_project_descriptor(const ProjectDescriptor &a_desc
         }
 
         std::string output;
-        output.append("{\"schemaVersion\":1,\"projectId\":");
+        output.append("{\"schemaVersion\":");
+        output.append(std::to_string(a_descriptor.schema_version()));
+        output.append(",\"projectId\":");
         append_json_string(output, a_descriptor.project_id().text());
         output.append(",\"displayName\":");
         append_json_string(output, a_descriptor.display_name());
@@ -1212,7 +1335,20 @@ Result<std::string> serialize_project_descriptor(const ProjectDescriptor &a_desc
         append_json_string(output, a_descriptor.roots().generated().text());
         output.append(",\"saved\":");
         append_json_string(output, a_descriptor.roots().saved().text());
-        output.append("},\"defaultScene\":null,\"requiredCapabilities\":[],\"extensions\":");
+        output.append("},\"defaultScene\":");
+        if (a_descriptor.default_scene().has_value())
+        {
+            output.append("{\"sceneAssetId\":");
+            append_json_string(output, a_descriptor.default_scene()->scene_asset_id());
+            output.append(",\"sourceLocator\":");
+            append_json_string(output, a_descriptor.default_scene()->source_locator().text());
+            output.push_back('}');
+        }
+        else
+        {
+            output.append("null");
+        }
+        output.append(",\"requiredCapabilities\":[],\"extensions\":");
         output.append(a_descriptor.extensions_json());
         output.push_back('}');
         if (output.size() > k_maximumDescriptorBytes)
@@ -1270,5 +1406,53 @@ Result<void> save_project_descriptor(FilesystemRoot &a_filesystem, const Project
                                                          std::move(*writeResult.try_error())));
     }
     return Result<void>::success();
+}
+
+Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesystem,
+                                                     const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        Result<ProjectDescriptor> source = load_project_descriptor(a_filesystem, a_assertContext);
+        if (!source)
+        {
+            return Result<ProjectDescriptor>::failure(std::move(*source.try_error()));
+        }
+        if (source.try_value()->schema_version() == k_currentProjectDescriptorSchemaVersion)
+        {
+            return source;
+        }
+
+        Result<ProjectId> projectId = ProjectId::parse(source.try_value()->project_id().text(), a_assertContext);
+        std::array<Result<RelativePath>, 4U> rootResults = {
+            RelativePath::parse(source.try_value()->roots().source_assets().text(), a_assertContext),
+            RelativePath::parse(source.try_value()->roots().runtime_assets().text(), a_assertContext),
+            RelativePath::parse(source.try_value()->roots().generated().text(), a_assertContext),
+            RelativePath::parse(source.try_value()->roots().saved().text(), a_assertContext)};
+        if (!projectId || !std::ranges::all_of(rootResults, [](const Result<RelativePath> &a_result) noexcept
+                                               { return a_result.has_value(); }))
+        {
+            return Result<ProjectDescriptor>::failure(make_project_error(a_assertContext, ProjectError::InvalidFormat,
+                                                                         "Validated descriptor could not be migrated"));
+        }
+
+        ProjectRoots roots(std::move(*rootResults[0].try_value()), std::move(*rootResults[1].try_value()),
+                           std::move(*rootResults[2].try_value()), std::move(*rootResults[3].try_value()));
+        std::optional<StartupSceneReference> defaultScene;
+        ProjectDescriptor migrated(k_currentProjectDescriptorSchemaVersion, std::move(*projectId.try_value()),
+                                   std::string(source.try_value()->display_name()),
+                                   source.try_value()->engine_compatibility(), std::move(roots),
+                                   std::move(defaultScene), std::string(source.try_value()->extensions_json()));
+        Result<void> saved = save_project_descriptor(a_filesystem, migrated, a_assertContext);
+        if (!saved)
+        {
+            return Result<ProjectDescriptor>::failure(std::move(*saved.try_error()));
+        }
+        return Result<ProjectDescriptor>::success(std::move(migrated));
+    }
+    catch (...)
+    {
+        terminate_project_exception(a_assertContext);
+    }
 }
 } // namespace cue

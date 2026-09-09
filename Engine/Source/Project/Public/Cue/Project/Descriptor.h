@@ -13,6 +13,8 @@ namespace cue
 class AssertContext;
 class FilesystemRoot;
 
+inline constexpr std::uint32_t k_currentProjectDescriptorSchemaVersion = 2U;
+
 /// @brief Project 移動や表示名変更でも変化しない UUID Version 4 Identity
 class ProjectId final
 {
@@ -104,7 +106,45 @@ class ProjectRoots final
     RelativePath m_saved;
 };
 
-/// @brief 検証済み Project Descriptor v1 の所有 Model
+/// @brief Startup Sceneの永続IdentityとSource Asset Root相対Locatorを分離して所有する参照
+class StartupSceneReference final
+{
+  public:
+    /// @brief 無効な参照を作らせないため既定構築を禁止する
+    StartupSceneReference() = delete;
+    /// @brief 参照値を複製する
+    StartupSceneReference(const StartupSceneReference &) = default;
+    /// @brief 参照値を複製代入する
+    StartupSceneReference &operator=(const StartupSceneReference &) = default;
+    /// @brief 参照値を移動する
+    StartupSceneReference(StartupSceneReference &&) noexcept = default;
+    /// @brief 参照値を移動代入する
+    StartupSceneReference &operator=(StartupSceneReference &&) noexcept = default;
+    /// @brief 参照値を破棄する
+    ~StartupSceneReference() = default;
+
+    /// @brief SceneAssetIdのcanonical UUID Version 4文字列を返す
+    [[nodiscard]] std::string_view scene_asset_id() const noexcept;
+    /// @brief roots.sourceAssetsからの現在位置を返す
+    [[nodiscard]] const RelativePath &source_locator() const noexcept;
+    /// @brief IdentityとLocatorがともに一致するか比較する
+    [[nodiscard]] bool equivalent_to(const StartupSceneReference &a_other) const noexcept;
+
+  private:
+    friend class ProjectDescriptor;
+    friend Result<ProjectDescriptor> parse_project_descriptor(std::string_view, const AssertContext &) noexcept;
+    friend Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &, std::string_view,
+                                                                     EngineCompatibility, std::string_view,
+                                                                     const AssertContext &) noexcept;
+
+    /// @brief 検証済みScene IdentityとSource Locatorを所有する参照へ束ねる
+    StartupSceneReference(std::string &&a_sceneAssetId, RelativePath &&a_sourceLocator) noexcept;
+
+    std::string m_sceneAssetId;
+    RelativePath m_sourceLocator;
+};
+
+/// @brief 検証済み Project Descriptor v1／v2 の所有 Model
 class ProjectDescriptor final
 {
   public:
@@ -131,6 +171,8 @@ class ProjectDescriptor final
     [[nodiscard]] const EngineCompatibility &engine_compatibility() const noexcept;
     /// @brief Project Root 配下の役割別 Directory を返す
     [[nodiscard]] const ProjectRoots &roots() const noexcept;
+    /// @brief Startup Scene参照を返す。未選択ならnullopt
+    [[nodiscard]] const std::optional<StartupSceneReference> &default_scene() const noexcept;
     /// @brief 未知 Extension を意味解釈せず保持する canonical JSON Object を返す
     [[nodiscard]] std::string_view extensions_json() const noexcept;
 
@@ -140,17 +182,21 @@ class ProjectDescriptor final
   private:
     friend Result<ProjectDescriptor> parse_project_descriptor(std::string_view, const AssertContext &) noexcept;
     friend Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &, std::string_view,
-                                                                      EngineCompatibility,
-                                                                      const AssertContext &) noexcept;
+                                                                     EngineCompatibility, std::string_view,
+                                                                     const AssertContext &) noexcept;
+    friend Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &, const AssertContext &) noexcept;
 
-    /// @brief Parser が検証した Descriptor v1 の所有値を束ねる
-    ProjectDescriptor(ProjectId &&a_projectId, std::string &&a_displayName, EngineCompatibility a_engineCompatibility,
-                      ProjectRoots &&a_roots, std::string &&a_extensionsJson) noexcept;
+    /// @brief Parser が検証した Descriptor v1／v2 の所有値を束ねる
+    ProjectDescriptor(std::uint32_t a_schemaVersion, ProjectId &&a_projectId, std::string &&a_displayName,
+                      EngineCompatibility a_engineCompatibility, ProjectRoots &&a_roots,
+                      std::optional<StartupSceneReference> &&a_defaultScene, std::string &&a_extensionsJson) noexcept;
 
+    std::uint32_t m_schemaVersion;
     ProjectId m_projectId;
     std::string m_displayName;
     EngineCompatibility m_engineCompatibility;
     ProjectRoots m_roots;
+    std::optional<StartupSceneReference> m_defaultScene;
     std::string m_extensionsJson;
 };
 
@@ -158,12 +204,14 @@ class ProjectDescriptor final
 [[nodiscard]] Result<ProjectDescriptor> parse_project_descriptor(std::string_view a_json,
                                                                  const AssertContext &a_assertContext) noexcept;
 
-/// @brief Blank Project 用の固定 Root と未設定 Scene を持つ検証済み Descriptor を構築する
-[[nodiscard]] Result<ProjectDescriptor> create_blank_project_descriptor(
-    const ProjectId &a_projectId, std::string_view a_displayName, EngineCompatibility a_engineCompatibility,
-    const AssertContext &a_assertContext) noexcept;
+/// @brief Blank Project 用の固定 Root とDefault Scene参照を持つ検証済み Descriptor v2を構築する
+[[nodiscard]] Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &a_projectId,
+                                                                        std::string_view a_displayName,
+                                                                        EngineCompatibility a_engineCompatibility,
+                                                                        std::string_view a_defaultSceneAssetId,
+                                                                        const AssertContext &a_assertContext) noexcept;
 
-/// @brief 所有 Model が Descriptor v1 の全不変条件を満たすか再検証する
+/// @brief 所有 Model が Descriptor v1／v2 の全不変条件を満たすか再検証する
 [[nodiscard]] Result<void> validate_project_descriptor(const ProjectDescriptor &a_descriptor,
                                                        const AssertContext &a_assertContext) noexcept;
 
@@ -178,4 +226,10 @@ class ProjectDescriptor final
 /// @brief Project Root の CueProject.json を Atomic に置換保存する
 [[nodiscard]] Result<void> save_project_descriptor(FilesystemRoot &a_filesystem, const ProjectDescriptor &a_descriptor,
                                                    const AssertContext &a_assertContext) noexcept;
+
+/// @brief CueProject.jsonを明示的に一段ずつCurrent SchemaへMigrationしAtomic置換する
+///
+/// Current Schemaは書込せずそのまま返す。Migration失敗時はAtomic Storageにより元Descriptorを維持する
+[[nodiscard]] Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesystem,
+                                                                   const AssertContext &a_assertContext) noexcept;
 } // namespace cue

@@ -159,7 +159,8 @@ class TestDirectory final
         return cue::Result<cue::project_hub::ProjectHubConfiguration>::failure(std::move(*snapshot.try_error()));
     }
     cue::project_hub::ProjectHubConfiguration configuration{
-        1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value()),
+        cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()),
+        std::move(*snapshot.try_value()),
         cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}};
     return cue::Result<cue::project_hub::ProjectHubConfiguration>::success(std::move(configuration));
 }

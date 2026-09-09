@@ -180,7 +180,8 @@ class TestDirectory final
     auto descriptor = platform->compose_descriptor_locator(*project.try_value());
     auto firstId = platform->next_project_id();
     auto secondId = platform->next_project_id();
-    if (!opened || *opened.try_value() == nullptr || !descriptor || !firstId || !secondId)
+    auto sceneId = platform->next_scene_asset_id();
+    if (!opened || *opened.try_value() == nullptr || !descriptor || !firstId || !secondId || !sceneId)
     {
         return false;
     }
@@ -202,8 +203,9 @@ class TestDirectory final
     const std::string_view descriptorText = *descriptor.try_value();
     const bool hasDescriptor = descriptorText.ends_with("\\CueProject.json");
     return hasDescriptor && is_version_four_id(firstId.try_value()->text()) &&
-           is_version_four_id(secondId.try_value()->text()) &&
-           firstId.try_value()->text() != secondId.try_value()->text();
+           is_version_four_id(secondId.try_value()->text()) && is_version_four_id(*sceneId.try_value()) &&
+           firstId.try_value()->text() != secondId.try_value()->text() &&
+           sceneId.try_value()->find(firstId.try_value()->text()) == std::string::npos;
 }
 } // namespace
 

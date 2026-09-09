@@ -454,7 +454,7 @@ cue::ProjectDescriptor make_project_descriptor(const cue::AssertContext &a_asser
     auto projectId = take_value(cue::ProjectId::parse("00000000-0000-4000-8000-000000000001", a_assertContext));
     return take_value(cue::create_blank_project_descriptor(
         projectId, "Editor Core Test", cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
-        a_assertContext));
+        "00000000-0000-4000-8000-000000000099", a_assertContext));
 }
 
 /// @brief 固定 Identity から空 Scene Document を生成する

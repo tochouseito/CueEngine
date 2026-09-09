@@ -213,7 +213,8 @@ class SequenceOperationIdSource final : public cue::project_files::ProjectFileOp
     }
     return cue::create_blank_project_descriptor(
         *id.try_value(), "Recovery Test",
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, a_assertContext);
+        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+        "00000000-0000-4000-8000-000000000099", a_assertContext);
 }
 
 /// @brief Test RootへDescriptorを保存する

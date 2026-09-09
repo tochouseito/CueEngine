@@ -41,8 +41,8 @@ class TestFatalHandler final : public cue::FatalHandler
 /// @brief Native Test PathをWindows Filesystem Factory用のUTF-8へ変換する
 [[nodiscard]] std::string to_utf8(std::wstring_view a_path)
 {
-    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, a_path.data(),
-                                          static_cast<int>(a_path.size()), nullptr, 0, nullptr, nullptr);
+    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, a_path.data(), static_cast<int>(a_path.size()),
+                                          nullptr, 0, nullptr, nullptr);
     if (count <= 0)
     {
         return {};
@@ -66,8 +66,8 @@ class TestDirectory final
             return;
         }
         m_path = temporary.data();
-        m_path += L"CueM09ProcessTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                  std::to_wstring(GetTickCount64());
+        m_path +=
+            L"CueM09ProcessTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
         m_isCreated = CreateDirectoryW(m_path.c_str(), nullptr) != FALSE;
     }
 
@@ -188,7 +188,8 @@ template <typename Value>
         cue::EngineCompatibility{cue::EngineVersion{0U, 1U, 0U}, cue::EngineVersion{1U, 0U, 0U}},
     };
     auto generated = cue::generate_blank_project(**parent.try_value(), "SampleProject", "M09 Process Project",
-                                                 *projectId.try_value(), projectTemplate, a_assertContext);
+                                                 *projectId.try_value(), "00000000-0000-4000-8000-000000000099",
+                                                 projectTemplate, a_assertContext);
     if (!generated || !is_file(directory.child(L"SampleProject\\CueProject.json")))
     {
         return false;
@@ -197,9 +198,9 @@ template <typename Value>
     auto projectFilesystem =
         cue::create_windows_filesystem_root(directory.child_utf8(L"SampleProject"), a_assertContext);
     auto opened = projectFilesystem ? cue::load_project_descriptor(**projectFilesystem.try_value(), a_assertContext)
-                                    : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
-                                          a_assertContext, cue::ProjectError::IoFailure,
-                                          "Generated project root could not be opened"));
+                                    : cue::Result<cue::ProjectDescriptor>::failure(
+                                          cue::make_project_error(a_assertContext, cue::ProjectError::IoFailure,
+                                                                  "Generated project root could not be opened"));
     if (!opened || !generated.try_value()->equivalent_to(*opened.try_value()))
     {
         return false;
@@ -207,14 +208,14 @@ template <typename Value>
 
     auto profile = cue::ProjectCapabilityProfile::create({}, a_assertContext);
     auto snapshot = cue::ProjectCapabilitySnapshot::create({}, a_assertContext);
-    auto compatibility = profile && snapshot
-                             ? cue::evaluate_project_compatibility(
-                                   opened.try_value()->schema_version(), 1U,
-                                   opened.try_value()->engine_compatibility(), cue::EngineVersion{0U, 1U, 0U},
-                                   *profile.try_value(), *snapshot.try_value(), a_assertContext)
-                             : cue::Result<cue::ProjectCompatibilityReport>::failure(cue::make_project_error(
-                                   a_assertContext, cue::ProjectError::InvalidCompatibilityInput,
-                                   "Compatibility inputs could not be created"));
+    auto compatibility =
+        profile && snapshot ? cue::evaluate_project_compatibility(
+                                  opened.try_value()->schema_version(), cue::k_currentProjectDescriptorSchemaVersion,
+                                  opened.try_value()->engine_compatibility(), cue::EngineVersion{0U, 1U, 0U},
+                                  *profile.try_value(), *snapshot.try_value(), a_assertContext)
+                            : cue::Result<cue::ProjectCompatibilityReport>::failure(
+                                  cue::make_project_error(a_assertContext, cue::ProjectError::InvalidCompatibilityInput,
+                                                          "Compatibility inputs could not be created"));
     if (!compatibility || !compatibility.try_value()->can_open() ||
         compatibility.try_value()->status() != cue::ProjectCompatibilityStatus::Compatible)
     {
@@ -228,15 +229,13 @@ template <typename Value>
     {
         return false;
     }
-    auto workspaceFilesystem =
-        cue::create_windows_filesystem_root(directory.child_utf8(L"Workspace"), a_assertContext);
+    auto workspaceFilesystem = cue::create_windows_filesystem_root(directory.child_utf8(L"Workspace"), a_assertContext);
     if (!workspaceFilesystem ||
         !cue::save_recent_project_registry(**workspaceFilesystem.try_value(), registry, a_assertContext))
     {
         return false;
     }
-    auto reopenedRegistry =
-        cue::load_recent_project_registry(**workspaceFilesystem.try_value(), a_assertContext);
+    auto reopenedRegistry = cue::load_recent_project_registry(**workspaceFilesystem.try_value(), a_assertContext);
     if (!reopenedRegistry || reopenedRegistry.try_value()->entries().size() != 1U ||
         !reopenedRegistry.try_value()->entries()[0].is_pinned())
     {
@@ -257,13 +256,11 @@ template <typename Value>
         return false;
     }
 
-    auto movedFilesystem =
-        cue::create_windows_filesystem_root(directory.child_utf8(L"MovedProject"), a_assertContext);
-    auto movedDescriptor = movedFilesystem
-                               ? cue::load_project_descriptor(**movedFilesystem.try_value(), a_assertContext)
-                               : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
-                                     a_assertContext, cue::ProjectError::IoFailure,
-                                     "Moved project root could not be opened"));
+    auto movedFilesystem = cue::create_windows_filesystem_root(directory.child_utf8(L"MovedProject"), a_assertContext);
+    auto movedDescriptor =
+        movedFilesystem ? cue::load_project_descriptor(**movedFilesystem.try_value(), a_assertContext)
+                        : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
+                              a_assertContext, cue::ProjectError::IoFailure, "Moved project root could not be opened"));
     if (!movedDescriptor || movedDescriptor.try_value()->project_id() != opened.try_value()->project_id())
     {
         return false;
@@ -282,20 +279,19 @@ template <typename Value>
     }
 
     auto replacementId = cue::ProjectId::parse("87654321-4321-4abc-8def-ba0987654321", a_assertContext);
-    auto existingDestination = replacementId
-                                   ? cue::generate_blank_project(**parent.try_value(), "MovedProject", "Replacement",
-                                                                 *replacementId.try_value(), projectTemplate,
-                                                                 a_assertContext)
-                                   : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
-                                         a_assertContext, cue::ProjectError::InvalidProjectId,
-                                         "Replacement ProjectId could not be created"));
-    auto invalidNested = replacementId
-                             ? cue::generate_blank_project(**parent.try_value(), "Nested/Project", "Outside",
-                                                           *replacementId.try_value(), projectTemplate,
-                                                           a_assertContext)
-                             : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
-                                   a_assertContext, cue::ProjectError::InvalidProjectId,
-                                   "Nested ProjectId could not be created"));
+    auto existingDestination =
+        replacementId
+            ? cue::generate_blank_project(**parent.try_value(), "MovedProject", "Replacement",
+                                          *replacementId.try_value(), "00000000-0000-4000-8000-000000000099",
+                                          projectTemplate, a_assertContext)
+            : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
+                  a_assertContext, cue::ProjectError::InvalidProjectId, "Replacement ProjectId could not be created"));
+    auto invalidNested =
+        replacementId
+            ? cue::generate_blank_project(**parent.try_value(), "Nested/Project", "Outside", *replacementId.try_value(),
+                                          "00000000-0000-4000-8000-000000000099", projectTemplate, a_assertContext)
+            : cue::Result<cue::ProjectDescriptor>::failure(cue::make_project_error(
+                  a_assertContext, cue::ProjectError::InvalidProjectId, "Nested ProjectId could not be created"));
     if (existingDestination || invalidNested || is_directory(directory.child(L"Nested")))
     {
         return false;

@@ -58,6 +58,7 @@ struct WindowsEditorLaunchParameters final
     std::string expectedProjectId;
     std::string engineCompatibilityId;
     std::optional<std::string> initialSceneLocator;
+    std::optional<std::string> expectedInitialSceneAssetId;
 };
 
 /// @brief Editor側でProject互換性を再検証する現在Engine入力
@@ -108,8 +109,7 @@ class WindowsEditorSession final
     /// @brief Active Sceneを未使用の別LocatorへSave Asする
     [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_as_new(RelativePath a_locator) noexcept;
     /// @brief User確認済みの別LocatorへActive SceneをSave Asする
-    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_as_overwriting(
-        RelativePath a_locator) noexcept;
+    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_as_overwriting(RelativePath a_locator) noexcept;
     /// @brief DirtyなActive SceneのRecoveryをSaved RootへAtomic保存する
     [[nodiscard]] Result<void> autosave_active_scene_recovery() noexcept;
     /// @brief Active Sceneを外部変更検査付きで再読込する
@@ -146,17 +146,17 @@ class WindowsEditorSession final
                          std::unique_ptr<FilesystemRoot> a_savedRoot, const AssertContext &a_assertContext) noexcept;
     /// @brief Registry、Controller、任意の初期SceneをSession所有順で構築する
     [[nodiscard]] Result<void> initialize(ProjectDescriptor a_descriptor,
-                                          const std::optional<std::string> &a_initialSceneLocator) noexcept;
+                                          const std::optional<std::string> &a_initialSceneLocator,
+                                          const std::optional<std::string> &a_expectedInitialSceneAssetId) noexcept;
     /// @brief Activeまたは準備済みDocumentが存在しないことを検証する
     [[nodiscard]] Result<void> require_project_only_state() const noexcept;
     /// @brief Active Documentが閉じられた場合にSession表示状態を同期する
     void reconcile_active_document() noexcept;
     /// @brief Active Sceneを初回保存先Policyに従って保存する共通経路
-    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_impl(
-        bool a_allowExistingDestination) noexcept;
+    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_impl(bool a_allowExistingDestination) noexcept;
     /// @brief Save As先Directoryを準備してControllerの別Destination保存へ接続する
-    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_as_impl(
-        RelativePath a_locator, bool a_allowExistingDestination) noexcept;
+    [[nodiscard]] Result<scene::SceneSaveOutcome> save_active_scene_as_impl(RelativePath a_locator,
+                                                                            bool a_allowExistingDestination) noexcept;
     /// @brief Scene LocatorのParent DirectoryをSource Assets Root内へ作成する
     [[nodiscard]] Result<void> ensure_scene_parent_directory(const RelativePath &a_locator) noexcept;
 

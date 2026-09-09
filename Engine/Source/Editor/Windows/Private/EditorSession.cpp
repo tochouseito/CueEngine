@@ -254,9 +254,8 @@ WindowsEditorSession::~WindowsEditorSession() noexcept
         Result<void> stopped = m_filesWorkspace->stop();
         if (!stopped)
         {
-            static_cast<void>(m_assertContext->logger().log(LogLevel::Error,
-                                                            "Files workspace watcher could not be stopped",
-                                                            std::move(*stopped.try_error())));
+            static_cast<void>(m_assertContext->logger().log(
+                LogLevel::Error, "Files workspace watcher could not be stopped", std::move(*stopped.try_error())));
         }
     }
 }
@@ -384,7 +383,8 @@ Result<std::unique_ptr<WindowsEditorSession>> WindowsEditorSession::create(
             std::move(*projectLocator.try_value()), std::move(*projectRoot.try_value()),
             std::move(*sourceRoot.try_value()), std::move(*savedRoot.try_value()), a_assertContext));
         Result<void> initialized =
-            session->initialize(std::move(*descriptor.try_value()), a_parameters.initialSceneLocator);
+            session->initialize(std::move(*descriptor.try_value()), a_parameters.initialSceneLocator,
+                                a_parameters.expectedInitialSceneAssetId);
         if (!initialized)
         {
             return Result<std::unique_ptr<WindowsEditorSession>>::failure(std::move(*initialized.try_error()));
@@ -398,7 +398,8 @@ Result<std::unique_ptr<WindowsEditorSession>> WindowsEditorSession::create(
 }
 
 Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
-                                              const std::optional<std::string> &a_initialSceneLocator) noexcept
+                                              const std::optional<std::string> &a_initialSceneLocator,
+                                              const std::optional<std::string> &a_expectedInitialSceneAssetId) noexcept
 {
     try
     {
@@ -474,6 +475,20 @@ Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
             {
                 return Result<void>::failure(std::move(*opened.try_error()));
             }
+            if (a_expectedInitialSceneAssetId.has_value())
+            {
+                Result<scene::SceneAssetId> expectedSceneAssetId =
+                    scene::SceneAssetId::parse(*a_expectedInitialSceneAssetId, *m_assertContext);
+                const editor_core::EditorDocument *document =
+                    expectedSceneAssetId ? m_controller->session().find_document(*opened.try_value()) : nullptr;
+                if (!expectedSceneAssetId || document == nullptr ||
+                    document->scene_document().scene_asset_id() != *expectedSceneAssetId.try_value())
+                {
+                    return Result<void>::failure(
+                        make_session_error(*m_assertContext, WindowsEditorSessionError::SceneOpenFailed,
+                                           "Initial scene identity differs from the Project Descriptor"));
+                }
+            }
         }
         return Result<void>::success();
     }
@@ -487,9 +502,9 @@ Result<void> WindowsEditorSession::require_project_only_state() const noexcept
 {
     if (m_activeDocumentId.has_value() || m_preparedDocumentId.has_value())
     {
-        return Result<void>::failure(make_session_error(*m_assertContext,
-                                                        WindowsEditorSessionError::InvalidSessionState,
-                                                        "Close or discard every session scene before opening another scene"));
+        return Result<void>::failure(
+            make_session_error(*m_assertContext, WindowsEditorSessionError::InvalidSessionState,
+                               "Close or discard every session scene before opening another scene"));
     }
     return Result<void>::success();
 }
@@ -517,22 +532,21 @@ Result<editor_core::EditorDocumentId> WindowsEditorSession::prepare_new_scene(Re
     reconcile_active_document();
     if (m_preparedDocumentId.has_value())
     {
-        return Result<editor_core::EditorDocumentId>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "A prepared scene must be activated or discarded before preparing another scene"));
+        return Result<editor_core::EditorDocumentId>::failure(
+            make_session_error(*m_assertContext, WindowsEditorSessionError::InvalidSessionState,
+                               "A prepared scene must be activated or discarded before preparing another scene"));
     }
     Result<EntryType> entry = m_sourceAssetsRoot->query_entry(a_locator);
     if (!entry)
     {
-        return Result<editor_core::EditorDocumentId>::failure(reclassify_session_error(
-            *m_assertContext, WindowsEditorSessionError::SceneOpenFailed,
-            "New scene destination could not be inspected", std::move(*entry.try_error())));
+        return Result<editor_core::EditorDocumentId>::failure(
+            reclassify_session_error(*m_assertContext, WindowsEditorSessionError::SceneOpenFailed,
+                                     "New scene destination could not be inspected", std::move(*entry.try_error())));
     }
     if (*entry.try_value() != EntryType::Missing)
     {
         return Result<editor_core::EditorDocumentId>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::SceneOpenFailed,
-            "New scene destination already exists"));
+            *m_assertContext, WindowsEditorSessionError::SceneOpenFailed, "New scene destination already exists"));
     }
     Result<scene::SceneAssetId> sceneId = scene::SceneAssetId::generate(*m_sceneIdentitySource, *m_assertContext);
     if (!sceneId)
@@ -577,9 +591,9 @@ Result<editor_core::EditorDocumentId> WindowsEditorSession::prepare_open_scene(R
     reconcile_active_document();
     if (m_preparedDocumentId.has_value())
     {
-        return Result<editor_core::EditorDocumentId>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "A prepared scene must be activated or discarded before preparing another scene"));
+        return Result<editor_core::EditorDocumentId>::failure(
+            make_session_error(*m_assertContext, WindowsEditorSessionError::InvalidSessionState,
+                               "A prepared scene must be activated or discarded before preparing another scene"));
     }
     Result<editor_core::EditorDocumentId> opened = m_controller->open_document_from_storage(std::move(a_locator));
     if (!opened)
@@ -597,9 +611,9 @@ Result<editor_core::DocumentCloseState> WindowsEditorSession::request_activate_p
     reconcile_active_document();
     if (!m_preparedDocumentId.has_value())
     {
-        return Result<editor_core::DocumentCloseState>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "No prepared scene is available to activate"));
+        return Result<editor_core::DocumentCloseState>::failure(
+            make_session_error(*m_assertContext, WindowsEditorSessionError::InvalidSessionState,
+                               "No prepared scene is available to activate"));
     }
     if (!m_activeDocumentId.has_value())
     {
@@ -636,9 +650,9 @@ Result<void> WindowsEditorSession::discard_prepared_scene() noexcept
     }
     if (*state.try_value() != editor_core::DocumentCloseState::Closed)
     {
-        return Result<void>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "Prepared scene did not reach the closed state"));
+        return Result<void>::failure(make_session_error(*m_assertContext,
+                                                        WindowsEditorSessionError::InvalidSessionState,
+                                                        "Prepared scene did not reach the closed state"));
     }
     m_preparedDocumentId.reset();
     return Result<void>::success();
@@ -693,15 +707,14 @@ Result<void> WindowsEditorSession::autosave_active_scene_recovery() noexcept
     reconcile_active_document();
     if (!m_activeDocumentId.has_value())
     {
-        return Result<void>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "No active scene is available for recovery autosave"));
+        return Result<void>::failure(make_session_error(*m_assertContext,
+                                                        WindowsEditorSessionError::InvalidSessionState,
+                                                        "No active scene is available for recovery autosave"));
     }
     return m_controller->autosave_recovery(*m_activeDocumentId);
 }
 
-Result<scene::SceneSaveOutcome> WindowsEditorSession::save_active_scene_impl(
-    bool a_allowExistingDestination) noexcept
+Result<scene::SceneSaveOutcome> WindowsEditorSession::save_active_scene_impl(bool a_allowExistingDestination) noexcept
 {
     reconcile_active_document();
     if (!m_activeDocumentId.has_value())
@@ -723,8 +736,7 @@ Result<scene::SceneSaveOutcome> WindowsEditorSession::save_active_scene_impl(
             ? m_controller->save_document(*m_activeDocumentId)
             : (a_allowExistingDestination
                    ? m_controller->save_document_as(*m_activeDocumentId, RelativePath(document->scene_locator()))
-                   : m_controller->save_document_as_new(*m_activeDocumentId,
-                                                        RelativePath(document->scene_locator())));
+                   : m_controller->save_document_as_new(*m_activeDocumentId, RelativePath(document->scene_locator())));
     reconcile_active_document();
     return saved;
 }
@@ -735,9 +747,9 @@ Result<scene::SceneSaveOutcome> WindowsEditorSession::save_active_scene_as_impl(
     reconcile_active_document();
     if (!m_activeDocumentId.has_value())
     {
-        return Result<scene::SceneSaveOutcome>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "No active scene is available to save as another destination"));
+        return Result<scene::SceneSaveOutcome>::failure(
+            make_session_error(*m_assertContext, WindowsEditorSessionError::InvalidSessionState,
+                               "No active scene is available to save as another destination"));
     }
     Result<void> created = ensure_scene_parent_directory(a_locator);
     if (!created)
@@ -745,9 +757,8 @@ Result<scene::SceneSaveOutcome> WindowsEditorSession::save_active_scene_as_impl(
         return Result<scene::SceneSaveOutcome>::failure(std::move(*created.try_error()));
     }
     Result<scene::SceneSaveOutcome> saved =
-        a_allowExistingDestination
-            ? m_controller->save_document_as(*m_activeDocumentId, std::move(a_locator))
-            : m_controller->save_document_as_new(*m_activeDocumentId, std::move(a_locator));
+        a_allowExistingDestination ? m_controller->save_document_as(*m_activeDocumentId, std::move(a_locator))
+                                   : m_controller->save_document_as_new(*m_activeDocumentId, std::move(a_locator));
     reconcile_active_document();
     return saved;
 }
@@ -808,9 +819,9 @@ Result<void> WindowsEditorSession::discard_uncertain_save_active_scene() noexcep
     reconcile_active_document();
     if (!m_activeDocumentId.has_value())
     {
-        return Result<void>::failure(make_session_error(
-            *m_assertContext, WindowsEditorSessionError::InvalidSessionState,
-            "No active scene has an uncertain save to discard"));
+        return Result<void>::failure(make_session_error(*m_assertContext,
+                                                        WindowsEditorSessionError::InvalidSessionState,
+                                                        "No active scene has an uncertain save to discard"));
     }
     Result<void> discarded = m_controller->discard_uncertain_save(*m_activeDocumentId);
     reconcile_active_document();

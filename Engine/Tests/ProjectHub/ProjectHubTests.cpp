@@ -391,9 +391,25 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
         return cue::ProjectId::parse(ids[m_nextIdentity++], *m_assertContext);
     }
 
+    [[nodiscard]] cue::Result<std::string> next_scene_asset_id() noexcept override
+    {
+        constexpr std::string_view ids[] = {
+            "10000000-0000-4000-8000-000000000001", "10000000-0000-4000-8000-000000000002",
+            "10000000-0000-4000-8000-000000000003", "10000000-0000-4000-8000-000000000004",
+            "10000000-0000-4000-8000-000000000005", "10000000-0000-4000-8000-000000000006"};
+        if (m_nextSceneIdentity >= std::size(ids))
+        {
+            return cue::Result<std::string>::failure(cue::project_hub::make_project_hub_error(
+                *m_assertContext, cue::project_hub::ProjectHubError::InvalidConfiguration,
+                "Test SceneAssetId source is exhausted"));
+        }
+        return cue::Result<std::string>::success(std::string(ids[m_nextSceneIdentity++]));
+    }
+
   private:
     const cue::AssertContext *m_assertContext;
     std::size_t m_nextIdentity = 0U;
+    std::size_t m_nextSceneIdentity = 0U;
     bool m_nextProjectPublishDurabilityUnknown = false;
     bool m_nextProjectWriteDurabilityUnknown = false;
     std::optional<std::string> m_failedLocator;
@@ -415,7 +431,8 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
         return cue::Result<cue::project_hub::ProjectHubConfiguration>::failure(std::move(*snapshot.try_error()));
     }
     cue::project_hub::ProjectHubConfiguration configuration{
-        1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value()),
+        cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()),
+        std::move(*snapshot.try_value()),
         cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}};
     return cue::Result<cue::project_hub::ProjectHubConfiguration>::success(std::move(configuration));
 }
@@ -534,7 +551,18 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
         launch.try_value()->expected_project_id() != alphaId ||
         launch.try_value()->engine_compatibility_id() != "cue-engine:[1.0.0,2.0.0)" ||
         !launch.try_value()->initial_scene_locator().has_value() ||
+        launch.try_value()->expected_initial_scene_asset_id().has_value() ||
         launch.try_value()->project_descriptor_locator().find("CueProject.json") == std::string_view::npos)
+    {
+        return false;
+    }
+    auto defaultLaunch = service.try_value()->get()->open_project(alphaId, 410U);
+    if (!defaultLaunch || !defaultLaunch.try_value()->initial_scene_locator().has_value() ||
+        *defaultLaunch.try_value()->initial_scene_locator() != "Scenes/Default.cuescene" ||
+        !defaultLaunch.try_value()->expected_initial_scene_asset_id().has_value() ||
+        *defaultLaunch.try_value()->expected_initial_scene_asset_id() != "10000000-0000-4000-8000-000000000001" ||
+        !std::filesystem::is_regular_file(directory.path() / "Projects" / "Alpha" / "Assets" / "Source" / "Scenes" /
+                                          "Default.cuescene"))
     {
         return false;
     }

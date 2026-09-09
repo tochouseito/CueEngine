@@ -378,13 +378,15 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
-                                                 make_template(), a_assertContext);
-    constexpr std::array expected = {std::string_view("Assets/Source"), std::string_view("Assets/Runtime"),
-                                     std::string_view("Generated"), std::string_view("Saved"),
-                                     std::string_view("Source/Game")};
+    auto generated =
+        cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
+    constexpr std::array expected = {std::string_view("Assets/Source"),  std::string_view("Assets/Source/Scenes"),
+                                     std::string_view("Assets/Runtime"), std::string_view("Generated"),
+                                     std::string_view("Saved"),          std::string_view("Source/Game")};
     if (!generated || !filesystem.is_published() || filesystem.has_staging() || !filesystem.has_descriptor() ||
         !filesystem.has_file("CMakeLists.txt") || !filesystem.has_file("CMakePresets.json") ||
+        !filesystem.has_file("Assets/Source/Scenes/Default.cuescene") ||
         !filesystem.has_file("Source/Game/CMakeLists.txt") || !filesystem.has_file("Source/Game/GameModule.cpp") ||
         filesystem.directories().size() != expected.size())
     {
@@ -400,8 +402,13 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     const std::string_view projectCMake = filesystem.file_contents("CMakeLists.txt");
     const std::string_view presets = filesystem.file_contents("CMakePresets.json");
     const std::string_view module = filesystem.file_contents("Source/Game/GameModule.cpp");
+    const std::string_view scene = filesystem.file_contents("Assets/Source/Scenes/Default.cuescene");
     auto serialized = cue::serialize_project_descriptor(*generated.try_value(), a_assertContext);
-    return serialized && serialized.try_value()->find("\"defaultScene\":null") != std::string::npos &&
+    return serialized &&
+           serialized.try_value()->find("\"defaultScene\":{\"sceneAssetId\":\"00000000-0000-4000-8000-000000000099\","
+                                        "\"sourceLocator\":\"Scenes/Default.cuescene\"}") != std::string::npos &&
+           scene == "{\"formatVersion\":1,\"sceneAssetId\":\"00000000-0000-4000-8000-000000000099\","
+                    "\"objects\":[],\"extensions\":{}}" &&
            serialized.try_value()->find("CMakeLists") == std::string::npos &&
            serialized.try_value()->find("Renderer") == std::string::npos &&
            projectCMake.find("CUE_ENGINE_ROOT") != std::string_view::npos &&
@@ -431,8 +438,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     {
         GeneratorFilesystem filesystem(FailurePoint::None, false, a_assertContext);
         auto projectId = make_project_id(a_assertContext);
-        auto generated = cue::generate_blank_project(filesystem, name, "Sample Project", *projectId.try_value(),
-                                                     make_template(), a_assertContext);
+        auto generated =
+            cue::generate_blank_project(filesystem, name, "Sample Project", *projectId.try_value(),
+                                        "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
         if (!has_project_error(generated, cue::ProjectError::InvalidProjectName) || filesystem.has_staging() ||
             filesystem.is_published())
         {
@@ -447,8 +455,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::None, true, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
-                                                 make_template(), a_assertContext);
+    auto generated =
+        cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && !filesystem.has_staging() &&
            !filesystem.is_published();
 }
@@ -464,8 +473,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     {
         GeneratorFilesystem filesystem(failure, false, a_assertContext);
         auto projectId = make_project_id(a_assertContext);
-        auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project",
-                                                     *projectId.try_value(), make_template(), a_assertContext);
+        auto generated =
+            cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                        "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
         const cue::ProjectError expected =
             failure == FailurePoint::VerifyDescriptor || failure == FailurePoint::VerifyBuildFile
                 ? cue::ProjectError::InvalidFormat
@@ -483,8 +493,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::WriteDescriptorAndRollback, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
-                                                 make_template(), a_assertContext);
+    auto generated =
+        cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && filesystem.has_staging() &&
            !filesystem.is_published() && !generated.try_error()->contexts().empty();
 }
@@ -494,8 +505,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
 {
     GeneratorFilesystem filesystem(FailurePoint::Durability, false, a_assertContext);
     auto projectId = make_project_id(a_assertContext);
-    auto generated = cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
-                                                 make_template(), a_assertContext);
+    auto generated =
+        cue::generate_blank_project(filesystem, "SampleProject", "Sample Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", make_template(), a_assertContext);
     return has_project_error(generated, cue::ProjectError::IoFailure) && filesystem.is_published() &&
            !filesystem.has_staging() && generated.try_error()->root_code().domain() == "Cue.IO" &&
            generated.try_error()->root_code().value() == static_cast<std::int64_t>(cue::IoError::DurabilityUnknown);

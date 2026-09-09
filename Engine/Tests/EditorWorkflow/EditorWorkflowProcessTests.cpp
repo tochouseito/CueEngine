@@ -105,18 +105,20 @@ class TestDirectory final
     {
         std::_Exit(3);
     }
-    return {1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value())};
+    return {cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U},
+            std::move(*profile.try_value()), std::move(*snapshot.try_value())};
 }
 
 /// @brief 生成Projectへ対応するEditor起動値を作る
 [[nodiscard]] cue::editor::WindowsEditorLaunchParameters make_parameters(
     const std::filesystem::path &a_projectPath, std::string_view a_projectId,
     const cue::EngineCompatibility &a_compatibility, const cue::AssertContext &a_context,
-    std::optional<std::string> a_initialScene = std::nullopt)
+    std::optional<std::string> a_initialScene = std::nullopt,
+    std::optional<std::string> a_expectedInitialSceneAssetId = std::nullopt)
 {
     return {cue::k_editorLaunchProtocolVersion, to_utf8(a_projectPath / L"CueProject.json", a_context.fatal_handler()),
-            std::string(a_projectId), cue::make_engine_compatibility_id(a_compatibility, a_context),
-            std::move(a_initialScene)};
+            std::string(a_projectId),           cue::make_engine_compatibility_id(a_compatibility, a_context),
+            std::move(a_initialScene),          std::move(a_expectedInitialSceneAssetId)};
 }
 
 /// @brief File全体を既存Destination保護の比較用Byte列として読む
@@ -207,8 +209,9 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     {
         std::_Exit(4);
     }
-    auto generated = cue::generate_blank_project(**parent.try_value(), "Project", "Workflow Project",
-                                                 *projectId.try_value(), {engineCompatibility}, a_context);
+    auto generated =
+        cue::generate_blank_project(**parent.try_value(), "Project", "Workflow Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", {engineCompatibility}, a_context);
     if (!generated)
     {
         std::_Exit(5);
@@ -436,7 +439,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
 
     auto reopened = cue::editor::WindowsEditorSession::create(
         make_parameters(projectPath, projectId.try_value()->text(), engineCompatibility, a_context,
-                        std::string("Scenes/Main.cuescene")),
+                        std::string("Scenes/Main.cuescene"), std::string(sceneText.data(), sceneText.size())),
         make_configuration(a_context), a_context);
     if (!reopened || !(*reopened.try_value())->active_document_id().has_value())
     {
@@ -551,6 +554,14 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     if (invalidScene)
     {
         std::_Exit(19);
+    }
+    auto wrongSceneIdentity = cue::editor::WindowsEditorSession::create(
+        make_parameters(projectPath, projectId.try_value()->text(), engineCompatibility, a_context,
+                        std::string("Scenes/Main.cuescene"), std::string("00000000-0000-4000-8000-000000000999")),
+        make_configuration(a_context), a_context);
+    if (wrongSceneIdentity)
+    {
+        std::_Exit(52);
     }
 
     if (!run_editor_process(a_editorExecutable, projectPath, "play-repeated-workflow") ||

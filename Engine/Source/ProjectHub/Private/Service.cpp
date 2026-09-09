@@ -41,10 +41,12 @@ namespace cue::project_hub
 {
 EditorLaunchRequest::EditorLaunchRequest(std::string &&a_projectDescriptorLocator, std::string &&a_expectedProjectId,
                                          std::string &&a_engineCompatibilityId,
-                                         std::optional<std::string> &&a_initialSceneLocator) noexcept
+                                         std::optional<std::string> &&a_initialSceneLocator,
+                                         std::optional<std::string> &&a_expectedInitialSceneAssetId) noexcept
     : m_projectDescriptorLocator(std::move(a_projectDescriptorLocator)),
       m_expectedProjectId(std::move(a_expectedProjectId)), m_engineCompatibilityId(std::move(a_engineCompatibilityId)),
-      m_initialSceneLocator(std::move(a_initialSceneLocator))
+      m_initialSceneLocator(std::move(a_initialSceneLocator)),
+      m_expectedInitialSceneAssetId(std::move(a_expectedInitialSceneAssetId))
 {
 }
 
@@ -71,6 +73,11 @@ std::string_view EditorLaunchRequest::engine_compatibility_id() const noexcept
 const std::optional<std::string> &EditorLaunchRequest::initial_scene_locator() const noexcept
 {
     return m_initialSceneLocator;
+}
+
+const std::optional<std::string> &EditorLaunchRequest::expected_initial_scene_asset_id() const noexcept
+{
+    return m_expectedInitialSceneAssetId;
 }
 
 ProjectHubService::ProjectHubService(ConstructionKey, FilesystemRoot &a_workspaceFilesystem,
@@ -339,9 +346,14 @@ Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::stri
     {
         return Result<ProjectCreationOutcome>::failure(std::move(*projectId.try_error()));
     }
-    auto descriptor =
-        generate_blank_project(**parentRoot.try_value(), a_projectName, a_displayName, *projectId.try_value(),
-                               BlankProjectTemplate{m_configuration.blankProjectCompatibility}, *m_assertContext);
+    auto sceneAssetId = m_platform->next_scene_asset_id();
+    if (!sceneAssetId)
+    {
+        return Result<ProjectCreationOutcome>::failure(std::move(*sceneAssetId.try_error()));
+    }
+    auto descriptor = generate_blank_project(
+        **parentRoot.try_value(), a_projectName, a_displayName, *projectId.try_value(), *sceneAssetId.try_value(),
+        BlankProjectTemplate{m_configuration.blankProjectCompatibility}, *m_assertContext);
     std::optional<Error> creationDurabilityError;
     if (!descriptor)
     {
@@ -549,6 +561,7 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
             return Result<EditorLaunchRequest>::failure(std::move(primary));
         }
         std::optional<std::string> sceneLocator;
+        std::optional<std::string> expectedSceneAssetId;
         if (a_initialSceneLocator.has_value())
         {
             auto parsedSceneLocator = RelativePath::parse(*a_initialSceneLocator, *m_assertContext);
@@ -559,6 +572,11 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
                     std::move(*parsedSceneLocator.try_error())));
             }
             sceneLocator = std::string(parsedSceneLocator.try_value()->text());
+        }
+        else if (descriptor.try_value()->default_scene().has_value())
+        {
+            sceneLocator = std::string(descriptor.try_value()->default_scene()->source_locator().text());
+            expectedSceneAssetId = std::string(descriptor.try_value()->default_scene()->scene_asset_id());
         }
         auto descriptorLocator = m_platform->compose_descriptor_locator(found->locator());
         if (!descriptorLocator)
@@ -589,7 +607,7 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
         }
         return Result<EditorLaunchRequest>::success(
             EditorLaunchRequest(std::move(*descriptorLocator.try_value()), std::move(expectedProjectId),
-                                std::move(compatibilityId), std::move(sceneLocator)));
+                                std::move(compatibilityId), std::move(sceneLocator), std::move(expectedSceneAssetId)));
     }
     catch (...)
     {

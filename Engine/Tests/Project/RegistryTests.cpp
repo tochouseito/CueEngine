@@ -116,11 +116,11 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     }
 
     /// @brief Registry Test対象外のRecovery Backup公開を明示的に拒否する
-    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(
-        const cue::RelativePath &, std::span<const std::byte>, const cue::AssertContext &) noexcept override
+    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(const cue::RelativePath &, std::span<const std::byte>,
+                                                                 const cue::AssertContext &) noexcept override
     {
-        return cue::Result<void>::failure(cue::make_io_error(
-            *m_assertContext, cue::IoError::IoFailure, "Recovery backup is not used by registry tests"));
+        return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::IoFailure,
+                                                             "Recovery backup is not used by registry tests"));
     }
 
     [[nodiscard]] cue::Result<cue::FileWriteLease> acquire_file_write_lease(const cue::RelativePath &) noexcept override
@@ -180,9 +180,9 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     {
         return cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
     }
-    return cue::create_blank_project_descriptor(
-        *projectId.try_value(), "Registry Test",
-        cue::EngineCompatibility{cue::EngineVersion{0U, 1U, 0U}, std::nullopt}, a_assertContext);
+    return cue::create_blank_project_descriptor(*projectId.try_value(), "Registry Test",
+                                                cue::EngineCompatibility{cue::EngineVersion{0U, 1U, 0U}, std::nullopt},
+                                                "00000000-0000-4000-8000-000000000099", a_assertContext);
 }
 
 /// @brief Result の Project Error 分類が期待値と一致するか判定する
@@ -219,7 +219,8 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     auto first = make_descriptor("12345678-1234-4abc-8def-1234567890ab", a_assertContext);
     auto second = make_descriptor("87654321-4321-4abc-8def-ba0987654321", a_assertContext);
     cue::RecentProjectRegistry registry;
-    if (!first || !second || !registry.register_project(*first.try_value(), "C:/Projects/First", 100U, a_assertContext) ||
+    if (!first || !second ||
+        !registry.register_project(*first.try_value(), "C:/Projects/First", 100U, a_assertContext) ||
         !registry.register_project(*second.try_value(), "C:/Projects/Second", 200U, a_assertContext) ||
         registry.entries().size() != 2U || registry.entries()[0].project_id() != second.try_value()->project_id())
     {
@@ -263,7 +264,8 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
 
     auto conflict = registry.reassociate_project(*first.try_value(), "C:/Projects/Second", 400U, a_assertContext);
     return has_project_error(conflict, cue::ProjectError::ProjectLocatorConflict) &&
-           registry.remove_project(first.try_value()->project_id(), a_assertContext) && registry.entries().size() == 1U &&
+           registry.remove_project(first.try_value()->project_id(), a_assertContext) &&
+           registry.entries().size() == 1U &&
            registry.entries()[0].locator_state() == cue::ProjectLocatorState::Missing;
 }
 
@@ -272,8 +274,8 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
 {
     auto descriptor = make_descriptor("12345678-1234-4abc-8def-1234567890ab", a_assertContext);
     cue::RecentProjectRegistry registry;
-    if (!descriptor || !registry.register_project(*descriptor.try_value(), "C:/Projects/Cue テスト", 12345U,
-                                                  a_assertContext) ||
+    if (!descriptor ||
+        !registry.register_project(*descriptor.try_value(), "C:/Projects/Cue テスト", 12345U, a_assertContext) ||
         !registry.set_project_pinned(descriptor.try_value()->project_id(), true, a_assertContext) ||
         !registry.mark_project_missing(descriptor.try_value()->project_id(), a_assertContext))
     {
@@ -289,10 +291,10 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     }
 
     auto serialized = cue::serialize_recent_project_registry(registry, a_assertContext);
-    auto reparsed = serialized ? cue::parse_recent_project_registry(*serialized.try_value(), a_assertContext)
-                               : cue::Result<cue::RecentProjectRegistry>::failure(
-                                     cue::make_project_error(a_assertContext, cue::ProjectError::InvalidWorkspaceFormat,
-                                                             "Registry serialization failed"));
+    auto reparsed =
+        serialized ? cue::parse_recent_project_registry(*serialized.try_value(), a_assertContext)
+                   : cue::Result<cue::RecentProjectRegistry>::failure(cue::make_project_error(
+                         a_assertContext, cue::ProjectError::InvalidWorkspaceFormat, "Registry serialization failed"));
     if (!reparsed || reparsed.try_value()->entries().size() != 1U ||
         reparsed.try_value()->entries()[0].locator() != "C:/Projects/Cue テスト" ||
         reparsed.try_value()->entries()[0].locator_state() != cue::ProjectLocatorState::Missing ||
@@ -368,8 +370,8 @@ class WorkspaceFilesystem final : public cue::FilesystemRoot
     {
         return false;
     }
-    auto overflow = registry.register_project(*overflowDescriptor.try_value(), "C:/Projects/4096", 4096U,
-                                              a_assertContext);
+    auto overflow =
+        registry.register_project(*overflowDescriptor.try_value(), "C:/Projects/4096", 4096U, a_assertContext);
     return has_project_error(overflow, cue::ProjectError::InvalidWorkspaceFormat);
 }
 } // namespace

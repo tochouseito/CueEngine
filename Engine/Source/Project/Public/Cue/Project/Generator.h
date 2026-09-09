@@ -24,7 +24,8 @@ struct BlankProjectTemplate final
 /// この状態で同名生成の再試行または完成 Directory の自動削除を行わない
 [[nodiscard]] Result<ProjectDescriptor> generate_blank_project(
     FilesystemRoot &a_parentFilesystem, std::string_view a_projectName, std::string_view a_displayName,
-    const ProjectId &a_projectId, BlankProjectTemplate a_template, const AssertContext &a_assertContext) noexcept;
+    const ProjectId &a_projectId, std::string_view a_defaultSceneAssetId, BlankProjectTemplate a_template,
+    const AssertContext &a_assertContext) noexcept;
 
 /// @brief 既存 Project に不足する Game Source と CMake Workspace File だけを追加する
 ///

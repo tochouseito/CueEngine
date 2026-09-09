@@ -107,7 +107,7 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
         take_value(cue::ProjectId::parse("00000000-0000-4000-8000-000000000215", a_assertContext));
     return take_value(cue::create_blank_project_descriptor(
         std::move(projectId), "Play UI Test", cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
-        a_assertContext));
+        "00000000-0000-4000-8000-000000000099", a_assertContext));
 }
 
 /// @brief Runtime Core Typeを持つSeal済みTest Registryを生成する
@@ -151,8 +151,7 @@ void release_shortcut(cue::editor::PlaySessionPresenter &a_presenter) noexcept
 }
 
 /// @brief Presenter初回描画後のRuntime Window位置とSizeをPublic ImGui APIから取得する
-[[nodiscard]] RuntimeWindowLayout capture_runtime_window_layout(
-    cue::editor::PlaySessionPresenter &a_presenter) noexcept
+[[nodiscard]] RuntimeWindowLayout capture_runtime_window_layout(cue::editor::PlaySessionPresenter &a_presenter) noexcept
 {
     ImGui::NewFrame();
     a_presenter.draw();
