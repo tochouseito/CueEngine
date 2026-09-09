@@ -16,6 +16,7 @@ endif()
 
 set(projectId "41234567-89ab-4cde-8f01-23456789abcd")
 set(sceneId "51234567-89ab-4cde-8f01-23456789abcd")
+set(artifactId "61234567-89ab-4cde-8f01-23456789abcd")
 set(stagingRoot "${TEST_ROOT}/BuiltPackage")
 set(packageRoot "${TEST_ROOT}/RelocatedPackage")
 set(workingRoot "${TEST_ROOT}/UnrelatedWorkingDirectory")
@@ -45,7 +46,7 @@ endif()
 math(EXPR compatibleFullVersion "${COMPILER_FULL_VERSION} + 1")
 math(EXPR compatibleBuild "${COMPILER_BUILD} + 1")
 file(WRITE "${metadataPath}"
-    "{\n    \"schemaVersion\": 1,\n    \"artifactId\": \"runtime-package-probe\",\n    \"projectId\": \"${projectId}\",\n    \"engineCompatibility\": {\n        \"minimum\": \"1.0.0\",\n        \"maximumExclusive\": \"2.0.0\"\n    },\n    \"abiVersion\": 1,\n    \"configuration\": \"${CONFIGURATION}\",\n    \"architecture\": \"x64\",\n    \"compilerFamily\": \"msvc\",\n    \"msvcToolset\": {\n        \"compilerVersion\": ${COMPILER_VERSION},\n        \"fullVersion\": ${compatibleFullVersion},\n        \"build\": ${compatibleBuild}\n    },\n    \"runtimeLibrary\": \"${runtimeLibrary}\",\n    \"iteratorDebugLevel\": ${iteratorDebugLevel},\n    \"moduleFile\": \"CueGameModule.dll\",\n    \"entrySymbol\": \"cue_game_module_query\"\n}\n")
+    "{\n    \"schemaVersion\": 1,\n    \"artifactId\": \"${artifactId}\",\n    \"projectId\": \"${projectId}\",\n    \"engineCompatibility\": {\n        \"minimum\": \"1.0.0\",\n        \"maximumExclusive\": \"2.0.0\"\n    },\n    \"abiVersion\": 1,\n    \"configuration\": \"${CONFIGURATION}\",\n    \"architecture\": \"x64\",\n    \"compilerFamily\": \"msvc\",\n    \"msvcToolset\": {\n        \"compilerVersion\": ${COMPILER_VERSION},\n        \"fullVersion\": ${compatibleFullVersion},\n        \"build\": ${compatibleBuild}\n    },\n    \"runtimeLibrary\": \"${runtimeLibrary}\",\n    \"iteratorDebugLevel\": ${iteratorDebugLevel},\n    \"moduleFile\": \"CueGameModule.dll\",\n    \"entrySymbol\": \"cue_game_module_query\"\n}\n")
 
 set(paths
     "CueRuntimeHost.exe"
@@ -61,23 +62,30 @@ set(roles
     "gameModule"
     "gameModuleMetadata"
 )
-set(filesJson "")
-list(LENGTH paths fileCount)
-math(EXPR lastFileIndex "${fileCount} - 1")
-foreach(index RANGE 0 ${lastFileIndex})
-    list(GET paths ${index} relativePath)
-    list(GET roles ${index} role)
-    set(absolutePath "${stagingRoot}/${relativePath}")
-    file(SIZE "${absolutePath}" sizeBytes)
-    file(SHA256 "${absolutePath}" sha256)
-    if(NOT filesJson STREQUAL "")
-        string(APPEND filesJson ",")
-    endif()
-    string(APPEND filesJson
-        "{\"role\":\"${role}\",\"path\":\"${relativePath}\",\"sizeBytes\":${sizeBytes},\"sha256\":\"${sha256}\"}")
-endforeach()
-file(WRITE "${stagingRoot}/CuePackage.json"
-    "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineVersion\":\"1.0.0\",\"configuration\":\"${CONFIGURATION}\",\"startupScene\":{\"sceneAssetId\":\"${sceneId}\",\"runtimeDataPath\":\"${sceneRelativePath}\"},\"files\":[${filesJson}]}\n")
+function(write_package_manifest packageDirectory projectSizeOverride)
+    set(filesJson "")
+    list(LENGTH paths fileCount)
+    math(EXPR lastFileIndex "${fileCount} - 1")
+    foreach(index RANGE 0 ${lastFileIndex})
+        list(GET paths ${index} relativePath)
+        list(GET roles ${index} role)
+        set(absolutePath "${packageDirectory}/${relativePath}")
+        file(SIZE "${absolutePath}" sizeBytes)
+        if(role STREQUAL "projectRuntimeData" AND NOT projectSizeOverride STREQUAL "")
+            set(sizeBytes "${projectSizeOverride}")
+        endif()
+        file(SHA256 "${absolutePath}" sha256)
+        if(NOT filesJson STREQUAL "")
+            string(APPEND filesJson ",")
+        endif()
+        string(APPEND filesJson
+            "{\"role\":\"${role}\",\"path\":\"${relativePath}\",\"sizeBytes\":${sizeBytes},\"sha256\":\"${sha256}\"}")
+    endforeach()
+    file(WRITE "${packageDirectory}/CuePackage.json"
+        "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineVersion\":\"1.0.0\",\"configuration\":\"${CONFIGURATION}\",\"startupScene\":{\"sceneAssetId\":\"${sceneId}\",\"runtimeDataPath\":\"${sceneRelativePath}\"},\"files\":[${filesJson}]}\n")
+endfunction()
+
+write_package_manifest("${stagingRoot}" "")
 
 file(RENAME "${stagingRoot}" "${packageRoot}")
 if(CONFIGURATION STREQUAL "Debug")
@@ -108,6 +116,65 @@ foreach(requiredMessage IN ITEMS
         message(FATAL_ERROR "Relocated Runtime Package output is missing: ${requiredMessage}\n${combinedOutput}")
     endif()
 endforeach()
+
+file(COPY_FILE "${packageRoot}/CueRuntimeHost.exe" "${packageRoot}/RenamedRuntimeHost.exe" ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${packageRoot}/RenamedRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE renamedHostResult
+    OUTPUT_VARIABLE renamedHostOutput
+    ERROR_VARIABLE renamedHostError
+    TIMEOUT 15
+)
+set(renamedHostCombined "${renamedHostOutput}\n${renamedHostError}")
+string(FIND "${renamedHostCombined}" "Running RuntimeHost executable does not match the Manifest role"
+    renamedHostMessagePosition)
+if(renamedHostResult EQUAL 0 OR renamedHostMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Renamed RuntimeHost was not rejected by Manifest identity\n${renamedHostCombined}")
+endif()
+file(REMOVE "${packageRoot}/RenamedRuntimeHost.exe")
+
+math(EXPR oversizedProjectBytes "1024 * 1024 + 1")
+write_package_manifest("${packageRoot}" "${oversizedProjectBytes}")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE oversizedProjectResult
+    OUTPUT_VARIABLE oversizedProjectOutput
+    ERROR_VARIABLE oversizedProjectError
+    TIMEOUT 15
+)
+set(oversizedProjectCombined "${oversizedProjectOutput}\n${oversizedProjectError}")
+string(FIND "${oversizedProjectCombined}" "Runtime Data role exceeds its Package startup size limit"
+    oversizedProjectMessagePosition)
+if(oversizedProjectResult EQUAL 0 OR oversizedProjectMessagePosition EQUAL -1)
+    message(FATAL_ERROR
+        "Oversized Project Runtime Data declaration was not rejected before read\n${oversizedProjectCombined}")
+endif()
+write_package_manifest("${packageRoot}" "")
+
+set(packageMetadataPath "${packageRoot}/Game/CueGameModule.metadata.json")
+file(READ "${packageMetadataPath}" validMetadata)
+string(REPLACE "\"artifactId\": \"${artifactId}\"" "\"artifactId\": \"runtime-package-probe\""
+    invalidMetadata "${validMetadata}")
+file(WRITE "${packageMetadataPath}" "${invalidMetadata}")
+write_package_manifest("${packageRoot}" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE invalidArtifactIdResult
+    OUTPUT_VARIABLE invalidArtifactIdOutput
+    ERROR_VARIABLE invalidArtifactIdError
+    TIMEOUT 15
+)
+set(invalidArtifactIdCombined "${invalidArtifactIdOutput}\n${invalidArtifactIdError}")
+string(FIND "${invalidArtifactIdCombined}" "Game Module Metadata header is invalid"
+    invalidArtifactIdMessagePosition)
+if(invalidArtifactIdResult EQUAL 0 OR invalidArtifactIdMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-canonical Metadata artifactId was accepted\n${invalidArtifactIdCombined}")
+endif()
+file(WRITE "${packageMetadataPath}" "${validMetadata}")
+write_package_manifest("${packageRoot}" "")
 
 file(MAKE_DIRECTORY "${packageRoot}/Runtime")
 file(WRITE "${packageRoot}/Runtime/Unlisted.dll" "unlisted")

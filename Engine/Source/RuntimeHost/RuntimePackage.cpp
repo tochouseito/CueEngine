@@ -46,6 +46,30 @@ namespace
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
 constexpr std::size_t k_maximumRuntimeSystems = 256U;
 
+/// @brief lowercase hexadecimal文字か判定する
+[[nodiscard]] bool is_lower_hex(char a_value) noexcept
+{
+    return (a_value >= '0' && a_value <= '9') || (a_value >= 'a' && a_value <= 'f');
+}
+
+/// @brief lowercase canonical UUID Version 4文字列か判定する
+[[nodiscard]] bool is_canonical_uuid_v4(std::string_view a_text) noexcept
+{
+    if (a_text.size() != 36U || a_text[8] != '-' || a_text[13] != '-' || a_text[18] != '-' || a_text[23] != '-' ||
+        a_text[14] != '4' || (a_text[19] != '8' && a_text[19] != '9' && a_text[19] != 'a' && a_text[19] != 'b'))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < a_text.size(); ++index)
+    {
+        if (index != 8U && index != 13U && index != 18U && index != 23U && !is_lower_hex(a_text[index]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// @brief Runtime Package処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_package_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -657,7 +681,7 @@ template <std::size_t Size>
         bool hasMaximum = false;
         if (!cursor.consume('{') || !cursor.member("schemaVersion") || !cursor.unsigned_number(schemaVersion) ||
             schemaVersion != 1U || !cursor.consume(',') || !cursor.member("artifactId") ||
-            !cursor.string(artifactId) || artifactId.empty() || !cursor.consume(',') ||
+            !cursor.string(artifactId) || !is_canonical_uuid_v4(artifactId) || !cursor.consume(',') ||
             !cursor.member("projectId") || !cursor.string(projectId) || !cursor.consume(',') ||
             !cursor.member("engineCompatibility") || !cursor.consume('{') || !cursor.member("minimum") ||
             !cursor.string(minimumText) || !cursor.consume(',') || !cursor.member("maximumExclusive"))
@@ -1401,13 +1425,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 a_assertContext, package::PackageError::InvalidPackageManifest,
                 "Package Engine version or Build Configuration differs from RuntimeHost"));
         }
-        auto inventory = package::verify_package_manifest_files(root.generic_string(), *manifest.try_value(),
-                                                                 a_assertContext);
-        if (!inventory)
-        {
-            return Result<LoadedRuntimePackage>::failure(std::move(*inventory.try_error()));
-        }
-
+        const package::PackageFileEntry *runtimeHostEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::RuntimeHost);
         const package::PackageFileEntry *projectEntry =
             find_role(*manifest.try_value(), package::PackageFileRole::ProjectRuntimeData);
         const package::PackageFileEntry *sceneEntry =
@@ -1416,11 +1435,31 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             find_role(*manifest.try_value(), package::PackageFileRole::GameModuleMetadata);
         const package::PackageFileEntry *moduleEntry =
             find_role(*manifest.try_value(), package::PackageFileRole::GameModule);
-        if (projectEntry == nullptr || sceneEntry == nullptr || metadataEntry == nullptr || moduleEntry == nullptr)
+        if (runtimeHostEntry == nullptr || projectEntry == nullptr || sceneEntry == nullptr ||
+            metadataEntry == nullptr || moduleEntry == nullptr)
         {
             return Result<LoadedRuntimePackage>::failure(package_error(
                 a_assertContext, package::PackageError::InvalidPackageManifest,
                 "Package is missing a required Runtime role"));
+        }
+        if (projectEntry->byte_size() > package::k_maximumRuntimeProjectDataBytes ||
+            sceneEntry->byte_size() > package::k_maximumRuntimeSceneDataBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Runtime Data role exceeds its Package startup size limit"));
+        }
+        if (executable.try_value()->filename() != std::filesystem::path(runtimeHostEntry->relative_path()))
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackagePath,
+                "Running RuntimeHost executable does not match the Manifest role"));
+        }
+        auto inventory = package::verify_package_manifest_files(root.generic_string(), *manifest.try_value(),
+                                                                 a_assertContext);
+        if (!inventory)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*inventory.try_error()));
         }
         auto projectBytes = read_manifest_file(**filesystem.try_value(), *projectEntry, a_assertContext);
         auto sceneBytes = read_manifest_file(**filesystem.try_value(), *sceneEntry, a_assertContext);
