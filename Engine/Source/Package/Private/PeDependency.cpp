@@ -127,6 +127,23 @@ struct ThunkValidationContext final
            ((a_output.rva == 0U) == (a_output.size == 0U));
 }
 
+/// @brief 符号なし値を指定境界へ切り上げOverflowを拒否する
+[[nodiscard]] bool align_up(std::uint64_t a_value, std::uint32_t a_alignment, std::uint64_t &a_output) noexcept
+{
+    if (a_alignment == 0U)
+    {
+        return false;
+    }
+    const std::uint64_t remainder = a_value % a_alignment;
+    const std::uint64_t increment = remainder == 0U ? 0U : a_alignment - remainder;
+    if (a_value > (std::numeric_limits<std::uint64_t>::max)() - increment)
+    {
+        return false;
+    }
+    a_output = a_value + increment;
+    return true;
+}
+
 /// @brief x64 PE HeaderとSection Tableの境界を検証してLayoutを返す
 [[nodiscard]] bool parse_layout(std::span<const std::byte> a_bytes, PeLayout &a_output) noexcept
 {
@@ -152,10 +169,12 @@ struct ThunkValidationContext final
     }
     const std::size_t optionalOffset = peOffset + 24U;
     std::uint16_t magic = 0U;
+    std::uint32_t sectionAlignment = 0U;
     std::uint32_t sizeOfImage = 0U;
     std::uint32_t sizeOfHeaders = 0U;
     std::uint32_t directoryCount = 0U;
     if (!read_u16(a_bytes, optionalOffset, magic) || magic != k_pe32PlusMagic ||
+        !read_u32(a_bytes, optionalOffset + 32U, sectionAlignment) || sectionAlignment == 0U ||
         !read_u32(a_bytes, optionalOffset + 56U, sizeOfImage) || sizeOfImage == 0U ||
         !read_u32(a_bytes, optionalOffset + 60U, sizeOfHeaders) || sizeOfHeaders > a_bytes.size() ||
         sizeOfHeaders > sizeOfImage ||
@@ -166,6 +185,36 @@ struct ThunkValidationContext final
     const std::size_t sectionTableOffset = optionalOffset + optionalSize;
     if (sectionTableOffset > a_bytes.size() ||
         sectionCount > (a_bytes.size() - sectionTableOffset) / k_sectionHeaderBytes)
+    {
+        return false;
+    }
+    std::uint64_t requiredImageSize = 0U;
+    if (!align_up(sizeOfHeaders, sectionAlignment, requiredImageSize))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < sectionCount; ++index)
+    {
+        const std::size_t section = sectionTableOffset + index * k_sectionHeaderBytes;
+        std::uint32_t virtualSize = 0U;
+        std::uint32_t virtualAddress = 0U;
+        std::uint32_t rawSize = 0U;
+        if (!read_u32(a_bytes, section + 8U, virtualSize) ||
+            !read_u32(a_bytes, section + 12U, virtualAddress) ||
+            !read_u32(a_bytes, section + 16U, rawSize))
+        {
+            return false;
+        }
+        const std::uint64_t sectionExtent = (std::max)(virtualSize, rawSize);
+        const std::uint64_t sectionEnd = static_cast<std::uint64_t>(virtualAddress) + sectionExtent;
+        std::uint64_t alignedSectionEnd = 0U;
+        if (!align_up(sectionEnd, sectionAlignment, alignedSectionEnd))
+        {
+            return false;
+        }
+        requiredImageSize = (std::max)(requiredImageSize, alignedSectionEnd);
+    }
+    if (sizeOfImage < requiredImageSize || sizeOfImage % sectionAlignment != 0U)
     {
         return false;
     }

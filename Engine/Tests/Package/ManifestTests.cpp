@@ -162,6 +162,7 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u16(bytes, 0x94U, 240U);
     constexpr std::size_t optional = 0x98U;
     write_u16(bytes, optional, 0x020bU);
+    write_u32(bytes, optional + 32U, 0x1000U);
     write_u32(bytes, optional + 56U, 0x2000U);
     write_u32(bytes, optional + 60U, 0x200U);
     write_u32(bytes, optional + 108U, 16U);
@@ -575,6 +576,15 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto invalidTruncatedImage = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", truncatedImage},
         dependencies, a_assertContext);
+
+    std::vector<std::byte> truncatedSectionImage = game;
+    write_u16(truncatedSectionImage, 0x86U, 2U);
+    constexpr std::size_t secondSection = 0x1b0U;
+    write_u32(truncatedSectionImage, secondSection + 8U, 0x100U);
+    write_u32(truncatedSectionImage, secondSection + 12U, 0x2000U);
+    auto invalidSectionImageExtent = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+        {"CueGameModule.dll", truncatedSectionImage}, dependencies, a_assertContext);
     return valid && validNamedImport && validSpacedImport &&
            is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
@@ -592,7 +602,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(invalidHeaderRange, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidHeaderSectionAlias, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidZeroImageSize, cue::package::PackageError::InvalidPortableExecutable) &&
-           is_package_error(invalidTruncatedImage, cue::package::PackageError::InvalidPortableExecutable);
+           is_package_error(invalidTruncatedImage, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidSectionImageExtent, cue::package::PackageError::InvalidPortableExecutable);
 }
 
 /// @brief Package Root上の存在、Size、SHA-256照合と欠落検出を検証する
