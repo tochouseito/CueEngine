@@ -62,10 +62,10 @@ class TestFatalHandler final : public cue::FatalHandler
 class TestDirectory final
 {
   public:
-    /// @brief Temporary Root下へProcess固有Directoryを作成する
-    TestDirectory()
+    /// @brief Test Workspace下へProcess固有Directoryを作成する
+    explicit TestDirectory(const std::filesystem::path &a_workspaceRoot)
     {
-        m_path = std::filesystem::temp_directory_path() /
+        m_path = a_workspaceRoot /
                  (L"CEW-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(m_path);
     }
@@ -310,9 +310,10 @@ class TestDirectory final
 }
 
 /// @brief Project生成からScene保存、実Editor再起動、Stable ID再Openまでを検証する
-void test_process_round_trip(const std::filesystem::path &a_editorExecutable, const cue::AssertContext &a_context)
+void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
+                             const std::filesystem::path &a_workspaceRoot, const cue::AssertContext &a_context)
 {
-    TestDirectory directory;
+    TestDirectory directory(a_workspaceRoot);
     auto parent = cue::create_windows_filesystem_root(to_utf8(directory.path(), a_context.fatal_handler()), a_context);
     auto projectId = cue::ProjectId::parse("00000000-0000-4000-8000-000000000901", a_context);
     const cue::EngineCompatibility engineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}};
@@ -742,7 +743,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
 /// @brief Headless制作Workflowと実CueEditorTool再起動境界を検証する
 int wmain(int a_argumentCount, wchar_t **a_arguments)
 {
-    if (a_argumentCount != 2)
+    if (a_argumentCount != 3)
     {
         return 1;
     }
@@ -750,6 +751,6 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(handler, std::move(sinks));
     cue::AssertContext context(logger, handler);
-    test_process_round_trip(a_arguments[1], context);
+    test_process_round_trip(a_arguments[1], a_arguments[2], context);
     return 0;
 }
