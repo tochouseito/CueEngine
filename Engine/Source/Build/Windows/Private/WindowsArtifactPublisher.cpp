@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -168,12 +169,6 @@ class DirectoryChainGuard final
     [[nodiscard]] HANDLE leaf_handle() const noexcept
     {
         return m_handles.back().get();
-    }
-
-    /// @brief Leaf Directoryの固定をRename許可Handleへ置き換える
-    void replace_leaf(UniqueHandle a_handle) noexcept
-    {
-        m_handles.back() = std::move(a_handle);
     }
 
   private:
@@ -509,38 +504,46 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
            left.nFileIndexLow == right.nFileIndexLow;
 }
 
-/// @brief Candidate Identityを保持したままPath Renameを許可するHandleへ切り替える
-[[nodiscard]] cue::Result<void> prepare_guarded_directory_rename(DirectoryChainGuard &a_guard,
-                                                                 const std::filesystem::path &a_candidate,
-                                                                 const cue::AssertContext &a_assertContext) noexcept
+/// @brief Write-through Handleで固定中のCandidateを同一IdentityのままVersionへRenameする
+[[nodiscard]] cue::Result<void> rename_guarded_directory(DirectoryChainGuard &a_guard,
+                                                         const std::filesystem::path &a_destination,
+                                                         const cue::AssertContext &a_assertContext) noexcept
 {
-    const std::filesystem::path candidate = native_path(a_candidate);
-    UniqueHandle identity(CreateFileW(candidate.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!identity.is_valid())
+    try
     {
-        return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
-            "Candidate identity handle could not be acquired for durable publication"));
+        const std::wstring destination = native_path(a_destination).native();
+        const std::size_t byteSize = offsetof(FILE_RENAME_INFO, FileName) + destination.size() * sizeof(wchar_t);
+        std::vector<std::uint64_t> storage(
+            (byteSize + sizeof(std::uint64_t) - 1U) / sizeof(std::uint64_t), 0U);
+        auto *information = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+        information->ReplaceIfExists = FALSE;
+        information->RootDirectory = nullptr;
+        information->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
+        std::memcpy(information->FileName, destination.data(), information->FileNameLength);
+        if (SetFileInformationByHandle(a_guard.leaf_handle(), FileRenameInfo, information,
+                                       static_cast<DWORD>(byteSize)) == FALSE)
+        {
+            const DWORD renameCode = GetLastError();
+            UniqueHandle visible(CreateFileW(
+                destination.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            const cue::WindowsBuildArtifactError error =
+                visible.is_valid() && has_same_file_identity(a_guard.leaf_handle(), visible.get())
+                    ? cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown
+                    : cue::WindowsBuildArtifactError::CandidateInvalid;
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, error, renameCode,
+                error == cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown
+                    ? "Artifact Version is visible but guarded write-through rename completion is unknown"
+                    : "Artifact Version could not be published through the guarded write-through Candidate handle"));
+        }
+        return cue::Result<void>::success();
     }
-    BY_HANDLE_FILE_INFORMATION information{};
-    if (GetFileInformationByHandle(identity.get(), &information) == FALSE)
+    catch (...)
     {
-        return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
-            "Candidate identity attributes could not be read for durable publication"));
+        terminate_artifact_exception(a_assertContext);
     }
-    if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
-        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U ||
-        !has_same_file_identity(a_guard.leaf_handle(), identity.get()))
-    {
-        return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, ERROR_REPARSE_TAG_MISMATCH,
-            "Candidate identity changed before durable publication"));
-    }
-    a_guard.replace_leaf(std::move(identity));
-    return cue::Result<void>::success();
 }
 
 /// @brief Guard中Candidateの既知Fileだけを削除しLeaf DirectoryをHandle経由で削除予約する
@@ -893,6 +896,14 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     const cue::ErrorCode &root = a_error.root_code();
     return root.domain() == "Cue.Build.Windows.Artifact" &&
            root.value() == static_cast<std::int64_t>(cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown);
+}
+
+/// @brief Version公開Errorが可視化後の耐久性不明を表すか判定する
+[[nodiscard]] bool is_version_durability_unknown(const cue::Error &a_error) noexcept
+{
+    const cue::ErrorCode &root = a_error.root_code();
+    return root.domain() == "Cue.Build.Windows.Artifact" &&
+           root.value() == static_cast<std::int64_t>(cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown);
 }
 
 /// @brief Byte列を新規Fileへ書きFlushする
@@ -1630,71 +1641,18 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cancelCandidate();
             }
-            cue::Result<void> renamePrepared =
-                prepare_guarded_directory_rename(*candidateGuard, candidate, *m_assertContext);
-            if (!renamePrepared)
+            cue::Result<void> versionPublished =
+                rename_guarded_directory(*candidateGuard, version, *m_assertContext);
+            if (!versionPublished)
             {
-                return failCandidate(std::move(*renamePrepared.try_error()));
-            }
-            const std::filesystem::path nativeCandidate = native_path(candidate);
-            const std::filesystem::path nativeVersion = native_path(version);
-            if (MoveFileExW(nativeCandidate.c_str(), nativeVersion.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
-            {
-                const DWORD renameCode = GetLastError();
-                cue::Result<DirectoryChainGuard> visibleVersion = acquire_directory_chain_guard(
-                    m_projectRoot, version, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown,
-                    *m_assertContext, true);
-                if (visibleVersion &&
-                    has_same_file_identity(candidateGuard->leaf_handle(), visibleVersion.try_value()->leaf_handle()))
+                cue::Error publicationError = std::move(*versionPublished.try_error());
+                if (is_version_durability_unknown(publicationError))
                 {
-                    candidateGuard = std::move(*visibleVersion.try_value());
-                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown, renameCode,
-                        "Artifact Version is visible but durable rename completion is unknown"));
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(publicationError));
                 }
-                cue::Result<DirectoryChainGuard> rollbackCandidate = acquire_directory_chain_guard(
-                    m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext,
-                    true);
-                if (rollbackCandidate &&
-                    has_same_file_identity(candidateGuard->leaf_handle(), rollbackCandidate.try_value()->leaf_handle()))
-                {
-                    candidateGuard = std::move(*rollbackCandidate.try_value());
-                    return failCandidate(make_windows_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, renameCode,
-                        "Artifact Version durable rename failed before publication"));
-                }
-                cue::Error publicationError = make_windows_error(
-                    *m_assertContext, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown, renameCode,
-                    "Artifact Version location could not be classified after durable rename failure");
-                if (!visibleVersion)
-                {
-                    publicationError.append_secondary_diagnostics(
-                        *m_assertContext, *visibleVersion.try_error(), "Published Version identity could not be checked",
-                        "Postcondition validation");
-                }
-                if (!rollbackCandidate)
-                {
-                    publicationError.append_secondary_diagnostics(
-                        *m_assertContext, *rollbackCandidate.try_error(), "Candidate identity could not be recovered",
-                        "Rollback");
-                }
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(publicationError));
+                return failCandidate(std::move(publicationError));
             }
-            cue::Result<DirectoryChainGuard> versionGuard = acquire_directory_chain_guard(
-                m_projectRoot, version, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext, true);
-            if (!versionGuard)
-            {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*versionGuard.try_error()));
-            }
-            if (!has_same_file_identity(candidateGuard->leaf_handle(), versionGuard.try_value()->leaf_handle()))
-            {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                               "Durably published Artifact Version does not match the guarded Candidate identity"));
-            }
-            candidateGuard = std::move(*versionGuard.try_value());
             auto versionModuleHash = hash_file(version / "CueGameModule.dll", "CueGameModule.dll", *m_assertContext);
             std::optional<cue::BuildArtifactFile> versionPdbHash;
             if (hasPdb)
