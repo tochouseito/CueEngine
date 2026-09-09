@@ -138,6 +138,23 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
     return std::string(reinterpret_cast<const char *>(text.data()), text.size());
 }
 
+/// @brief Absolute Windows PathをExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path extended_windows_path(const std::filesystem::path &a_path)
+{
+    std::filesystem::path preferred = a_path;
+    preferred.make_preferred();
+    const std::wstring &native = preferred.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return preferred;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+}
+
 /// @brief Runtime Package処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_package_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -1308,7 +1325,8 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
 [[nodiscard]] cue::Result<UniqueHandle> guard_directory(
     const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
 {
-    UniqueHandle handle(CreateFileW(a_path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+    const std::filesystem::path extendedPath = extended_windows_path(a_path);
+    UniqueHandle handle(CreateFileW(extendedPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                                     FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
@@ -1376,7 +1394,8 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
         std::sort(expected.begin(), expected.end());
 
         const std::filesystem::path runtimePath = a_root / "Runtime";
-        const DWORD runtimeAttributes = GetFileAttributesW(runtimePath.c_str());
+        const std::filesystem::path extendedRuntimePath = extended_windows_path(runtimePath);
+        const DWORD runtimeAttributes = GetFileAttributesW(extendedRuntimePath.c_str());
         if (runtimeAttributes == INVALID_FILE_ATTRIBUTES)
         {
             const DWORD code = GetLastError();
@@ -1398,11 +1417,12 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
 
         std::vector<std::wstring> actual;
         std::error_code iteratorError;
-        std::filesystem::directory_iterator iterator(runtimePath, iteratorError);
+        std::filesystem::directory_iterator iterator(extendedRuntimePath, iteratorError);
         const std::filesystem::directory_iterator end;
         while (!iteratorError && iterator != end)
         {
-            const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+            const std::filesystem::path extendedEntryPath = extended_windows_path(iterator->path());
+            const DWORD attributes = GetFileAttributesW(extendedEntryPath.c_str());
             if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
                 (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
             {
@@ -1438,7 +1458,8 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
 [[nodiscard]] cue::Result<UniqueHandle> guard_package_file(
     const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
 {
-    UniqueHandle handle(CreateFileW(a_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    const std::filesystem::path extendedPath = extended_windows_path(a_path);
+    UniqueHandle handle(CreateFileW(extendedPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
@@ -1695,7 +1716,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         }
         if (hasRuntimeDependencies)
         {
-            runtimeCookie = AddDllDirectory((root / "Runtime").c_str());
+            const std::filesystem::path runtimeLoadPath = extended_windows_path(root / "Runtime");
+            runtimeCookie = AddDllDirectory(runtimeLoadPath.c_str());
             if (runtimeCookie == nullptr)
             {
                 return Result<LoadedRuntimePackage>::failure(windows_package_error(
@@ -1703,8 +1725,9 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                     "Runtime dependency directory could not be registered"));
             }
         }
+        const std::filesystem::path moduleLoadPath = extended_windows_path(modulePath);
         HMODULE library = LoadLibraryExW(
-            modulePath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
+            moduleLoadPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
         if (library == nullptr)
         {
             const DWORD code = GetLastError();
