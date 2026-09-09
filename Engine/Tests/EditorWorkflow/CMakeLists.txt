@@ -41,7 +41,16 @@ endif()
 add_custom_target(Cue.Editor.Workflow.Tests DEPENDS CueEditorWorkflowProcessTests)
 add_dependencies(CueEditorWorkflowProcessTests CueEditorTool CueRuntimeHost)
 
-add_test(NAME Cue.Editor.Workflow.ProcessRoundTrip COMMAND CueEditorWorkflowProcessTests $<TARGET_FILE:CueEditorTool>)
+get_filename_component(cueEditorWorkflowWorkspace "${CMAKE_SOURCE_DIR}/../.cew" ABSOLUTE)
+set(cueEditorWorkflowConfiguration "$<IF:$<CONFIG:Debug>,d,$<IF:$<CONFIG:Development>,v,r>>")
+add_test(
+    NAME Cue.Editor.Workflow.ProcessRoundTrip
+    COMMAND
+        CueEditorWorkflowProcessTests
+        $<TARGET_FILE:CueEditorTool>
+        # MSBuild FileTracker still uses MAX_PATH for compiler-identification logs.
+        "${cueEditorWorkflowWorkspace}/${cueEditorWorkflowConfiguration}"
+)
 set_tests_properties(
     Cue.Editor.Workflow.ProcessRoundTrip
     PROPERTIES
