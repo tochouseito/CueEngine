@@ -120,7 +120,7 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(std::filesystem::copy_file(a_probe, outputDirectory / "CueGameModule.dll"));
 
     cue::ChildProcessCancellation cancellation;
-    auto lease = take_value(publisher->acquire_build_lease(plan, cancellation));
+    auto lease = take_value(publisher->acquire_build_lease(plan, cancellation, std::nullopt));
     require(lease.has_value());
 
     std::unique_ptr<cue::BuildArtifactPublisher> contender = take_value(
@@ -131,15 +131,22 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     std::thread contenderThread(
         [&]()
         {
-            contenderResult =
-                std::make_unique<LeaseResult>(contender->acquire_build_lease(plan, contenderCancellation));
+            contenderResult = std::make_unique<LeaseResult>(
+                contender->acquire_build_lease(plan, contenderCancellation, std::nullopt));
         });
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     contenderCancellation.request_cancel();
     contenderThread.join();
     require(contenderResult != nullptr && contenderResult->has_value() && !contenderResult->try_value()->has_value());
 
-    auto published = take_value(publisher->publish(plan, cancellation, std::move(*lease)));
+    cue::ChildProcessCancellation timeoutCancellation;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+    auto timedOut = contender->acquire_build_lease(plan, timeoutCancellation, deadline);
+    require(!timedOut && timedOut.try_error()->root_code().domain() == "Cue.Build.Publisher" &&
+            timedOut.try_error()->root_code().value() ==
+                static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut));
+
+    auto published = take_value(publisher->publish(plan, cancellation, std::move(*lease), std::nullopt));
     require(published.has_value());
     require(published->artifact_id() == plan.operation_id());
     require(published->files().size() == 2U);
@@ -159,18 +166,18 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(current.find("sha256") != std::string::npos);
 
     cue::BuildPlan invalidPlan = make_plan(projectRoot, "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto invalidLease = take_value(publisher->acquire_build_lease(invalidPlan, cancellation));
+    auto invalidLease = take_value(publisher->acquire_build_lease(invalidPlan, cancellation, std::nullopt));
     require(invalidLease.has_value());
     require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
     require(std::filesystem::copy_file(a_invalidProbe, outputDirectory / "CueGameModule.dll"));
-    require(!publisher->publish(invalidPlan, cancellation, std::move(*invalidLease)).has_value());
+    require(!publisher->publish(invalidPlan, cancellation, std::move(*invalidLease), std::nullopt).has_value());
     require(read_text(currentPath) == current);
 
     cue::BuildPlan missingPlan = make_plan(projectRoot, "21234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto missingLease = take_value(publisher->acquire_build_lease(missingPlan, cancellation));
+    auto missingLease = take_value(publisher->acquire_build_lease(missingPlan, cancellation, std::nullopt));
     require(missingLease.has_value());
     require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
-    require(!publisher->publish(missingPlan, cancellation, std::move(*missingLease)).has_value());
+    require(!publisher->publish(missingPlan, cancellation, std::move(*missingLease), std::nullopt).has_value());
     require(read_text(currentPath) == current);
 
     std::filesystem::remove_all(projectRoot, error);

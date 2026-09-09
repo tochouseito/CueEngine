@@ -112,7 +112,8 @@ class TestPublisher final : public cue::BuildArtifactPublisher
 
     /// @brief 取消前ならBuild Workerへ検証用Exclusive Leaseを返す
     [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
-        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline) noexcept override
     {
         if (a_cancellation.is_cancel_requested())
         {
@@ -125,7 +126,7 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     /// @brief Cancel前だけ必須Fileを含む決定的な検証用Artifact Inventoryを返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
         const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
-        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease, cue::BuildArtifactLockDeadline) noexcept override
     {
         static_cast<void>(a_buildLease);
         if (a_cancellation.is_cancel_requested())

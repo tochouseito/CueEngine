@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -42,6 +43,16 @@ constexpr DWORD k_lockRetryMilliseconds = 10U;
 {
     cue::ErrorCode code = cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Build.Windows.Artifact",
                                                  static_cast<std::int64_t>(a_code));
+    return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
+}
+
+/// @brief Platform非依存なPublisher Lock待機Timeoutを構築する
+[[nodiscard]] cue::Error make_lock_timeout_error(const cue::AssertContext &a_assertContext,
+                                                 std::string_view a_summary) noexcept
+{
+    cue::ErrorCode code =
+        cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Build.Publisher",
+                               static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut));
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
 }
 
@@ -303,7 +314,8 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 /// @brief Lock Fileを作成して取消可能なExclusive Byte Range Lockを取得する
 [[nodiscard]] cue::Result<std::optional<UniqueHandle>> acquire_exclusive_lock(
     const std::filesystem::path &a_path, const cue::ChildProcessCancellation &a_cancellation,
-    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext) noexcept
+    cue::BuildArtifactLockDeadline a_deadline, cue::WindowsBuildArtifactError a_code,
+    const cue::AssertContext &a_assertContext) noexcept
 {
     cue::Result<void> parent = ensure_directory(a_path.parent_path(), a_code, a_assertContext);
     if (!parent)
@@ -319,6 +331,11 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     }
     while (!a_cancellation.is_cancel_requested())
     {
+        if (a_deadline && std::chrono::steady_clock::now() >= *a_deadline)
+        {
+            return cue::Result<std::optional<UniqueHandle>>::failure(
+                make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
+        }
         OVERLAPPED overlap{};
         if (LockFileEx(handle.get(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) !=
             FALSE)
@@ -331,7 +348,20 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
             return cue::Result<std::optional<UniqueHandle>>::failure(
                 make_windows_error(a_assertContext, a_code, code, "Artifact byte-range lock could not be acquired"));
         }
-        Sleep(k_lockRetryMilliseconds);
+        DWORD retryMilliseconds = k_lockRetryMilliseconds;
+        if (a_deadline)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= *a_deadline)
+            {
+                return cue::Result<std::optional<UniqueHandle>>::failure(
+                    make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
+            }
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*a_deadline - now);
+            retryMilliseconds = static_cast<DWORD>(
+                std::clamp<std::int64_t>(remaining.count(), 1, static_cast<std::int64_t>(k_lockRetryMilliseconds)));
+        }
+        Sleep(retryMilliseconds);
     }
     return cue::Result<std::optional<UniqueHandle>>::success(std::nullopt);
 }
@@ -447,6 +477,45 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     }
     return cue::Result<cue::BuildArtifactFile>::success(
         {std::move(a_relativePath), static_cast<std::uint64_t>(byteSize), std::move(hashText)});
+}
+
+/// @brief 可視なCurrentが参照するVersion全FileをInventoryのSizeとHashへ再照合する
+[[nodiscard]] cue::Result<void> verify_inventory_files(const std::filesystem::path &a_version,
+                                                       const cue::BuildArtifactInventory &a_inventory,
+                                                       const cue::AssertContext &a_assertContext) noexcept
+{
+    for (const cue::BuildArtifactFile &expected : a_inventory.files())
+    {
+        const std::optional<std::filesystem::path> relative = to_path(expected.relativePath);
+        if (!relative)
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                           "Visible Current artifact contains an invalid inventory path"));
+        }
+        cue::Result<cue::BuildArtifactFile> actual =
+            hash_file(a_version / *relative, expected.relativePath, a_assertContext);
+        if (!actual)
+        {
+            return cue::Result<void>::failure(std::move(*actual.try_error()));
+        }
+        if (actual.try_value()->byteSize != expected.byteSize ||
+            actual.try_value()->contentHash != expected.contentHash)
+        {
+            return cue::Result<void>::failure(make_error(a_assertContext,
+                                                         cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                                                         "Visible Current artifact differs from its inventory"));
+        }
+    }
+    return cue::Result<void>::success();
+}
+
+/// @brief Current更新Errorが可視化後の耐久性不明を表すか判定する
+[[nodiscard]] bool is_current_durability_unknown(const cue::Error &a_error) noexcept
+{
+    const cue::ErrorCode &root = a_error.root_code();
+    return root.domain() == "Cue.Build.Windows.Artifact" &&
+           root.value() == static_cast<std::int64_t>(cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown);
 }
 
 /// @brief Byte列を新規Fileへ書きFlushする
@@ -639,7 +708,9 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         static_cast<void>(DeleteFileW(temporary.c_str()));
         if (newManifestVisible)
         {
-            return cue::Result<void>::success();
+            return cue::Result<void>::failure(
+                make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown,
+                                   code, "Current artifact manifest is visible but durability is unknown"));
         }
         return cue::Result<void>::failure(make_windows_error(a_assertContext,
                                                              cue::WindowsBuildArtifactError::CurrentManifestFailed,
@@ -666,7 +737,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
 
     /// @brief Plan固有Binary TreeのExclusive Byte Range Lockを取消可能に取得する
     [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
-        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline a_deadline) noexcept override
     {
         try
         {
@@ -678,8 +750,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             }
             const std::filesystem::path lock =
                 m_projectRoot / "Generated" / "Build" / "Locks" / (std::string(a_plan.workspace_key()) + ".lock");
-            auto acquired = acquire_exclusive_lock(
-                lock, a_cancellation, cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
+            auto acquired =
+                acquire_exclusive_lock(lock, a_cancellation, a_deadline,
+                                       cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
             if (!acquired)
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
@@ -703,7 +776,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     /// @brief Build出力をCandidateへ確定してから不変VersionとCurrent Manifestを公開する
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
         const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
-        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease,
+        cue::BuildArtifactLockDeadline a_deadline) noexcept override
     {
         try
         {
@@ -799,7 +873,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     std::move(*storeCreated.try_error()));
             }
             auto artifactLock =
-                acquire_exclusive_lock(store / "Access.lock", a_cancellation,
+                acquire_exclusive_lock(store / "Access.lock", a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!artifactLock)
             {
@@ -859,12 +933,48 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*inventory.try_error()));
             }
-            cue::Result<void> current = publish_current(store, a_plan.operation_id(),
-                                                        serialize_current(*inventory.try_value()), *m_assertContext);
+            const std::string currentContent = serialize_current(*inventory.try_value());
+            cue::Result<void> current = publish_current(store, a_plan.operation_id(), currentContent, *m_assertContext);
             if (!current)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*current.try_error()));
+                cue::Error publicationError = std::move(*current.try_error());
+                if (is_current_durability_unknown(publicationError))
+                {
+                    cue::Result<void> inventoryVerified =
+                        verify_inventory_files(version, *inventory.try_value(), *m_assertContext);
+                    cue::Result<void> moduleVerified =
+                        validate_module(version / "CueGameModule.dll", a_plan, m_projectIdBytes, *m_assertContext);
+                    if (inventoryVerified && moduleVerified)
+                    {
+                        std::string context("Visible Current artifact ");
+                        context.append(inventory.try_value()->artifact_id());
+                        context.append(" at ");
+                        context.append(inventory.try_value()->version_directory());
+                        context.append(" matched canonical schema, inventory, size, hash, and module contract; "
+                                       "durability remains unknown");
+                        publicationError.add_context(m_assertContext->fatal_handler(), context);
+                    }
+                    else
+                    {
+                        publicationError.add_context(
+                            m_assertContext->fatal_handler(),
+                            "Visible Current matched the requested manifest bytes but its referenced artifact could "
+                            "not be fully revalidated; Current selection is unknown");
+                        if (!inventoryVerified)
+                        {
+                            publicationError.append_secondary_diagnostics(
+                                *m_assertContext, *inventoryVerified.try_error(),
+                                "Visible Current inventory revalidation failed", "Inventory validation");
+                        }
+                        if (!moduleVerified)
+                        {
+                            publicationError.append_secondary_diagnostics(*m_assertContext, *moduleVerified.try_error(),
+                                                                          "Visible Current module revalidation failed",
+                                                                          "Module validation");
+                        }
+                    }
+                }
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(publicationError));
             }
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(
                 std::optional<cue::BuildArtifactInventory>(std::move(*inventory.try_value())));

@@ -88,6 +88,7 @@ struct PublisherState final
     std::atomic<bool> blockUntilCancelled = false;
     std::atomic<bool> active = false;
     std::atomic<bool> failWithNativeError = false;
+    std::atomic<bool> timeoutDuringLease = false;
 };
 
 class TestPublisher final : public cue::BuildArtifactPublisher
@@ -110,8 +111,17 @@ class TestPublisher final : public cue::BuildArtifactPublisher
 
     /// @brief 取消前ならBuild Workerへ検証用Exclusive Leaseを返す
     [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
-        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline) noexcept override
     {
+        if (m_state->timeoutDuringLease.load(std::memory_order_acquire))
+        {
+            cue::ErrorCode code =
+                cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Build.Publisher",
+                                       static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut));
+            return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(cue::Error::create(
+                m_assertContext->fatal_handler(), std::move(code), "Injected publisher lock timeout"));
+        }
         if (a_cancellation.is_cancel_requested())
         {
             return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(std::nullopt);
@@ -123,7 +133,7 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     /// @brief Cancel、Native Error、成功Artifactを制御可能な検証用Publish結果として返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
         const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
-        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease, cue::BuildArtifactLockDeadline) noexcept override
     {
         static_cast<void>(a_buildLease);
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
@@ -350,6 +360,34 @@ class TestPublisher final : public cue::BuildArtifactPublisher
            failed.diagnostics[1].nativeError->domain == "Win32" && failed.diagnostics[1].nativeError->code == 5;
 }
 
+/// @brief Publisher Lock待機Timeoutを専用診断付きTimedOut状態へ変換するか検証する
+[[nodiscard]] bool test_publisher_lock_timeout(const cue::AssertContext &a_assertContext)
+{
+    RunnerState runnerState;
+    PublisherState publisherState;
+    publisherState.timeoutDuringLease.store(true, std::memory_order_release);
+    auto created = cue::GameBuildService::create(make_settings(), std::make_unique<ControlledRunner>(runnerState),
+                                                 std::make_unique<TestPublisher>(publisherState, a_assertContext),
+                                                 a_assertContext);
+    if (!created)
+    {
+        return false;
+    }
+    std::unique_ptr<cue::GameBuildService> service = std::move(*created.try_value());
+    if (!service->start(make_request("71234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
+                        cue::CMakeConfigureMode::Required) ||
+        !service->wait_for_completion())
+    {
+        return false;
+    }
+    const cue::BuildOperationSnapshot timedOut = service->snapshot();
+    return timedOut.state == cue::GameBuildOperationState::TimedOut && !timedOut.diagnostics.empty() &&
+           timedOut.diagnostics.back().domain == "Cue.Build.Publisher" &&
+           timedOut.diagnostics.back().code ==
+               static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut) &&
+           publisherState.calls == 0U;
+}
+
 /// @brief Service破棄が進行中ProcessへCancelを通知して完了を待つか検証する
 [[nodiscard]] bool test_shutdown(const cue::AssertContext &a_assertContext)
 {
@@ -378,7 +416,8 @@ int main()
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     return test_artifact_model(assertContext) && test_service_lifecycle(assertContext) &&
-                   test_native_error_snapshot(assertContext) && test_shutdown(assertContext)
+                   test_native_error_snapshot(assertContext) && test_publisher_lock_timeout(assertContext) &&
+                   test_shutdown(assertContext)
                ? 0
                : 1;
 }

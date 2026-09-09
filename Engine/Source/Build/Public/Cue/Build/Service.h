@@ -2,6 +2,7 @@
 
 #include <Cue/Build/CMakeRunner.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -25,6 +26,15 @@ enum class GameBuildServiceError : std::int64_t
     OwnerThreadViolation,
     ArtifactPublicationFailed
 };
+
+/// @brief Platform非依存なArtifact Publisher待機失敗の分類
+enum class BuildArtifactPublisherError : std::int64_t
+{
+    LockWaitTimedOut = 1
+};
+
+/// @brief Lock待機を単調Clock上で打ち切る絶対時刻
+using BuildArtifactLockDeadline = std::optional<std::chrono::steady_clock::time_point>;
 
 /// @brief Artifact Version Directory内の一FileをHash付きで識別する
 struct BuildArtifactFile final
@@ -99,10 +109,12 @@ class BuildArtifactPublisher
 
     /// @brief Configure開始前にPlan固有Build WorkspaceのExclusive Leaseを取得する
     ///
-    /// PlanとCancellationは呼出中だけ借用する。取消要求を観測した場合は成功のnulloptを返す。成功Leaseは同じWorker上で
+    /// Plan、Cancellation、Deadlineは呼出中だけ借用する。取消要求を観測した場合は成功のnulloptを返す。Deadline到達は
+    /// BuildArtifactPublisherError::LockWaitTimedOutを返す。成功Leaseは同じWorker上で
     /// Publishへ移すか破棄し、Build ProcessとCandidate確定が終わるまで保持する。回復可能なLock失敗はErrorを返す。
     [[nodiscard]] virtual Result<std::optional<std::unique_ptr<BuildWorkspaceLease>>> acquire_build_lease(
-        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation) noexcept = 0;
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
+        BuildArtifactLockDeadline a_deadline) noexcept = 0;
 
     /// @brief Build Plan固有Candidateを検証・公開し、成功時だけInventoryを返す
     ///
@@ -110,10 +122,12 @@ class BuildArtifactPublisher
     /// Leaseを解放してから Artifact Mutation Leaseを取得し、二つのLeaseを同時保持しない。一つのGameBuildService
     /// Workerから直列に呼ばれ、返却Inventoryが
     /// 全値を所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
-    /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
+    /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。DeadlineはArtifact Mutation
+    /// Lock待機だけを制限し、到達時は
+    /// BuildArtifactPublisherError::LockWaitTimedOutを返す。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
     [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
         const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
-        std::unique_ptr<BuildWorkspaceLease> a_buildLease) noexcept = 0;
+        std::unique_ptr<BuildWorkspaceLease> a_buildLease, BuildArtifactLockDeadline a_deadline) noexcept = 0;
 
   protected:
     /// @brief 派生Publisherを初期化する

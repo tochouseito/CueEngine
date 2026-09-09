@@ -33,6 +33,25 @@ constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
 }
 
+/// @brief 設定済み待機時間をPublisherへ渡す単調Clock上のDeadlineへ変換する
+[[nodiscard]] cue::BuildArtifactLockDeadline make_lock_deadline(
+    std::optional<std::chrono::milliseconds> a_timeout) noexcept
+{
+    if (!a_timeout)
+    {
+        return std::nullopt;
+    }
+    return std::chrono::steady_clock::now() + *a_timeout;
+}
+
+/// @brief Error ChainのRootがPublisher Lock待機Timeoutか判定する
+[[nodiscard]] bool is_publisher_lock_timeout(const cue::Error &a_error) noexcept
+{
+    const cue::ErrorCode &root = a_error.root_code();
+    return root.domain() == "Cue.Build.Publisher" &&
+           root.value() == static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut);
+}
+
 /// @brief Artifact IDとHashで許可するlowercase hexadecimal文字か判定する
 [[nodiscard]] bool is_lower_hex(char a_value) noexcept
 {
@@ -352,7 +371,8 @@ struct GameBuildService::Impl final
             {
                 current.activeStage.reset();
                 current.diagnostics = std::move(diagnostics);
-                current.state = GameBuildOperationState::Failed;
+                current.state = is_publisher_lock_timeout(a_error) ? GameBuildOperationState::TimedOut
+                                                                   : GameBuildOperationState::Failed;
             }
         }
         catch (...)
@@ -431,7 +451,8 @@ struct GameBuildService::Impl final
                  ChildProcessCancellation &a_cancellation) noexcept
     {
         Observer observer(*this, a_operationId);
-        auto acquired = artifactPublisher->acquire_build_lease(a_plan, a_cancellation);
+        auto acquired = artifactPublisher->acquire_build_lease(a_plan, a_cancellation,
+                                                               make_lock_deadline(settings.configureTimeout));
         if (!acquired)
         {
             finish_error(a_operationId, *acquired.try_error());
@@ -460,7 +481,8 @@ struct GameBuildService::Impl final
             finish_cancelled(a_operationId);
             return;
         }
-        auto published = artifactPublisher->publish(a_plan, a_cancellation, std::move(buildLease));
+        auto published = artifactPublisher->publish(a_plan, a_cancellation, std::move(buildLease),
+                                                    make_lock_deadline(settings.buildTimeout));
         if (!published)
         {
             ErrorCode code =
