@@ -244,6 +244,117 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return std::string(reinterpret_cast<const char *>(text.data()), text.size());
 }
 
+/// @brief Absolute Windows PathをExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path native_path(const std::filesystem::path &a_path)
+{
+    std::filesystem::path preferred = a_path;
+    preferred.make_preferred();
+    const std::wstring &value = preferred.native();
+    if (value.starts_with(L"\\\\?\\"))
+    {
+        return preferred;
+    }
+    if (value.starts_with(L"\\\\"))
+    {
+        std::wstring extended = L"\\\\?\\UNC\\";
+        extended.append(value.substr(2U));
+        return std::filesystem::path(std::move(extended));
+    }
+    std::wstring extended = L"\\\\?\\";
+    extended.append(value);
+    return std::filesystem::path(std::move(extended));
+}
+
+/// @brief Directory ComponentをReparse Pointを追跡せず検査し存在有無を返す
+[[nodiscard]] cue::Result<bool> inspect_directory_component(const std::filesystem::path &a_path,
+                                                            cue::WindowsBuildArtifactError a_code,
+                                                            const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::filesystem::path inspected = native_path(a_path);
+    UniqueHandle handle(CreateFileW(inspected.c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle.is_valid())
+    {
+        const DWORD code = GetLastError();
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)
+        {
+            return cue::Result<bool>::success(false);
+        }
+        return cue::Result<bool>::failure(
+            make_windows_error(a_assertContext, a_code, code, "Artifact directory component could not be inspected"));
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
+    {
+        return cue::Result<bool>::failure(make_windows_error(a_assertContext, a_code, GetLastError(),
+                                                              "Artifact directory attributes could not be read"));
+    }
+    if ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+    {
+        return cue::Result<bool>::failure(make_windows_error(
+            a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH, "Artifact directory contains a reparse point"));
+    }
+    if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U)
+    {
+        return cue::Result<bool>::failure(
+            make_windows_error(a_assertContext, a_code, ERROR_DIRECTORY, "Artifact path component is not a directory"));
+    }
+    return cue::Result<bool>::success(true);
+}
+
+/// @brief RootからDirectoryまでの既存ComponentがReparse Pointを含まないことを検証する
+[[nodiscard]] cue::Result<void> validate_directory_chain(const std::filesystem::path &a_root,
+                                                         const std::filesystem::path &a_directory,
+                                                         cue::WindowsBuildArtifactError a_code,
+                                                         const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::filesystem::path root = a_root.lexically_normal();
+    const std::filesystem::path directory = a_directory.lexically_normal();
+    const std::filesystem::path relative = directory.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute())
+    {
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, a_code, "Artifact directory is outside the Project Root"));
+    }
+
+    cue::Result<bool> rootState = inspect_directory_component(root, a_code, a_assertContext);
+    if (!rootState)
+    {
+        return cue::Result<void>::failure(std::move(*rootState.try_error()));
+    }
+    if (!*rootState.try_value())
+    {
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, a_code, "Artifact Project Root no longer exists"));
+    }
+
+    std::filesystem::path current = root;
+    for (const std::filesystem::path &component : relative)
+    {
+        if (component == ".")
+        {
+            continue;
+        }
+        if (component == "..")
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, a_code, "Artifact directory escaped the Project Root"));
+        }
+        current /= component;
+        cue::Result<bool> state = inspect_directory_component(current, a_code, a_assertContext);
+        if (!state)
+        {
+            return cue::Result<void>::failure(std::move(*state.try_error()));
+        }
+        if (!*state.try_value())
+        {
+            return cue::Result<void>::success();
+        }
+    }
+    return cue::Result<void>::success();
+}
+
 /// @brief 現在のEngine Processと同じDirectoryを返す
 [[nodiscard]] std::optional<std::filesystem::path> current_process_directory()
 {
@@ -264,43 +375,107 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 }
 
 /// @brief Directoryを不足分だけ作成し回復可能なFilesystem Errorへ変換する
-[[nodiscard]] cue::Result<void> ensure_directory(const std::filesystem::path &a_directory,
+[[nodiscard]] cue::Result<void> ensure_directory(const std::filesystem::path &a_root,
+                                                 const std::filesystem::path &a_directory,
                                                  cue::WindowsBuildArtifactError a_code,
                                                  const cue::AssertContext &a_assertContext) noexcept
 {
-    std::error_code error;
-    if (std::filesystem::create_directories(a_directory, error))
+    const std::filesystem::path root = a_root.lexically_normal();
+    const std::filesystem::path directory = a_directory.lexically_normal();
+    const std::filesystem::path relative = directory.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute())
     {
-        return cue::Result<void>::success();
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, a_code, "Artifact directory is outside the Project Root"));
     }
-    std::error_code statusError;
-    if (!error && std::filesystem::is_directory(a_directory, statusError) && !statusError)
+
+    std::filesystem::path current = root;
+    cue::Result<bool> rootState = inspect_directory_component(current, a_code, a_assertContext);
+    if (!rootState)
     {
-        return cue::Result<void>::success();
+        return cue::Result<void>::failure(std::move(*rootState.try_error()));
     }
-    const DWORD nativeCode =
-        static_cast<DWORD>(error ? error.value() : (statusError ? statusError.value() : ERROR_DIRECTORY));
-    return cue::Result<void>::failure(
-        make_windows_error(a_assertContext, a_code, nativeCode, "Artifact directory could not be created"));
+    if (!*rootState.try_value())
+    {
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, a_code, "Artifact Project Root no longer exists"));
+    }
+
+    for (const std::filesystem::path &component : relative)
+    {
+        if (component == ".")
+        {
+            continue;
+        }
+        if (component == "..")
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, a_code, "Artifact directory escaped the Project Root"));
+        }
+        current /= component;
+        cue::Result<bool> state = inspect_directory_component(current, a_code, a_assertContext);
+        if (!state)
+        {
+            return cue::Result<void>::failure(std::move(*state.try_error()));
+        }
+        if (!*state.try_value())
+        {
+            const std::filesystem::path created = native_path(current);
+            if (CreateDirectoryW(created.c_str(), nullptr) == FALSE)
+            {
+                const DWORD code = GetLastError();
+                if (code != ERROR_ALREADY_EXISTS)
+                {
+                    return cue::Result<void>::failure(make_windows_error(
+                        a_assertContext, a_code, code, "Artifact directory component could not be created"));
+                }
+            }
+            state = inspect_directory_component(current, a_code, a_assertContext);
+            if (!state)
+            {
+                return cue::Result<void>::failure(std::move(*state.try_error()));
+            }
+            if (!*state.try_value())
+            {
+                return cue::Result<void>::failure(
+                    make_error(a_assertContext, a_code, "Artifact directory component was not created"));
+            }
+        }
+    }
+    return cue::Result<void>::success();
 }
 
 /// @brief Lock Fileを作成して取消可能なExclusive Byte Range Lockを取得する
 [[nodiscard]] cue::Result<std::optional<UniqueHandle>> acquire_exclusive_lock(
-    const std::filesystem::path &a_path, const cue::ChildProcessCancellation &a_cancellation,
+    const std::filesystem::path &a_root, const std::filesystem::path &a_path,
+    const cue::ChildProcessCancellation &a_cancellation,
     cue::BuildArtifactLockDeadline a_deadline, cue::WindowsBuildArtifactError a_code,
     const cue::AssertContext &a_assertContext) noexcept
 {
-    cue::Result<void> parent = ensure_directory(a_path.parent_path(), a_code, a_assertContext);
+    cue::Result<void> parent = ensure_directory(a_root, a_path.parent_path(), a_code, a_assertContext);
     if (!parent)
     {
         return cue::Result<std::optional<UniqueHandle>>::failure(std::move(*parent.try_error()));
     }
-    UniqueHandle handle(CreateFileW(a_path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+    const std::filesystem::path lockPath = native_path(a_path);
+    UniqueHandle handle(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
         return cue::Result<std::optional<UniqueHandle>>::failure(
             make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact lock file could not be opened"));
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
+    {
+        return cue::Result<std::optional<UniqueHandle>>::failure(make_windows_error(
+            a_assertContext, a_code, GetLastError(), "Artifact lock file attributes could not be read"));
+    }
+    if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
+    {
+        return cue::Result<std::optional<UniqueHandle>>::failure(make_windows_error(
+            a_assertContext, a_code, ERROR_FILE_INVALID, "Artifact lock path is not a regular file"));
     }
     while (!a_cancellation.is_cancel_requested())
     {
@@ -909,7 +1084,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             const std::filesystem::path lock =
                 m_projectRoot / "Generated" / "Build" / "Locks" / (std::string(a_plan.workspace_key()) + ".lock");
             auto acquired =
-                acquire_exclusive_lock(lock, a_cancellation, a_deadline,
+                acquire_exclusive_lock(m_projectRoot, lock, a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
             if (!acquired)
             {
@@ -966,6 +1141,28 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             const std::filesystem::path source = *binary / "bin" / configuration / "CueGameModule.dll";
             const std::filesystem::path sourcePdb = *binary / "bin" / configuration / "CueGameModule.pdb";
             const std::filesystem::path candidate = *candidatePath;
+            cue::Result<void> sourceChain = validate_directory_chain(
+                m_projectRoot, source.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+            cue::Result<void> candidateChain = validate_directory_chain(
+                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
+                *m_assertContext);
+            cue::Result<void> storeChain = validate_directory_chain(
+                m_projectRoot, *storePath, cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
+            if (!sourceChain)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*sourceChain.try_error()));
+            }
+            if (!candidateChain)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*candidateChain.try_error()));
+            }
+            if (!storeChain)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*storeChain.try_error()));
+            }
             std::error_code filesystemError;
             const std::filesystem::file_status sourceStatus = std::filesystem::symlink_status(source, filesystemError);
             if (filesystemError || !std::filesystem::is_regular_file(sourceStatus))
@@ -996,18 +1193,32 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                         "Game Module PDB build output is not a regular file"));
                 }
             }
-            if (std::filesystem::exists(candidate, filesystemError) || filesystemError ||
-                !std::filesystem::create_directories(candidate, filesystemError) || filesystemError)
+            if (std::filesystem::exists(candidate, filesystemError) || filesystemError)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
                     *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
                     filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_ALREADY_EXISTS,
                     "Operation candidate directory is unavailable"));
             }
+            cue::Result<void> candidateCreated = ensure_directory(
+                m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+            if (!candidateCreated)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*candidateCreated.try_error()));
+            }
             using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
             /// @brief Primary Errorを保持したまま未公開CandidateをRollbackする
             const auto failCandidate = [&](cue::Error a_error) -> PublishResult
             {
+                cue::Result<void> safeCleanup = validate_directory_chain(
+                    m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+                if (!safeCleanup)
+                {
+                    a_error.append_secondary_diagnostics(*m_assertContext, *safeCleanup.try_error(),
+                                                         "Unpublished Candidate path became unsafe", "Rollback");
+                    return PublishResult::failure(std::move(a_error));
+                }
                 std::error_code cleanupCode;
                 static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
                 if (cleanupCode)
@@ -1023,6 +1234,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             /// @brief 取消前に未公開CandidateをRollbackしCleanup失敗だけをErrorとして返す
             const auto cancelCandidate = [&]() -> PublishResult
             {
+                cue::Result<void> safeCleanup = validate_directory_chain(
+                    m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+                if (!safeCleanup)
+                {
+                    return PublishResult::failure(std::move(*safeCleanup.try_error()));
+                }
                 std::error_code cleanupCode;
                 static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
                 if (cleanupCode)
@@ -1098,13 +1315,14 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
 
             const std::filesystem::path store = *storePath;
             cue::Result<void> storeCreated = ensure_directory(
-                store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
+                m_projectRoot, store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed,
+                *m_assertContext);
             if (!storeCreated)
             {
                 return failCandidate(std::move(*storeCreated.try_error()));
             }
             auto artifactLock =
-                acquire_exclusive_lock(store / "Access.lock", a_cancellation, a_deadline,
+                acquire_exclusive_lock(m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!artifactLock)
             {
@@ -1271,6 +1489,13 @@ Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_pu
         {
             return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(make_error(
                 a_assertContext, WindowsBuildArtifactError::InvalidSettings, "Artifact Project Root is invalid"));
+        }
+        Result<void> rootValidated =
+            validate_directory_chain(*root, *root, WindowsBuildArtifactError::InvalidSettings, a_assertContext);
+        if (!rootValidated)
+        {
+            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(
+                std::move(*rootValidated.try_error()));
         }
         const EngineCompatibility &compatibility = a_descriptor.engine_compatibility();
         const std::optional<std::filesystem::path> processDirectory = current_process_directory();

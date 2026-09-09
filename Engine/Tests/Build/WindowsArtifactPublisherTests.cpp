@@ -5,8 +5,16 @@
 #include <Cue/Foundation/Log.h>
 #include <Cue/Project/Descriptor.h>
 
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <winioctl.h>
+
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -19,6 +27,70 @@
 namespace
 {
 constexpr std::string_view k_projectId = "41234567-89ab-4cde-8f01-23456789abcd";
+
+/// @brief Junction用Mount Point Reparse BufferのNative Layoutを表す
+struct MountPointReparseBuffer final
+{
+    DWORD reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    WORD reparseDataLength = 0U;
+    WORD reserved = 0U;
+    WORD substituteNameOffset = 0U;
+    WORD substituteNameLength = 0U;
+    WORD printNameOffset = 0U;
+    WORD printNameLength = 0U;
+    wchar_t pathBuffer[1]{};
+};
+
+/// @brief 特権不要のDirectory JunctionをPublisher再検証Fixtureとして作成する
+[[nodiscard]] bool create_directory_link(const std::filesystem::path &a_linkPath,
+                                         const std::filesystem::path &a_targetPath)
+{
+    if (CreateDirectoryW(a_linkPath.c_str(), nullptr) == FALSE)
+    {
+        return false;
+    }
+
+    const std::wstring substituteName = L"\\??\\" + a_targetPath.native();
+    const std::wstring printName = a_targetPath.native();
+    const std::size_t substituteBytes = substituteName.size() * sizeof(wchar_t);
+    const std::size_t printBytes = printName.size() * sizeof(wchar_t);
+    const std::size_t pathBytes = substituteBytes + sizeof(wchar_t) + printBytes + sizeof(wchar_t);
+    const std::size_t totalBytes = offsetof(MountPointReparseBuffer, pathBuffer) + pathBytes;
+    if (substituteBytes > MAXWORD || printBytes > MAXWORD || pathBytes + 8U > MAXWORD || totalBytes > MAXDWORD)
+    {
+        RemoveDirectoryW(a_linkPath.c_str());
+        return false;
+    }
+
+    std::vector<std::uint32_t> storage((totalBytes + sizeof(std::uint32_t) - 1U) / sizeof(std::uint32_t), 0U);
+    auto *buffer = reinterpret_cast<MountPointReparseBuffer *>(storage.data());
+    buffer->reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    buffer->reparseDataLength = static_cast<WORD>(pathBytes + 8U);
+    buffer->substituteNameLength = static_cast<WORD>(substituteBytes);
+    buffer->printNameOffset = static_cast<WORD>(substituteBytes + sizeof(wchar_t));
+    buffer->printNameLength = static_cast<WORD>(printBytes);
+    std::memcpy(buffer->pathBuffer, substituteName.data(), substituteBytes);
+    std::memcpy(reinterpret_cast<std::byte *>(buffer->pathBuffer) + buffer->printNameOffset, printName.data(),
+                printBytes);
+
+    HANDLE link = CreateFileW(a_linkPath.c_str(), GENERIC_WRITE, 0U, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (link == INVALID_HANDLE_VALUE)
+    {
+        RemoveDirectoryW(a_linkPath.c_str());
+        return false;
+    }
+    DWORD returned = 0U;
+    const BOOL succeeded = DeviceIoControl(link, FSCTL_SET_REPARSE_POINT, buffer, static_cast<DWORD>(totalBytes),
+                                           nullptr, 0U, &returned, nullptr);
+    CloseHandle(link);
+    if (succeeded == FALSE)
+    {
+        RemoveDirectoryW(a_linkPath.c_str());
+        return false;
+    }
+    return true;
+}
 
 #if CUE_TEST_BUILD_CONFIGURATION == 1
 constexpr cue::BuildConfiguration k_configuration = cue::BuildConfiguration::Debug;
@@ -97,6 +169,71 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
         cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, {19U, 51U, 36256U, 0U}, 1U};
     return take_value(cue::create_build_plan(
         {generic_path(a_projectRoot), std::move(profile), std::move(a_operationId), compatibility}, a_assertContext));
+}
+
+/// @brief Plan作成後に追加されたJunction経由のRoot外読書きとRollbackを拒否する
+void test_reparse_revalidation(const std::filesystem::path &a_probe,
+                              const cue::AssertContext &a_assertContext)
+{
+    const std::filesystem::path parent =
+        a_probe.parent_path() / ("CueBuildArtifactReparse-" + std::string(k_configurationName));
+    const std::filesystem::path project = parent / "Project";
+    const std::filesystem::path outside = parent / "Outside";
+    std::error_code error;
+    std::filesystem::remove_all(parent, error);
+    require(!error);
+    require(std::filesystem::create_directories(project));
+    require(std::filesystem::create_directories(outside));
+
+    cue::ProjectDescriptor descriptor = make_descriptor(a_assertContext);
+    std::unique_ptr<cue::BuildArtifactPublisher> publisher = take_value(
+        cue::create_windows_build_artifact_publisher(generic_path(project), descriptor, a_assertContext));
+    cue::BuildPlan lockPlan =
+        make_plan(project, "91234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    require(create_directory_link(project / "Generated", outside));
+    cue::ChildProcessCancellation cancellation;
+    require(!publisher->acquire_build_lease(lockPlan, cancellation, std::nullopt).has_value());
+    require(!std::filesystem::exists(outside / "Build"));
+    require(std::filesystem::remove(project / "Generated", error));
+    require(!error);
+
+    cue::BuildPlan candidatePlan =
+        make_plan(project, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    const std::filesystem::path output =
+        std::filesystem::path(candidatePlan.binary_directory()) / "bin" / k_configurationName;
+    require(std::filesystem::create_directories(output));
+    require(std::filesystem::copy_file(a_probe, output / "CueGameModule.dll"));
+    {
+        std::ofstream pdb(output / "CueGameModule.pdb", std::ios::binary | std::ios::trunc);
+        pdb << "reparse-test-symbols-" << k_configurationName;
+        require(static_cast<bool>(pdb));
+    }
+    auto candidateLease = take_value(publisher->acquire_build_lease(candidatePlan, cancellation, std::nullopt));
+    require(candidateLease.has_value());
+    const std::filesystem::path outsideCandidates = outside / "Candidates";
+    require(std::filesystem::create_directories(outsideCandidates));
+    require(create_directory_link(project / "Generated" / "Build" / "Candidates", outsideCandidates));
+    require(!publisher->publish(candidatePlan, cancellation, std::move(*candidateLease), std::nullopt).has_value());
+    require(std::filesystem::is_empty(outsideCandidates));
+    require(std::filesystem::remove(project / "Generated" / "Build" / "Candidates", error));
+    require(!error);
+
+    cue::BuildPlan storePlan =
+        make_plan(project, "b1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto storeLease = take_value(publisher->acquire_build_lease(storePlan, cancellation, std::nullopt));
+    require(storeLease.has_value());
+    const std::filesystem::path outsideStore = outside / "Store";
+    require(std::filesystem::create_directories(outsideStore));
+    require(std::filesystem::create_directories(project / "Generated" / "Artifacts"));
+    require(create_directory_link(project / "Generated" / "Artifacts" / k_configurationName, outsideStore));
+    require(!publisher->publish(storePlan, cancellation, std::move(*storeLease), std::nullopt).has_value());
+    require(std::filesystem::is_empty(outsideStore));
+    require(!std::filesystem::exists(std::filesystem::path(storePlan.candidate_directory())));
+    require(std::filesystem::remove(project / "Generated" / "Artifacts" / k_configurationName, error));
+    require(!error);
+
+    std::filesystem::remove_all(parent, error);
+    require(!error);
 }
 
 /// @brief Artifact公開、Lock取消、失敗時Current保全を一つのProject Rootで検証する
@@ -272,6 +409,7 @@ int main(int a_argumentCount, char **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
+    test_reparse_revalidation(std::filesystem::path(a_arguments[1]), assertContext);
     test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), std::filesystem::path(a_arguments[2]),
                                     std::filesystem::path(a_arguments[3]), std::filesystem::path(a_arguments[4]),
                                     std::filesystem::path(a_arguments[5]), assertContext);
