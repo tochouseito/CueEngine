@@ -523,33 +523,51 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                                cue::WindowsBuildArtifactError a_code,
                                                const cue::AssertContext &a_assertContext) noexcept
 {
-    UniqueHandle file(
-        CreateFileW(a_path.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!file.is_valid())
+    std::optional<cue::Error> writeError;
     {
-        return cue::Result<void>::failure(
-            make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact file could not be created"));
-    }
-    std::size_t offset = 0U;
-    while (offset < a_bytes.size())
-    {
-        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(a_bytes.size() - offset, MAXDWORD));
-        DWORD written = 0U;
-        const BOOL succeeded = WriteFile(file.get(), a_bytes.data() + offset, request, &written, nullptr);
-        if (succeeded == FALSE || written == 0U)
+        UniqueHandle file(
+            CreateFileW(a_path.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!file.is_valid())
         {
-            const DWORD code = succeeded == FALSE ? GetLastError() : ERROR_WRITE_FAULT;
             return cue::Result<void>::failure(
-                make_windows_error(a_assertContext, a_code, code, "Artifact file write failed"));
+                make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact file could not be created"));
         }
-        offset += written;
+        std::size_t offset = 0U;
+        while (offset < a_bytes.size())
+        {
+            const DWORD request = static_cast<DWORD>(std::min<std::size_t>(a_bytes.size() - offset, MAXDWORD));
+            DWORD written = 0U;
+            const BOOL succeeded = WriteFile(file.get(), a_bytes.data() + offset, request, &written, nullptr);
+            if (succeeded == FALSE || written == 0U)
+            {
+                const DWORD code = succeeded == FALSE ? GetLastError() : ERROR_WRITE_FAULT;
+                writeError.emplace(make_windows_error(a_assertContext, a_code, code, "Artifact file write failed"));
+                break;
+            }
+            offset += written;
+        }
+        if (!writeError.has_value() && FlushFileBuffers(file.get()) == FALSE)
+        {
+            writeError.emplace(
+                make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact file flush failed"));
+        }
     }
-    if (FlushFileBuffers(file.get()) == FALSE)
+    if (!writeError.has_value())
     {
-        return cue::Result<void>::failure(
-            make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact file flush failed"));
+        return cue::Result<void>::success();
     }
-    return cue::Result<void>::success();
+    if (DeleteFileW(a_path.c_str()) == FALSE)
+    {
+        const DWORD cleanupCode = GetLastError();
+        if (cleanupCode != ERROR_FILE_NOT_FOUND && cleanupCode != ERROR_PATH_NOT_FOUND)
+        {
+            cue::Error cleanupError =
+                make_windows_error(a_assertContext, a_code, cleanupCode, "Incomplete artifact file rollback failed");
+            writeError->append_secondary_diagnostics(a_assertContext, cleanupError,
+                                                     "Incomplete artifact file could not be removed", "Rollback");
+        }
+    }
+    return cue::Result<void>::failure(std::move(*writeError));
 }
 
 /// @brief Build出力を新規Candidate FileへCopyし、File内容をFlushしてから返す
@@ -803,6 +821,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     {
         try
         {
+            if (!m_isAvailable)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::PublisherUnavailable,
+                               "Artifact Publisher is unavailable after an unknown Current selection"));
+            }
             if (!same_root(m_projectRoot, a_plan.project_root()))
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
@@ -842,6 +866,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     {
         try
         {
+            if (!m_isAvailable)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::PublisherUnavailable,
+                               "Artifact Publisher is unavailable after an unknown Current selection"));
+            }
             auto *windowsLease = dynamic_cast<WindowsBuildWorkspaceLease *>(a_buildLease.get());
             if (windowsLease == nullptr || !windowsLease->matches(a_plan.workspace_key()) ||
                 !same_root(m_projectRoot, a_plan.project_root()))
@@ -1087,6 +1117,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     }
                     else
                     {
+                        m_isAvailable = false;
                         publicationError.add_context(
                             m_assertContext->fatal_handler(),
                             "Visible Current matched the requested manifest bytes but its referenced artifact could "
@@ -1122,6 +1153,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     std::array<std::uint8_t, 16U> m_projectIdBytes;
     cue::EngineCompatibility m_compatibility;
     const cue::AssertContext *m_assertContext;
+    bool m_isAvailable = true;
 };
 } // namespace
 
