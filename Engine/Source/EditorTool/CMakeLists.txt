@@ -11,9 +11,12 @@ target_link_libraries(
     PRIVATE
         Cue.Editor.ImGui
         Cue.Editor.Windows
+        Cue.Build.Windows
         Cue.Foundation.Windows
         Cue.ImGui.Core
+        Cue.Platform.Windows
         Cue.ToolHost.WindowsD3D12
+        bcrypt
 )
 target_compile_features(CueEditorTool PRIVATE cxx_std_20)
 target_compile_definitions(CueEditorTool PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

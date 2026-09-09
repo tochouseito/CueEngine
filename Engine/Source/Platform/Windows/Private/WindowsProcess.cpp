@@ -106,6 +106,8 @@ struct CaptureState final
     std::mutex mutex;
     std::uint64_t nextSequence = 0U;
     std::vector<cue::ChildProcessOutputChunk> chunks;
+    std::optional<std::size_t> maximumBytes;
+    std::size_t capturedBytes = 0U;
     DWORD outputError = ERROR_SUCCESS;
     DWORD errorError = ERROR_SUCCESS;
 };
@@ -280,7 +282,18 @@ void capture_pipe(HANDLE a_pipe, cue::ChildProcessStream a_stream, CaptureState 
                 return;
             }
             std::scoped_lock lock(a_state.mutex);
-            a_state.chunks.push_back({a_state.nextSequence++, a_stream, std::string(buffer.data(), read)});
+            const std::size_t available =
+                a_state.maximumBytes
+                    ? (*a_state.maximumBytes > a_state.capturedBytes ? *a_state.maximumBytes - a_state.capturedBytes
+                                                                     : 0U)
+                    : static_cast<std::size_t>(read);
+            const std::size_t captured = std::min<std::size_t>(read, available);
+            if (captured > 0U)
+            {
+                a_state.chunks.push_back(
+                    {a_state.nextSequence++, a_stream, std::string(buffer.data(), captured)});
+                a_state.capturedBytes += captured;
+            }
         }
     }
     catch (...)
@@ -493,6 +506,7 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
         errorWrite.reset();
 
         CaptureState capture;
+        capture.maximumBytes = a_request.maximum_captured_output_bytes();
         capture.chunks.reserve(32U);
         std::thread outputThread;
         std::thread errorThread;

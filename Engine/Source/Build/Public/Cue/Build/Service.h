@@ -2,6 +2,7 @@
 
 #include <Cue/Build/CMakeRunner.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -26,12 +27,38 @@ enum class GameBuildServiceError : std::int64_t
     ArtifactPublicationFailed
 };
 
+/// @brief Platform非依存なArtifact Publisher Timeoutの分類
+enum class BuildArtifactPublisherError : std::int64_t
+{
+    LockWaitTimedOut = 1,
+    ModuleProbeTimedOut
+};
+
+/// @brief Publisherの取消可能処理を単調Clock上で打ち切る絶対時刻
+using BuildArtifactLockDeadline = std::optional<std::chrono::steady_clock::time_point>;
+
 /// @brief Artifact Version Directory内の一FileをHash付きで識別する
 struct BuildArtifactFile final
 {
     std::string relativePath;
     std::uint64_t byteSize = 0U;
     std::string contentHash;
+};
+
+/// @brief 一つのBuild WorkspaceをProcess間で排他的に保護するRAII Token
+class BuildWorkspaceLease
+{
+  public:
+    /// @brief Process間排他所有権のCopy構築を禁止する
+    BuildWorkspaceLease(const BuildWorkspaceLease &) = delete;
+    /// @brief Process間排他所有権のCopy代入を禁止する
+    BuildWorkspaceLease &operator=(const BuildWorkspaceLease &) = delete;
+    /// @brief 派生Leaseを通してNative Lockを解放する
+    virtual ~BuildWorkspaceLease() = default;
+
+  protected:
+    /// @brief 派生Leaseだけに構築を許可する
+    BuildWorkspaceLease() noexcept = default;
 };
 
 /// @brief Publish済み不変Game Module Artifact集合
@@ -81,14 +108,27 @@ class BuildArtifactPublisher
     /// @brief 派生Publisherを正しく破棄する
     virtual ~BuildArtifactPublisher() = default;
 
+    /// @brief Configure開始前にPlan固有Build WorkspaceのExclusive Leaseを取得する
+    ///
+    /// Plan、Cancellation、Deadlineは呼出中だけ借用する。取消要求を観測した場合は成功のnulloptを返す。Deadline到達は
+    /// BuildArtifactPublisherError::LockWaitTimedOutを返す。成功Leaseは同じWorker上で
+    /// Publishへ移すか破棄し、Build ProcessとCandidate確定が終わるまで保持する。回復可能なLock失敗はErrorを返す。
+    [[nodiscard]] virtual Result<std::optional<std::unique_ptr<BuildWorkspaceLease>>> acquire_build_lease(
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
+        BuildArtifactLockDeadline a_deadline) noexcept = 0;
+
     /// @brief Build Plan固有Candidateを検証・公開し、成功時だけInventoryを返す
     ///
-    /// PlanとCancellationは呼出中だけ借用する。実装は一つのGameBuildService
-    /// Workerから直列に呼ばれ、返却Inventoryが全値を
-    /// 所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
-    /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
+    /// PlanとCancellationは呼出中だけ借用し、Build Leaseの所有権を取得する。実装はCandidate Snapshot確定後にBuild
+    /// Leaseを解放してから Artifact Mutation Leaseを取得し、二つのLeaseを同時保持しない。一つのGameBuildService
+    /// Workerから直列に呼ばれ、返却Inventoryが
+    /// 全値を所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
+    /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。DeadlineはArtifact Mutation
+    /// Lock待機とGame Module Probeを制限し、到達時は対応するBuildArtifactPublisherErrorを返す。回復可能な
+    /// 検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
     [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
-        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation) noexcept = 0;
+        const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
+        std::unique_ptr<BuildWorkspaceLease> a_buildLease, BuildArtifactLockDeadline a_deadline) noexcept = 0;
 
   protected:
     /// @brief 派生Publisherを初期化する

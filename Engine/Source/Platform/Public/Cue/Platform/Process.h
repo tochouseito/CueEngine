@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -79,9 +80,11 @@ class ChildProcessRequest final
     /// @brief Childへ必要情報だけを渡すProcess要求を構築する
     ///
     /// EnvironmentはAllowlistそのものであり、Host Environmentを暗黙継承しない。Timeout省略時は時間制限を設けない。
+    /// Capture上限省略時は全出力を保持し、0指定時はPipeを読み切るがResultへ保持しない。
     ChildProcessRequest(std::string a_executable, std::vector<std::string> a_arguments, std::string a_workingDirectory,
                         std::vector<ChildProcessEnvironmentEntry> a_environmentAllowlist,
-                        std::optional<std::chrono::milliseconds> a_timeout) noexcept;
+                        std::optional<std::chrono::milliseconds> a_timeout,
+                        std::optional<std::size_t> a_maximumCapturedOutputBytes = std::nullopt) noexcept;
 
     /// @brief 検証前UTF-8 Absolute Executable Pathを返す
     [[nodiscard]] std::string_view executable() const noexcept;
@@ -93,6 +96,8 @@ class ChildProcessRequest final
     [[nodiscard]] const std::vector<ChildProcessEnvironmentEntry> &environment_allowlist() const noexcept;
     /// @brief 任意の実行Timeoutを返す
     [[nodiscard]] std::optional<std::chrono::milliseconds> timeout() const noexcept;
+    /// @brief stdout／stderr合計の任意Capture Byte上限を返す
+    [[nodiscard]] std::optional<std::size_t> maximum_captured_output_bytes() const noexcept;
 
   private:
     std::string m_executable;
@@ -100,6 +105,7 @@ class ChildProcessRequest final
     std::string m_workingDirectory;
     std::vector<ChildProcessEnvironmentEntry> m_environmentAllowlist;
     std::optional<std::chrono::milliseconds> m_timeout;
+    std::optional<std::size_t> m_maximumCapturedOutputBytes;
 };
 
 /// @brief 別Threadから一方向に通知できる一回のProcess Cancel状態

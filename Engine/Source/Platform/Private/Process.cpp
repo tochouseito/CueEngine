@@ -44,10 +44,11 @@ ChildProcessResult::ChildProcessResult(ChildProcessOutcome a_outcome, std::optio
 ChildProcessRequest::ChildProcessRequest(std::string a_executable, std::vector<std::string> a_arguments,
                                          std::string a_workingDirectory,
                                          std::vector<ChildProcessEnvironmentEntry> a_environmentAllowlist,
-                                         std::optional<std::chrono::milliseconds> a_timeout) noexcept
+                                         std::optional<std::chrono::milliseconds> a_timeout,
+                                         std::optional<std::size_t> a_maximumCapturedOutputBytes) noexcept
     : m_executable(std::move(a_executable)), m_arguments(std::move(a_arguments)),
       m_workingDirectory(std::move(a_workingDirectory)), m_environmentAllowlist(std::move(a_environmentAllowlist)),
-      m_timeout(a_timeout)
+      m_timeout(a_timeout), m_maximumCapturedOutputBytes(a_maximumCapturedOutputBytes)
 {
 }
 
@@ -74,6 +75,11 @@ const std::vector<ChildProcessEnvironmentEntry> &ChildProcessRequest::environmen
 std::optional<std::chrono::milliseconds> ChildProcessRequest::timeout() const noexcept
 {
     return m_timeout;
+}
+
+std::optional<std::size_t> ChildProcessRequest::maximum_captured_output_bytes() const noexcept
+{
+    return m_maximumCapturedOutputBytes;
 }
 
 void ChildProcessCancellation::request_cancel() noexcept

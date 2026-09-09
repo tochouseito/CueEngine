@@ -26,6 +26,70 @@ target_compile_features(CueBuildPublicHeaderTest PRIVATE cxx_std_20)
 set(cueBuildTestTargets CueBuildToolchainTests CueBuildPlanTests CueBuildCMakeRunnerTests CueBuildServiceTests
                         CueBuildDiagnosticBundleTests CueBuildPublicHeaderTest)
 if(WIN32)
+    add_library(CueBuildArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
+    add_library(CueBuildInvalidArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildInvalidArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildInvalidArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildInvalidArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_INVALID_API=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
+    add_library(CueBuildCrashingArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildCrashingArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildCrashingArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildCrashingArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_CRASH_QUERY=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
+    add_library(CueBuildHangingArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildHangingArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildHangingArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildHangingArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_HANG_QUERY=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
+    add_library(CueBuildZeroExitArtifactProbe SHARED ArtifactProbe.cpp)
+    target_link_libraries(CueBuildZeroExitArtifactProbe PRIVATE Cue.GameModule.Abi)
+    target_compile_features(CueBuildZeroExitArtifactProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildZeroExitArtifactProbe
+        PRIVATE
+            CUE_GAME_MODULE_BUILD=1
+            CUE_TEST_EXIT_ZERO_QUERY=1
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
 
@@ -36,7 +100,35 @@ if(WIN32)
     add_executable(CueBuildWindowsToolchainTests WindowsToolchainTests.cpp)
     target_link_libraries(CueBuildWindowsToolchainTests PRIVATE Cue.Build.Windows)
     target_compile_features(CueBuildWindowsToolchainTests PRIVATE cxx_std_20)
-    list(APPEND cueBuildTestTargets CueBuildCMakeRunnerProbe CueBuildCMakeRunnerProcessTests CueBuildWindowsToolchainTests)
+
+    add_executable(CueBuildWindowsPublicHeaderTest WindowsPublicHeaderCompile.cpp)
+    target_link_libraries(CueBuildWindowsPublicHeaderTest PRIVATE Cue.Build.Windows)
+    target_compile_features(CueBuildWindowsPublicHeaderTest PRIVATE cxx_std_20)
+
+    add_executable(CueBuildWindowsArtifactPublisherTests WindowsArtifactPublisherTests.cpp)
+    target_link_libraries(CueBuildWindowsArtifactPublisherTests PRIVATE Cue.Build.Windows Cue.Project)
+    target_compile_features(CueBuildWindowsArtifactPublisherTests PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildWindowsArtifactPublisherTests
+        PRIVATE
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+    )
+    list(
+        APPEND
+        cueBuildTestTargets
+        CueBuildCMakeRunnerProbe
+        CueBuildCMakeRunnerProcessTests
+        CueBuildWindowsToolchainTests
+        CueBuildWindowsPublicHeaderTest
+        CueBuildArtifactProbe
+        CueBuildInvalidArtifactProbe
+        CueBuildCrashingArtifactProbe
+        CueBuildHangingArtifactProbe
+        CueBuildZeroExitArtifactProbe
+        CueBuildWindowsArtifactPublisherTests
+    )
 endif()
 
 foreach(testTarget IN LISTS cueBuildTestTargets)
@@ -89,4 +181,13 @@ if(WIN32)
 
     add_test(NAME Cue.Build.Windows.Toolchain COMMAND CueBuildWindowsToolchainTests)
     set_tests_properties(Cue.Build.Windows.Toolchain PROPERTIES LABELS "Build;Windows" TIMEOUT 20)
+
+    add_test(NAME Cue.Build.Windows.PublicHeaders COMMAND CueBuildWindowsPublicHeaderTest)
+    set_tests_properties(Cue.Build.Windows.PublicHeaders PROPERTIES LABELS "Build;Windows" TIMEOUT 10)
+
+    add_test(NAME Cue.Build.Windows.ArtifactPublisher
+             COMMAND CueBuildWindowsArtifactPublisherTests $<TARGET_FILE:CueBuildArtifactProbe>
+                     $<TARGET_FILE:CueBuildInvalidArtifactProbe> $<TARGET_FILE:CueBuildCrashingArtifactProbe>
+                     $<TARGET_FILE:CueBuildHangingArtifactProbe> $<TARGET_FILE:CueBuildZeroExitArtifactProbe>)
+    set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
 endif()

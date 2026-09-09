@@ -8,6 +8,13 @@ target_link_libraries(
         Cue.Project
 )
 target_compile_features(CueEditorWorkflowProcessTests PRIVATE cxx_std_20)
+target_compile_definitions(
+    CueEditorWorkflowProcessTests
+    PRIVATE
+        $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+        $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+        $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+)
 
 set_target_properties(
     CueEditorWorkflowProcessTests
@@ -40,5 +47,5 @@ set_tests_properties(
     PROPERTIES
         LABELS "Editor;Process"
         RUN_SERIAL TRUE
-        TIMEOUT 60
+        TIMEOUT 660
 )

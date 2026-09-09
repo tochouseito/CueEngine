@@ -238,10 +238,15 @@ Win32 Error値へ依存させない。
 | `IoFailure` | Read、Write、Flush、Rename、Replace等のその他失敗 |
 | `DurabilityUnknown` | Publish後のFlush失敗またはDurability非対応 |
 
-Windows実装では、Directory Handleに対する`FlushFileBuffers`を公開契約として利用せず、
-`MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`をPublishとDirectory MetadataのDurability試行を一体化したNative境界として扱う。
+Windows実装では、Directory Handleに対する`FlushFileBuffers`を公開契約として利用しない。Path Identityを事前に固定しない
+操作では`MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`を、Reparse Pointを拒否して差替えを阻止したDirectory Handleを既に保持する
+操作では`FILE_FLAG_WRITE_THROUGH`付きHandleへの`SetFileInformationByHandle(FileRenameInfo)`を、PublishとDirectory Metadataの
+Durability試行を一体化したNative境界として扱う。Microsoftの`CreateFile2`契約は、NTFSでWrite-through Handleから生じるRename等の
+Metadata変更も遅延なくFlushすることを明記している。
 この呼出しが失敗した場合はSourceとDestinationの事後状態を確認し、Sourceが消失してDestinationが可視化済みなら
 Rollbackせず`DurabilityUnknown`を返す。未公開なら通常のPublish失敗としてSourceをCleanupする。
+
+Source: [CREATEFILE2_EXTENDED_PARAMETERS](https://learn.microsoft.com/windows/win32/api/fileapi/ns-fileapi-createfile2_extended_parameters)
 
 ErrorにはOperation名、Root-relative Path、Stage、Portable分類、Native Codeを含める。Credential、User名、不要な絶対Pathを通常Logへ出さない。
 Cleanup／Close／Rollback失敗は`append_secondary_diagnostics`でPrimary Errorへ追加し、Primary原因を上書きしない。
