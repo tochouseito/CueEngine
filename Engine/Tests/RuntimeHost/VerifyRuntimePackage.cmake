@@ -131,6 +131,21 @@ if(reservedApiResult EQUAL 0 OR reservedApiMessagePosition EQUAL -1)
 endif()
 
 execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=reserved-query-output"
+        "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE reservedQueryResult
+    OUTPUT_VARIABLE reservedQueryOutput
+    ERROR_VARIABLE reservedQueryError
+    TIMEOUT 15
+)
+set(reservedQueryCombined "${reservedQueryOutput}\n${reservedQueryError}")
+string(FIND "${reservedQueryCombined}" "Game Module rejected the RuntimeHost ABI" reservedQueryMessagePosition)
+if(reservedQueryResult EQUAL 0 OR reservedQueryMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-zero Game Module Query Output reserved field was accepted\n${reservedQueryCombined}")
+endif()
+
+execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=invalid-system-id"
         "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"

@@ -1690,7 +1690,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                                              {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
                                               nullptr, 0U}};
         if (query(CUE_GAME_MODULE_ABI_VERSION_1, &queryOutput, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS ||
-            queryOutput.api == nullptr)
+            queryOutput.api == nullptr || queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
         {
             FreeLibrary(library);
             if (runtimeCookie != nullptr)
