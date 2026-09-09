@@ -168,11 +168,17 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
 
 - `sceneAssetId`、`objectId`、`componentInstanceId`、`typeId`はlowercase UUID v4とし、nilを拒否する
 - `objects`は`ObjectId`のByte辞書順、`components`は`ComponentInstanceId`順、`fields`は符号なし`fieldId`昇順とする
+- `objectId`はScene内、`componentInstanceId`はScene内、`fieldId`は同一Component内で一意とする。各配列は同値を許さない
+  strict ascending orderとし、重複をReader／Writerとも`UnsupportedRuntimeSceneData`で拒否する
 - `parentObjectId`は同じ`objects`内の別Object IDまたは`null`とし、循環、自己Parent、欠損Parentを拒否する
 - `active`はJSON booleanとする
 - `translation`、`rotation`、`scale`はそれぞれ3、4、3個の有限JSON numberとする。Writerはlocale非依存の最短round-trip表現を使用する
-- `schemaVersion`と`fieldId`は正のJSON整数とし、それぞれComponent Schema Version、Field Identityを表す
+- `schemaVersion`と`fieldId`は`1`以上`4294967295`以下のJSON整数とし、それぞれ`uint32_t`のComponent Schema Version、
+  Field Identityを表す。範囲外、符号、小数表現を拒否する
 - `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
+- `signedInteger`は`-9223372036854775808`以上`9223372036854775807`以下のJSON整数、`unsignedInteger`は`0`以上
+  `18446744073709551615`以下のJSON整数とし、範囲外、小数表現を拒否する。`floatingPoint`は有限IEEE 754 binary64へ
+  round-trip可能なJSON numberだけを許可し、overflow、NaN、Infinityを拒否する
 - `assetReference`はM16では解決可能なRuntime RegistryとPackage Inventoryが存在しないため、値にかかわらず
   `UnsupportedRuntimeSceneData`で拒否する。一般Asset DatabaseのIdentity契約は確定しない
 - RuntimeHost v1が登録していないComponent Type、Schema Version、Field、Asset Referenceを含む場合、WriterまたはReaderは省略せず`UnsupportedRuntimeSceneData`で拒否する
@@ -323,6 +329,12 @@ M16 Publisherはその構成をPackageせず失敗させる。
 Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryをProcess-localな
 DLL検索Directoryへ登録する。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
 静的Bootstrapを別ADRで決定する。
+
+`Runtime/`をDLL検索Directoryへ登録する直前に、RuntimeHostはDirectoryを非再帰で列挙し、通常Fileだけで構成されること、Reparse
+Pointや子Directoryがないこと、各File NameのASCII case-insensitive集合がManifestの`runtimeDependency` Entry集合と完全一致することを
+検証する。未列挙File、欠損Entry、Alias、列挙失敗が一つでもあればDirectoryを登録せず起動を拒否する。Manifestに
+`runtimeDependency`がない場合は`Runtime/`が存在しないか空であることを要求する。これにより、Package公開後に追加された未検証DLLを
+Windows Loaderの候補へ含めない。
 
 新しい第三者LibraryをRuntime Dependencyへ追加またはVersion更新する場合は、AGENTS.mdの承認、vcpkg Manifest、License、Notice契約を
 別Issueで満たす。本ADRは新しい外部Library導入を承認しない。
