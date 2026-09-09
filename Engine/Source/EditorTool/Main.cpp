@@ -737,6 +737,20 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 {
                     static_cast<void>(std::fwrite(log.bytes.data(), sizeof(char), log.bytes.size(), stderr));
                 }
+                for (const cue::BuildDiagnosticSnapshot &diagnostic : initialSnapshot.diagnostics)
+                {
+                    std::fprintf(stderr, "Build diagnostic: %s/%lld %s\n", diagnostic.domain.c_str(),
+                                 static_cast<long long>(diagnostic.code), diagnostic.summary.c_str());
+                    for (const std::string &context : diagnostic.contexts)
+                    {
+                        std::fprintf(stderr, "  Context: %s\n", context.c_str());
+                    }
+                    if (diagnostic.nativeError)
+                    {
+                        std::fprintf(stderr, "  Native: %s/%lld\n", diagnostic.nativeError->domain.c_str(),
+                                     static_cast<long long>(diagnostic.nativeError->code));
+                    }
+                }
                 static_cast<void>(std::fflush(stderr));
                 if (!initialSnapshot.diagnostics.empty())
                 {

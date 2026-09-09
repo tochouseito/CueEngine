@@ -513,13 +513,15 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     try
     {
         const std::wstring destination = native_path(a_destination).native();
-        const std::size_t byteSize = offsetof(FILE_RENAME_INFO, FileName) + destination.size() * sizeof(wchar_t);
+        const std::size_t fileNameBytes = destination.size() * sizeof(wchar_t);
+        // FileNameLengthからは除外するが、可変長Bufferには明示的なNUL終端領域を確保する。
+        const std::size_t byteSize = offsetof(FILE_RENAME_INFO, FileName) + fileNameBytes + sizeof(wchar_t);
         std::vector<std::uint64_t> storage(
             (byteSize + sizeof(std::uint64_t) - 1U) / sizeof(std::uint64_t), 0U);
         auto *information = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
         information->ReplaceIfExists = FALSE;
         information->RootDirectory = nullptr;
-        information->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
+        information->FileNameLength = static_cast<DWORD>(fileNameBytes);
         std::memcpy(information->FileName, destination.data(), information->FileNameLength);
         if (SetFileInformationByHandle(a_guard.leaf_handle(), FileRenameInfo, information,
                                        static_cast<DWORD>(byteSize)) == FALSE)
