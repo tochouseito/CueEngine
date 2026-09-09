@@ -67,5 +67,6 @@ if(MSVC)
         CueRuntimeHost
         PRIVATE
             $<$<CONFIG:Development>:/DEBUG>
+            /DEPENDENTLOADFLAG:0x800
     )
 endif()

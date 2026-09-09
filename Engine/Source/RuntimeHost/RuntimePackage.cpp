@@ -1361,6 +1361,12 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
 {
     try
     {
+        if (SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS) == FALSE)
+        {
+            return Result<LoadedRuntimePackage>::failure(windows_package_error(
+                a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
+                "RuntimeHost could not restrict the process DLL search policy"));
+        }
         auto executable = executable_path(a_assertContext);
         if (!executable)
         {
@@ -1490,9 +1496,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             }
             return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
         }
-        HMODULE library = LoadLibraryExW(modulePath.c_str(), nullptr,
-                                         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 |
-                                             LOAD_LIBRARY_SEARCH_USER_DIRS);
+        HMODULE library = LoadLibraryExW(
+            modulePath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
         if (library == nullptr)
         {
             const DWORD code = GetLastError();
