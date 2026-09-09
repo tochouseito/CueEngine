@@ -116,6 +116,36 @@ enum class FailurePoint
     BlockPublish
 };
 
+/// @brief 実Windows Filesystemの検証完了後かつPublish Authorization確定前でTest Threadを停止する
+class BlockingPublishAuthorization final : public cue::StagingPublishAuthorization
+{
+  public:
+    /// @brief 委譲先Authorizationと同期Flagを借用する
+    BlockingPublishAuthorization(const cue::StagingPublishAuthorization *a_inner, std::atomic_bool &a_entered,
+                                 std::atomic_bool &a_allowed) noexcept
+        : m_inner(a_inner), m_entered(&a_entered), m_allowed(&a_allowed)
+    {
+    }
+    /// @brief 借用した同期対象を変更せず解放する
+    ~BlockingPublishAuthorization() override = default;
+
+    /// @brief 検証完了を通知し、Test Threadが許可した後に本来のAuthorizationへ委譲する
+    [[nodiscard]] bool try_authorize() const noexcept override
+    {
+        m_entered->store(true, std::memory_order_release);
+        while (!m_allowed->load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        return m_inner == nullptr || m_inner->try_authorize();
+    }
+
+  private:
+    const cue::StagingPublishAuthorization *m_inner;
+    std::atomic_bool *m_entered;
+    std::atomic_bool *m_allowed;
+};
+
 /// @brief 実Windows Filesystemへ委譲しPackage Stageだけを一度失敗させるTest Double
 class FailingFilesystemRoot final : public cue::FilesystemRoot
 {
@@ -129,7 +159,7 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     /// @brief 委譲先Rootを解放する
     ~FailingFilesystemRoot() override = default;
 
-    /// @brief Publish開始がFilesystem境界へ到達したか期限付きで待機して返す
+    /// @brief 実FilesystemのStaging検証が完了してAuthorization境界へ到達したか期限付きで待機して返す
     [[nodiscard]] bool wait_until_publish_entered() const noexcept
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -140,7 +170,7 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
         return m_publishEntered.load(std::memory_order_acquire);
     }
 
-    /// @brief 待機中のPublishを実Filesystemへ進める
+    /// @brief 待機中のAuthorizationを実FilesystemのNative Publish境界へ進める
     void allow_publish() noexcept
     {
         m_allowPublish.store(true, std::memory_order_release);
@@ -223,11 +253,8 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     {
         if (m_failure == FailurePoint::BlockPublish)
         {
-            m_publishEntered.store(true, std::memory_order_release);
-            while (!m_allowPublish.load(std::memory_order_acquire))
-            {
-                std::this_thread::yield();
-            }
+            BlockingPublishAuthorization blocking(a_authorization, m_publishEntered, m_allowPublish);
+            return m_inner->publish_staging_area(std::move(a_staging), a_destination, &blocking);
         }
         if (consume(FailurePoint::Publish))
         {

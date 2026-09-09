@@ -324,9 +324,44 @@ struct NativePublishOutcome final
     DWORD nativeCode;
 };
 
-/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と Destination から公開状態を分類する
+/// @brief Ambiguous Rename後に公開先で照合するOperation-owned Directory Identity
+struct NativeDirectoryIdentity final
+{
+    DWORD volumeSerial;
+    DWORD fileIndexHigh;
+    DWORD fileIndexLow;
+};
+
+/// @brief Destinationが期待したNative Directory Objectを指す場合だけtrueを返す
+[[nodiscard]] bool matches_directory_identity(const std::wstring &a_destination,
+                                              const NativeDirectoryIdentity &a_expected) noexcept
+{
+    UniqueHandle destination(CreateFileW(a_destination.c_str(), FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                         OPEN_EXISTING,
+                                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!destination.is_valid())
+    {
+        return false;
+    }
+
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(destination.get(), &information) == FALSE)
+    {
+        return false;
+    }
+    return (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+           (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+           information.dwVolumeSerialNumber == a_expected.volumeSerial &&
+           information.nFileIndexHigh == a_expected.fileIndexHigh &&
+           information.nFileIndexLow == a_expected.fileIndexLow;
+}
+
+/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と期待Destination Identityから公開状態を分類する
 [[nodiscard]] NativePublishOutcome publish_with_durability(const std::wstring &a_source,
-                                                           const std::wstring &a_destination, DWORD a_flags) noexcept
+                                                            const std::wstring &a_destination, DWORD a_flags,
+                                                            const NativeDirectoryIdentity *a_expectedIdentity =
+                                                                nullptr) noexcept
 {
     if (MoveFileExW(a_source.c_str(), a_destination.c_str(), a_flags | MOVEFILE_WRITE_THROUGH) != FALSE)
     {
@@ -339,7 +374,10 @@ struct NativePublishOutcome final
     const DWORD destinationAttributes = GetFileAttributesW(a_destination.c_str());
     const bool isSourceMissing = sourceAttributes == INVALID_FILE_ATTRIBUTES &&
                                  (sourceCode == ERROR_FILE_NOT_FOUND || sourceCode == ERROR_PATH_NOT_FOUND);
-    return NativePublishOutcome{isSourceMissing && destinationAttributes != INVALID_FILE_ATTRIBUTES, publishCode};
+    const bool destinationMatches = destinationAttributes != INVALID_FILE_ATTRIBUTES &&
+                                    (a_expectedIdentity == nullptr ||
+                                     matches_directory_identity(a_destination, *a_expectedIdentity));
+    return NativePublishOutcome{isSourceMissing && destinationMatches, publishCode};
 }
 
 /// @brief UTF-8 を Strict UTF-16 へ変換して IO Error として失敗を返す
@@ -1905,8 +1943,10 @@ cue::Result<void> WindowsFilesystemRoot::publish_staging_area(
             *m_assertContext, cue::IoError::PreconditionFailed,
             "Staging directory publish authorization was rejected"));
     }
-    const NativePublishOutcome publish =
-        publish_with_durability(*stagingPath.try_value(), *destinationPath.try_value(), 0);
+    const NativeDirectoryIdentity expectedIdentity{record->second.volumeSerial, record->second.fileIndexHigh,
+                                                   record->second.fileIndexLow};
+    const NativePublishOutcome publish = publish_with_durability(
+        *stagingPath.try_value(), *destinationPath.try_value(), 0, &expectedIdentity);
     if (!publish.isPublished)
     {
         return cue::Result<void>::failure(
