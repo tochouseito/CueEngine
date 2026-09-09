@@ -24,7 +24,9 @@ constexpr std::size_t k_sectionHeaderBytes = 40U;
 constexpr std::size_t k_importDescriptorBytes = 20U;
 constexpr std::size_t k_delayImportDescriptorBytes = 32U;
 constexpr std::size_t k_exportDirectoryBytes = 40U;
+constexpr std::size_t k_maximumSectionCount = 96U;
 constexpr std::size_t k_maximumImportDescriptors = 512U;
+constexpr std::size_t k_maximumImportThunkEntries = 65536U;
 constexpr std::size_t k_maximumImportNameBytes = 1024U;
 
 struct PeDirectory final
@@ -85,6 +87,20 @@ struct ParsedPeImage final
     return true;
 }
 
+/// @brief Little-endian 64-bit値を境界内だけ読み込む
+[[nodiscard]] bool read_u64(std::span<const std::byte> a_bytes, std::size_t a_offset,
+                            std::uint64_t &a_output) noexcept
+{
+    std::uint32_t lower = 0U;
+    std::uint32_t upper = 0U;
+    if (!read_u32(a_bytes, a_offset, lower) || !read_u32(a_bytes, a_offset + 4U, upper))
+    {
+        return false;
+    }
+    a_output = static_cast<std::uint64_t>(lower) | (static_cast<std::uint64_t>(upper) << 32U);
+    return true;
+}
+
 /// @brief PE Optional HeaderのData Directory一件を読み込む
 [[nodiscard]] bool read_directory(std::span<const std::byte> a_bytes, std::size_t a_optionalOffset,
                                   std::size_t a_index, PeDirectory &a_output) noexcept
@@ -112,6 +128,7 @@ struct ParsedPeImage final
     if (!read_u32(a_bytes, peOffset, peSignature) || peSignature != 0x00004550U ||
         !read_u16(a_bytes, peOffset + 4U, machine) || machine != k_amd64Machine ||
         !read_u16(a_bytes, peOffset + 6U, sectionCount) || sectionCount == 0U ||
+        sectionCount > k_maximumSectionCount ||
         !read_u16(a_bytes, peOffset + 20U, optionalSize) || optionalSize < 224U)
     {
         return false;
@@ -214,6 +231,34 @@ struct ParsedPeImage final
     return false;
 }
 
+/// @brief PE32+ Import Thunk TableがImage内でNUL終端されることを検証する
+[[nodiscard]] bool validate_import_thunk_table(const PeLayout &a_layout, std::uint32_t a_tableRva) noexcept
+{
+    if (a_tableRva == 0U)
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < k_maximumImportThunkEntries; ++index)
+    {
+        const std::uint64_t delta = index * 8ULL;
+        if (delta > (std::numeric_limits<std::uint32_t>::max)() - a_tableRva)
+        {
+            return false;
+        }
+        const auto offset = rva_to_offset(a_layout, a_tableRva + static_cast<std::uint32_t>(delta), 8U);
+        std::uint64_t thunk = 0U;
+        if (!offset || !read_u64(a_layout.bytes, *offset, thunk))
+        {
+            return false;
+        }
+        if (thunk == 0U)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// @brief 通常Import DirectoryのDLL名を列挙する
 [[nodiscard]] bool append_import_directory(const PeLayout &a_layout, std::vector<std::string> &a_imports)
 {
@@ -247,8 +292,11 @@ struct ParsedPeImage final
         {
             return true;
         }
+        const std::uint32_t lookupTableRva = fields[0] != 0U ? fields[0] : fields[4];
         std::string name;
-        if (fields[3] == 0U || !read_import_name(a_layout, fields[3], name))
+        if (fields[3] == 0U || fields[4] == 0U || !validate_import_thunk_table(a_layout, lookupTableRva) ||
+            (lookupTableRva != fields[4] && !validate_import_thunk_table(a_layout, fields[4])) ||
+            !read_import_name(a_layout, fields[3], name))
         {
             return false;
         }
@@ -292,7 +340,13 @@ struct ParsedPeImage final
             return true;
         }
         std::string name;
-        if ((fields[0] & 1U) == 0U || fields[1] == 0U || !read_import_name(a_layout, fields[1], name))
+        if (fields[0] != 1U || fields[1] == 0U || fields[2] == 0U ||
+            !rva_to_offset(a_layout, fields[2], 8U) || fields[3] == 0U || fields[4] == 0U ||
+            !validate_import_thunk_table(a_layout, fields[3]) ||
+            !validate_import_thunk_table(a_layout, fields[4]) ||
+            (fields[5] != 0U && !validate_import_thunk_table(a_layout, fields[5])) ||
+            (fields[6] != 0U && !validate_import_thunk_table(a_layout, fields[6])) ||
+            !read_import_name(a_layout, fields[1], name))
         {
             return false;
         }
@@ -458,7 +512,7 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
 {
     if (!is_valid_configuration(a_configuration) || ascii_lower(a_runtimeHost.fileName) != "cueruntimehost.exe" ||
         ascii_lower(a_gameModule.fileName) != "cuegamemodule.dll" ||
-        a_appLocalDependencies.size() > k_maximumPackageFileEntries)
+        a_appLocalDependencies.size() > k_maximumPackageFileEntries - k_requiredPackageFileEntries)
     {
         return Result<void>::failure(make_package_error(
             a_assertContext, PackageError::RuntimeDependencyViolation,

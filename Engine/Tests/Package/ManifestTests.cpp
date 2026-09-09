@@ -131,6 +131,13 @@ void write_u32(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint3
     }
 }
 
+/// @brief Test PEへLittle-endian 64-bit値を書き込む
+void write_u64(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint64_t a_value) noexcept
+{
+    write_u32(a_bytes, a_offset, static_cast<std::uint32_t>(a_value));
+    write_u32(a_bytes, a_offset + 4U, static_cast<std::uint32_t>(a_value >> 32U));
+}
+
 /// @brief Test PEのSection内へNUL終端ASCII文字列を書き込む
 void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::string_view a_text) noexcept
 {
@@ -171,8 +178,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         std::size_t nameOffset = 0x300U;
         for (std::size_t index = 0U; index < a_imports.size(); ++index)
         {
+            const std::uint32_t lookupRva = 0x1500U + static_cast<std::uint32_t>(index * 0x20U);
+            const std::uint32_t addressRva = 0x1600U + static_cast<std::uint32_t>(index * 0x20U);
+            write_u32(bytes, 0x200U + index * 20U, lookupRva);
             write_u32(bytes, 0x200U + index * 20U + 12U,
                       0x1000U + static_cast<std::uint32_t>(nameOffset - 0x200U));
+            write_u32(bytes, 0x200U + index * 20U + 16U, addressRva);
+            write_u64(bytes, 0x700U + index * 0x20U, 0x8000000000000001ULL);
+            write_u64(bytes, 0x800U + index * 0x20U, 0x8000000000000001ULL);
             write_ascii(bytes, nameOffset, a_imports[index]);
             nameOffset += a_imports[index].size() + 1U;
         }
@@ -188,6 +201,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
             write_u32(bytes, 0x400U + index * 32U, 1U);
             write_u32(bytes, 0x400U + index * 32U + 4U,
                       0x1200U + static_cast<std::uint32_t>(nameOffset - 0x400U));
+            write_u32(bytes, 0x400U + index * 32U + 8U,
+                      0x1700U + static_cast<std::uint32_t>(index * 8U));
+            write_u32(bytes, 0x400U + index * 32U + 12U,
+                      0x1800U + static_cast<std::uint32_t>(index * 0x20U));
+            write_u32(bytes, 0x400U + index * 32U + 16U,
+                      0x1900U + static_cast<std::uint32_t>(index * 0x20U));
+            write_u64(bytes, 0xa00U + index * 0x20U, 0x8000000000000001ULL);
+            write_u64(bytes, 0xb00U + index * 0x20U, 0x8000000000000001ULL);
             write_ascii(bytes, nameOffset, a_delayImports[index]);
             nameOffset += a_delayImports[index].size() + 1U;
         }
@@ -380,13 +401,28 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto overLimit = cue::package::validate_runtime_dependency_inventory(cue::BuildConfiguration::Debug,
                                                                          std::move(oversized), a_assertContext);
 
+    std::vector<cue::package::RuntimeDependencyCandidate> overCount;
+    overCount.reserve(cue::package::k_maximumPackageFileEntries - cue::package::k_requiredPackageFileEntries + 1U);
+    for (std::size_t index = 0U;
+         index < cue::package::k_maximumPackageFileEntries - cue::package::k_requiredPackageFileEntries + 1U;
+         ++index)
+    {
+        overCount.push_back(
+            {cue::BuildConfiguration::Debug,
+             make_entry(PackageFileRole::RuntimeDependency,
+                        "Runtime/Dependency" + std::to_string(index) + ".dll", a_assertContext)});
+    }
+    auto tooMany = cue::package::validate_runtime_dependency_inventory(cue::BuildConfiguration::Debug,
+                                                                        std::move(overCount), a_assertContext);
+
     return inventory && inventory.try_value()->size() == 2U &&
            inventory.try_value()->front().relative_path() == "Runtime/A.dll" &&
            inventory.try_value()->back().relative_path() == "Runtime/Z.dll" &&
            is_package_error(configurationMix, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(duplicateAlias, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(role, cue::package::PackageError::InvalidPackageManifest) &&
-           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded);
+           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
+           is_package_error(tooMany, cue::package::PackageError::PackageManifestResourceLimitExceeded);
 }
 
 /// @brief x64 PE通常／Delay Import閉包、構成Allowlist、未登録／未到達、Forwarder拒否を検証する
@@ -443,12 +479,44 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto invalidPe = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", malformed}, {"CueGameModule.dll", game}, dependencies,
         a_assertContext);
+
+    std::vector<std::byte> missingImportThunk = game;
+    write_u32(missingImportThunk, 0x200U, 0U);
+    write_u32(missingImportThunk, 0x200U + 16U, 0U);
+    auto invalidImportThunk = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", missingImportThunk},
+        dependencies, a_assertContext);
+
+    std::vector<std::byte> unterminatedImportThunk = game;
+    write_u32(unterminatedImportThunk, 0x200U, 0x1df8U);
+    write_u64(unterminatedImportThunk, 0xff8U, 0x8000000000000001ULL);
+    auto unterminatedImport = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+        {"CueGameModule.dll", unterminatedImportThunk}, dependencies, a_assertContext);
+
+    std::vector<std::byte> missingDelayThunk = localA;
+    write_u32(missingDelayThunk, 0x400U + 12U, 0U);
+    auto invalidDelayThunk = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
+        std::array{cue::package::RuntimePeImageView{"LocalA.dll", missingDelayThunk},
+                   cue::package::RuntimePeImageView{"LocalB.dll", localB}},
+        a_assertContext);
+
+    std::vector<std::byte> excessiveSections = game;
+    write_u16(excessiveSections, 0x86U, 97U);
+    auto invalidSectionCount = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", excessiveSections},
+        dependencies, a_assertContext);
     return valid && is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(hostBoundary, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(unreachable, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(forwarder, cue::package::PackageError::RuntimeDependencyViolation) &&
-           is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable);
+           is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidImportThunk, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(unterminatedImport, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidDelayThunk, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidSectionCount, cue::package::PackageError::InvalidPortableExecutable);
 }
 
 /// @brief Package Root上の存在、Size、SHA-256照合と欠落検出を検証する

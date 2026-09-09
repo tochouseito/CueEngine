@@ -22,6 +22,7 @@ inline constexpr std::uint32_t k_packageManifestSchemaVersion = 1U;
 inline constexpr std::size_t k_maximumPackageManifestBytes = 1024U * 1024U;
 inline constexpr std::size_t k_maximumPackageManifestStringBytes = 64U * 1024U;
 inline constexpr std::size_t k_maximumPackageFileEntries = 256U;
+inline constexpr std::size_t k_requiredPackageFileEntries = 5U;
 inline constexpr std::size_t k_maximumPackageRelativePathBytes = 1024U;
 inline constexpr std::size_t k_maximumPackagePathSegments = 32U;
 inline constexpr std::uint64_t k_maximumPackagedFileBytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;

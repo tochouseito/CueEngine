@@ -1101,7 +1101,7 @@ Result<std::vector<PackageFileEntry>> validate_runtime_dependency_inventory(
         return Result<std::vector<PackageFileEntry>>::failure(manifest_error(
             a_assertContext, PackageError::InvalidPackageManifest, "Runtime Dependency configuration is invalid"));
     }
-    if (a_candidates.size() > k_maximumPackageFileEntries)
+    if (a_candidates.size() > k_maximumPackageFileEntries - k_requiredPackageFileEntries)
     {
         return Result<std::vector<PackageFileEntry>>::failure(
             manifest_error(a_assertContext, PackageError::PackageManifestResourceLimitExceeded,
