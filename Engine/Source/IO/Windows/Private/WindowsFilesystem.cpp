@@ -353,12 +353,10 @@ struct NativePublishOutcome final
            actual.try_value()->entryLow == a_expected.entryLow;
 }
 
-/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と期待Destination Identityから公開状態を分類する
+/// @brief MOVEFILE_WRITE_THROUGH の失敗後も Source と Destination の可視状態から公開状態を分類する
 [[nodiscard]] NativePublishOutcome publish_with_durability(const std::wstring &a_source,
-                                                            const std::wstring &a_destination, DWORD a_flags,
-                                                            const cue::windows_io::NativeFilesystemIdentity *
-                                                                a_expectedIdentity = nullptr,
-                                                            const cue::AssertContext *a_context = nullptr) noexcept
+                                                            const std::wstring &a_destination,
+                                                            DWORD a_flags) noexcept
 {
     if (MoveFileExW(a_source.c_str(), a_destination.c_str(), a_flags | MOVEFILE_WRITE_THROUGH) != FALSE)
     {
@@ -371,11 +369,47 @@ struct NativePublishOutcome final
     const DWORD destinationAttributes = GetFileAttributesW(a_destination.c_str());
     const bool isSourceMissing = sourceAttributes == INVALID_FILE_ATTRIBUTES &&
                                  (sourceCode == ERROR_FILE_NOT_FOUND || sourceCode == ERROR_PATH_NOT_FOUND);
-    const bool destinationMatches = destinationAttributes != INVALID_FILE_ATTRIBUTES &&
-                                    (a_expectedIdentity == nullptr ||
-                                     (a_context != nullptr && matches_directory_identity(
-                                                                  a_destination, *a_expectedIdentity, *a_context)));
-    return NativePublishOutcome{isSourceMissing && destinationMatches, publishCode};
+    return NativePublishOutcome{isSourceMissing && destinationAttributes != INVALID_FILE_ATTRIBUTES, publishCode};
+}
+
+/// @brief 固定済みDirectory Handleを置換なしでRenameし失敗後はDestination Identityから公開状態を分類する
+[[nodiscard]] NativePublishOutcome publish_handle_with_durability(
+    HANDLE a_source, const std::wstring &a_destination,
+    const cue::windows_io::NativeFilesystemIdentity &a_expectedIdentity,
+    const cue::AssertContext &a_context) noexcept
+{
+    constexpr std::size_t headerSize = offsetof(FILE_RENAME_INFO, FileName);
+    constexpr std::size_t maxFileNameBytes =
+        std::numeric_limits<DWORD>::max() - headerSize - sizeof(wchar_t);
+    if (a_destination.size() > maxFileNameBytes / sizeof(wchar_t))
+    {
+        return NativePublishOutcome{false, ERROR_FILENAME_EXCED_RANGE};
+    }
+
+    const DWORD fileNameBytes = static_cast<DWORD>(a_destination.size() * sizeof(wchar_t));
+    std::vector<std::byte> storage;
+    try
+    {
+        storage.resize(headerSize + fileNameBytes + sizeof(wchar_t));
+    }
+    catch (...)
+    {
+        terminate_allocation(a_context);
+    }
+    FILE_RENAME_INFO *rename = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+    rename->ReplaceIfExists = FALSE;
+    rename->RootDirectory = nullptr;
+    rename->FileNameLength = fileNameBytes;
+    std::copy(a_destination.begin(), a_destination.end(), rename->FileName);
+
+    if (SetFileInformationByHandle(a_source, FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE)
+    {
+        return NativePublishOutcome{true, ERROR_SUCCESS};
+    }
+
+    const DWORD publishCode = GetLastError();
+    return NativePublishOutcome{
+        matches_directory_identity(a_destination, a_expectedIdentity, a_context), publishCode};
 }
 
 /// @brief UTF-8 を Strict UTF-16 へ変換して IO Error として失敗を返す
@@ -1785,9 +1819,10 @@ cue::Result<cue::StagingArea> WindowsFilesystemRoot::create_staging_area(
         if (CreateDirectoryW(full.try_value()->c_str(), nullptr) != FALSE)
         {
             UniqueHandle stagingHandle(
-                CreateFileW(full.try_value()->c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                CreateFileW(full.try_value()->c_str(), DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+                            nullptr));
             if (!stagingHandle.is_valid())
             {
                 const DWORD code = GetLastError();
@@ -1954,8 +1989,8 @@ cue::Result<void> WindowsFilesystemRoot::publish_staging_area(
             *m_assertContext, cue::IoError::PreconditionFailed,
             "Staging directory publish authorization was rejected"));
     }
-    const NativePublishOutcome publish = publish_with_durability(
-        *stagingPath.try_value(), *destinationPath.try_value(), 0, &record->second.identity, m_assertContext);
+    const NativePublishOutcome publish = publish_handle_with_durability(
+        record->second.handle.get(), *destinationPath.try_value(), record->second.identity, *m_assertContext);
     if (!publish.isPublished)
     {
         return cue::Result<void>::failure(
