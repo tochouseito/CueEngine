@@ -42,8 +42,10 @@ else()
     set(runtimeLibrary "Dll")
     set(iteratorDebugLevel 0)
 endif()
+math(EXPR compatibleFullVersion "${COMPILER_FULL_VERSION} + 1")
+math(EXPR compatibleBuild "${COMPILER_BUILD} + 1")
 file(WRITE "${metadataPath}"
-    "{\n    \"schemaVersion\": 1,\n    \"artifactId\": \"runtime-package-probe\",\n    \"projectId\": \"${projectId}\",\n    \"engineCompatibility\": {\n        \"minimum\": \"1.0.0\",\n        \"maximumExclusive\": \"2.0.0\"\n    },\n    \"abiVersion\": 1,\n    \"configuration\": \"${CONFIGURATION}\",\n    \"architecture\": \"x64\",\n    \"compilerFamily\": \"msvc\",\n    \"msvcToolset\": {\n        \"compilerVersion\": ${COMPILER_VERSION},\n        \"fullVersion\": ${COMPILER_FULL_VERSION},\n        \"build\": ${COMPILER_BUILD}\n    },\n    \"runtimeLibrary\": \"${runtimeLibrary}\",\n    \"iteratorDebugLevel\": ${iteratorDebugLevel},\n    \"moduleFile\": \"CueGameModule.dll\",\n    \"entrySymbol\": \"cue_game_module_query\"\n}\n")
+    "{\n    \"schemaVersion\": 1,\n    \"artifactId\": \"runtime-package-probe\",\n    \"projectId\": \"${projectId}\",\n    \"engineCompatibility\": {\n        \"minimum\": \"1.0.0\",\n        \"maximumExclusive\": \"2.0.0\"\n    },\n    \"abiVersion\": 1,\n    \"configuration\": \"${CONFIGURATION}\",\n    \"architecture\": \"x64\",\n    \"compilerFamily\": \"msvc\",\n    \"msvcToolset\": {\n        \"compilerVersion\": ${COMPILER_VERSION},\n        \"fullVersion\": ${compatibleFullVersion},\n        \"build\": ${compatibleBuild}\n    },\n    \"runtimeLibrary\": \"${runtimeLibrary}\",\n    \"iteratorDebugLevel\": ${iteratorDebugLevel},\n    \"moduleFile\": \"CueGameModule.dll\",\n    \"entrySymbol\": \"cue_game_module_query\"\n}\n")
 
 set(paths
     "CueRuntimeHost.exe"

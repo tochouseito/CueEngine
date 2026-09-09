@@ -707,10 +707,10 @@ template <std::size_t Size>
                 ? "Debug"
                 : (a_manifest.configuration() == cue::BuildConfiguration::Development ? "Development" : "Release");
         const bool debug = a_manifest.configuration() == cue::BuildConfiguration::Debug;
+        // _MSC_FULL_VERと_MSC_BUILDはProvenanceとして保持し、同一_MSC_VER内のServicing更新は許容する。
         if (projectId != a_manifest.project_id() || projectId != a_project.projectId || !compatibilityMatches ||
             abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || configuration != expectedConfiguration ||
             architecture != "x64" || compilerFamily != "msvc" || compilerVersion != _MSC_VER ||
-            fullVersion != _MSC_FULL_VER || build != _MSC_BUILD ||
             runtimeLibrary != (debug ? "DebugDll" : "Dll") || iteratorDebugLevel != (debug ? 2U : 0U) ||
             moduleFile != "CueGameModule.dll" || entrySymbol != "cue_game_module_query")
         {
