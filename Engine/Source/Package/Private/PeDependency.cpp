@@ -183,8 +183,8 @@ struct ThunkValidationContext final
 [[nodiscard]] std::optional<std::size_t> rva_to_offset(const PeLayout &a_layout, std::uint32_t a_rva,
                                                        std::size_t a_requiredBytes) noexcept
 {
-    if (a_rva < a_layout.sizeOfHeaders && a_rva <= a_layout.bytes.size() &&
-        a_requiredBytes <= a_layout.bytes.size() - a_rva)
+    if (a_rva < a_layout.sizeOfHeaders && a_requiredBytes <= a_layout.sizeOfHeaders - a_rva &&
+        a_rva <= a_layout.bytes.size() && a_requiredBytes <= a_layout.bytes.size() - a_rva)
     {
         return static_cast<std::size_t>(a_rva);
     }
