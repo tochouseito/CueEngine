@@ -90,6 +90,13 @@ enum class WorkflowError : std::int64_t
     return path;
 }
 
+/// @brief Package相対Pathから最後のFile Nameを借用する
+[[nodiscard]] std::string_view package_file_name(std::string_view a_relativePath) noexcept
+{
+    const std::size_t separator = a_relativePath.find_last_of('/');
+    return separator == std::string_view::npos ? a_relativePath : a_relativePath.substr(separator + 1U);
+}
+
 /// @brief 同じProject Rootから導出されたAbsolute LocatorをRoot相対Locatorへ変換する
 [[nodiscard]] std::optional<std::string> make_project_relative(std::string_view a_projectRoot,
                                                                std::string_view a_absoluteLocator)
@@ -280,6 +287,47 @@ struct GamePackageWorkflowService::Impl final
             }
             payloads.push_back(std::move(*projectPayload.try_value()));
             payloads.push_back(std::move(*scenePayload.try_value()));
+
+            const PackageFilePayload *runtimeHostPayload = nullptr;
+            const PackageFilePayload *gameModulePayload = nullptr;
+            std::vector<RuntimePeImageView> dependencyImages;
+            dependencyImages.reserve(payloads.size());
+            for (const PackageFilePayload &payload : payloads)
+            {
+                switch (payload.entry().role())
+                {
+                case PackageFileRole::RuntimeHost:
+                    runtimeHostPayload = &payload;
+                    break;
+                case PackageFileRole::GameModule:
+                    gameModulePayload = &payload;
+                    break;
+                case PackageFileRole::RuntimeDependency:
+                    dependencyImages.push_back(
+                        {package_file_name(payload.entry().relative_path()), payload.bytes()});
+                    break;
+                case PackageFileRole::GameModuleMetadata:
+                case PackageFileRole::ProjectRuntimeData:
+                case PackageFileRole::StartupSceneRuntimeData:
+                    break;
+                }
+            }
+            if (runtimeHostPayload == nullptr || gameModulePayload == nullptr)
+            {
+                return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
+                    *assertContext, WorkflowError::ArtifactMismatch,
+                    "Package PE dependency inputs are incomplete"));
+            }
+            Result<void> dependencyClosure = validate_runtime_dependency_closure(
+                a_artifact.configuration(),
+                {package_file_name(runtimeHostPayload->entry().relative_path()), runtimeHostPayload->bytes()},
+                {package_file_name(gameModulePayload->entry().relative_path()), gameModulePayload->bytes()},
+                dependencyImages, *assertContext);
+            if (!dependencyClosure)
+            {
+                return Result<PublishedRuntimePackageSnapshot>::failure(
+                    std::move(*dependencyClosure.try_error()));
+            }
 
             std::vector<PackageFileEntry> entries;
             entries.reserve(payloads.size());

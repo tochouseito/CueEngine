@@ -135,6 +135,7 @@ class ControlledRunner final : public cue::ChildProcessRunner
 struct PublisherState final
 {
     std::atomic<bool> corruptInventory = false;
+    std::atomic<bool> invalidPortableExecutable = false;
     std::atomic<std::uint32_t> calls = 0U;
 };
 
@@ -147,6 +148,44 @@ struct PublisherState final
         std::cerr << "Requirement failed at " << a_location.file_name() << ':' << a_location.line() << '\n';
     }
     return a_condition;
+}
+
+/// @brief Test PEへLittle-endian 16-bit値を書き込む
+void write_u16(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint16_t a_value) noexcept
+{
+    a_bytes[a_offset] = static_cast<std::byte>(a_value & 0xffU);
+    a_bytes[a_offset + 1U] = static_cast<std::byte>((a_value >> 8U) & 0xffU);
+}
+
+/// @brief Test PEへLittle-endian 32-bit値を書き込む
+void write_u32(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint32_t a_value) noexcept
+{
+    for (std::size_t index = 0U; index < 4U; ++index)
+    {
+        a_bytes[a_offset + index] = static_cast<std::byte>((a_value >> (index * 8U)) & 0xffU);
+    }
+}
+
+/// @brief Importを持たない最小x64 PE Test Imageを生成する
+[[nodiscard]] std::vector<std::byte> make_test_pe()
+{
+    std::vector<std::byte> bytes(0x1000U, std::byte{0U});
+    write_u16(bytes, 0U, 0x5a4dU);
+    write_u32(bytes, 0x3cU, 0x80U);
+    write_u32(bytes, 0x80U, 0x00004550U);
+    write_u16(bytes, 0x84U, 0x8664U);
+    write_u16(bytes, 0x86U, 1U);
+    write_u16(bytes, 0x94U, 240U);
+    constexpr std::size_t optional = 0x98U;
+    write_u16(bytes, optional, 0x020bU);
+    write_u32(bytes, optional + 60U, 0x200U);
+    write_u32(bytes, optional + 108U, 16U);
+    constexpr std::size_t section = 0x188U;
+    write_u32(bytes, section + 8U, 0x0e00U);
+    write_u32(bytes, section + 12U, 0x1000U);
+    write_u32(bytes, section + 16U, 0x0e00U);
+    write_u32(bytes, section + 20U, 0x200U);
+    return bytes;
 }
 
 /// @brief Build成功ArtifactをTest Rootへ実体化するPublisher
@@ -171,7 +210,8 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
 
     /// @brief 取消前なら空のExclusive Leaseを返す
     [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>> acquire_build_lease(
-        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::BuildPlan &, const cue::ChildProcessCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline) noexcept override
     {
         if (a_cancellation.is_cancel_requested())
         {
@@ -184,7 +224,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     /// @brief Operation固有Versionへ必須ArtifactとPackage対象外PDBを書きInventoryを返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
         const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
-        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
+        std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease, cue::BuildArtifactLockDeadline) noexcept override
     {
         static_cast<void>(a_buildLease);
         if (a_cancellation.is_cancel_requested())
@@ -192,7 +232,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
         }
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
-        const std::vector<std::byte> moduleBytes = text_bytes("test-game-module");
+        const std::vector<std::byte> moduleBytes =
+            m_state->invalidPortableExecutable.load(std::memory_order_acquire)
+                ? text_bytes("test-game-module")
+                : make_test_pe();
         const std::vector<std::byte> pdbBytes = text_bytes("test-debug-symbols");
         const std::vector<std::byte> metadataBytes = text_bytes("{\"schemaVersion\":1}\n");
         auto modulePayload = cue::package::PackageFilePayload::create(
@@ -327,8 +370,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     std::filesystem::create_directories(projectRoot);
     std::filesystem::create_directories(hostPath.parent_path());
     {
+        const std::vector<std::byte> hostBytes = make_test_pe();
         std::ofstream host(hostPath, std::ios::binary);
-        host << "test-runtime-host";
+        host.write(reinterpret_cast<const char *>(hostBytes.data()),
+                   static_cast<std::streamsize>(hostBytes.size()));
     }
 
     RunnerState buildRunner;
@@ -397,6 +442,20 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
 
     buildRunner.mode.store(RunnerMode::Succeed, std::memory_order_release);
+    publisher.invalidPortableExecutable.store(true, std::memory_order_release);
+    if (!require(service->retry("16234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
+    {
+        return false;
+    }
+    cue::package::PackageWorkflowSnapshot invalidPe = service->snapshot();
+    if (!require(invalidPe.state == cue::package::PackageWorkflowState::Failed && !invalidPe.package &&
+                 invalidPe.latestSuccessfulPackage &&
+                 invalidPe.latestSuccessfulPackage->destination == firstDestination))
+    {
+        return false;
+    }
+
+    publisher.invalidPortableExecutable.store(false, std::memory_order_release);
     publisher.corruptInventory.store(true, std::memory_order_release);
     if (!require(service->retry("21234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
     {
