@@ -749,9 +749,22 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 return fail("Editor Build did not complete successfully");
             }
             if (!initialSnapshot.artifact || initialSnapshot.artifact->configuration() != a_configuration ||
-                initialSnapshot.artifact->files().size() != 2U || initialSnapshot.stages.size() != 2U)
+                initialSnapshot.stages.size() != 2U)
             {
                 return fail("Editor Build did not publish the requested Game Module artifact");
+            }
+            bool hasDll = false;
+            bool hasMetadata = false;
+            bool hasPdb = false;
+            for (const cue::BuildArtifactFile &file : initialSnapshot.artifact->files())
+            {
+                hasDll = hasDll || file.relativePath == "CueGameModule.dll";
+                hasMetadata = hasMetadata || file.relativePath == "CueGameModule.metadata.json";
+                hasPdb = hasPdb || file.relativePath == "CueGameModule.pdb";
+            }
+            if (!hasDll || !hasMetadata || (a_configuration != cue::BuildConfiguration::Release && !hasPdb))
+            {
+                return fail("Editor Build Artifact inventory is incomplete");
             }
 
             const std::string_view configuration =
@@ -768,7 +781,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             if (!currentStream.is_open() || currentStream.bad() ||
                 current.find(initialSnapshot.operationId) == std::string::npos ||
                 current.find("CueGameModule.dll") == std::string::npos ||
-                current.find("CueGameModule.metadata.json") == std::string::npos)
+                current.find("CueGameModule.metadata.json") == std::string::npos ||
+                (hasPdb && current.find("CueGameModule.pdb") == std::string::npos))
             {
                 return fail("Editor Build Current manifest does not identify the published artifact");
             }

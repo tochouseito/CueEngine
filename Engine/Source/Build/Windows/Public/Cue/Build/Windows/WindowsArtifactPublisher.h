@@ -21,7 +21,8 @@ enum class WindowsBuildArtifactError : std::int64_t
     ArtifactLockFailed,
     ArtifactAlreadyExists,
     CurrentManifestFailed,
-    CurrentManifestDurabilityUnknown
+    CurrentManifestDurabilityUnknown,
+    ArtifactVersionDurabilityUnknown
 };
 
 /// @brief Project契約を所有するWindows Build Artifact Publisherを構築する

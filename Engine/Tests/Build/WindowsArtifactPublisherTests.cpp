@@ -118,6 +118,11 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     const std::filesystem::path outputDirectory = binaryDirectory / "bin" / k_configurationName;
     require(std::filesystem::create_directories(outputDirectory));
     require(std::filesystem::copy_file(a_probe, outputDirectory / "CueGameModule.dll"));
+    {
+        std::ofstream pdb(outputDirectory / "CueGameModule.pdb", std::ios::binary | std::ios::trunc);
+        pdb << "test-symbols-" << k_configurationName;
+        require(static_cast<bool>(pdb));
+    }
 
     cue::ChildProcessCancellation cancellation;
     auto lease = take_value(publisher->acquire_build_lease(plan, cancellation, std::nullopt));
@@ -149,10 +154,11 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     auto published = take_value(publisher->publish(plan, cancellation, std::move(*lease), std::nullopt));
     require(published.has_value());
     require(published->artifact_id() == plan.operation_id());
-    require(published->files().size() == 2U);
+    require(published->files().size() == 3U);
     const std::filesystem::path store = std::filesystem::path(plan.artifact_store_directory());
     const std::filesystem::path version = store / "Versions" / std::string(plan.operation_id());
     require(std::filesystem::is_regular_file(version / "CueGameModule.dll"));
+    require(std::filesystem::is_regular_file(version / "CueGameModule.pdb"));
     require(std::filesystem::is_regular_file(version / "CueGameModule.metadata.json"));
     const std::string metadata = read_text(version / "CueGameModule.metadata.json");
     require(metadata.find(std::string(k_projectId)) != std::string::npos);
@@ -164,6 +170,21 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     const std::string current = read_text(currentPath);
     require(current.find(std::string(plan.operation_id())) != std::string::npos);
     require(current.find("sha256") != std::string::npos);
+    require(current.find("CueGameModule.pdb") != std::string::npos);
+
+    if (k_configuration != cue::BuildConfiguration::Release)
+    {
+        cue::BuildPlan missingPdbPlan = make_plan(projectRoot, "31234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+        auto missingPdbLease = take_value(publisher->acquire_build_lease(missingPdbPlan, cancellation, std::nullopt));
+        require(missingPdbLease.has_value());
+        require(std::filesystem::remove(outputDirectory / "CueGameModule.pdb"));
+        require(
+            !publisher->publish(missingPdbPlan, cancellation, std::move(*missingPdbLease), std::nullopt).has_value());
+        require(read_text(currentPath) == current);
+        std::ofstream pdb(outputDirectory / "CueGameModule.pdb", std::ios::binary | std::ios::trunc);
+        pdb << "restored-test-symbols-" << k_configurationName;
+        require(static_cast<bool>(pdb));
+    }
 
     cue::BuildPlan invalidPlan = make_plan(projectRoot, "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     auto invalidLease = take_value(publisher->acquire_build_lease(invalidPlan, cancellation, std::nullopt));

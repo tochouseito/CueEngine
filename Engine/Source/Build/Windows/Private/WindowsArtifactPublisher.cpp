@@ -552,6 +552,67 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return cue::Result<void>::success();
 }
 
+/// @brief Build出力を新規Candidate FileへCopyし、File内容をFlushしてから返す
+[[nodiscard]] cue::Result<void> copy_new_file_durable(const std::filesystem::path &a_source,
+                                                      const std::filesystem::path &a_destination,
+                                                      const cue::AssertContext &a_assertContext) noexcept
+{
+    UniqueHandle source(CreateFileW(a_source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!source.is_valid())
+    {
+        return cue::Result<void>::failure(
+            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
+                               "Build artifact source could not be opened"));
+    }
+    UniqueHandle destination(CreateFileW(a_destination.c_str(), GENERIC_WRITE, 0U, nullptr, CREATE_NEW,
+                                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!destination.is_valid())
+    {
+        return cue::Result<void>::failure(
+            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
+                               "Build artifact candidate could not be created"));
+    }
+
+    std::array<std::byte, 64U * 1024U> buffer{};
+    for (;;)
+    {
+        DWORD read = 0U;
+        if (ReadFile(source.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) == FALSE)
+        {
+            return cue::Result<void>::failure(make_windows_error(a_assertContext,
+                                                                 cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                                 GetLastError(), "Build artifact source read failed"));
+        }
+        if (read == 0U)
+        {
+            break;
+        }
+        DWORD offset = 0U;
+        while (offset < read)
+        {
+            DWORD written = 0U;
+            const BOOL succeeded =
+                WriteFile(destination.get(), buffer.data() + offset, read - offset, &written, nullptr);
+            if (succeeded == FALSE || written == 0U)
+            {
+                const DWORD code = succeeded == FALSE ? GetLastError() : ERROR_WRITE_FAULT;
+                return cue::Result<void>::failure(make_windows_error(a_assertContext,
+                                                                     cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                                     code, "Build artifact candidate write failed"));
+            }
+            offset += written;
+        }
+    }
+    if (FlushFileBuffers(destination.get()) == FALSE)
+    {
+        return cue::Result<void>::failure(make_windows_error(a_assertContext,
+                                                             cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                             GetLastError(), "Build artifact candidate flush failed"));
+    }
+    return cue::Result<void>::success();
+}
+
 /// @brief Candidate DLLの公開ABIがBuild PlanとProject契約に一致するか検証する
 [[nodiscard]] cue::Result<void> validate_module(const std::filesystem::path &a_path, const cue::BuildPlan &a_plan,
                                                 std::span<const std::uint8_t, 16U> a_projectId,
@@ -800,6 +861,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                                "Build Plan path could not be converted"));
             }
             const std::filesystem::path source = *binary / "bin" / configuration / "CueGameModule.dll";
+            const std::filesystem::path sourcePdb = *binary / "bin" / configuration / "CueGameModule.pdb";
             const std::filesystem::path candidate = *candidatePath;
             std::error_code filesystemError;
             const std::filesystem::file_status sourceStatus = std::filesystem::symlink_status(source, filesystemError);
@@ -810,6 +872,27 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_FILE_INVALID,
                     "Game Module build output is not a regular file"));
             }
+            const bool requiresPdb = a_plan.profile().configuration() != cue::BuildConfiguration::Release;
+            const bool hasPdb = std::filesystem::exists(sourcePdb, filesystemError);
+            if (filesystemError || (requiresPdb && !hasPdb))
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
+                    *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                    filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_FILE_NOT_FOUND,
+                    "Required Game Module PDB build output is unavailable"));
+            }
+            if (hasPdb)
+            {
+                const std::filesystem::file_status pdbStatus =
+                    std::filesystem::symlink_status(sourcePdb, filesystemError);
+                if (filesystemError || !std::filesystem::is_regular_file(pdbStatus))
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
+                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                        filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_FILE_INVALID,
+                        "Game Module PDB build output is not a regular file"));
+                }
+            }
             if (std::filesystem::exists(candidate, filesystemError) || filesystemError ||
                 !std::filesystem::create_directories(candidate, filesystemError) || filesystemError)
             {
@@ -819,14 +902,21 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     "Operation candidate directory is unavailable"));
             }
             const std::filesystem::path candidateModule = candidate / "CueGameModule.dll";
-            if (!std::filesystem::copy_file(source, candidateModule, std::filesystem::copy_options::none,
-                                            filesystemError) ||
-                filesystemError)
+            cue::Result<void> moduleCopied = copy_new_file_durable(source, candidateModule, *m_assertContext);
+            if (!moduleCopied)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
-                    *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_FILE_EXISTS,
-                    "Game Module candidate copy failed"));
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*moduleCopied.try_error()));
+            }
+            if (hasPdb)
+            {
+                cue::Result<void> pdbCopied =
+                    copy_new_file_durable(sourcePdb, candidate / "CueGameModule.pdb", *m_assertContext);
+                if (!pdbCopied)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(*pdbCopied.try_error()));
+                }
             }
             cue::Result<void> validated = validate_module(candidateModule, a_plan, m_projectIdBytes, *m_assertContext);
             if (!validated)
@@ -846,6 +936,17 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     std::move(*metadataWritten.try_error()));
             }
             auto candidateModuleHash = hash_file(candidateModule, "CueGameModule.dll", *m_assertContext);
+            std::optional<cue::BuildArtifactFile> candidatePdbHash;
+            if (hasPdb)
+            {
+                auto hashed = hash_file(candidate / "CueGameModule.pdb", "CueGameModule.pdb", *m_assertContext);
+                if (!hashed)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(*hashed.try_error()));
+                }
+                candidatePdbHash.emplace(std::move(*hashed.try_value()));
+            }
             auto candidateMetadataHash =
                 hash_file(candidate / "CueGameModule.metadata.json", "CueGameModule.metadata.json", *m_assertContext);
             if (!candidateModuleHash)
@@ -896,14 +997,38 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
             }
-            std::filesystem::rename(candidate, version, filesystemError);
-            if (filesystemError)
+            if (MoveFileExW(candidate.c_str(), version.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
             {
+                const DWORD code = GetLastError();
+                const DWORD versionAttributes = GetFileAttributesW(version.c_str());
+                const DWORD candidateAttributes = GetFileAttributesW(candidate.c_str());
+                const DWORD candidateCode =
+                    candidateAttributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+                if (versionAttributes != INVALID_FILE_ATTRIBUTES &&
+                    (versionAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U &&
+                    candidateAttributes == INVALID_FILE_ATTRIBUTES &&
+                    (candidateCode == ERROR_FILE_NOT_FOUND || candidateCode == ERROR_PATH_NOT_FOUND))
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
+                        *m_assertContext, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown, code,
+                        "Artifact Version is visible but directory publication durability is unknown"));
+                }
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_windows_error(*m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                       filesystemError.value(), "Artifact Version could not be published"));
+                    make_windows_error(*m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, code,
+                                       "Artifact Version could not be published"));
             }
             auto versionModuleHash = hash_file(version / "CueGameModule.dll", "CueGameModule.dll", *m_assertContext);
+            std::optional<cue::BuildArtifactFile> versionPdbHash;
+            if (hasPdb)
+            {
+                auto hashed = hash_file(version / "CueGameModule.pdb", "CueGameModule.pdb", *m_assertContext);
+                if (!hashed)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(*hashed.try_error()));
+                }
+                versionPdbHash.emplace(std::move(*hashed.try_value()));
+            }
             auto versionMetadataHash =
                 hash_file(version / "CueGameModule.metadata.json", "CueGameModule.metadata.json", *m_assertContext);
             if (!versionModuleHash)
@@ -917,6 +1042,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     std::move(*versionMetadataHash.try_error()));
             }
             if (versionModuleHash.try_value()->contentHash != candidateModuleHash.try_value()->contentHash ||
+                (candidatePdbHash.has_value() &&
+                 (!versionPdbHash.has_value() || versionPdbHash->contentHash != candidatePdbHash->contentHash)) ||
                 versionMetadataHash.try_value()->contentHash != candidateMetadataHash.try_value()->contentHash)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
@@ -925,6 +1052,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             }
             std::vector<cue::BuildArtifactFile> files;
             files.push_back(std::move(*versionModuleHash.try_value()));
+            if (versionPdbHash.has_value())
+            {
+                files.push_back(std::move(*versionPdbHash));
+            }
             files.push_back(std::move(*versionMetadataHash.try_value()));
             auto inventory = cue::BuildArtifactInventory::create(a_plan, std::string(a_plan.operation_id()),
                                                                  std::move(files), *m_assertContext);
