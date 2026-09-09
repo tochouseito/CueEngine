@@ -3,13 +3,12 @@
 #include "Sha256.h"
 
 #include <Cue/Foundation/Assert.h>
+#include <Cue/Math/Scalar.h>
 #include <Cue/Package/Error.h>
 
 #include <array>
 #include <charconv>
-#include <cmath>
 #include <cstdlib>
-#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -97,8 +96,7 @@ template <typename Value> void append_number(std::string &a_output, Value a_valu
     std::to_chars_result result{};
     if constexpr (std::is_floating_point_v<Value>)
     {
-        result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), a_value, std::chars_format::general,
-                               std::numeric_limits<Value>::max_digits10);
+        result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), a_value, std::chars_format::general);
     }
     else
     {
@@ -184,6 +182,15 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
 {
     try
     {
+        const cue::Result<cue::math::Tolerance> runtimeTolerance =
+            cue::math::Tolerance::create(a_assertContext.fatal_handler(), 0.00001F, 0.00001F);
+        if (!runtimeTolerance)
+        {
+            return cue::Result<std::string>::failure(cue::package::make_package_error(
+                a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                "Runtime Transform tolerance could not be initialized"));
+        }
+
         std::string output;
         output.reserve(512U);
         output.append("{\"schemaVersion\":");
@@ -194,6 +201,14 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
         bool firstObject = true;
         for (const cue::scene::SceneObject &object : a_scene.objects())
         {
+            const cue::math::Transform &transform = object.transform();
+            if (!cue::math::is_finite(transform.translation()) || !cue::math::is_finite(transform.scale()) ||
+                !cue::math::is_unit_rotation(transform.rotation(), *runtimeTolerance.try_value()))
+            {
+                return cue::Result<std::string>::failure(cue::package::make_package_error(
+                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                    "Runtime Transform must contain finite values and a unit rotation"));
+            }
             if (!object.components().empty())
             {
                 return cue::Result<std::string>::failure(cue::package::make_package_error(
@@ -219,7 +234,7 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
             output.append(",\"active\":");
             output.append(object.is_active() ? "true" : "false");
             output.append(",\"transform\":");
-            append_transform(output, object.transform());
+            append_transform(output, transform);
             output.append(",\"components\":[]}");
             if (output.size() > cue::package::k_maximumRuntimeSceneDataBytes)
             {

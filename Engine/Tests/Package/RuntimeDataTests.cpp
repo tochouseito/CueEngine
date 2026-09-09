@@ -5,6 +5,8 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
+#include <Cue/Math/Scalar.h>
+#include <Cue/Math/Transform.h>
 #include <Cue/Package/Error.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/Scene/ComponentData.h>
@@ -193,6 +195,63 @@ template <typename Value>
                "\"parentObjectId\":\"20000000-0000-4000-8000-000000000001\"") != std::string_view::npos &&
            published.try_value()->startup_scene_data().bytes().find("\"active\":false") != std::string_view::npos &&
            published.try_value()->startup_scene_data().bytes().find("\"extensions\"") == std::string_view::npos;
+}
+
+/// @brief Runtime Transformのbinary32値が最短Round-trip表現で直列化されるか検証する
+[[nodiscard]] bool test_shortest_float_serialization(const cue::AssertContext &a_assertContext)
+{
+    auto descriptor = make_descriptor(k_sceneId, a_assertContext);
+    auto scene = make_scene(k_sceneId, a_assertContext);
+    auto objectId = cue::scene::ObjectId::parse("20000000-0000-4000-8000-000000000001", a_assertContext);
+    auto tolerance = cue::math::Tolerance::create(a_assertContext.fatal_handler(), 0.00001F, 0.00001F);
+    if (!descriptor || !scene || !objectId || !tolerance)
+    {
+        return false;
+    }
+    auto transform = cue::math::Transform::create(
+        a_assertContext.fatal_handler(), cue::math::Vector3{0.1F, -0.2F, 1.25F}, cue::math::Quaternion{},
+        cue::math::Vector3{1.0F, 1.0F, 1.0F}, *tolerance.try_value());
+    if (!transform || !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt,
+                                                     *transform.try_value()))
+    {
+        return false;
+    }
+    auto snapshot = cue::scene::create_scene_snapshot(*scene.try_value(), a_assertContext);
+    auto published =
+        snapshot ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
+                                                              a_assertContext)
+                 : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(std::move(*snapshot.try_error()));
+    return published && published.try_value()->startup_scene_data().bytes().find(
+                            "\"translation\":[0.1,-0.2,1.25]") != std::string_view::npos;
+}
+
+/// @brief 緩い生成Toleranceを通過した非単位QuaternionをPublisher境界で拒否するか検証する
+[[nodiscard]] bool test_runtime_rotation_revalidated(const cue::AssertContext &a_assertContext)
+{
+    auto descriptor = make_descriptor(k_sceneId, a_assertContext);
+    auto scene = make_scene(k_sceneId, a_assertContext);
+    auto objectId = cue::scene::ObjectId::parse("20000000-0000-4000-8000-000000000001", a_assertContext);
+    auto permissiveTolerance = cue::math::Tolerance::create(a_assertContext.fatal_handler(), 1.0F, 1.0F);
+    if (!descriptor || !scene || !objectId || !permissiveTolerance)
+    {
+        return false;
+    }
+    auto transform = cue::math::Transform::create(
+        a_assertContext.fatal_handler(), cue::math::Vector3{}, cue::math::Quaternion{0.0F, 0.0F, 0.0F, 2.0F},
+        cue::math::Vector3{1.0F, 1.0F, 1.0F}, *permissiveTolerance.try_value());
+    if (!transform || !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt,
+                                                     *transform.try_value()))
+    {
+        return false;
+    }
+    auto snapshot = cue::scene::create_scene_snapshot(*scene.try_value(), a_assertContext);
+    if (!snapshot)
+    {
+        return false;
+    }
+    auto published = cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
+                                                                a_assertContext);
+    return has_package_error(published, cue::package::PackageError::UnsupportedRuntimeSceneData);
 }
 
 /// @brief Runtime Scene v1が既知Componentも省略せずPublication全体で拒否するか検証する
@@ -427,7 +486,8 @@ int main()
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     return test_sha256_vector() && test_deterministic_empty_scene(assertContext) &&
-                   test_runtime_object_projection(assertContext) && test_known_component_rejected(assertContext) &&
+                   test_runtime_object_projection(assertContext) && test_shortest_float_serialization(assertContext) &&
+                   test_runtime_rotation_revalidated(assertContext) && test_known_component_rejected(assertContext) &&
                    test_asset_reference_rejected(assertContext) && test_opaque_component_rejected(assertContext) &&
                    test_startup_scene_contract(assertContext)
                ? 0
