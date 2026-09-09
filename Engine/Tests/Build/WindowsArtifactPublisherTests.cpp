@@ -200,7 +200,9 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
                               const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path parent =
-        a_probe.parent_path() / ("CueBuildArtifactReparse-" + std::string(k_configurationName));
+        std::filesystem::temp_directory_path() /
+        ("CueBuildArtifactReparse-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::string(k_configurationName));
     const std::filesystem::path project = parent / "Project";
     const std::filesystem::path outside = parent / "Outside";
     std::error_code error;
@@ -268,7 +270,9 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
                                      const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path projectRoot =
-        a_probe.parent_path() / ("CueBuildArtifactPublisherTests-" + std::string(k_configurationName));
+        std::filesystem::temp_directory_path() /
+        ("CueBuildArtifactPublisherTests-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::string(k_configurationName));
     std::error_code error;
     std::filesystem::remove_all(projectRoot, error);
     require(!error);
