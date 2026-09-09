@@ -146,6 +146,35 @@ M16は一般Asset Cookではなく、二つのVersion付きCanonical JSONを生�
 | `Data/CueProject.runtime.json` | Runtime Project Data | schema version、ProjectId、Engine Compatibility、Required Capability、Startup SceneAssetId |
 | `Data/Scenes/<scene-asset-id>.cueruntime.json` | Runtime Scene Data | schema version、SceneAssetId、ObjectId、Hierarchy、Active、Core Transform、実体化可能なComponent Data |
 
+Runtime Project Data schema version 1の完全なWire Objectを次に固定する。UTF-8、BOMなし、LF、末尾改行ありとし、
+Writerは例示順でMemberを出力する。ReaderもM16ではこのCanonical Member順だけを受理し、未知Member、欠落、重複、末尾Dataを拒否する。
+
+```json
+{"schemaVersion":1,"projectId":"12345678-1234-4abc-8def-1234567890ab","engineCompatibility":{"minimum":"1.0.0","maximumExclusive":"2.0.0"},"requiredCapabilities":[],"startupSceneAssetId":"22345678-1234-4abc-8def-1234567890ab"}
+```
+
+- `schemaVersion`はJSON整数`1`だけを受理する
+- `projectId`と`startupSceneAssetId`はlowercase UUID v4とし、nilを拒否する
+- `engineCompatibility.minimum`はCanonical `major.minor.patch`文字列とする
+- `engineCompatibility.maximumExclusive`は、minimumより大きいCanonical Version文字列または`null`とする
+- `requiredCapabilities`は将来予約であり、version 1では空Arrayだけを受理する
+
+Runtime Scene Data schema version 1の完全なWire Objectを次に固定する。空白、Encoding、Member検証はRuntime Project Dataと同じとする。
+
+```json
+{"schemaVersion":1,"sceneAssetId":"22345678-1234-4abc-8def-1234567890ab","objects":[{"objectId":"32345678-1234-4abc-8def-1234567890ab","parentObjectId":null,"active":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":[{"componentInstanceId":"42345678-1234-4abc-8def-1234567890ab","typeId":"52345678-1234-4abc-8def-1234567890ab","schemaVersion":1,"fields":[{"fieldId":1,"kind":"boolean","value":true}]}]}]}
+```
+
+- `sceneAssetId`、`objectId`、`componentInstanceId`、`typeId`はlowercase UUID v4とし、nilを拒否する
+- `objects`は`ObjectId`のByte辞書順、`components`は`ComponentInstanceId`順、`fields`は符号なし`fieldId`昇順とする
+- `parentObjectId`は同じ`objects`内の別Object IDまたは`null`とし、循環、自己Parent、欠損Parentを拒否する
+- `active`はJSON booleanとする
+- `translation`、`rotation`、`scale`はそれぞれ3、4、3個の有限JSON numberとする。Writerはlocale非依存の最短round-trip表現を使用する
+- `schemaVersion`と`fieldId`は正のJSON整数とし、それぞれComponent Schema Version、Field Identityを表す
+- `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
+- `assetReference`の`value`はM16ではPublisherが理解できる登録済みTokenだけを許可する。一般Asset DatabaseのIdentity契約は確定しない
+- RuntimeHost v1が登録していないComponent Type、Schema Version、Field、Asset Referenceを含む場合、WriterまたはReaderは省略せず`UnsupportedRuntimeSceneData`で拒否する
+
 Runtime Data WriterはRaw Source Byte列をCopyせず、検証済みProject Modelと`SceneDocumentSnapshot`から新しいWire表現を生成する。
 Runtime SceneはAuthoring FileのExtension、Editor状態、未知Extension、Undo履歴、Locator、保存用Migration情報を含めない。
 `ObjectId`は診断と`SceneInstance` Mappingのため維持するが、Runtime `EntityHandle`を保存しない。
@@ -231,7 +260,8 @@ Entryは`path`のUTF-8 Byte昇順で整列する。同一Pathの重複、ASCII c
 Manifest自身は自己参照Hashを避けるため`files`へ含めない。
 
 Game Module MetadataのProjectId、Configuration、Architecture、ABI、Toolset、Runtime Libraryと、Manifest、RuntimeHostの期待値を
-DLL Load前に一致させる。Runtime Project DataとRuntime Scene DataのProjectId／SceneAssetIdもManifestと一致させる。
+DLL Load前に一致させる。Runtime Project DataのProjectId／Startup SceneAssetId、Runtime Scene DataのSceneAssetIdをManifestと
+一致させる。Runtime Scene Data version 1はProjectIdを重複保存しない。
 
 ### Resource Limits
 
@@ -276,6 +306,12 @@ OSが提供するSystem DLLはPackage Entryにしない。App-local DLLが必要
 `runtimeDependency`としてHash／Sizeを記録する。未知または不足したDependencyを起動時のOS Search Pathへ委ねず、Publish前に失敗する。
 Debugと非DebugのRuntime Libraryを同じManifestへ混在させない。
 
+`CueRuntimeHost.exe`のLoad-time ImportはWindows System DLLだけに限定する。Host自身がApp-local DLLを直接Importしている場合、
+Windows LoaderはManifest検証や`Runtime` Directory登録より前に解決を要求するため、M16 Publisherはその構成をPackageせず失敗させる。
+Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryをProcess-localな
+DLL検索Directoryへ登録する。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
+静的Bootstrapを別ADRで決定する。
+
 新しい第三者LibraryをRuntime Dependencyへ追加またはVersion更新する場合は、AGENTS.mdの承認、vcpkg Manifest、License、Notice契約を
 別Issueで満たす。本ADRは新しい外部Library導入を承認しない。
 
@@ -312,11 +348,13 @@ Publisherは最終DestinationのSiblingにOperation-owned Staging Directoryを�
 1. Destinationが存在しないことを確認する
 2. 一意なSibling StagingをOperationが作成する
 3. Runtime Dataを生成し、Game Artifact、RuntimeHost、DependencyをCopyする
-4. Manifestを最後にStagingへ書く
-5. Staging内の全EntryをManifestから再読込し、Size、Hash、Identity、Compatibilityを検証する
-6. Destination不存在を再確認する
-7. Staging Directoryを置換なしの同一Volume RenameでDestinationへ一度だけ公開する
-8. 公開済みDestinationからManifestと全Entryを再検証し、Publish Outcomeを確定する
+4. 各Fileを閉じる前にWriteと`FlushFileBuffers`の成功を確認する。失敗時はStagingだけをRollbackする
+5. Manifestを最後にStagingへ書き、同様にFile内容をFlushする
+6. Staging内の全EntryをManifestから再読込し、Size、Hash、Identity、Compatibilityを検証する
+7. Destination不存在を再確認する
+8. ADR-0014のWrite-through境界を満たす置換なしの同一Volume RenameでStaging DirectoryをDestinationへ一度だけ公開する
+9. Rename APIの失敗時は固定済みStaging IdentityがSource、Destinationのどちらに存在するか事後確認し、公開状態を推測しない
+10. 公開済みDestinationからManifestと全Entryを再検証し、Publish Outcomeを確定する
 
 既存DestinationがFile、Directory、Reparse Pointのいずれでも、暗黙Merge、削除、Rename、上書きを行わず`DestinationExists`で失敗する。
 別の最終名を選ぶ操作は呼び出し側が明示する。Operation IDまたはTimestampをPackage Contentへ保存しない。
@@ -327,10 +365,11 @@ Cancelは最終Rename直前まで受理し、StagingだけをCleanupする。Ren
 
 Publish OutcomeはADR-0014と同じ分類を使用する。
 
-- `Committed`: Destinationを再読込して完全性を確認し、Package成功として記録できる
+- `Committed`: 全FileのFlush、Write-through Rename、Destination再読込による完全性確認に成功し、Package成功として記録できる
 - `NotPublished`: Destinationは公開されず、以前の成功Package記録を維持する
-- `PublishedButDurabilityUnknown`: Destinationが可視な可能性があり、成功として自動Runしない。可視状態を再検証して診断へ記録し、
-  旧Packageが維持された、または新版が失敗したと推測しない
+- `PublishedButDurabilityUnknown`: Renameの耐久性を確認できない、またはRename成功後のManifest／Entry再検証に失敗して、
+  Destinationが可視でも安全な成功Packageと確定できない。成功として自動Runせず、確認できた可視状態を診断へ記録する。
+  通常の再検証失敗も公開後である以上このOutcomeへ含め、`NotPublished`へ分類したり自動Rollbackしたりしない
 
 最後に成功したPackage LocatorとManifest SummaryはEditor SessionまたはUser Workspace側の再生成可能な状態として保持できるが、
 Project Descriptor、Source Scene、Package ManifestへMachine絶対Pathを書き戻さない。
