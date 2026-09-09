@@ -26,10 +26,11 @@ set(scenePath "${stagingRoot}/${sceneRelativePath}")
 set(metadataPath "${stagingRoot}/Game/CueGameModule.metadata.json")
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
-file(MAKE_DIRECTORY "${stagingRoot}/Data/Scenes" "${stagingRoot}/Game" "${workingRoot}")
+file(MAKE_DIRECTORY "${stagingRoot}/Data/Scenes" "${stagingRoot}/Game" "${stagingRoot}/Runtime" "${workingRoot}")
 file(WRITE "${workingRoot}/CuePackage.json" "{\"schemaVersion\":999}\n")
 file(COPY_FILE "${TEST_EXECUTABLE}" "${stagingRoot}/CueRuntimeHost.exe" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${MODULE_LIBRARY}" "${stagingRoot}/Game/CueGameModule.dll" ONLY_IF_DIFFERENT)
+file(COPY_FILE "${MODULE_LIBRARY}" "${stagingRoot}/Runtime/ProbeDependency.dll" ONLY_IF_DIFFERENT)
 
 file(WRITE "${projectPath}"
     "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineCompatibility\":{\"minimum\":\"1.0.0\",\"maximumExclusive\":\"2.0.0\"},\"requiredCapabilities\":[],\"startupSceneAssetId\":\"${sceneId}\"}\n")
@@ -54,6 +55,7 @@ set(paths
     "${sceneRelativePath}"
     "Game/CueGameModule.dll"
     "Game/CueGameModule.metadata.json"
+    "Runtime/ProbeDependency.dll"
 )
 set(roles
     "runtimeHost"
@@ -61,6 +63,7 @@ set(roles
     "startupSceneRuntimeData"
     "gameModule"
     "gameModuleMetadata"
+    "runtimeDependency"
 )
 function(write_package_manifest packageDirectory projectSizeOverride metadataSizeOverride)
     set(filesJson "")
@@ -129,6 +132,31 @@ if(NOT unicodePackageResult EQUAL 0)
         "Runtime Package failed from a non-ACP Unicode path\n${unicodePackageOutput}\n${unicodePackageError}")
 endif()
 file(RENAME "${unicodePackageRoot}" "${packageRoot}")
+
+set(longPathSegment "0123456789abcdef0123456789abcdef0123456789abcdef")
+set(longPackageParent
+    "${TEST_ROOT}/LongPath/${longPathSegment}/${longPathSegment}/${longPathSegment}/${longPathSegment}")
+set(longPackageRoot "${longPackageParent}/RelocatedPackage")
+set(longRuntimeExecutable "${longPackageRoot}/CueRuntimeHost.exe")
+string(LENGTH "${longRuntimeExecutable}" longRuntimeExecutableLength)
+if(longRuntimeExecutableLength LESS_EQUAL 260)
+    message(FATAL_ERROR "Long-path Runtime Package fixture did not exceed MAX_PATH")
+endif()
+file(MAKE_DIRECTORY "${longPackageParent}")
+file(RENAME "${packageRoot}" "${longPackageRoot}")
+execute_process(
+    COMMAND "${longRuntimeExecutable}" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE longPathPackageResult
+    OUTPUT_VARIABLE longPathPackageOutput
+    ERROR_VARIABLE longPathPackageError
+    TIMEOUT 15
+)
+if(NOT longPathPackageResult EQUAL 0)
+    message(FATAL_ERROR
+        "Runtime Package failed from a path longer than MAX_PATH\n${longPathPackageOutput}\n${longPathPackageError}")
+endif()
+file(RENAME "${longPackageRoot}" "${packageRoot}")
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=reserved-api-tail"
@@ -358,7 +386,7 @@ if(unlistedRuntimeResult EQUAL 0)
     message(FATAL_ERROR
         "Manifest-external Runtime dependency was accepted\n${unlistedRuntimeOutput}\n${unlistedRuntimeError}")
 endif()
-file(REMOVE_RECURSE "${packageRoot}/Runtime")
+file(REMOVE "${packageRoot}/Runtime/Unlisted.dll")
 
 file(APPEND "${packageRoot}/Data/CueProject.runtime.json" "tampered")
 execute_process(
