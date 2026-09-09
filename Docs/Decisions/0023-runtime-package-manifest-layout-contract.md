@@ -172,7 +172,8 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
   strict ascending orderとし、重複をReader／Writerとも`UnsupportedRuntimeSceneData`で拒否する
 - `parentObjectId`は同じ`objects`内の別Object IDまたは`null`とし、循環、自己Parent、欠損Parentを拒否する
 - `active`はJSON booleanとする
-- `translation`、`rotation`、`scale`はそれぞれ3、4、3個の有限JSON numberとする。Writerはlocale非依存の最短round-trip表現を使用する
+- `translation`、`rotation`、`scale`はそれぞれ3、4、3個の、有限IEEE 754 binary32へround-trip可能なJSON numberとする。
+  Writerはlocale非依存の最短round-trip表現を使用し、Readerはbinary32のoverflow、NaN、Infinityを拒否する
 - `schemaVersion`と`fieldId`は`1`以上`4294967295`以下のJSON整数とし、それぞれ`uint32_t`のComponent Schema Version、
   Field Identityを表す。範囲外、符号、小数表現を拒否する
 - `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
