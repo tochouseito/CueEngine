@@ -311,7 +311,9 @@ App-local Runtime Fileを入力にする。CollectorはPublish前にGame Module�
 Delay-load Importの直接・推移閉包を構築する。Import名はASCII case-insensitiveで比較し、System DLL／許可済みMSVC Runtimeを除く各Importが、
 明示登録された`Runtime/`直下Fileへ一意に対応することを要求する。対応FileのPE Headerを同じ規則で再帰検査し、Cycleは検査済み集合で
 打ち切る。Import Tableが不正、対象Architecture不一致、同名Alias、未登録Import、登録済みだが閉包から到達しないFile、または閉包計算に
-失敗した場合はPackage Publish前に拒否する。検査対象FileはBuild Artifactおよび明示登録Dependencyの検証済みHandleから読み、OS Loaderや
+失敗した場合はPackage Publish前に拒否する。M16 CollectorはExport Forwarderの依存Edgeを解決しないため、Game ModuleまたはApp-local
+Runtime FileのPE Export DirectoryにForwarder RVAが一件でもあれば、転送先がSystem DLLかを推測せずPackage Publish前に拒否する。
+検査対象FileはBuild Artifactおよび明示登録Dependencyの検証済みHandleから読み、OS Loaderや
 検索Pathによる解決結果を入力にしない。Project Directory、`PATH`全体、Windows System Directory、Visual Studio Installation、vcpkg
 Install Treeを再帰探索しない。
 
