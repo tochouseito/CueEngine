@@ -487,6 +487,12 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", missingImportThunk},
         dependencies, a_assertContext);
 
+    std::vector<std::byte> shortImportAddressTable = game;
+    write_u64(shortImportAddressTable, 0x800U, 0U);
+    auto mismatchedImportThunkCount = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+        {"CueGameModule.dll", shortImportAddressTable}, dependencies, a_assertContext);
+
     std::vector<std::byte> unterminatedImportThunk = game;
     write_u32(unterminatedImportThunk, 0x200U, 0x1df8U);
     write_u64(unterminatedImportThunk, 0xff8U, 0x8000000000000001ULL);
@@ -502,6 +508,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
                    cue::package::RuntimePeImageView{"LocalB.dll", localB}},
         a_assertContext);
 
+    std::vector<std::byte> shortDelayAddressTable = localA;
+    write_u64(shortDelayAddressTable, 0xa00U, 0U);
+    auto mismatchedDelayThunkCount = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
+        std::array{cue::package::RuntimePeImageView{"LocalA.dll", shortDelayAddressTable},
+                   cue::package::RuntimePeImageView{"LocalB.dll", localB}},
+        a_assertContext);
+
     std::vector<std::byte> excessiveSections = game;
     write_u16(excessiveSections, 0x86U, 97U);
     auto invalidSectionCount = cue::package::validate_runtime_dependency_closure(
@@ -514,8 +528,10 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(forwarder, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidImportThunk, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(mismatchedImportThunkCount, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(unterminatedImport, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidDelayThunk, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(mismatchedDelayThunkCount, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidSectionCount, cue::package::PackageError::InvalidPortableExecutable);
 }
 

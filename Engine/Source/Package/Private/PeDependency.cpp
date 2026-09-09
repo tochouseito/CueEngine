@@ -52,6 +52,18 @@ struct ParsedPeImage final
     bool hasExportForwarder = false;
 };
 
+struct ValidatedThunkTable final
+{
+    std::uint32_t rva = 0U;
+    std::size_t entryCount = 0U;
+};
+
+struct ThunkValidationContext final
+{
+    std::vector<ValidatedThunkTable> tables;
+    std::size_t remainingEntries = k_maximumImportThunkEntries;
+};
+
 /// @brief PE解析中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_pe_exception(const cue::AssertContext &a_assertContext) noexcept
 {
@@ -231,36 +243,47 @@ struct ParsedPeImage final
     return false;
 }
 
-/// @brief PE32+ Import Thunk TableがImage内でNUL終端されることを検証する
-[[nodiscard]] bool validate_import_thunk_table(const PeLayout &a_layout, std::uint32_t a_tableRva) noexcept
+/// @brief PE32+ Import Thunk TableをRVA単位で一度だけ走査しEntry数を返す
+[[nodiscard]] std::optional<std::size_t> validate_import_thunk_table(
+    const PeLayout &a_layout, std::uint32_t a_tableRva, ThunkValidationContext &a_context)
 {
     if (a_tableRva == 0U)
     {
-        return false;
+        return std::nullopt;
     }
-    for (std::size_t index = 0U; index < k_maximumImportThunkEntries; ++index)
+    const auto cached = std::ranges::find_if(
+        a_context.tables, [a_tableRva](const ValidatedThunkTable &a_table) noexcept
+        { return a_table.rva == a_tableRva; });
+    if (cached != a_context.tables.end())
+    {
+        return cached->entryCount;
+    }
+    for (std::size_t index = 0U; a_context.remainingEntries > 0U; ++index)
     {
         const std::uint64_t delta = index * 8ULL;
         if (delta > (std::numeric_limits<std::uint32_t>::max)() - a_tableRva)
         {
-            return false;
+            return std::nullopt;
         }
+        --a_context.remainingEntries;
         const auto offset = rva_to_offset(a_layout, a_tableRva + static_cast<std::uint32_t>(delta), 8U);
         std::uint64_t thunk = 0U;
         if (!offset || !read_u64(a_layout.bytes, *offset, thunk))
         {
-            return false;
+            return std::nullopt;
         }
         if (thunk == 0U)
         {
-            return true;
+            a_context.tables.push_back({a_tableRva, index});
+            return index;
         }
     }
-    return false;
+    return std::nullopt;
 }
 
 /// @brief 通常Import DirectoryのDLL名を列挙する
-[[nodiscard]] bool append_import_directory(const PeLayout &a_layout, std::vector<std::string> &a_imports)
+[[nodiscard]] bool append_import_directory(const PeLayout &a_layout, std::vector<std::string> &a_imports,
+                                           ThunkValidationContext &a_context)
 {
     if (a_layout.importDirectory.rva == 0U)
     {
@@ -293,9 +316,11 @@ struct ParsedPeImage final
             return true;
         }
         const std::uint32_t lookupTableRva = fields[0] != 0U ? fields[0] : fields[4];
+        const auto lookupCount = validate_import_thunk_table(a_layout, lookupTableRva, a_context);
+        const auto addressCount = validate_import_thunk_table(a_layout, fields[4], a_context);
         std::string name;
-        if (fields[3] == 0U || fields[4] == 0U || !validate_import_thunk_table(a_layout, lookupTableRva) ||
-            (lookupTableRva != fields[4] && !validate_import_thunk_table(a_layout, fields[4])) ||
+        if (fields[3] == 0U || !lookupCount || *lookupCount == 0U || !addressCount ||
+            *addressCount != *lookupCount ||
             !read_import_name(a_layout, fields[3], name))
         {
             return false;
@@ -306,7 +331,8 @@ struct ParsedPeImage final
 }
 
 /// @brief Delay-load Import DirectoryのDLL名を列挙する
-[[nodiscard]] bool append_delay_import_directory(const PeLayout &a_layout, std::vector<std::string> &a_imports)
+[[nodiscard]] bool append_delay_import_directory(const PeLayout &a_layout, std::vector<std::string> &a_imports,
+                                                 ThunkValidationContext &a_context)
 {
     if (a_layout.delayImportDirectory.rva == 0U)
     {
@@ -341,11 +367,23 @@ struct ParsedPeImage final
         }
         std::string name;
         if (fields[0] != 1U || fields[1] == 0U || fields[2] == 0U ||
-            !rva_to_offset(a_layout, fields[2], 8U) || fields[3] == 0U || fields[4] == 0U ||
-            !validate_import_thunk_table(a_layout, fields[3]) ||
-            !validate_import_thunk_table(a_layout, fields[4]) ||
-            (fields[5] != 0U && !validate_import_thunk_table(a_layout, fields[5])) ||
-            (fields[6] != 0U && !validate_import_thunk_table(a_layout, fields[6])) ||
+            !rva_to_offset(a_layout, fields[2], 8U) || fields[3] == 0U || fields[4] == 0U)
+        {
+            return false;
+        }
+        const auto addressCount = validate_import_thunk_table(a_layout, fields[3], a_context);
+        const auto lookupCount = validate_import_thunk_table(a_layout, fields[4], a_context);
+        if (!lookupCount || *lookupCount == 0U || !addressCount || *addressCount != *lookupCount)
+        {
+            return false;
+        }
+        const auto boundCount = fields[5] == 0U
+                                    ? std::optional<std::size_t>(*lookupCount)
+                                    : validate_import_thunk_table(a_layout, fields[5], a_context);
+        const auto unloadCount = fields[6] == 0U
+                                     ? std::optional<std::size_t>(*lookupCount)
+                                     : validate_import_thunk_table(a_layout, fields[6], a_context);
+        if (!boundCount || *boundCount != *lookupCount || !unloadCount || *unloadCount != *lookupCount ||
             !read_import_name(a_layout, fields[1], name))
         {
             return false;
@@ -411,8 +449,9 @@ struct ParsedPeImage final
 [[nodiscard]] bool parse_pe_image(std::span<const std::byte> a_bytes, ParsedPeImage &a_output)
 {
     PeLayout layout;
-    if (!parse_layout(a_bytes, layout) || !append_import_directory(layout, a_output.imports) ||
-        !append_delay_import_directory(layout, a_output.imports) ||
+    ThunkValidationContext thunkContext;
+    if (!parse_layout(a_bytes, layout) || !append_import_directory(layout, a_output.imports, thunkContext) ||
+        !append_delay_import_directory(layout, a_output.imports, thunkContext) ||
         !inspect_export_forwarders(layout, a_output.hasExportForwarder))
     {
         return false;
