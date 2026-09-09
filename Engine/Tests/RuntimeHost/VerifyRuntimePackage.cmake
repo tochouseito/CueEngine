@@ -114,6 +114,37 @@ foreach(requiredMessage IN ITEMS
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=reserved-api-tail"
+        "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE reservedApiResult
+    OUTPUT_VARIABLE reservedApiOutput
+    ERROR_VARIABLE reservedApiError
+    TIMEOUT 15
+)
+set(reservedApiCombined "${reservedApiOutput}\n${reservedApiError}")
+string(FIND "${reservedApiCombined}" "Game Module API identity or lifecycle is incompatible"
+    reservedApiMessagePosition)
+if(reservedApiResult EQUAL 0 OR reservedApiMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-zero Game Module API reserved tail was accepted\n${reservedApiCombined}")
+endif()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=invalid-system-id"
+        "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE invalidSystemIdResult
+    OUTPUT_VARIABLE invalidSystemIdOutput
+    ERROR_VARIABLE invalidSystemIdError
+    TIMEOUT 15
+)
+set(invalidSystemIdCombined "${invalidSystemIdOutput}\n${invalidSystemIdError}")
+string(FIND "${invalidSystemIdCombined}" "Game Module registration failed" invalidSystemIdMessagePosition)
+if(invalidSystemIdResult EQUAL 0 OR invalidSystemIdMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Invalid UTF-8 Runtime System ID was accepted\n${invalidSystemIdCombined}")
+endif()
+
 file(COPY_FILE "${packageRoot}/CueRuntimeHost.exe" "${packageRoot}/RenamedRuntimeHost.exe" ONLY_IF_DIFFERENT)
 execute_process(
     COMMAND "${packageRoot}/RenamedRuntimeHost.exe" --package-smoke-test
@@ -189,6 +220,37 @@ string(FIND "${invalidArtifactIdCombined}" "Game Module Metadata header is inval
 if(invalidArtifactIdResult EQUAL 0 OR invalidArtifactIdMessagePosition EQUAL -1)
     message(FATAL_ERROR "Non-canonical Metadata artifactId was accepted\n${invalidArtifactIdCombined}")
 endif()
+file(WRITE "${packageMetadataPath}" "${validMetadata}")
+write_package_manifest("${packageRoot}" "" "")
+
+foreach(toolsetField IN ITEMS compilerVersion fullVersion build)
+    if(toolsetField STREQUAL "compilerVersion")
+        set(validToolsetValue "${COMPILER_VERSION}")
+    elseif(toolsetField STREQUAL "fullVersion")
+        set(validToolsetValue "${compatibleFullVersion}")
+    else()
+        set(validToolsetValue "${compatibleBuild}")
+    endif()
+    string(REPLACE "\"${toolsetField}\": ${validToolsetValue}"
+        "\"${toolsetField}\": 9007199254740992" outOfRangeMetadata "${validMetadata}")
+    file(WRITE "${packageMetadataPath}" "${outOfRangeMetadata}")
+    write_package_manifest("${packageRoot}" "" "")
+    execute_process(
+        COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE outOfRangeToolsetResult
+        OUTPUT_VARIABLE outOfRangeToolsetOutput
+        ERROR_VARIABLE outOfRangeToolsetError
+        TIMEOUT 15
+    )
+    set(outOfRangeToolsetCombined "${outOfRangeToolsetOutput}\n${outOfRangeToolsetError}")
+    string(FIND "${outOfRangeToolsetCombined}" "Game Module Metadata body is invalid"
+        outOfRangeToolsetMessagePosition)
+    if(outOfRangeToolsetResult EQUAL 0 OR outOfRangeToolsetMessagePosition EQUAL -1)
+        message(FATAL_ERROR
+            "Out-of-range Metadata ${toolsetField} was accepted\n${outOfRangeToolsetCombined}")
+    endif()
+endforeach()
 file(WRITE "${packageMetadataPath}" "${validMetadata}")
 write_package_manifest("${packageRoot}" "" "")
 

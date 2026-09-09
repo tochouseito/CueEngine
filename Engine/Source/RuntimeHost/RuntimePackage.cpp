@@ -46,6 +46,7 @@ namespace
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
 constexpr std::size_t k_maximumRuntimeSystems = 256U;
 constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
+constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 
 /// @brief lowercase hexadecimal文字か判定する
 [[nodiscard]] bool is_lower_hex(char a_value) noexcept
@@ -67,6 +68,65 @@ constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
         {
             return false;
         }
+    }
+    return true;
+}
+
+/// @brief UTF-8 Byte列がUnicode Scalar Valueの正規Encodingだけを含むか返す
+[[nodiscard]] bool is_valid_utf8(std::string_view a_text) noexcept
+{
+    std::size_t offset = 0U;
+    while (offset < a_text.size())
+    {
+        const auto first = static_cast<unsigned char>(a_text[offset]);
+        if (first <= 0x7fU)
+        {
+            ++offset;
+            continue;
+        }
+        std::size_t length = 0U;
+        std::uint32_t value = 0U;
+        std::uint32_t minimum = 0U;
+        if (first >= 0xc2U && first <= 0xdfU)
+        {
+            length = 2U;
+            value = first & 0x1fU;
+            minimum = 0x80U;
+        }
+        else if (first >= 0xe0U && first <= 0xefU)
+        {
+            length = 3U;
+            value = first & 0x0fU;
+            minimum = 0x800U;
+        }
+        else if (first >= 0xf0U && first <= 0xf4U)
+        {
+            length = 4U;
+            value = first & 0x07U;
+            minimum = 0x10000U;
+        }
+        else
+        {
+            return false;
+        }
+        if (offset + length > a_text.size())
+        {
+            return false;
+        }
+        for (std::size_t index = 1U; index < length; ++index)
+        {
+            const auto continuation = static_cast<unsigned char>(a_text[offset + index]);
+            if ((continuation & 0xc0U) != 0x80U)
+            {
+                return false;
+            }
+            value = (value << 6U) | (continuation & 0x3fU);
+        }
+        if (value < minimum || value > 0x10ffffU || (value >= 0xd800U && value <= 0xdfffU))
+        {
+            return false;
+        }
+        offset += length;
     }
     return true;
 }
@@ -720,7 +780,8 @@ template <std::size_t Size>
             !cursor.member("iteratorDebugLevel") || !cursor.unsigned_number(iteratorDebugLevel) ||
             !cursor.consume(',') || !cursor.member("moduleFile") || !cursor.string(moduleFile) ||
             !cursor.consume(',') || !cursor.member("entrySymbol") || !cursor.string(entrySymbol) ||
-            !cursor.consume('}') || !cursor.finished())
+            !cursor.consume('}') || !cursor.finished() || compilerVersion > k_maximumJsonInteger ||
+            fullVersion > k_maximumJsonInteger || build > k_maximumJsonInteger)
         {
             return cue::Result<void>::failure(package_error(a_assertContext,
                                                             cue::package::PackageError::InvalidRuntimeData,
@@ -925,13 +986,18 @@ CueGameModuleResult CUE_GAME_MODULE_CALL reject_component_registration(
 [[nodiscard]] bool copy_utf8_view(const CueGameUtf8ViewV1 &a_view, std::string &a_output)
 {
     if (a_view.structSize < sizeof(CueGameUtf8ViewV1) || a_view.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
-        a_view.size > cue::package::k_maximumPackageManifestStringBytes ||
-        (a_view.size != 0U && a_view.data == nullptr))
+        a_view.size == 0U || a_view.size > cue::package::k_maximumPackageManifestStringBytes ||
+        a_view.data == nullptr)
     {
         return false;
     }
-    a_output.assign(a_view.data == nullptr ? "" : a_view.data, static_cast<std::size_t>(a_view.size));
-    return !a_output.empty();
+    const std::string_view text(a_view.data, static_cast<std::size_t>(a_view.size));
+    if (!is_valid_utf8(text))
+    {
+        return false;
+    }
+    a_output.assign(text);
+    return true;
 }
 
 /// @brief Game Module System DescriptorとCallbackをHost所有定義へCopy登録する
@@ -1639,6 +1705,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         if (api.structSize < sizeof(CueGameModuleApiV1) || api.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
             api.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || api.configuration != host_module_configuration() ||
             api.architecture != CUE_GAME_MODULE_ARCHITECTURE_X64 || api.reserved != 0U ||
+            api.reservedTail[0] != 0U || api.reservedTail[1] != 0U || api.reservedTail[2] != 0U ||
+            api.reservedTail[3] != 0U ||
             api.projectId.structSize < sizeof(CueGameUuidV1) ||
             api.projectId.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
             uuid_text(api.projectId) != manifest.try_value()->project_id() || api.createModule == nullptr ||

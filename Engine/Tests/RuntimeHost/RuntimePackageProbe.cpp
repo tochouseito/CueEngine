@@ -1,10 +1,27 @@
 #include <Cue/GameModule/GameModuleAbi.h>
 
+#include <Windows.h>
+
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <new>
+#include <string_view>
 
 namespace
 {
+constexpr char k_probeModeEnvironment[] = "CUE_RUNTIME_PACKAGE_PROBE_MODE";
+
+/// @brief Process単位のTest Modeが要求値と一致するか返す
+[[nodiscard]] bool is_probe_mode(std::string_view a_expected) noexcept
+{
+    std::array<char, 64U> value{};
+    const DWORD length = GetEnvironmentVariableA(
+        k_probeModeEnvironment, value.data(), static_cast<DWORD>(value.size()));
+    return length == a_expected.size() && length < value.size() &&
+           std::string_view(value.data(), static_cast<std::size_t>(length)) == a_expected;
+}
+
 #if CUE_TEST_BUILD_CONFIGURATION == 1
 constexpr std::uint32_t k_configuration = CUE_GAME_MODULE_CONFIGURATION_DEBUG;
 #elif CUE_TEST_BUILD_CONFIGURATION == 2
@@ -136,6 +153,7 @@ CueGameModuleResult CUE_GAME_MODULE_CALL stop_system(
 }
 
 constexpr char k_systemIdText[] = "runtime-package-probe";
+constexpr char k_invalidSystemIdText[] = "\xc3\x28";
 constexpr CueGameSystemDescriptorV1 k_system = {
     sizeof(CueGameSystemDescriptorV1),
     CUE_GAME_MODULE_STRUCTURE_VERSION_1,
@@ -160,6 +178,13 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_systems(
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
     }
+    if (is_probe_mode("invalid-system-id"))
+    {
+        CueGameSystemDescriptorV1 invalidSystem = k_system;
+        invalidSystem.stableId = {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                  k_invalidSystemIdText, sizeof(k_invalidSystemIdText) - 1U};
+        return a_sink->registerSystem(a_sink->context, &invalidSystem, a_diagnostic);
+    }
     return a_sink->registerSystem(a_sink->context, &k_system, a_diagnostic);
 }
 
@@ -177,6 +202,21 @@ constexpr CueGameModuleApiV1 k_api = {
     &register_systems,
     &destroy_module,
     {0U, 0U, 0U, 0U}};
+
+constexpr CueGameModuleApiV1 k_apiWithReservedTail = {
+    sizeof(CueGameModuleApiV1),
+    CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+    CUE_GAME_MODULE_ABI_VERSION_1,
+    k_configuration,
+    CUE_GAME_MODULE_ARCHITECTURE_X64,
+    0U,
+    k_projectId,
+    &create_module,
+    &register_schemas,
+    &register_components,
+    &register_systems,
+    &destroy_module,
+    {0U, 0U, 0U, 1U}};
 } // namespace
 
 /// @brief Test用Game Moduleの固定ABI Tableを返す
@@ -190,6 +230,6 @@ cue_game_module_query(uint32_t a_requestedAbiVersion, CueGameModuleQueryOutputV1
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
     }
-    a_output->api = &k_api;
+    a_output->api = is_probe_mode("reserved-api-tail") ? &k_apiWithReservedTail : &k_api;
     return CUE_GAME_MODULE_RESULT_SUCCESS;
 }
