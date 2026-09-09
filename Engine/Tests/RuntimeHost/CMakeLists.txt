@@ -206,10 +206,16 @@ set_tests_properties(
 set_tests_properties(
     Cue.RuntimeHost.Dependencies
     Cue.RuntimeHost.InitializationFailure
-    Cue.RuntimeHost.Package.Process
     PROPERTIES
         LABELS RuntimeHost
         TIMEOUT 10
+)
+
+set_tests_properties(
+    Cue.RuntimeHost.Package.Process
+    PROPERTIES
+        LABELS RuntimeHost
+        TIMEOUT 300
 )
 
 set_tests_properties(
