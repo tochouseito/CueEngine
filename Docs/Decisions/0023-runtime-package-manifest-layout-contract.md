@@ -174,6 +174,9 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
 - `active`はJSON booleanとする
 - `translation`、`rotation`、`scale`はそれぞれ3、4、3個の、有限IEEE 754 binary32へround-trip可能なJSON numberとする。
   Writerはlocale非依存の最短round-trip表現を使用し、Readerはbinary32のoverflow、NaN、Infinityを拒否する
+- `rotation`はbinary32へ変換した4成分から`cue::math::length`で求めた長さを`1.0F`と比較し、絶対Tolerance
+  `0.00001F`、相対Tolerance `0.00001F`の`cue::math::is_unit_rotation`を満たす単位Quaternionだけを受理する。
+  条件を満たさない値はReader／Writerとも`UnsupportedRuntimeSceneData`で拒否し、暗黙に正規化しない
 - `schemaVersion`と`fieldId`は`1`以上`4294967295`以下のJSON整数とし、それぞれ`uint32_t`のComponent Schema Version、
   Field Identityを表す。範囲外、符号、小数表現を拒否する
 - `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
