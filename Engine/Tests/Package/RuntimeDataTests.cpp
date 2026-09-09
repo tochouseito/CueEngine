@@ -195,7 +195,7 @@ template <typename Value>
            published.try_value()->startup_scene_data().bytes().find("\"extensions\"") == std::string_view::npos;
 }
 
-/// @brief 既知Componentと型付きFieldがStable Identityを保ったRuntime Dataになるか検証する
+/// @brief 既知Componentを投影し同一Object内のComponent Type重複を拒否するか検証する
 [[nodiscard]] bool test_known_component_projection(const cue::AssertContext &a_assertContext)
 {
     auto descriptor = make_descriptor(k_sceneId, a_assertContext);
@@ -274,8 +274,33 @@ template <typename Value>
         "\"components\":[{\"componentInstanceId\":\"30000000-0000-4000-8000-000000000001\","
         "\"typeId\":\"40000000-0000-4000-8000-000000000001\",\"schemaVersion\":1,"
         "\"fields\":[{\"fieldId\":7,\"kind\":\"signedInteger\",\"value\":42}]}]";
-    return published &&
-           published.try_value()->startup_scene_data().bytes().find(expectedComponent) != std::string_view::npos;
+    if (!published ||
+        published.try_value()->startup_scene_data().bytes().find(expectedComponent) == std::string_view::npos)
+    {
+        return false;
+    }
+
+    auto duplicateId =
+        cue::scene::ComponentInstanceId::parse("30000000-0000-4000-8000-000000000002", a_assertContext);
+    const cue::scene::SceneObject *sceneObject = scene.try_value()->find_object(*objectId.try_value());
+    if (!duplicateId || sceneObject == nullptr || sceneObject->components().empty())
+    {
+        return false;
+    }
+    auto duplicate = sceneObject->components().front().duplicate_with_identity(*duplicateId.try_value(),
+                                                                                a_assertContext);
+    if (!duplicate || !scene.try_value()->add_component(*objectId.try_value(), std::move(*duplicate.try_value())))
+    {
+        return false;
+    }
+    auto duplicateSnapshot = cue::scene::create_scene_snapshot(*scene.try_value(), a_assertContext);
+    auto duplicatePublication =
+        duplicateSnapshot
+            ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *duplicateSnapshot.try_value(),
+                                                         a_assertContext)
+            : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(
+                  std::move(*duplicateSnapshot.try_error()));
+    return has_package_error(duplicatePublication, cue::package::PackageError::UnsupportedRuntimeSceneData);
 }
 
 /// @brief Runtime解決基盤のないAsset ReferenceをPublication全体で拒否するか検証する

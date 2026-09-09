@@ -5,6 +5,7 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Package/Error.h>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -305,8 +307,18 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
             append_transform(output, object.transform());
             output.append(",\"components\":[");
             bool firstComponent = true;
+            std::vector<cue::schema::TypeId> componentTypes;
             for (const cue::scene::SceneComponent &component : object.components())
             {
+                const cue::scene::KnownComponentData *known = component.try_known();
+                if (known == nullptr ||
+                    std::find(componentTypes.begin(), componentTypes.end(), known->type_id()) != componentTypes.end())
+                {
+                    return cue::Result<std::string>::failure(cue::package::make_package_error(
+                        a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                        "Runtime Scene contains an opaque or duplicate Component Type"));
+                }
+                componentTypes.push_back(known->type_id());
                 if (!firstComponent)
                 {
                     output.push_back(',');
