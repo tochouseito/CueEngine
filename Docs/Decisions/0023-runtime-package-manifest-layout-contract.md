@@ -317,6 +317,29 @@ Runtime FileのPE Export DirectoryにForwarder RVAが一件でもあれば、転
 検索Pathによる解決結果を入力にしない。Project Directory、`PATH`全体、Windows System Directory、Visual Studio Installation、vcpkg
 Install Treeを再帰探索しない。
 
+M16のSystem Import Allowlistは`windows-10-1903-x64-v1`とし、ADR-0007の最小Runtime OSであるWindows 10 version 1903
+x64を対象に、次のASCII case-insensitive DLL名だけをPackage外Importとして許可する。
+
+- `bcrypt.dll`
+- `d3d12.dll`
+- `dxgi.dll`
+- `kernel32.dll`
+- `ole32.dll`
+- `shell32.dll`
+- `user32.dll`
+- `api-ms-win-crt-filesystem-l1-1-0.dll`
+- `api-ms-win-crt-heap-l1-1-0.dll`
+- `api-ms-win-crt-locale-l1-1-0.dll`
+- `api-ms-win-crt-math-l1-1-0.dll`
+- `api-ms-win-crt-runtime-l1-1-0.dll`
+- `api-ms-win-crt-stdio-l1-1-0.dll`
+- `api-ms-win-crt-string-l1-1-0.dll`
+
+許可済みMSVC Runtime Importは`msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`の3名だけとする。
+AllowlistはPublish環境のSystem Directory列挙から生成せず、Engine Source内のVersion付き定数とTest Vectorを正本にする。一覧外の
+Importは、現在のMachineで解決できる場合も未登録App-local Importとして拒否する。最小OS、Toolset、Runtime Library、またはEngineの
+直接Import変更で一覧を変える場合はAllowlist Versionと互換性を先に判断し、本ADRまたは後継ADRを更新する。
+
 OSが提供するSystem DLLと、下記のMSVC Runtime前提はPackage Entryにしない。Game ModuleのApp-local DLLが必要な場合は、
 Build時の正本PathからStagingへCopyし、`runtimeDependency`としてHash／Sizeを記録する。M16ではWindows DLL Loaderが再帰探索しない
 ことと検索境界を一致させるため、`runtimeDependency`は`Runtime/`直下の一File Nameだけを許可し、子Directoryを拒否する。
