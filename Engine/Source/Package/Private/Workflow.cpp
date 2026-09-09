@@ -225,6 +225,10 @@ struct GamePackageWorkflowService::Impl final
                         *assertContext, WorkflowError::PackagePublicationFailed,
                         "Package publication was cancelled"));
                 }
+                if (file.relativePath == "CueGameModule.pdb")
+                {
+                    continue;
+                }
                 PackageFileRole role = PackageFileRole::RuntimeDependency;
                 std::string packagePath = join_relative("Runtime", file.relativePath);
                 if (file.relativePath == "CueGameModule.dll")

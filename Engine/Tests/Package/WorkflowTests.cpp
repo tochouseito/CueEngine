@@ -181,7 +181,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
             std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>(std::make_unique<Lease>()));
     }
 
-    /// @brief Operation固有Versionへ二つの必須Artifactを書きInventoryを返す
+    /// @brief Operation固有Versionへ必須ArtifactとPackage対象外PDBを書きInventoryを返す
     [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish(
         const cue::BuildPlan &a_plan, const cue::ChildProcessCancellation &a_cancellation,
         std::unique_ptr<cue::BuildWorkspaceLease> a_buildLease) noexcept override
@@ -193,6 +193,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         }
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
         const std::vector<std::byte> moduleBytes = text_bytes("test-game-module");
+        const std::vector<std::byte> pdbBytes = text_bytes("test-debug-symbols");
         const std::vector<std::byte> metadataBytes = text_bytes("{\"schemaVersion\":1}\n");
         auto modulePayload = cue::package::PackageFilePayload::create(
             cue::package::PackageFileRole::GameModule, "CueGameModule.dll", moduleBytes, *m_assertContext);
@@ -211,6 +212,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         std::error_code error;
         std::filesystem::create_directories(versionDirectory, error);
         if (error || !write_file(versionDirectory / L"CueGameModule.dll", moduleBytes) ||
+            !write_file(versionDirectory / L"CueGameModule.pdb", pdbBytes) ||
             !write_file(versionDirectory / L"CueGameModule.metadata.json", metadataBytes))
         {
             cue::ErrorCode code = cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Package.Test", 1);
@@ -225,6 +227,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         auto inventory = cue::BuildArtifactInventory::create(
             a_plan, artifactId,
             {{"CueGameModule.dll", moduleBytes.size(), std::move(moduleHash)},
+             {"CueGameModule.pdb", pdbBytes.size(), std::string(64U, 'a')},
              {"CueGameModule.metadata.json", metadataBytes.size(),
               std::string(metadataPayload.try_value()->entry().sha256())}},
             *m_assertContext);
@@ -367,7 +370,9 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     if (!require(first.state == cue::package::PackageWorkflowState::PackageReady && first.package &&
                  first.latestSuccessfulPackage && first.package->operationId == firstOperation &&
                  std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
-                                         L"CuePackage.json")))
+                                         L"CuePackage.json") &&
+                 !std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
+                                          L"Runtime" / L"CueGameModule.pdb")))
     {
         return false;
     }
