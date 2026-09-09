@@ -62,7 +62,7 @@ set(roles
     "gameModule"
     "gameModuleMetadata"
 )
-function(write_package_manifest packageDirectory projectSizeOverride)
+function(write_package_manifest packageDirectory projectSizeOverride metadataSizeOverride)
     set(filesJson "")
     list(LENGTH paths fileCount)
     math(EXPR lastFileIndex "${fileCount} - 1")
@@ -73,6 +73,8 @@ function(write_package_manifest packageDirectory projectSizeOverride)
         file(SIZE "${absolutePath}" sizeBytes)
         if(role STREQUAL "projectRuntimeData" AND NOT projectSizeOverride STREQUAL "")
             set(sizeBytes "${projectSizeOverride}")
+        elseif(role STREQUAL "gameModuleMetadata" AND NOT metadataSizeOverride STREQUAL "")
+            set(sizeBytes "${metadataSizeOverride}")
         endif()
         file(SHA256 "${absolutePath}" sha256)
         if(NOT filesJson STREQUAL "")
@@ -85,10 +87,11 @@ function(write_package_manifest packageDirectory projectSizeOverride)
         "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineVersion\":\"1.0.0\",\"configuration\":\"${CONFIGURATION}\",\"startupScene\":{\"sceneAssetId\":\"${sceneId}\",\"runtimeDataPath\":\"${sceneRelativePath}\"},\"files\":[${filesJson}]}\n")
 endfunction()
 
-write_package_manifest("${stagingRoot}" "")
+write_package_manifest("${stagingRoot}" "" "")
 
 file(RENAME "${stagingRoot}" "${packageRoot}")
-file(WRITE "${packageRoot}/bcrypt.dll" "unverified app-local system dependency")
+# KnownDLLではないLoad-time Importを偽装し、Application Directory探索の回帰を検出する
+file(WRITE "${packageRoot}/d3d12.dll" "unverified app-local system dependency")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"
@@ -129,7 +132,7 @@ endif()
 file(REMOVE "${packageRoot}/RenamedRuntimeHost.exe")
 
 math(EXPR oversizedProjectBytes "1024 * 1024 + 1")
-write_package_manifest("${packageRoot}" "${oversizedProjectBytes}")
+write_package_manifest("${packageRoot}" "${oversizedProjectBytes}" "")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"
@@ -145,14 +148,33 @@ if(oversizedProjectResult EQUAL 0 OR oversizedProjectMessagePosition EQUAL -1)
     message(FATAL_ERROR
         "Oversized Project Runtime Data declaration was not rejected before read\n${oversizedProjectCombined}")
 endif()
-write_package_manifest("${packageRoot}" "")
+write_package_manifest("${packageRoot}" "" "")
+
+math(EXPR oversizedMetadataBytes "64 * 1024 + 1")
+write_package_manifest("${packageRoot}" "" "${oversizedMetadataBytes}")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE oversizedMetadataResult
+    OUTPUT_VARIABLE oversizedMetadataOutput
+    ERROR_VARIABLE oversizedMetadataError
+    TIMEOUT 15
+)
+set(oversizedMetadataCombined "${oversizedMetadataOutput}\n${oversizedMetadataError}")
+string(FIND "${oversizedMetadataCombined}" "Game Module Metadata role exceeds its Package startup size limit"
+    oversizedMetadataMessagePosition)
+if(oversizedMetadataResult EQUAL 0 OR oversizedMetadataMessagePosition EQUAL -1)
+    message(FATAL_ERROR
+        "Oversized Game Module Metadata declaration was not rejected before read\n${oversizedMetadataCombined}")
+endif()
+write_package_manifest("${packageRoot}" "" "")
 
 set(packageMetadataPath "${packageRoot}/Game/CueGameModule.metadata.json")
 file(READ "${packageMetadataPath}" validMetadata)
 string(REPLACE "\"artifactId\": \"${artifactId}\"" "\"artifactId\": \"runtime-package-probe\""
     invalidMetadata "${validMetadata}")
 file(WRITE "${packageMetadataPath}" "${invalidMetadata}")
-write_package_manifest("${packageRoot}" "")
+write_package_manifest("${packageRoot}" "" "")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"
@@ -168,7 +190,29 @@ if(invalidArtifactIdResult EQUAL 0 OR invalidArtifactIdMessagePosition EQUAL -1)
     message(FATAL_ERROR "Non-canonical Metadata artifactId was accepted\n${invalidArtifactIdCombined}")
 endif()
 file(WRITE "${packageMetadataPath}" "${validMetadata}")
-write_package_manifest("${packageRoot}" "")
+write_package_manifest("${packageRoot}" "" "")
+
+set(packageScenePath "${packageRoot}/${sceneRelativePath}")
+file(READ "${packageScenePath}" validScene)
+file(WRITE "${packageScenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"71234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]},{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}]}\n")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE nonCanonicalSceneResult
+    OUTPUT_VARIABLE nonCanonicalSceneOutput
+    ERROR_VARIABLE nonCanonicalSceneError
+    TIMEOUT 15
+)
+set(nonCanonicalSceneCombined "${nonCanonicalSceneOutput}\n${nonCanonicalSceneError}")
+string(FIND "${nonCanonicalSceneCombined}" "Runtime Scene object order is not canonical"
+    nonCanonicalSceneMessagePosition)
+if(nonCanonicalSceneResult EQUAL 0 OR nonCanonicalSceneMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-canonical Runtime Scene object order was accepted\n${nonCanonicalSceneCombined}")
+endif()
+file(WRITE "${packageScenePath}" "${validScene}")
+write_package_manifest("${packageRoot}" "" "")
 
 file(MAKE_DIRECTORY "${packageRoot}/Runtime")
 file(WRITE "${packageRoot}/Runtime/Unlisted.dll" "unlisted")

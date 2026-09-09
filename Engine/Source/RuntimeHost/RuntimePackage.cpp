@@ -45,6 +45,7 @@ namespace
 {
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
 constexpr std::size_t k_maximumRuntimeSystems = 256U;
+constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
 
 /// @brief lowercase hexadecimal文字か判定する
 [[nodiscard]] bool is_lower_hex(char a_value) noexcept
@@ -603,6 +604,12 @@ template <std::size_t Size>
                     a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                     "Runtime Scene contains an invalid Object identity or Transform"));
             }
+            if (!objects.empty() && !(objects.back().id < *objectId.try_value()))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object order is not canonical"));
+            }
             std::optional<cue::scene::ObjectId> parsedParent;
             if (hasParent)
             {
@@ -1145,10 +1152,12 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     /// @brief DLLとProject Scope Handle、検索Directory Cookie、固定Handleを所有する
     WindowsRuntimePackageModule(HMODULE a_library, CueGameModuleHandle a_module, const CueGameModuleApiV1 &a_api,
                                 DLL_DIRECTORY_COOKIE a_runtimeCookie, UniqueHandle a_rootGuard,
-                                UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard) noexcept
+                                UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
+                                std::vector<UniqueHandle> a_runtimeDependencyGuards) noexcept
         : m_library(a_library), m_module(a_module), m_api(&a_api), m_runtimeCookie(a_runtimeCookie),
           m_rootGuard(std::move(a_rootGuard)), m_gameGuard(std::move(a_gameGuard)),
-          m_runtimeGuard(std::move(a_runtimeGuard)), m_moduleGuard(std::move(a_moduleGuard))
+          m_runtimeGuard(std::move(a_runtimeGuard)), m_moduleGuard(std::move(a_moduleGuard)),
+          m_runtimeDependencyGuards(std::move(a_runtimeDependencyGuards))
     {
     }
     /// @brief System State破棄後にModule、DLL、検索Directoryを逆順Cleanupする
@@ -1177,6 +1186,7 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     UniqueHandle m_gameGuard;
     UniqueHandle m_runtimeGuard;
     UniqueHandle m_moduleGuard;
+    std::vector<UniqueHandle> m_runtimeDependencyGuards;
 };
 
 /// @brief DirectoryをReparse追跡なし、Delete共有なしで固定する
@@ -1184,7 +1194,7 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
 {
     UniqueHandle handle(CreateFileW(a_path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
@@ -1309,8 +1319,8 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     }
 }
 
-/// @brief Game Module FileをWrite／Delete共有なしで固定する
-[[nodiscard]] cue::Result<UniqueHandle> guard_module_file(
+/// @brief Load対象Package FileをWrite／Delete共有なしで固定する
+[[nodiscard]] cue::Result<UniqueHandle> guard_package_file(
     const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
 {
     UniqueHandle handle(CreateFileW(a_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -1319,7 +1329,16 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     {
         return cue::Result<UniqueHandle>::failure(windows_package_error(
             a_assertContext, cue::package::PackageError::PackageFileMissing, GetLastError(),
-            "Game Module file could not be fixed"));
+            "Runtime Package load target could not be fixed"));
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U || GetFileType(handle.get()) != FILE_TYPE_DISK)
+    {
+        return cue::Result<UniqueHandle>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidPackagePath,
+            "Runtime Package load target is not a regular non-reparse file"));
     }
     return cue::Result<UniqueHandle>::success(std::move(handle));
 }
@@ -1449,6 +1468,12 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 a_assertContext, package::PackageError::InvalidPackageManifest,
                 "Runtime Data role exceeds its Package startup size limit"));
         }
+        if (metadataEntry->byte_size() > k_maximumGameModuleMetadataBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Game Module Metadata role exceeds its Package startup size limit"));
+        }
         if (executable.try_value()->filename() != std::filesystem::path(runtimeHostEntry->relative_path()))
         {
             return Result<LoadedRuntimePackage>::failure(package_error(
@@ -1501,6 +1526,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 !rootGuard ? std::move(*rootGuard.try_error()) : std::move(*gameGuard.try_error()));
         }
         UniqueHandle runtimeGuard;
+        std::vector<UniqueHandle> runtimeDependencyGuards;
         DLL_DIRECTORY_COOKIE runtimeCookie = nullptr;
         auto runtimeInventory =
             validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
@@ -1517,6 +1543,44 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 return Result<LoadedRuntimePackage>::failure(std::move(*guarded.try_error()));
             }
             runtimeGuard = std::move(*guarded.try_value());
+            for (const package::PackageFileEntry &entry : manifest.try_value()->files())
+            {
+                if (entry.role() != package::PackageFileRole::RuntimeDependency)
+                {
+                    continue;
+                }
+                auto dependencyGuard = guard_package_file(
+                    root / std::filesystem::path(entry.relative_path()), a_assertContext);
+                if (!dependencyGuard)
+                {
+                    return Result<LoadedRuntimePackage>::failure(
+                        std::move(*dependencyGuard.try_error()));
+                }
+                runtimeDependencyGuards.push_back(std::move(*dependencyGuard.try_value()));
+            }
+        }
+        const std::filesystem::path modulePath = root / std::filesystem::path(moduleEntry->relative_path());
+        auto moduleGuard = guard_package_file(modulePath, a_assertContext);
+        if (!moduleGuard)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
+        }
+        auto guardedInventory = package::verify_package_manifest_files(root.generic_string(), *manifest.try_value(),
+                                                                        a_assertContext);
+        auto guardedRuntimeInventory = guardedInventory
+                                           ? validate_runtime_dependency_inventory(
+                                                 root, *manifest.try_value(), a_assertContext)
+                                           : Result<bool>::failure(std::move(*guardedInventory.try_error()));
+        if (!guardedRuntimeInventory || *guardedRuntimeInventory.try_value() != hasRuntimeDependencies)
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                guardedRuntimeInventory
+                    ? package_error(a_assertContext, package::PackageError::PackageFileMismatch,
+                                    "Runtime dependency inventory changed after load targets were fixed")
+                    : std::move(*guardedRuntimeInventory.try_error()));
+        }
+        if (hasRuntimeDependencies)
+        {
             runtimeCookie = AddDllDirectory((root / "Runtime").c_str());
             if (runtimeCookie == nullptr)
             {
@@ -1524,16 +1588,6 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                     a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
                     "Runtime dependency directory could not be registered"));
             }
-        }
-        const std::filesystem::path modulePath = root / std::filesystem::path(moduleEntry->relative_path());
-        auto moduleGuard = guard_module_file(modulePath, a_assertContext);
-        if (!moduleGuard)
-        {
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
-            return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
         }
         HMODULE library = LoadLibraryExW(
             modulePath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
@@ -1614,7 +1668,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         }
         auto module = std::make_unique<WindowsRuntimePackageModule>(
             library, moduleHandle, api, runtimeCookie, std::move(*rootGuard.try_value()),
-            std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()));
+            std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()),
+            std::move(runtimeDependencyGuards));
         RegistrationContext registration;
         auto schemas = call_registration(api.registerSchemas, moduleHandle, registration, RegistrationStage::Schemas,
                                          a_assertContext);
