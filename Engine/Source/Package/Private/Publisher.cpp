@@ -261,12 +261,21 @@ std::span<const std::byte> PackageFilePayload::bytes() const noexcept
 
 void PackageCancellation::request_cancel() noexcept
 {
-    m_cancelRequested.store(true, std::memory_order_release);
+    State expected = State::Active;
+    static_cast<void>(m_state.compare_exchange_strong(expected, State::CancelRequested, std::memory_order_acq_rel,
+                                                      std::memory_order_acquire));
 }
 
 bool PackageCancellation::is_cancel_requested() const noexcept
 {
-    return m_cancelRequested.load(std::memory_order_acquire);
+    return m_state.load(std::memory_order_acquire) == State::CancelRequested;
+}
+
+bool PackageCancellation::try_begin_publish() const noexcept
+{
+    State expected = State::Active;
+    return m_state.compare_exchange_strong(expected, State::PublishStarted, std::memory_order_acq_rel,
+                                           std::memory_order_acquire);
 }
 
 PackagePublishReport publish_runtime_package(FilesystemRoot &a_filesystem, const RelativePath &a_destination,
@@ -368,6 +377,15 @@ PackagePublishReport publish_runtime_package(FilesystemRoot &a_filesystem, const
             Error primary = staged ? make_package_error(a_assertContext, PackageError::PackageCancelled,
                                                         "Package publication was cancelled")
                                    : std::move(*staged.try_error());
+            auto recovery = rollback_staging(a_filesystem, staging, primary, a_assertContext);
+            return make_report(PackagePublishStage::ValidateStaging, PackagePublishOutcome::NotPublished,
+                               a_destination, a_manifest, std::move(primary), std::move(recovery));
+        }
+
+        if (!a_cancellation.try_begin_publish())
+        {
+            Error primary = make_package_error(a_assertContext, PackageError::PackageCancelled,
+                                               "Package publication was cancelled");
             auto recovery = rollback_staging(a_filesystem, staging, primary, a_assertContext);
             return make_report(PackagePublishStage::ValidateStaging, PackagePublishOutcome::NotPublished,
                                a_destination, a_manifest, std::move(primary), std::move(recovery));

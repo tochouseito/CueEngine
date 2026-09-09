@@ -62,6 +62,7 @@ struct PackagePublishReport final
     std::string destination;
     PackageManifestSummary manifest;
     std::optional<Error> error;
+    /// @brief Rollback再試行に必要な元Filesystem Instance専用のStaging所有Token
     std::optional<StagingArea> recoveryStaging;
 
     /// @brief 最終Destinationを再検証してCommit済みか返す
@@ -103,7 +104,7 @@ class PackageFilePayload final
     std::vector<std::byte> m_bytes;
 };
 
-/// @brief Package公開の取消要求をThread間で伝える共有Flag
+/// @brief 一つのPackage公開でCancel受理と最終Publish開始を原子的に直列化する共有状態
 class PackageCancellation final
 {
   public:
@@ -120,20 +121,37 @@ class PackageCancellation final
     /// @brief 取消Flagを解放する
     ~PackageCancellation() = default;
 
-    /// @brief 最終Rename前に観測される取消要求を設定する
+    /// @brief Publish開始が確定する前なら取消を設定し、確定後の要求は現在Operationへ影響させない
     void request_cancel() noexcept;
     /// @brief 取消が要求済みか返す
     [[nodiscard]] bool is_cancel_requested() const noexcept;
 
   private:
-    std::atomic_bool m_cancelRequested = false;
+    friend PackagePublishReport publish_runtime_package(
+        FilesystemRoot &, const RelativePath &, const PackageManifest &, std::span<const PackageFilePayload>,
+        const PackageCancellation &, const AssertContext &) noexcept;
+
+    /// @brief Cancel受理前だけPublish開始を原子的に確定する
+    [[nodiscard]] bool try_begin_publish() const noexcept;
+
+    /// @brief 一つのPackage公開における取消とPublishの排他的状態
+    enum class State : std::uint8_t
+    {
+        Active,
+        CancelRequested,
+        PublishStarted
+    };
+
+    mutable std::atomic<State> m_state = State::Active;
 };
 
 /// @brief 検証済みManifestと不変PayloadをOperation所有Stagingから最終Destinationへ一度だけ公開する
 ///
-/// Filesystem、Destination、Manifest、Payload、Cancellation、AssertContextは呼出中だけ借用する。同一Filesystem
-/// Instanceへの並行呼出しは行わない。Publish前失敗と取消ではDestinationを作らずStagingだけをRollbackする。
-/// Publish後のDurabilityUnknownまたは再検証失敗ではDestinationを削除せず成功扱いにしない。
+/// Destination、Manifest、Payload、Cancellation、AssertContextは呼出中だけ借用する。Filesystemは少なくとも呼出中
+/// 借用し、ReportがrecoveryStagingを返した場合は、そのTokenを同じFilesystem InstanceでRollbackし終えるまでInstanceを
+/// 存続させる。同一Filesystem Instanceへの並行呼出しは行わない。PackageCancellationはOperationごとに新規作成する。
+/// Publish前失敗と取消ではDestinationを作らずStagingだけをRollbackする。Publish後のDurabilityUnknownまたは再検証失敗では
+/// Destinationを削除せず成功扱いにしない。
 [[nodiscard]] PackagePublishReport publish_runtime_package(
     FilesystemRoot &a_filesystem, const RelativePath &a_destination, const PackageManifest &a_manifest,
     std::span<const PackageFilePayload> a_payloads, const PackageCancellation &a_cancellation,

@@ -7,12 +7,16 @@
 #include <Cue/IO/Windows/WindowsFilesystem.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -107,7 +111,8 @@ enum class FailurePoint
     ValidateStaging,
     Publish,
     Durability,
-    WriteAndRollback
+    WriteAndRollback,
+    BlockPublish
 };
 
 /// @brief 実Windows Filesystemへ委譲しPackage Stageだけを一度失敗させるTest Double
@@ -122,6 +127,23 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     }
     /// @brief 委譲先Rootを解放する
     ~FailingFilesystemRoot() override = default;
+
+    /// @brief Publish開始がFilesystem境界へ到達したか期限付きで待機して返す
+    [[nodiscard]] bool wait_until_publish_entered() const noexcept
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!m_publishEntered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::yield();
+        }
+        return m_publishEntered.load(std::memory_order_acquire);
+    }
+
+    /// @brief 待機中のPublishを実Filesystemへ進める
+    void allow_publish() noexcept
+    {
+        m_allowPublish.store(true, std::memory_order_release);
+    }
 
     /// @brief 委譲先Root Identityを返す
     [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
@@ -197,6 +219,14 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
                                                          const cue::RelativePath &a_destination) noexcept override
     {
+        if (m_failure == FailurePoint::BlockPublish)
+        {
+            m_publishEntered.store(true, std::memory_order_release);
+            while (!m_allowPublish.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+        }
         if (consume(FailurePoint::Publish))
         {
             return cue::Result<void>::failure(make_failure("Package publish failed"));
@@ -262,6 +292,8 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     bool m_failureConsumed = false;
     bool m_writeRollbackFailureConsumed = false;
     bool m_rollbackFailureConsumed = false;
+    std::atomic_bool m_publishEntered = false;
+    std::atomic_bool m_allowPublish = false;
 };
 
 /// @brief Test Rootを開くWindows Filesystemを構築する
@@ -350,6 +382,35 @@ void test_failure_injection(const std::filesystem::path &a_root,
     require(!durability.succeeded() && durability.error.has_value() && !durability.recoveryStaging.has_value());
     require(std::filesystem::is_regular_file(a_root / "UnknownPackage" / "CuePackage.json"));
 }
+
+/// @brief Publish開始確定後のCancelがCommit済み境界を巻き戻さないことを検証する
+void test_cancellation_publish_boundary(const std::filesystem::path &a_root,
+                                        const cue::package::PackageManifest &a_manifest,
+                                        std::span<const cue::package::PackageFilePayload> a_payloads,
+                                        const cue::AssertContext &a_assertContext)
+{
+    FailingFilesystemRoot filesystem(open_root(a_root, a_assertContext), FailurePoint::BlockPublish,
+                                     a_assertContext);
+    cue::RelativePath destination =
+        take_value(cue::RelativePath::parse("PublishBoundaryPackage", a_assertContext));
+    cue::package::PackageCancellation cancellation;
+    std::optional<cue::package::PackagePublishReport> report;
+    std::thread publishThread(
+        /// @brief Package公開を別Threadで進め、Publish状態遷移後にFilesystem境界で待機する
+        [&]() noexcept
+        {
+            report.emplace(cue::package::publish_runtime_package(filesystem, destination, a_manifest, a_payloads,
+                                                                 cancellation, a_assertContext));
+        });
+
+    const bool publishEntered = filesystem.wait_until_publish_entered();
+    cancellation.request_cancel();
+    filesystem.allow_publish();
+    publishThread.join();
+
+    require(publishEntered && report.has_value() && report->succeeded());
+    require(std::filesystem::is_regular_file(a_root / "PublishBoundaryPackage" / "CuePackage.json"));
+}
 } // namespace
 
 /// @brief Package Staging、Atomic Publish、Rollback、Failure Recoveryを検証する
@@ -371,6 +432,7 @@ int main(int a_argumentCount, char **a_arguments)
     const cue::package::PackageManifest manifest = make_manifest(payloads, assertContext);
     test_publish_contract(root, manifest, payloads, assertContext);
     test_failure_injection(root, manifest, payloads, assertContext);
+    test_cancellation_publish_boundary(root, manifest, payloads, assertContext);
 
     std::filesystem::remove_all(root, error);
     require(!error);
