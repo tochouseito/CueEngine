@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -164,6 +165,11 @@ class DirectoryChainGuard final
     DirectoryChainGuard &operator=(DirectoryChainGuard &&) noexcept = default;
     /// @brief 全HandleをCloseしてDirectory Chainの差替え禁止を解除する
     ~DirectoryChainGuard() = default;
+    /// @brief 検証済みLeaf DirectoryのNative Handleを返す
+    [[nodiscard]] HANDLE leaf_handle() const noexcept
+    {
+        return m_handles.back().get();
+    }
 
   private:
     std::vector<UniqueHandle> m_handles;
@@ -227,8 +233,10 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 {
   public:
     /// @brief Lock済みBuild FileとPlan Keyを所有する
-    WindowsBuildWorkspaceLease(GuardedExclusiveLock a_lock, std::string a_workspaceKey) noexcept
-        : ByteRangeLease(std::move(a_lock)), m_workspaceKey(std::move(a_workspaceKey))
+    WindowsBuildWorkspaceLease(GuardedExclusiveLock a_lock, DirectoryChainGuard a_workspaceGuard,
+                               std::string a_workspaceKey) noexcept
+        : ByteRangeLease(std::move(a_lock)), m_workspaceGuard(std::move(a_workspaceGuard)),
+          m_workspaceKey(std::move(a_workspaceKey))
     {
     }
     /// @brief Build Lockを解放する
@@ -240,6 +248,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     }
 
   private:
+    DirectoryChainGuard m_workspaceGuard;
     std::string m_workspaceKey;
 };
 
@@ -408,7 +417,8 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 /// @brief Rootから既存Directoryまでを追跡せず開き操作完了まで差替えを阻止する
 [[nodiscard]] cue::Result<DirectoryChainGuard> acquire_directory_chain_guard(
     const std::filesystem::path &a_root, const std::filesystem::path &a_directory,
-    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext) noexcept
+    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext,
+    bool a_requestLeafDeleteAccess = false) noexcept
 {
     const std::filesystem::path root = a_root.lexically_normal();
     const std::filesystem::path directory = a_directory.lexically_normal();
@@ -422,12 +432,16 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     std::vector<UniqueHandle> handles;
     std::filesystem::path current = root;
     /// @brief 一Directoryを追跡せず開いて検証しGuard集合へ追加する
-    const auto openComponent = [&](const std::filesystem::path &a_path) -> cue::Result<void>
+    const auto openComponent = [&](const std::filesystem::path &a_path, bool a_isLeaf) -> cue::Result<void>
     {
         const std::filesystem::path inspected = native_path(a_path);
-        UniqueHandle handle(CreateFileW(inspected.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        const DWORD desiredAccess = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
+                                    (a_requestLeafDeleteAccess && a_isLeaf ? DELETE : 0U);
+        const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+                            (a_requestLeafDeleteAccess && a_isLeaf ? FILE_FLAG_WRITE_THROUGH : 0U);
+        UniqueHandle handle(CreateFileW(inspected.c_str(), desiredAccess,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+                                        flags, nullptr));
         if (!handle.is_valid())
         {
             return cue::Result<void>::failure(make_windows_error(
@@ -453,7 +467,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         return cue::Result<void>::success();
     };
 
-    cue::Result<void> rootOpened = openComponent(current);
+    cue::Result<void> rootOpened = openComponent(current, current == directory);
     if (!rootOpened)
     {
         return cue::Result<DirectoryChainGuard>::failure(std::move(*rootOpened.try_error()));
@@ -470,13 +484,77 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                 make_error(a_assertContext, a_code, "Artifact directory escaped the Project Root"));
         }
         current /= component;
-        cue::Result<void> opened = openComponent(current);
+        cue::Result<void> opened = openComponent(current, current == directory);
         if (!opened)
         {
             return cue::Result<DirectoryChainGuard>::failure(std::move(*opened.try_error()));
         }
     }
     return cue::Result<DirectoryChainGuard>::success(DirectoryChainGuard(std::move(handles)));
+}
+
+/// @brief Guard中のLeaf Directoryを同一Volumeの検証済みDestinationへHandle経由でRenameする
+[[nodiscard]] cue::Result<void> rename_guarded_directory(DirectoryChainGuard &a_guard,
+                                                         const std::filesystem::path &a_destination,
+                                                         const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        const std::wstring destination = native_path(a_destination).native();
+        const std::size_t byteSize = offsetof(FILE_RENAME_INFO, FileName) + destination.size() * sizeof(wchar_t);
+        std::vector<std::uint64_t> storage(
+            (byteSize + sizeof(std::uint64_t) - 1U) / sizeof(std::uint64_t), 0U);
+        auto *information = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+        information->ReplaceIfExists = FALSE;
+        information->RootDirectory = nullptr;
+        information->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
+        std::memcpy(information->FileName, destination.data(), information->FileNameLength);
+        if (SetFileInformationByHandle(a_guard.leaf_handle(), FileRenameInfo, information,
+                                       static_cast<DWORD>(byteSize)) == FALSE)
+        {
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
+                "Artifact Version could not be published through the guarded Candidate handle"));
+        }
+        return cue::Result<void>::success();
+    }
+    catch (...)
+    {
+        terminate_artifact_exception(a_assertContext);
+    }
+}
+
+/// @brief Guard中Candidateの既知Fileだけを削除しLeaf DirectoryをHandle経由で削除予約する
+[[nodiscard]] cue::Result<void> delete_guarded_candidate(DirectoryChainGuard &a_guard,
+                                                         const std::filesystem::path &a_candidate,
+                                                         const cue::AssertContext &a_assertContext) noexcept
+{
+    constexpr std::array<std::wstring_view, 4U> files = {
+        L"CueGameModule.dll", L"CueGameModule.pdb", L"CueGameModule.metadata.json", L".probe-complete"};
+    for (const std::wstring_view file : files)
+    {
+        const std::filesystem::path path = native_path(a_candidate / file);
+        if (DeleteFileW(path.c_str()) == FALSE)
+        {
+            const DWORD code = GetLastError();
+            if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND)
+            {
+                return cue::Result<void>::failure(make_windows_error(
+                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, code,
+                    "Unpublished Candidate file could not be removed"));
+            }
+        }
+    }
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    if (SetFileInformationByHandle(a_guard.leaf_handle(), FileDispositionInfo, &disposition,
+                                   sizeof(disposition)) == FALSE)
+    {
+        return cue::Result<void>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
+            "Unpublished Candidate directory could not be removed through its guarded handle"));
+    }
+    return cue::Result<void>::success();
 }
 
 /// @brief 現在のEngine Processと同じDirectoryを返す
@@ -1227,8 +1305,30 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(std::nullopt);
             }
+            const std::optional<std::filesystem::path> binary = to_path(a_plan.binary_directory());
+            if (!binary)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Build Workspace path could not be converted"));
+            }
+            cue::Result<void> workspaceCreated = ensure_directory(
+                m_projectRoot, *binary, cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
+            if (!workspaceCreated)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    std::move(*workspaceCreated.try_error()));
+            }
+            cue::Result<DirectoryChainGuard> workspaceGuard = acquire_directory_chain_guard(
+                m_projectRoot, *binary, cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
+            if (!workspaceGuard)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    std::move(*workspaceGuard.try_error()));
+            }
             std::unique_ptr<cue::BuildWorkspaceLease> lease = std::make_unique<WindowsBuildWorkspaceLease>(
-                std::move(**acquired.try_value()), std::string(a_plan.workspace_key()));
+                std::move(**acquired.try_value()), std::move(*workspaceGuard.try_value()),
+                std::string(a_plan.workspace_key()));
             return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(
                 std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>(std::move(lease)));
         }
@@ -1363,26 +1463,24 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*candidateCreated.try_error()));
             }
+            cue::Result<DirectoryChainGuard> candidateGuardResult = acquire_directory_chain_guard(
+                m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext, true);
+            if (!candidateGuardResult)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*candidateGuardResult.try_error()));
+            }
+            std::optional<DirectoryChainGuard> candidateGuard(
+                std::move(*candidateGuardResult.try_value()));
             using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
             /// @brief Primary Errorを保持したまま未公開CandidateをRollbackする
             const auto failCandidate = [&](cue::Error a_error) -> PublishResult
             {
-                cue::Result<void> safeCleanup = validate_directory_chain(
-                    m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
-                if (!safeCleanup)
+                cue::Result<void> cleanup = delete_guarded_candidate(*candidateGuard, candidate, *m_assertContext);
+                candidateGuard.reset();
+                if (!cleanup)
                 {
-                    a_error.append_secondary_diagnostics(*m_assertContext, *safeCleanup.try_error(),
-                                                         "Unpublished Candidate path became unsafe", "Rollback");
-                    return PublishResult::failure(std::move(a_error));
-                }
-                std::error_code cleanupCode;
-                static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
-                if (cleanupCode)
-                {
-                    cue::Error cleanupError = make_windows_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                        static_cast<DWORD>(cleanupCode.value()), "Unpublished Candidate rollback failed");
-                    a_error.append_secondary_diagnostics(*m_assertContext, cleanupError,
+                    a_error.append_secondary_diagnostics(*m_assertContext, *cleanup.try_error(),
                                                          "Unpublished Candidate could not be removed", "Rollback");
                 }
                 return PublishResult::failure(std::move(a_error));
@@ -1390,19 +1488,11 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             /// @brief 取消前に未公開CandidateをRollbackしCleanup失敗だけをErrorとして返す
             const auto cancelCandidate = [&]() -> PublishResult
             {
-                cue::Result<void> safeCleanup = validate_directory_chain(
-                    m_projectRoot, candidate, cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
-                if (!safeCleanup)
+                cue::Result<void> cleanup = delete_guarded_candidate(*candidateGuard, candidate, *m_assertContext);
+                candidateGuard.reset();
+                if (!cleanup)
                 {
-                    return PublishResult::failure(std::move(*safeCleanup.try_error()));
-                }
-                std::error_code cleanupCode;
-                static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
-                if (cleanupCode)
-                {
-                    return PublishResult::failure(make_windows_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                        static_cast<DWORD>(cleanupCode.value()), "Cancelled Candidate rollback failed"));
+                    return PublishResult::failure(std::move(*cleanup.try_error()));
                 }
                 return PublishResult::success(std::nullopt);
             };
@@ -1506,25 +1596,11 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cancelCandidate();
             }
-            if (MoveFileExW(candidate.c_str(), version.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
+            cue::Result<void> versionPublished =
+                rename_guarded_directory(*candidateGuard, version, *m_assertContext);
+            if (!versionPublished)
             {
-                const DWORD code = GetLastError();
-                const DWORD versionAttributes = GetFileAttributesW(version.c_str());
-                const DWORD candidateAttributes = GetFileAttributesW(candidate.c_str());
-                const DWORD candidateCode =
-                    candidateAttributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
-                if (versionAttributes != INVALID_FILE_ATTRIBUTES &&
-                    (versionAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U &&
-                    candidateAttributes == INVALID_FILE_ATTRIBUTES &&
-                    (candidateCode == ERROR_FILE_NOT_FOUND || candidateCode == ERROR_PATH_NOT_FOUND))
-                {
-                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_windows_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown, code,
-                        "Artifact Version is visible but directory publication durability is unknown"));
-                }
-                return failCandidate(make_windows_error(*m_assertContext,
-                                                        cue::WindowsBuildArtifactError::CandidateInvalid, code,
-                                                        "Artifact Version could not be published"));
+                return failCandidate(std::move(*versionPublished.try_error()));
             }
             auto versionModuleHash = hash_file(version / "CueGameModule.dll", "CueGameModule.dll", *m_assertContext);
             std::optional<cue::BuildArtifactFile> versionPdbHash;

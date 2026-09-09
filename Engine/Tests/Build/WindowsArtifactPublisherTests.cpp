@@ -267,6 +267,8 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     cue::ChildProcessCancellation cancellation;
     auto lease = take_value(publisher->acquire_build_lease(plan, cancellation, std::nullopt));
     require(lease.has_value());
+    const std::filesystem::path displacedWorkspace = binaryDirectory.parent_path() / "DisplacedWorkspace";
+    require(MoveFileExW(binaryDirectory.c_str(), displacedWorkspace.c_str(), 0U) == FALSE);
 
     std::unique_ptr<cue::BuildArtifactPublisher> contender = take_value(
         cue::create_windows_build_artifact_publisher(generic_path(projectRoot), descriptor, a_assertContext));
@@ -390,8 +392,10 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(std::filesystem::exists(cancelledCandidate));
     const std::filesystem::path displacedOutput = outputDirectory.parent_path() / "DisplacedOutput";
     const std::filesystem::path candidateParent = cancelledCandidate.parent_path();
+    const std::filesystem::path displacedCandidate = candidateParent / "DisplacedCandidate";
     const std::filesystem::path displacedCandidates = candidateParent.parent_path() / "DisplacedCandidates";
     require(MoveFileExW(outputDirectory.c_str(), displacedOutput.c_str(), 0U) == FALSE);
+    require(MoveFileExW(cancelledCandidate.c_str(), displacedCandidate.c_str(), 0U) == FALSE);
     require(MoveFileExW(candidateParent.c_str(), displacedCandidates.c_str(), 0U) == FALSE);
     probeCancellation.request_cancel();
     probeThread.join();
