@@ -9,6 +9,7 @@
 #include <Cue/Project/Compatibility.h>
 #include <Cue/Project/Generator.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
@@ -27,12 +28,15 @@ namespace
 #if CUE_TEST_BUILD_CONFIGURATION == 1
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-debug";
 constexpr std::string_view k_packageWorkflowAction = "package-workflow-debug";
+constexpr std::wstring_view k_packageConfiguration = L"Debug";
 #elif CUE_TEST_BUILD_CONFIGURATION == 2
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-development";
 constexpr std::string_view k_packageWorkflowAction = "package-workflow-development";
+constexpr std::wstring_view k_packageConfiguration = L"Development";
 #elif CUE_TEST_BUILD_CONFIGURATION == 3
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-release";
 constexpr std::string_view k_packageWorkflowAction = "package-workflow-release";
+constexpr std::wstring_view k_packageConfiguration = L"Release";
 #else
 #error CUE_TEST_BUILD_CONFIGURATION must identify a supported configuration
 #endif
@@ -221,6 +225,79 @@ class TestDirectory final
                               ? 600000U
                               : 30000U;
     const DWORD wait = WaitForSingleObject(process.hProcess, timeout);
+    DWORD exitCode = 1U;
+    const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
+    if (!completed)
+    {
+        TerminateProcess(process.hProcess, 20U);
+        static_cast<void>(WaitForSingleObject(process.hProcess, 5000U));
+    }
+    CloseHandle(process.hProcess);
+    return completed && exitCode == 0U;
+}
+
+/// @brief 公開済みPackage Directoryを安定順で列挙する
+[[nodiscard]] std::vector<std::filesystem::path> list_package_directories(
+    const std::filesystem::path &a_projectPath)
+{
+    const std::filesystem::path parent =
+        a_projectPath / L"Generated" / L"Packages" / std::filesystem::path(k_packageConfiguration);
+    std::vector<std::filesystem::path> packages;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(parent))
+    {
+        if (entry.is_directory())
+        {
+            packages.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(packages);
+    return packages;
+}
+
+/// @brief PackageのJSON DataにWindows Absolute Path表現が含まれるか返す
+[[nodiscard]] bool package_json_contains_absolute_path(const std::filesystem::path &a_packageRoot)
+{
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::recursive_directory_iterator(a_packageRoot))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != L".json")
+        {
+            continue;
+        }
+        const std::string bytes = read_file(entry.path());
+        if (bytes.find("\\\\") != std::string::npos)
+        {
+            return true;
+        }
+        for (std::size_t index = 0U; index + 2U < bytes.size(); ++index)
+        {
+            const char drive = bytes[index];
+            if (((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) &&
+                bytes[index + 1U] == ':' && (bytes[index + 2U] == '/' || bytes[index + 2U] == '\\'))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// @brief Relocated PackageのRuntimeHostを無関係なCurrent DirectoryからSmoke起動する
+[[nodiscard]] bool run_relocated_runtime_package(const std::filesystem::path &a_packageRoot,
+                                                 const std::filesystem::path &a_workingDirectory)
+{
+    const std::filesystem::path executable = a_packageRoot / L"CueRuntimeHost.exe";
+    std::wstring commandLine = L"\"" + executable.native() + L"\" --package-smoke-test";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0U, nullptr,
+                       a_workingDirectory.c_str(), &startup, &process) == FALSE)
+    {
+        return false;
+    }
+    CloseHandle(process.hThread);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 30000U);
     DWORD exitCode = 1U;
     const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
     if (!completed)
@@ -602,6 +679,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     {
         std::_Exit(52);
     }
+    reopened.try_value()->reset();
 
     if (!run_editor_process(a_editorExecutable, projectPath, "play-repeated-workflow") ||
         read_file(savedScenePath) != childSavedSceneBytes)
@@ -615,6 +693,48 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     if (!run_editor_process(a_editorExecutable, projectPath, k_packageWorkflowAction))
     {
         std::_Exit(53);
+    }
+    if (!run_editor_process(a_editorExecutable, projectPath, k_packageWorkflowAction))
+    {
+        std::_Exit(55);
+    }
+
+    const std::vector<std::filesystem::path> packages = list_package_directories(projectPath);
+    if (packages.size() != 2U)
+    {
+        std::_Exit(56);
+    }
+    const std::string firstManifest = read_file(packages[0] / L"CuePackage.json");
+    const std::string secondManifest = read_file(packages[1] / L"CuePackage.json");
+    std::filesystem::path runtimeSceneName(std::string(sceneText.data(), sceneText.size()));
+    runtimeSceneName += L".cueruntime.json";
+    const std::filesystem::path runtimeProject = L"Data/CueProject.runtime.json";
+    const std::filesystem::path runtimeScene = std::filesystem::path(L"Data/Scenes") / runtimeSceneName;
+    if (firstManifest.empty() || secondManifest.empty() ||
+        read_file(packages[0] / runtimeProject) != read_file(packages[1] / runtimeProject) ||
+        read_file(packages[0] / runtimeScene) != read_file(packages[1] / runtimeScene) ||
+        package_json_contains_absolute_path(packages[0]) || package_json_contains_absolute_path(packages[1]))
+    {
+        std::_Exit(57);
+    }
+
+    const std::filesystem::path relocatedPackage = directory.path() / L"RelocatedPackage";
+    std::filesystem::copy(packages[1], relocatedPackage, std::filesystem::copy_options::recursive);
+    if (read_file(relocatedPackage / L"CuePackage.json") != secondManifest ||
+        package_json_contains_absolute_path(relocatedPackage))
+    {
+        std::_Exit(58);
+    }
+
+    const std::filesystem::path unavailableProject = directory.path() / L"Project.SourceUnavailable";
+    std::filesystem::rename(projectPath, unavailableProject);
+    const std::filesystem::path unrelatedWorkingDirectory = directory.path() / L"UnrelatedWorkingDirectory";
+    std::filesystem::create_directories(unrelatedWorkingDirectory);
+    const bool relocatedRun = run_relocated_runtime_package(relocatedPackage, unrelatedWorkingDirectory);
+    std::filesystem::rename(unavailableProject, projectPath);
+    if (!relocatedRun)
+    {
+        std::_Exit(59);
     }
 }
 } // namespace
