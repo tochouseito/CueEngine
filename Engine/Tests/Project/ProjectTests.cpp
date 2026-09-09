@@ -189,8 +189,9 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     }
 
     /// @brief Descriptor Test 対象外の Staging 公開を明示的に拒否する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&,
-                                                         const cue::RelativePath &) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&, const cue::RelativePath &,
+        const cue::StagingPublishAuthorization * = nullptr) noexcept override
     {
         return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::IoFailure,
                                                              "Staging is not implemented by memory test root"));

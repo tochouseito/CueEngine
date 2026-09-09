@@ -5,6 +5,7 @@
 #include <Cue/Foundation/Log.h>
 #include <Cue/IO/Error.h>
 #include <Cue/IO/Windows/WindowsFilesystem.h>
+#include <Cue/Package/Error.h>
 
 #include <array>
 #include <atomic>
@@ -216,8 +217,9 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
         return m_inner->create_staging_area(a_destination);
     }
     /// @brief Publish FailureまたはDurabilityUnknownを注入するかStaging公開を委譲する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &a_destination) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
         if (m_failure == FailurePoint::BlockPublish)
         {
@@ -233,7 +235,7 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
         }
         if (consume(FailurePoint::Durability))
         {
-            auto published = m_inner->publish_staging_area(std::move(a_staging), a_destination);
+            auto published = m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
             if (!published)
             {
                 return published;
@@ -241,7 +243,7 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
             return cue::Result<void>::failure(cue::make_io_error(
                 *m_assertContext, cue::IoError::DurabilityUnknown, "Published Package durability is unknown"));
         }
-        return m_inner->publish_staging_area(std::move(a_staging), a_destination);
+        return m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
     }
     /// @brief Rollback Failureを一度注入するかOperation所有Staging削除を委譲する
     [[nodiscard]] cue::Result<void> rollback_staging_area(cue::StagingArea &&a_staging) noexcept override
@@ -383,7 +385,7 @@ void test_failure_injection(const std::filesystem::path &a_root,
     require(std::filesystem::is_regular_file(a_root / "UnknownPackage" / "CuePackage.json"));
 }
 
-/// @brief Publish開始確定後のCancelがCommit済み境界を巻き戻さないことを検証する
+/// @brief Filesystem検証中のCancelがNative Publish直前で受理されることを検証する
 void test_cancellation_publish_boundary(const std::filesystem::path &a_root,
                                         const cue::package::PackageManifest &a_manifest,
                                         std::span<const cue::package::PackageFilePayload> a_payloads,
@@ -408,8 +410,12 @@ void test_cancellation_publish_boundary(const std::filesystem::path &a_root,
     filesystem.allow_publish();
     publishThread.join();
 
-    require(publishEntered && report.has_value() && report->succeeded());
-    require(std::filesystem::is_regular_file(a_root / "PublishBoundaryPackage" / "CuePackage.json"));
+    require(publishEntered && report.has_value() && !report->succeeded());
+    require(report->outcome == cue::package::PackagePublishOutcome::NotPublished && report->error.has_value());
+    require(report->error->root_code().domain() == "Cue.Package" &&
+            report->error->root_code().value() ==
+                static_cast<std::int64_t>(cue::package::PackageError::PackageCancelled));
+    require(!std::filesystem::exists(a_root / "PublishBoundaryPackage"));
 }
 } // namespace
 

@@ -271,7 +271,7 @@ bool PackageCancellation::is_cancel_requested() const noexcept
     return m_state.load(std::memory_order_acquire) == State::CancelRequested;
 }
 
-bool PackageCancellation::try_begin_publish() const noexcept
+bool PackageCancellation::try_authorize() const noexcept
 {
     State expected = State::Active;
     return m_state.compare_exchange_strong(expected, State::PublishStarted, std::memory_order_acq_rel,
@@ -382,18 +382,17 @@ PackagePublishReport publish_runtime_package(FilesystemRoot &a_filesystem, const
                                a_destination, a_manifest, std::move(primary), std::move(recovery));
         }
 
-        if (!a_cancellation.try_begin_publish())
-        {
-            Error primary = make_package_error(a_assertContext, PackageError::PackageCancelled,
-                                               "Package publication was cancelled");
-            auto recovery = rollback_staging(a_filesystem, staging, primary, a_assertContext);
-            return make_report(PackagePublishStage::ValidateStaging, PackagePublishOutcome::NotPublished,
-                               a_destination, a_manifest, std::move(primary), std::move(recovery));
-        }
-
-        auto published = a_filesystem.publish_staging_area(std::move(staging), a_destination);
+        auto published = a_filesystem.publish_staging_area(std::move(staging), a_destination, &a_cancellation);
         if (!published)
         {
+            if (a_cancellation.is_cancel_requested())
+            {
+                Error primary = make_package_error(a_assertContext, PackageError::PackageCancelled,
+                                                   "Package publication was cancelled");
+                auto recovery = rollback_staging(a_filesystem, staging, primary, a_assertContext);
+                return make_report(PackagePublishStage::Publish, PackagePublishOutcome::NotPublished,
+                                   a_destination, a_manifest, std::move(primary), std::move(recovery));
+            }
             Error primary = std::move(*published.try_error());
             if (is_durability_unknown(primary))
             {

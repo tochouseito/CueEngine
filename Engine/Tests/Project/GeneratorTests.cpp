@@ -245,8 +245,9 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     }
 
     /// @brief Staging を Destination へ一度だけ公開し、Publish 前後の失敗を区別して注入する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &a_destination) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
         if (!m_hasStaging || staging_token(a_staging) != 77U || a_destination.text() != "SampleProject")
         {
@@ -257,6 +258,11 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
         {
             return cue::Result<void>::failure(
                 cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, "Injected publish failure"));
+        }
+        if (a_authorization != nullptr && !a_authorization->try_authorize())
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::PreconditionFailed, "Publish authorization was rejected"));
         }
         m_hasStaging = false;
         m_isPublished = true;

@@ -105,7 +105,7 @@ class PackageFilePayload final
 };
 
 /// @brief 一つのPackage公開でCancel受理と最終Publish開始を原子的に直列化する共有状態
-class PackageCancellation final
+class PackageCancellation final : public StagingPublishAuthorization
 {
   public:
     /// @brief 未取消状態を構築する
@@ -118,8 +118,8 @@ class PackageCancellation final
     PackageCancellation(PackageCancellation &&) = delete;
     /// @brief 実行中Operationが参照する取消Flagの移動代入を禁止する
     PackageCancellation &operator=(PackageCancellation &&) = delete;
-    /// @brief 取消Flagを解放する
-    ~PackageCancellation() = default;
+    /// @brief 取消状態とPublish Authorization基底を解放する
+    ~PackageCancellation() override = default;
 
     /// @brief Publish開始が確定する前なら取消を設定し、確定後の要求は現在Operationへ影響させない
     void request_cancel() noexcept;
@@ -127,12 +127,8 @@ class PackageCancellation final
     [[nodiscard]] bool is_cancel_requested() const noexcept;
 
   private:
-    friend PackagePublishReport publish_runtime_package(
-        FilesystemRoot &, const RelativePath &, const PackageManifest &, std::span<const PackageFilePayload>,
-        const PackageCancellation &, const AssertContext &) noexcept;
-
-    /// @brief Cancel受理前だけPublish開始を原子的に確定する
-    [[nodiscard]] bool try_begin_publish() const noexcept;
+    /// @brief Cancel受理前だけNative Publish開始を原子的に確定する
+    [[nodiscard]] bool try_authorize() const noexcept override;
 
     /// @brief 一つのPackage公開における取消とPublishの排他的状態
     enum class State : std::uint8_t

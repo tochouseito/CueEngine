@@ -414,13 +414,20 @@ class FailingFilesystemRoot final : public cue::FilesystemRoot
     }
 
     /// @brief Staging 検証から耐久性確認までの Publish Failure Point を一度だけ再現する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
         if (consume(FailurePoint::ValidateStaged) || consume(FailurePoint::PrePublishReparseValidation) ||
             consume(FailurePoint::Publish))
         {
             return cue::Result<void>::failure(make_failure());
+        }
+
+        if (a_authorization != nullptr && !a_authorization->try_authorize())
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::PreconditionFailed, "Publish authorization was rejected"));
         }
 
         m_hasStaging = false;

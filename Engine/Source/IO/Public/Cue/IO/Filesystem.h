@@ -98,6 +98,29 @@ class StagingArea final
     std::uint64_t m_token;
 };
 
+/// @brief Staging検証完了後とNative Publish開始前の一度だけCommit可否を原子的に確定する境界
+class StagingPublishAuthorization
+{
+  public:
+    /// @brief Platform Providerを介して派生Authorizationを安全に破棄する
+    virtual ~StagingPublishAuthorization() noexcept = default;
+
+    /// @brief Native Publish開始を許可できる場合だけtrueを返す
+    [[nodiscard]] virtual bool try_authorize() const noexcept = 0;
+
+  protected:
+    /// @brief 派生Authorizationだけが基底部分を構築する
+    StagingPublishAuthorization() noexcept = default;
+    /// @brief 単一Operationの状態を複製させない
+    StagingPublishAuthorization(const StagingPublishAuthorization &) = delete;
+    /// @brief 単一Operationの状態を複製代入させない
+    StagingPublishAuthorization &operator=(const StagingPublishAuthorization &) = delete;
+    /// @brief 実行中Operationの状態Addressを変更させない
+    StagingPublishAuthorization(StagingPublishAuthorization &&) = delete;
+    /// @brief 実行中Operationの状態Addressを変更させない
+    StagingPublishAuthorization &operator=(StagingPublishAuthorization &&) = delete;
+};
+
 /// @brief 検証済み Root 内だけを操作する Platform 非依存 Filesystem 契約
 ///
 /// Instance は Thread-safe ではなく、同一 Instance の並行利用は呼び出し側が同期する
@@ -145,8 +168,10 @@ class FilesystemRoot
     /// Publish 前失敗では Destination を変更せず Token を有効に保ち、Rollback を再試行できる
     /// Publish 後の DurabilityUnknown では Destination が公開済みで Token は無効になる
     /// 成功時は Destination が公開済みになり Token は無効になる
-    [[nodiscard]] virtual Result<void> publish_staging_area(StagingArea &&a_staging,
-                                                            const RelativePath &a_destination) noexcept = 0;
+    /// Authorizationがある場合は全検証後かつNative Publish直前に一度だけ呼び、falseではDestinationを変更しない
+    [[nodiscard]] virtual Result<void> publish_staging_area(
+        StagingArea &&a_staging, const RelativePath &a_destination,
+        const StagingPublishAuthorization *a_authorization = nullptr) noexcept = 0;
     /// @brief Operation 所有 Staging だけを再帰削除し、Token を無効化する
     ///
     /// 削除失敗では Staging と Token を保持し、診断後に Rollback を再試行できる

@@ -915,8 +915,9 @@ class WindowsFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<cue::StagingArea> create_staging_area(
         const cue::RelativePath &a_destination) noexcept override;
     /// @brief Token が一致する Staging を既存 Destination へ上書きせず公開する
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &a_destination) noexcept override;
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override;
     /// @brief Token が一致する未公開 Staging だけを再帰削除する
     [[nodiscard]] cue::Result<void> rollback_staging_area(cue::StagingArea &&a_staging) noexcept override;
 
@@ -1853,8 +1854,9 @@ cue::Result<void> WindowsFilesystemRoot::validate_staging_identity(std::uint64_t
     return cue::Result<void>::success();
 }
 
-cue::Result<void> WindowsFilesystemRoot::publish_staging_area(cue::StagingArea &&a_staging,
-                                                              const cue::RelativePath &a_destination) noexcept
+cue::Result<void> WindowsFilesystemRoot::publish_staging_area(
+    cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+    const cue::StagingPublishAuthorization *a_authorization) noexcept
 {
     if (!owns_staging(a_staging))
     {
@@ -1896,6 +1898,12 @@ cue::Result<void> WindowsFilesystemRoot::publish_staging_area(cue::StagingArea &
     if (!validation)
     {
         return validation;
+    }
+    if (a_authorization != nullptr && !a_authorization->try_authorize())
+    {
+        return cue::Result<void>::failure(cue::make_io_error(
+            *m_assertContext, cue::IoError::PreconditionFailed,
+            "Staging directory publish authorization was rejected"));
     }
     const NativePublishOutcome publish =
         publish_with_durability(*stagingPath.try_value(), *destinationPath.try_value(), 0);

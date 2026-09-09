@@ -191,10 +191,11 @@ class FailingWorkspaceFilesystem final : public cue::FilesystemRoot
         return m_inner->create_staging_area(a_destination);
     }
 
-    [[nodiscard]] cue::Result<void> publish_staging_area(cue::StagingArea &&a_staging,
-                                                         const cue::RelativePath &a_destination) noexcept override
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
-        auto published = m_inner->publish_staging_area(std::move(a_staging), a_destination);
+        auto published = m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
         if (!published)
         {
             return published;
