@@ -443,6 +443,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, dependencies,
         a_assertContext);
 
+    std::vector<std::byte> namedImportGame = game;
+    write_u64(namedImportGame, 0x700U, 0x1a00U);
+    write_u16(namedImportGame, 0xc00U, 7U);
+    write_ascii(namedImportGame, 0xc02U, "CueImportedFunction");
+    auto validNamedImport = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", namedImportGame},
+        dependencies, a_assertContext);
+
     constexpr std::array missingImports = {std::string_view("Missing.dll")};
     const std::vector<std::byte> missingGame = make_test_pe(missingImports, {});
     auto missing = cue::package::validate_runtime_dependency_closure(
@@ -493,6 +501,12 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
         {"CueGameModule.dll", shortImportAddressTable}, dependencies, a_assertContext);
 
+    std::vector<std::byte> invalidImportByName = game;
+    write_u64(invalidImportByName, 0x700U, 0x00ffffffU);
+    auto invalidImportNameRva = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", invalidImportByName},
+        dependencies, a_assertContext);
+
     std::vector<std::byte> unterminatedImportThunk = game;
     write_u32(unterminatedImportThunk, 0x200U, 0x1df8U);
     write_u64(unterminatedImportThunk, 0xff8U, 0x8000000000000001ULL);
@@ -521,7 +535,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto invalidSectionCount = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", excessiveSections},
         dependencies, a_assertContext);
-    return valid && is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
+    return valid && validNamedImport &&
+           is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(hostBoundary, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(unreachable, cue::package::PackageError::RuntimeDependencyViolation) &&
@@ -529,6 +544,7 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidImportThunk, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(mismatchedImportThunkCount, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidImportNameRva, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(unterminatedImport, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidDelayThunk, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(mismatchedDelayThunkCount, cue::package::PackageError::InvalidPortableExecutable) &&

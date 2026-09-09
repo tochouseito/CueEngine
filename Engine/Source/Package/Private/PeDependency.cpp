@@ -28,6 +28,8 @@ constexpr std::size_t k_maximumSectionCount = 96U;
 constexpr std::size_t k_maximumImportDescriptors = 512U;
 constexpr std::size_t k_maximumImportThunkEntries = 65536U;
 constexpr std::size_t k_maximumImportNameBytes = 1024U;
+constexpr std::size_t k_maximumImportStringBytes = 1024U * 1024U;
+constexpr std::uint64_t k_importByOrdinalFlag64 = 0x8000000000000000ULL;
 
 struct PeDirectory final
 {
@@ -55,13 +57,14 @@ struct ParsedPeImage final
 struct ValidatedThunkTable final
 {
     std::uint32_t rva = 0U;
-    std::size_t entryCount = 0U;
+    std::vector<std::uint64_t> entries;
 };
 
 struct ThunkValidationContext final
 {
     std::vector<ValidatedThunkTable> tables;
-    std::size_t remainingEntries = k_maximumImportThunkEntries;
+    std::size_t &remainingEntries;
+    std::size_t &remainingStringBytes;
 };
 
 /// @brief PE解析中の予期しない例外をFatal境界へ渡す
@@ -215,15 +218,17 @@ struct ThunkValidationContext final
 }
 
 /// @brief ASCII DLL Import名をRVAから上限付きで読み込む
-[[nodiscard]] bool read_import_name(const PeLayout &a_layout, std::uint32_t a_rva, std::string &a_output)
+[[nodiscard]] bool read_import_name(const PeLayout &a_layout, std::uint32_t a_rva, std::string &a_output,
+                                    std::size_t &a_remainingStringBytes)
 {
     a_output.clear();
     for (std::size_t index = 0U; index <= k_maximumImportNameBytes; ++index)
     {
-        if (a_rva > (std::numeric_limits<std::uint32_t>::max)() - index)
+        if (a_remainingStringBytes == 0U || a_rva > (std::numeric_limits<std::uint32_t>::max)() - index)
         {
             return false;
         }
+        --a_remainingStringBytes;
         const auto offset = rva_to_offset(a_layout, a_rva + static_cast<std::uint32_t>(index), 1U);
         if (!offset)
         {
@@ -252,12 +257,15 @@ struct ThunkValidationContext final
         return std::nullopt;
     }
     const auto cached = std::ranges::find_if(
-        a_context.tables, [a_tableRva](const ValidatedThunkTable &a_table) noexcept
+        a_context.tables,
+        /// @brief 同じThunk Table RVAの検証済みEntry数を検索する
+        [a_tableRva](const ValidatedThunkTable &a_table) noexcept
         { return a_table.rva == a_tableRva; });
     if (cached != a_context.tables.end())
     {
-        return cached->entryCount;
+        return cached->entries.size();
     }
+    std::vector<std::uint64_t> entries;
     for (std::size_t index = 0U; a_context.remainingEntries > 0U; ++index)
     {
         const std::uint64_t delta = index * 8ULL;
@@ -274,11 +282,52 @@ struct ThunkValidationContext final
         }
         if (thunk == 0U)
         {
-            a_context.tables.push_back({a_tableRva, index});
+            a_context.tables.push_back({a_tableRva, std::move(entries)});
             return index;
         }
+        entries.push_back(thunk);
     }
     return std::nullopt;
+}
+
+/// @brief Cache済みLookup ThunkのOrdinalまたはIMAGE_IMPORT_BY_NAME参照を検証する
+[[nodiscard]] bool validate_import_lookup_entries(const PeLayout &a_layout, std::uint32_t a_tableRva,
+                                                  ThunkValidationContext &a_context)
+{
+    const auto cached = std::ranges::find_if(
+        a_context.tables,
+        /// @brief 指定Lookup Table RVAのCacheを検索する
+        [a_tableRva](const ValidatedThunkTable &a_table) noexcept
+        { return a_table.rva == a_tableRva; });
+    if (cached == a_context.tables.end())
+    {
+        return false;
+    }
+    for (const std::uint64_t thunk : cached->entries)
+    {
+        if ((thunk & k_importByOrdinalFlag64) != 0U)
+        {
+            if ((thunk & ~k_importByOrdinalFlag64) == 0U ||
+                (thunk & ~k_importByOrdinalFlag64) > (std::numeric_limits<std::uint16_t>::max)())
+            {
+                return false;
+            }
+            continue;
+        }
+        if (thunk > (std::numeric_limits<std::uint32_t>::max)() ||
+            thunk > (std::numeric_limits<std::uint32_t>::max)() - 2U)
+        {
+            return false;
+        }
+        const std::uint32_t nameRva = static_cast<std::uint32_t>(thunk);
+        const auto hintOffset = rva_to_offset(a_layout, nameRva, 2U);
+        std::string symbolName;
+        if (!hintOffset || !read_import_name(a_layout, nameRva + 2U, symbolName, a_context.remainingStringBytes))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// @brief 通常Import DirectoryのDLL名を列挙する
@@ -320,8 +369,8 @@ struct ThunkValidationContext final
         const auto addressCount = validate_import_thunk_table(a_layout, fields[4], a_context);
         std::string name;
         if (fields[3] == 0U || !lookupCount || *lookupCount == 0U || !addressCount ||
-            *addressCount != *lookupCount ||
-            !read_import_name(a_layout, fields[3], name))
+            *addressCount != *lookupCount || !validate_import_lookup_entries(a_layout, lookupTableRva, a_context) ||
+            !read_import_name(a_layout, fields[3], name, a_context.remainingStringBytes))
         {
             return false;
         }
@@ -384,7 +433,8 @@ struct ThunkValidationContext final
                                      ? std::optional<std::size_t>(*lookupCount)
                                      : validate_import_thunk_table(a_layout, fields[6], a_context);
         if (!boundCount || *boundCount != *lookupCount || !unloadCount || *unloadCount != *lookupCount ||
-            !read_import_name(a_layout, fields[1], name))
+            !validate_import_lookup_entries(a_layout, fields[4], a_context) ||
+            !read_import_name(a_layout, fields[1], name, a_context.remainingStringBytes))
         {
             return false;
         }
@@ -446,10 +496,11 @@ struct ThunkValidationContext final
 }
 
 /// @brief x64 PEから通常／Delay ImportとForwarder有無を抽出する
-[[nodiscard]] bool parse_pe_image(std::span<const std::byte> a_bytes, ParsedPeImage &a_output)
+[[nodiscard]] bool parse_pe_image(std::span<const std::byte> a_bytes, ParsedPeImage &a_output,
+                                  std::size_t &a_remainingThunkEntries, std::size_t &a_remainingStringBytes)
 {
     PeLayout layout;
-    ThunkValidationContext thunkContext;
+    ThunkValidationContext thunkContext{{}, a_remainingThunkEntries, a_remainingStringBytes};
     if (!parse_layout(a_bytes, layout) || !append_import_directory(layout, a_output.imports, thunkContext) ||
         !append_delay_import_directory(layout, a_output.imports, thunkContext) ||
         !inspect_export_forwarders(layout, a_output.hasExportForwarder))
@@ -559,9 +610,12 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
     }
     try
     {
+        std::size_t remainingThunkEntries = k_maximumImportThunkEntries;
+        std::size_t remainingStringBytes = k_maximumImportStringBytes;
         ParsedPeImage host;
         ParsedPeImage game;
-        if (!parse_pe_image(a_runtimeHost.bytes, host) || !parse_pe_image(a_gameModule.bytes, game))
+        if (!parse_pe_image(a_runtimeHost.bytes, host, remainingThunkEntries, remainingStringBytes) ||
+            !parse_pe_image(a_gameModule.bytes, game, remainingThunkEntries, remainingStringBytes))
         {
             return Result<void>::failure(make_package_error(
                 a_assertContext, PackageError::InvalidPortableExecutable,
@@ -598,7 +652,7 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
                     "App-local Runtime dependency names are invalid or case aliases"));
             }
             ParsedPeImage parsed;
-            if (!parse_pe_image(dependency.bytes, parsed))
+            if (!parse_pe_image(dependency.bytes, parsed, remainingThunkEntries, remainingStringBytes))
             {
                 return Result<void>::failure(make_package_error(
                     a_assertContext, PackageError::InvalidPortableExecutable,
