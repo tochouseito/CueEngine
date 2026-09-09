@@ -197,13 +197,21 @@ void write_manifest_files(const std::filesystem::path &a_root, const cue::packag
                                                      cue::BuildConfiguration::Debug, std::string(k_sceneId),
                                                      std::string(k_scenePath), std::move(pdbFiles), a_assertContext);
 
+    std::vector<cue::package::PackageFileEntry> nestedDependencyFiles = make_required_files(a_assertContext);
+    nestedDependencyFiles.push_back(
+        make_entry(PackageFileRole::RuntimeDependency, "Runtime/Vendor/Cue.dll", a_assertContext));
+    auto nestedDependency = cue::package::PackageManifest::create(
+        std::string(k_projectId), {1U, 0U, 0U}, cue::BuildConfiguration::Debug, std::string(k_sceneId),
+        std::string(k_scenePath), std::move(nestedDependencyFiles), a_assertContext);
+
     return is_package_error(absolute, cue::package::PackageError::InvalidPackagePath) &&
            is_package_error(invalidHash, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(zeroSize, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
            is_package_error(missing, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(duplicate, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(alias, cue::package::PackageError::InvalidPackageManifest) &&
-           is_package_error(pdb, cue::package::PackageError::InvalidPackageManifest);
+           is_package_error(pdb, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(nestedDependency, cue::package::PackageError::InvalidPackageManifest);
 }
 
 /// @brief Runtime Dependencyの単一Configuration、Role、決定順、重複拒否を検証する

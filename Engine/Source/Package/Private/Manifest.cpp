@@ -883,7 +883,11 @@ void append_engine_version(std::string &a_output, const cue::EngineVersion &a_ve
     case PackageFileRole::StartupSceneRuntimeData:
         return a_path == a_scenePath;
     case PackageFileRole::RuntimeDependency:
-        return a_path.starts_with("Runtime/") && a_path.size() > std::string_view("Runtime/").size();
+    {
+        constexpr std::string_view prefix = "Runtime/";
+        const std::string_view fileName = a_path.starts_with(prefix) ? a_path.substr(prefix.size()) : std::string_view{};
+        return !fileName.empty() && fileName.find('/') == std::string_view::npos;
+    }
     }
     return false;
 }
