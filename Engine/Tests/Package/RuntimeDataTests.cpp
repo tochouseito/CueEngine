@@ -278,6 +278,86 @@ template <typename Value>
            published.try_value()->startup_scene_data().bytes().find(expectedComponent) != std::string_view::npos;
 }
 
+/// @brief Runtime解決基盤のないAsset ReferenceをPublication全体で拒否するか検証する
+[[nodiscard]] bool test_asset_reference_rejected(const cue::AssertContext &a_assertContext)
+{
+    auto descriptor = make_descriptor(k_sceneId, a_assertContext);
+    auto scene = make_scene(k_sceneId, a_assertContext);
+    auto objectId = cue::scene::ObjectId::parse("20000000-0000-4000-8000-000000000001", a_assertContext);
+    auto componentId = cue::scene::ComponentInstanceId::parse("30000000-0000-4000-8000-000000000001", a_assertContext);
+    auto typeId = cue::schema::TypeId::parse("40000000-0000-4000-8000-000000000001", a_assertContext);
+    auto schemaVersion = cue::schema::SchemaVersion::create(1U, a_assertContext);
+    auto fieldId = cue::schema::FieldId::create(7U, a_assertContext);
+    auto assetReference = cue::scene::AssetReferenceValue::create("asset://unresolved", a_assertContext);
+    if (!descriptor || !scene || !objectId || !componentId || !typeId || !schemaVersion || !fieldId ||
+        !assetReference)
+    {
+        return false;
+    }
+
+    std::vector<cue::schema::FieldDescriptor> fieldDescriptors;
+    auto fieldDescriptor = cue::schema::create_field_descriptor(*fieldId.try_value(), "asset", a_assertContext);
+    if (!fieldDescriptor)
+    {
+        return false;
+    }
+    fieldDescriptors.push_back(std::move(*fieldDescriptor.try_value()));
+    std::vector<cue::schema::FieldId> reservedFields;
+    auto typeDescriptor = cue::schema::create_type_descriptor(*typeId.try_value(), "Cue.Package.AssetComponent",
+                                                              *schemaVersion.try_value(), std::move(fieldDescriptors),
+                                                              std::move(reservedFields), a_assertContext);
+    cue::schema::SchemaRegistryIdentitySource identitySource;
+    cue::schema::SchemaRegistryBuilder registryBuilder(identitySource, a_assertContext);
+    if (!typeDescriptor || !registryBuilder.add_type(std::move(*typeDescriptor.try_value())))
+    {
+        return false;
+    }
+    auto registry = registryBuilder.seal();
+    if (!registry)
+    {
+        return false;
+    }
+
+    std::vector<cue::scene::FieldKindBinding> bindings{
+        {*fieldId.try_value(), cue::scene::FieldValueKind::AssetReference}};
+    auto valueSchema = cue::scene::create_component_value_schema(
+        *typeId.try_value(), *schemaVersion.try_value(), std::move(bindings), **registry.try_value(), a_assertContext);
+    if (!valueSchema)
+    {
+        return false;
+    }
+    std::vector<cue::scene::ComponentValueSchema> valueSchemas;
+    valueSchemas.push_back(std::move(*valueSchema.try_value()));
+    auto valueRegistry = cue::scene::ComponentValueSchemaRegistry::create(std::move(valueSchemas),
+                                                                          **registry.try_value(), a_assertContext);
+    auto knownField = cue::scene::create_known_field(
+        *fieldId.try_value(), cue::scene::FieldValue::asset_reference(std::move(*assetReference.try_value())),
+        cue::scene::FieldValueKind::AssetReference, a_assertContext);
+    if (!valueRegistry || !knownField)
+    {
+        return false;
+    }
+    std::vector<cue::scene::KnownFieldData> knownFields;
+    knownFields.push_back(std::move(*knownField.try_value()));
+    std::vector<cue::scene::OpaqueFieldData> unknownFields;
+    auto component = cue::scene::create_known_component(
+        *componentId.try_value(), *typeId.try_value(), *schemaVersion.try_value(), std::move(knownFields),
+        std::move(unknownFields), **registry.try_value(), *valueRegistry.try_value(), a_assertContext);
+    if (!component ||
+        !scene.try_value()->add_object(*objectId.try_value(), "Asset", true, std::nullopt, cue::math::Transform{}) ||
+        !scene.try_value()->add_component(*objectId.try_value(),
+                                          cue::scene::SceneComponent::known(std::move(*component.try_value()))))
+    {
+        return false;
+    }
+    auto snapshot = cue::scene::create_scene_snapshot(*scene.try_value(), a_assertContext);
+    auto published =
+        snapshot ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
+                                                              a_assertContext)
+                 : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(std::move(*snapshot.try_error()));
+    return has_package_error(published, cue::package::PackageError::UnsupportedRuntimeSceneData);
+}
+
 /// @brief Opaque Componentを黙って省略せずPublication全体を拒否するか検証する
 [[nodiscard]] bool test_opaque_component_rejected(const cue::AssertContext &a_assertContext)
 {
@@ -353,7 +433,8 @@ int main()
     cue::AssertContext assertContext(logger, fatalHandler);
     return test_sha256_vector() && test_deterministic_empty_scene(assertContext) &&
                    test_runtime_object_projection(assertContext) && test_known_component_projection(assertContext) &&
-                   test_opaque_component_rejected(assertContext) && test_startup_scene_contract(assertContext)
+                   test_asset_reference_rejected(assertContext) && test_opaque_component_rejected(assertContext) &&
+                   test_startup_scene_contract(assertContext)
                ? 0
                : 1;
 }

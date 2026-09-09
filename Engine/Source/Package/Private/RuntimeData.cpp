@@ -198,8 +198,7 @@ void append_transform(std::string &a_output, const cue::math::Transform &a_trans
         append_json_string(a_output, *a_value.try_string());
         break;
     case cue::scene::FieldValueKind::AssetReference:
-        append_json_string(a_output, a_value.try_asset_reference()->token());
-        break;
+        return false;
     }
     return true;
 }
