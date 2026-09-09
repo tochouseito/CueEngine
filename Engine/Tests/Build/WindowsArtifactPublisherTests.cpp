@@ -382,7 +382,17 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
                 publisher->publish(cancelledPlan, probeCancellation, std::move(*cancelledLease),
                                    std::chrono::steady_clock::now() + std::chrono::seconds(2)));
         });
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    const std::filesystem::path cancelledCandidate(cancelledPlan.candidate_directory());
+    for (std::size_t attempt = 0U; attempt < 50U && !std::filesystem::exists(cancelledCandidate); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    require(std::filesystem::exists(cancelledCandidate));
+    const std::filesystem::path displacedOutput = outputDirectory.parent_path() / "DisplacedOutput";
+    const std::filesystem::path candidateParent = cancelledCandidate.parent_path();
+    const std::filesystem::path displacedCandidates = candidateParent.parent_path() / "DisplacedCandidates";
+    require(MoveFileExW(outputDirectory.c_str(), displacedOutput.c_str(), 0U) == FALSE);
+    require(MoveFileExW(candidateParent.c_str(), displacedCandidates.c_str(), 0U) == FALSE);
     probeCancellation.request_cancel();
     probeThread.join();
     require(cancelledResult != nullptr && cancelledResult->has_value() && !cancelledResult->try_value()->has_value());

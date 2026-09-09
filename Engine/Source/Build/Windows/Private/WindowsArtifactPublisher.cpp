@@ -146,12 +146,65 @@ class UniqueHandle final
     HANDLE m_handle = INVALID_HANDLE_VALUE;
 };
 
+/// @brief Filesystem操作中にDirectory ChainのRenameとReparse Point差替えを阻止するHandle集合
+class DirectoryChainGuard final
+{
+  public:
+    /// @brief 検証済みDirectory Handle集合を所有する
+    explicit DirectoryChainGuard(std::vector<UniqueHandle> a_handles) noexcept : m_handles(std::move(a_handles))
+    {
+    }
+    /// @brief Directory Handle集合の複製を禁止する
+    DirectoryChainGuard(const DirectoryChainGuard &) = delete;
+    /// @brief Directory Handle集合の複製代入を禁止する
+    DirectoryChainGuard &operator=(const DirectoryChainGuard &) = delete;
+    /// @brief Directory Handle集合の所有権を移動する
+    DirectoryChainGuard(DirectoryChainGuard &&) noexcept = default;
+    /// @brief Directory Handle集合の所有権を移動代入する
+    DirectoryChainGuard &operator=(DirectoryChainGuard &&) noexcept = default;
+    /// @brief 全HandleをCloseしてDirectory Chainの差替え禁止を解除する
+    ~DirectoryChainGuard() = default;
+
+  private:
+    std::vector<UniqueHandle> m_handles;
+};
+
+/// @brief Byte Range Lockと検証済みDirectory Chainを同じ寿命で所有する
+class GuardedExclusiveLock final
+{
+  public:
+    /// @brief Lock済みHandleとDirectory Chain Guardを所有する
+    GuardedExclusiveLock(UniqueHandle a_handle, DirectoryChainGuard a_parentGuard) noexcept
+        : m_handle(std::move(a_handle)), m_parentGuard(std::move(a_parentGuard))
+    {
+    }
+    /// @brief Guard付きLockの複製を禁止する
+    GuardedExclusiveLock(const GuardedExclusiveLock &) = delete;
+    /// @brief Guard付きLockの複製代入を禁止する
+    GuardedExclusiveLock &operator=(const GuardedExclusiveLock &) = delete;
+    /// @brief Guard付きLockの所有権を移動する
+    GuardedExclusiveLock(GuardedExclusiveLock &&) noexcept = default;
+    /// @brief Guard付きLockの所有権を移動代入する
+    GuardedExclusiveLock &operator=(GuardedExclusiveLock &&) noexcept = default;
+    /// @brief Lock HandleとDirectory Chain Guardを解放する
+    ~GuardedExclusiveLock() = default;
+    /// @brief Byte Range操作用Native Handleを返す
+    [[nodiscard]] HANDLE handle() const noexcept
+    {
+        return m_handle.get();
+    }
+
+  private:
+    UniqueHandle m_handle;
+    DirectoryChainGuard m_parentGuard;
+};
+
 /// @brief Offset 0、Length 1のWindows File LockをHandle寿命へ束ねる
 class ByteRangeLease
 {
   public:
-    /// @brief Lock済みHandleの一意所有権を取得する
-    explicit ByteRangeLease(UniqueHandle a_handle) noexcept : m_handle(std::move(a_handle))
+    /// @brief Guard付きLockの一意所有権を取得する
+    explicit ByteRangeLease(GuardedExclusiveLock a_lock) noexcept : m_lock(std::move(a_lock))
     {
     }
     /// @brief Byte Range Lock所有権のCopy構築を禁止する
@@ -161,15 +214,12 @@ class ByteRangeLease
     /// @brief Byte RangeをUnlockしてHandleをCloseする
     virtual ~ByteRangeLease()
     {
-        if (m_handle.is_valid())
-        {
-            OVERLAPPED overlap{};
-            static_cast<void>(UnlockFileEx(m_handle.get(), 0U, 1U, 0U, &overlap));
-        }
+        OVERLAPPED overlap{};
+        static_cast<void>(UnlockFileEx(m_lock.handle(), 0U, 1U, 0U, &overlap));
     }
 
   private:
-    UniqueHandle m_handle;
+    GuardedExclusiveLock m_lock;
 };
 
 /// @brief GameBuildServiceへ渡すWindows Build Workspace Lease
@@ -177,8 +227,8 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 {
   public:
     /// @brief Lock済みBuild FileとPlan Keyを所有する
-    WindowsBuildWorkspaceLease(UniqueHandle a_handle, std::string a_workspaceKey) noexcept
-        : ByteRangeLease(std::move(a_handle)), m_workspaceKey(std::move(a_workspaceKey))
+    WindowsBuildWorkspaceLease(GuardedExclusiveLock a_lock, std::string a_workspaceKey) noexcept
+        : ByteRangeLease(std::move(a_lock)), m_workspaceKey(std::move(a_workspaceKey))
     {
     }
     /// @brief Build Lockを解放する
@@ -355,6 +405,80 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return cue::Result<void>::success();
 }
 
+/// @brief Rootから既存Directoryまでを追跡せず開き操作完了まで差替えを阻止する
+[[nodiscard]] cue::Result<DirectoryChainGuard> acquire_directory_chain_guard(
+    const std::filesystem::path &a_root, const std::filesystem::path &a_directory,
+    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::filesystem::path root = a_root.lexically_normal();
+    const std::filesystem::path directory = a_directory.lexically_normal();
+    const std::filesystem::path relative = directory.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute())
+    {
+        return cue::Result<DirectoryChainGuard>::failure(
+            make_error(a_assertContext, a_code, "Artifact directory is outside the Project Root"));
+    }
+
+    std::vector<UniqueHandle> handles;
+    std::filesystem::path current = root;
+    /// @brief 一Directoryを追跡せず開いて検証しGuard集合へ追加する
+    const auto openComponent = [&](const std::filesystem::path &a_path) -> cue::Result<void>
+    {
+        const std::filesystem::path inspected = native_path(a_path);
+        UniqueHandle handle(CreateFileW(inspected.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        if (!handle.is_valid())
+        {
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, a_code, GetLastError(), "Artifact directory guard could not be acquired"));
+        }
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
+        {
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, a_code, GetLastError(), "Artifact directory guard attributes could not be read"));
+        }
+        if ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH, "Artifact directory guard found a reparse point"));
+        }
+        if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U)
+        {
+            return cue::Result<void>::failure(make_windows_error(
+                a_assertContext, a_code, ERROR_DIRECTORY, "Artifact directory guard found a non-directory"));
+        }
+        handles.push_back(std::move(handle));
+        return cue::Result<void>::success();
+    };
+
+    cue::Result<void> rootOpened = openComponent(current);
+    if (!rootOpened)
+    {
+        return cue::Result<DirectoryChainGuard>::failure(std::move(*rootOpened.try_error()));
+    }
+    for (const std::filesystem::path &component : relative)
+    {
+        if (component == ".")
+        {
+            continue;
+        }
+        if (component == "..")
+        {
+            return cue::Result<DirectoryChainGuard>::failure(
+                make_error(a_assertContext, a_code, "Artifact directory escaped the Project Root"));
+        }
+        current /= component;
+        cue::Result<void> opened = openComponent(current);
+        if (!opened)
+        {
+            return cue::Result<DirectoryChainGuard>::failure(std::move(*opened.try_error()));
+        }
+    }
+    return cue::Result<DirectoryChainGuard>::success(DirectoryChainGuard(std::move(handles)));
+}
+
 /// @brief 現在のEngine Processと同じDirectoryを返す
 [[nodiscard]] std::optional<std::filesystem::path> current_process_directory()
 {
@@ -446,7 +570,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 }
 
 /// @brief Lock Fileを作成して取消可能なExclusive Byte Range Lockを取得する
-[[nodiscard]] cue::Result<std::optional<UniqueHandle>> acquire_exclusive_lock(
+[[nodiscard]] cue::Result<std::optional<GuardedExclusiveLock>> acquire_exclusive_lock(
     const std::filesystem::path &a_root, const std::filesystem::path &a_path,
     const cue::ChildProcessCancellation &a_cancellation,
     cue::BuildArtifactLockDeadline a_deadline, cue::WindowsBuildArtifactError a_code,
@@ -455,7 +579,13 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     cue::Result<void> parent = ensure_directory(a_root, a_path.parent_path(), a_code, a_assertContext);
     if (!parent)
     {
-        return cue::Result<std::optional<UniqueHandle>>::failure(std::move(*parent.try_error()));
+        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(std::move(*parent.try_error()));
+    }
+    cue::Result<DirectoryChainGuard> parentGuard =
+        acquire_directory_chain_guard(a_root, a_path.parent_path(), a_code, a_assertContext);
+    if (!parentGuard)
+    {
+        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(std::move(*parentGuard.try_error()));
     }
     const std::filesystem::path lockPath = native_path(a_path);
     UniqueHandle handle(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -463,37 +593,39 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
-        return cue::Result<std::optional<UniqueHandle>>::failure(
+        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
             make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact lock file could not be opened"));
     }
     BY_HANDLE_FILE_INFORMATION information{};
     if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
     {
-        return cue::Result<std::optional<UniqueHandle>>::failure(make_windows_error(
+        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(make_windows_error(
             a_assertContext, a_code, GetLastError(), "Artifact lock file attributes could not be read"));
     }
     if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
     {
-        return cue::Result<std::optional<UniqueHandle>>::failure(make_windows_error(
+        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(make_windows_error(
             a_assertContext, a_code, ERROR_FILE_INVALID, "Artifact lock path is not a regular file"));
     }
     while (!a_cancellation.is_cancel_requested())
     {
         if (a_deadline && std::chrono::steady_clock::now() >= *a_deadline)
         {
-            return cue::Result<std::optional<UniqueHandle>>::failure(
+            return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
                 make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
         }
         OVERLAPPED overlap{};
         if (LockFileEx(handle.get(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) !=
             FALSE)
         {
-            return cue::Result<std::optional<UniqueHandle>>::success(std::optional<UniqueHandle>(std::move(handle)));
+            GuardedExclusiveLock guardedLock(std::move(handle), std::move(*parentGuard.try_value()));
+            return cue::Result<std::optional<GuardedExclusiveLock>>::success(
+                std::optional<GuardedExclusiveLock>(std::move(guardedLock)));
         }
         const DWORD code = GetLastError();
         if (code != ERROR_LOCK_VIOLATION && code != ERROR_IO_PENDING)
         {
-            return cue::Result<std::optional<UniqueHandle>>::failure(
+            return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
                 make_windows_error(a_assertContext, a_code, code, "Artifact byte-range lock could not be acquired"));
         }
         DWORD retryMilliseconds = k_lockRetryMilliseconds;
@@ -502,7 +634,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
             const auto now = std::chrono::steady_clock::now();
             if (now >= *a_deadline)
             {
-                return cue::Result<std::optional<UniqueHandle>>::failure(
+                return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
                     make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
             }
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*a_deadline - now);
@@ -511,7 +643,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         }
         Sleep(retryMilliseconds);
     }
-    return cue::Result<std::optional<UniqueHandle>>::success(std::nullopt);
+    return cue::Result<std::optional<GuardedExclusiveLock>>::success(std::nullopt);
 }
 
 /// @brief Regular FileをSHA-256でStreaming HashしSizeとDigestを返す
@@ -1163,6 +1295,30 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*storeChain.try_error()));
             }
+            cue::Result<void> candidateParentCreated = ensure_directory(
+                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
+                *m_assertContext);
+            if (!candidateParentCreated)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*candidateParentCreated.try_error()));
+            }
+            cue::Result<DirectoryChainGuard> sourceGuard = acquire_directory_chain_guard(
+                m_projectRoot, source.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
+                *m_assertContext);
+            cue::Result<DirectoryChainGuard> candidateParentGuard = acquire_directory_chain_guard(
+                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
+                *m_assertContext);
+            if (!sourceGuard)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*sourceGuard.try_error()));
+            }
+            if (!candidateParentGuard)
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    std::move(*candidateParentGuard.try_error()));
+            }
             std::error_code filesystemError;
             const std::filesystem::file_status sourceStatus = std::filesystem::symlink_status(source, filesystemError);
             if (filesystemError || !std::filesystem::is_regular_file(sourceStatus))
@@ -1320,6 +1476,13 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             if (!storeCreated)
             {
                 return failCandidate(std::move(*storeCreated.try_error()));
+            }
+            cue::Result<DirectoryChainGuard> storeGuard = acquire_directory_chain_guard(
+                m_projectRoot, store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed,
+                *m_assertContext);
+            if (!storeGuard)
+            {
+                return failCandidate(std::move(*storeGuard.try_error()));
             }
             auto artifactLock =
                 acquire_exclusive_lock(m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
