@@ -335,7 +335,9 @@ x64を対象に、次のASCII case-insensitive DLL名だけをPackage外Import�
 - `api-ms-win-crt-stdio-l1-1-0.dll`
 - `api-ms-win-crt-string-l1-1-0.dll`
 
-許可済みMSVC Runtime Importは`msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`の3名だけとする。
+許可済みMSVC Runtime ImportはConfigurationごとに固定する。Development／Releaseは`msvcp140.dll`、`vcruntime140.dll`、
+`vcruntime140_1.dll`の3名、Debugは`msvcp140d.dll`、`vcruntime140d.dll`、`vcruntime140_1d.dll`、`ucrtbased.dll`の4名だけとし、
+異なるConfigurationの名前を混在させない。
 AllowlistはPublish環境のSystem Directory列挙から生成せず、Engine Source内のVersion付き定数とTest Vectorを正本にする。一覧外の
 Importは、現在のMachineで解決できる場合も未登録App-local Importとして拒否する。最小OS、Toolset、Runtime Library、またはEngineの
 直接Import変更で一覧を変える場合はAllowlist Versionと互換性を先に判断し、本ADRまたは後継ADRを更新する。
