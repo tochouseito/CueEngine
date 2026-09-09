@@ -14,30 +14,34 @@ M00の完了証跡は[Repository Foundation completion evidence](Docs/Milestones
 ## Repository Layout
 
 Engine が所有する Source の正本は `Engine/Source` です。
-現在の最小構成は次のとおりです。
+現在の主要構成は次のとおりです。
 
 ```text
 Engine/
     Documents/
     Source/
-        CueBuildProbe/
-            Main.cpp
         Foundation/
-            Private/
-            Public/Cue/Foundation/
         Platform/
-            Public/Cue/Platform/
-            Windows/
         RHI/
-            Public/Cue/RHI/
-            D3D12/
+        IO/
+        Project/
+        Scene/
+        Schema/
+        GameCore/
+        Runtime/
+        EditorCore/
+        Editor/
+        Build/
+        Package/
+        ProjectHubTool/
+        EditorTool/
         RuntimeHost/
-            Main.cpp
     Tests/
-        Foundation/
-        Platform/
-        RHI/
-        RuntimeHost/
+Docs/
+    Decisions/
+    Evidence/
+    Testing/
+ThirdParty/
 ```
 
 Repository Root は CMake の Build 入口、License、Repository 設定などに使用します。
@@ -145,13 +149,27 @@ out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe --render-smoke warp --widt
 
 DebugとDevelopmentはD3D12 Debug Layer、InfoQueue、DREDを有効化します。Releaseは設計どおりこれらの診断を無効化するため、診断専用CTest 4件をSkipします。
 
+## First Usable Engine Workflow
+
+Project作成、Default Scene編集、Project Files操作、Play／Stop、Game Build、Package、Standalone起動は
+`CueProjectHubTool.exe`から開始します。
+
+```powershell
+out/build/windows-vs2026/bin/Debug/CueProjectHubTool.exe
+```
+
+初回利用時の画面操作、失敗時の復旧、3構成確認は
+[M16 First Usable Engine Workflow](Docs/Testing/M16-first-usable-engine-workflow.md)を順に実行してください。
+
 ## Current Limitations
 
 - Windows x64、Visual Studio 2026、DirectX 12だけを検証済みです
 - 単一Window、単一Graphics Queue、単一Thread、2 Back Buffer、VSync有効が現在の範囲です
 - Device Recovery、Fullscreen、HDR、Multi-window Renderingは未実装です
-- Shader、Pipeline、Draw Call、Depth Buffer、FrameGraph、Asset、ECS、Editor、配布PackageはM05の範囲外です
-- 現在の可視出力は固定色Back Buffer Clearです。描画性能の改善は測定していません
+- 現在の可視出力は固定色Back Buffer Clearです。3D Viewport、Game Rendering、Shader／Material制作機能は未実装です
+- Runtime Data変換はStartup Sceneだけを扱い、一般Asset Import／Cookは未実装です
+- Sound、Effect、Physics、Prefab、Scripting／Hot Reload、Installer、Code Signingは未実装です
+- ECSの並列化・改良と描画性能改善はM16後の別Scopeです。性能改善はまだ測定していません
 
 ## Project Policy
 
@@ -164,3 +182,5 @@ DebugとDevelopmentはD3D12 Debug Layer、InfoQueue、DREDを有効化します�
 - [M01 Runtime Foundation completion evidence](Docs/Milestones/M01-Runtime-Foundation.md)
 - [M04 D3D12 Frame Infrastructure completion evidence](Docs/Milestones/M04-D3D12-Frame-Infrastructure.md)
 - [M05 Render Target Clear completion evidence](Docs/Milestones/M05-Render-Target-Clear.md)
+- [M16 Runtime Package contract](Docs/Decisions/0023-runtime-package-manifest-layout-contract.md)
+- [M16 First Usable Engine Workflow](Docs/Testing/M16-first-usable-engine-workflow.md)
