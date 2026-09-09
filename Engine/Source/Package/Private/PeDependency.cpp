@@ -183,10 +183,14 @@ struct ThunkValidationContext final
 [[nodiscard]] std::optional<std::size_t> rva_to_offset(const PeLayout &a_layout, std::uint32_t a_rva,
                                                        std::size_t a_requiredBytes) noexcept
 {
-    if (a_rva < a_layout.sizeOfHeaders && a_requiredBytes <= a_layout.sizeOfHeaders - a_rva &&
-        a_rva <= a_layout.bytes.size() && a_requiredBytes <= a_layout.bytes.size() - a_rva)
+    if (a_rva < a_layout.sizeOfHeaders)
     {
-        return static_cast<std::size_t>(a_rva);
+        if (a_requiredBytes <= a_layout.sizeOfHeaders - a_rva && a_rva <= a_layout.bytes.size() &&
+            a_requiredBytes <= a_layout.bytes.size() - a_rva)
+        {
+            return static_cast<std::size_t>(a_rva);
+        }
+        return std::nullopt;
     }
     for (std::size_t index = 0U; index < a_layout.sectionCount; ++index)
     {
@@ -240,7 +244,7 @@ struct ThunkValidationContext final
         {
             return !a_output.empty();
         }
-        if (value < 0x21U || value > 0x7eU || value == '/' || value == '\\' || value == ':')
+        if (value < 0x20U || value > 0x7eU || value == '/' || value == '\\' || value == ':')
         {
             return false;
         }
@@ -366,7 +370,11 @@ struct ThunkValidationContext final
                 return false;
             }
         }
-        if (std::ranges::all_of(fields, [](std::uint32_t a_value) noexcept { return a_value == 0U; }))
+        if (std::ranges::all_of(
+                fields,
+                /// @brief Import Descriptorの終端Fieldか判定する
+                [](std::uint32_t a_value) noexcept
+                { return a_value == 0U; }))
         {
             return true;
         }
@@ -416,7 +424,11 @@ struct ThunkValidationContext final
                 return false;
             }
         }
-        if (std::ranges::all_of(fields, [](std::uint32_t a_value) noexcept { return a_value == 0U; }))
+        if (std::ranges::all_of(
+                fields,
+                /// @brief Delay Import Descriptorの終端Fieldか判定する
+                [](std::uint32_t a_value) noexcept
+                { return a_value == 0U; }))
         {
             return true;
         }

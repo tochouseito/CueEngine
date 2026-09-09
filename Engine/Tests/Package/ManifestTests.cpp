@@ -451,6 +451,15 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", namedImportGame},
         dependencies, a_assertContext);
 
+    constexpr std::array spacedImports = {std::string_view("My Library.dll")};
+    const std::vector<std::byte> spacedGame = make_test_pe(spacedImports, {});
+    const std::vector<std::byte> spacedDependencyImage = make_test_pe({}, {});
+    const std::array spacedDependency = {
+        cue::package::RuntimePeImageView{"My Library.dll", spacedDependencyImage}};
+    auto validSpacedImport = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", spacedGame},
+        spacedDependency, a_assertContext);
+
     constexpr std::array missingImports = {std::string_view("Missing.dll")};
     const std::vector<std::byte> missingGame = make_test_pe(missingImports, {});
     auto missing = cue::package::validate_runtime_dependency_closure(
@@ -543,7 +552,17 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto invalidHeaderRange = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerCrossingHost},
         {"CueGameModule.dll", game}, dependencies, a_assertContext);
-    return valid && validNamedImport &&
+
+    std::vector<std::byte> headerSectionAliasHost = host;
+    write_u32(headerSectionAliasHost, 0x110U, 0x1f8U);
+    write_u32(headerSectionAliasHost, 0x114U, 20U);
+    write_u32(headerSectionAliasHost, 0x194U, 0x1f8U);
+    write_u32(headerSectionAliasHost, 0x19cU, 0x300U);
+    std::fill(headerSectionAliasHost.begin() + 0x300U, headerSectionAliasHost.begin() + 0x314U, std::byte{0U});
+    auto invalidHeaderSectionAlias = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerSectionAliasHost},
+        {"CueGameModule.dll", game}, dependencies, a_assertContext);
+    return valid && validNamedImport && validSpacedImport &&
            is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(hostBoundary, cue::package::PackageError::RuntimeDependencyViolation) &&
@@ -557,7 +576,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(invalidDelayThunk, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(mismatchedDelayThunkCount, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidSectionCount, cue::package::PackageError::InvalidPortableExecutable) &&
-           is_package_error(invalidHeaderRange, cue::package::PackageError::InvalidPortableExecutable);
+           is_package_error(invalidHeaderRange, cue::package::PackageError::InvalidPortableExecutable) &&
+           is_package_error(invalidHeaderSectionAlias, cue::package::PackageError::InvalidPortableExecutable);
 }
 
 /// @brief Package Root上の存在、Size、SHA-256照合と欠落検出を検証する
