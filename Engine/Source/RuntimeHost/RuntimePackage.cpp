@@ -1180,6 +1180,111 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     return cue::Result<UniqueHandle>::success(std::move(handle));
 }
 
+/// @brief ASCII英字だけをlowercaseへ変換してWindows File名比較Keyを返す
+[[nodiscard]] std::wstring ascii_case_key(std::wstring_view a_value)
+{
+    std::wstring key(a_value);
+    for (wchar_t &character : key)
+    {
+        if (character >= L'A' && character <= L'Z')
+        {
+            character = static_cast<wchar_t>(character + (L'a' - L'A'));
+        }
+    }
+    return key;
+}
+
+/// @brief Runtime Directoryの通常File集合がManifestの依存Entryと完全一致するか検証する
+[[nodiscard]] cue::Result<bool> validate_runtime_dependency_inventory(
+    const std::filesystem::path &a_root, const cue::package::PackageManifest &a_manifest,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        std::vector<std::wstring> expected;
+        for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+        {
+            if (entry.role() != cue::package::PackageFileRole::RuntimeDependency)
+            {
+                continue;
+            }
+            constexpr std::string_view prefix = "Runtime/";
+            const std::string_view path = entry.relative_path();
+            if (!path.starts_with(prefix) || path.size() == prefix.size())
+            {
+                return cue::Result<bool>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidPackageManifest,
+                    "Runtime dependency path is outside the direct Runtime directory"));
+            }
+            std::wstring name;
+            name.reserve(path.size() - prefix.size());
+            for (const char character : path.substr(prefix.size()))
+            {
+                name.push_back(static_cast<unsigned char>(character));
+            }
+            expected.push_back(ascii_case_key(name));
+        }
+        std::sort(expected.begin(), expected.end());
+
+        const std::filesystem::path runtimePath = a_root / "Runtime";
+        const DWORD runtimeAttributes = GetFileAttributesW(runtimePath.c_str());
+        if (runtimeAttributes == INVALID_FILE_ATTRIBUTES)
+        {
+            const DWORD code = GetLastError();
+            if ((code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) && expected.empty())
+            {
+                return cue::Result<bool>::success(false);
+            }
+            return cue::Result<bool>::failure(windows_package_error(
+                a_assertContext, cue::package::PackageError::PackageFileMissing, code,
+                "Runtime dependency directory could not be inspected"));
+        }
+        if ((runtimeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (runtimeAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                "Runtime dependency path is not a regular non-reparse directory"));
+        }
+
+        std::vector<std::wstring> actual;
+        std::error_code iteratorError;
+        std::filesystem::directory_iterator iterator(runtimePath, iteratorError);
+        const std::filesystem::directory_iterator end;
+        while (!iteratorError && iterator != end)
+        {
+            const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+                (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+            {
+                return cue::Result<bool>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                    "Runtime directory contains a non-regular or reparse entry"));
+            }
+            actual.push_back(ascii_case_key(iterator->path().filename().wstring()));
+            iterator.increment(iteratorError);
+        }
+        if (iteratorError)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                "Runtime dependency directory could not be enumerated"));
+        }
+        std::sort(actual.begin(), actual.end());
+        if (actual != expected)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                "Runtime directory inventory differs from the Manifest"));
+        }
+        return cue::Result<bool>::success(!expected.empty());
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
 /// @brief Game Module FileをWrite／Delete共有なしで固定する
 [[nodiscard]] cue::Result<UniqueHandle> guard_module_file(
     const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
@@ -1352,10 +1457,13 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         }
         UniqueHandle runtimeGuard;
         DLL_DIRECTORY_COOKIE runtimeCookie = nullptr;
-        const bool hasRuntimeDependencies = std::any_of(
-            manifest.try_value()->files().begin(), manifest.try_value()->files().end(),
-            [](const package::PackageFileEntry &a_entry) noexcept
-            { return a_entry.role() == package::PackageFileRole::RuntimeDependency; });
+        auto runtimeInventory =
+            validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
+        if (!runtimeInventory)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*runtimeInventory.try_error()));
+        }
+        const bool hasRuntimeDependencies = *runtimeInventory.try_value();
         if (hasRuntimeDependencies)
         {
             auto guarded = guard_directory(root / "Runtime", a_assertContext);

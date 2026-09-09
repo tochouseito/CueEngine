@@ -100,6 +100,22 @@ foreach(requiredMessage IN ITEMS
     endif()
 endforeach()
 
+file(MAKE_DIRECTORY "${packageRoot}/Runtime")
+file(WRITE "${packageRoot}/Runtime/Unlisted.dll" "unlisted")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE unlistedRuntimeResult
+    OUTPUT_VARIABLE unlistedRuntimeOutput
+    ERROR_VARIABLE unlistedRuntimeError
+    TIMEOUT 15
+)
+if(unlistedRuntimeResult EQUAL 0)
+    message(FATAL_ERROR
+        "Manifest-external Runtime dependency was accepted\n${unlistedRuntimeOutput}\n${unlistedRuntimeError}")
+endif()
+file(REMOVE_RECURSE "${packageRoot}/Runtime")
+
 file(APPEND "${packageRoot}/Data/CueProject.runtime.json" "tampered")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
