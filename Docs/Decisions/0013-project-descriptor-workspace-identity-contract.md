@@ -4,6 +4,17 @@
 - Date: 2026-09-01
 - Decision Owners: CueEngine Project
 
+## Descriptor version 2 amendment
+
+ADR-0023はM16でProject Descriptorをschema version 2へ更新した。version 2は既存の`defaultScene` Memberを
+`null`、または`sceneAssetId`と`sourceLocator`を持つObjectとして扱い、Startup Sceneの永続Identityと
+`roots.sourceAssets`基準の現在Locatorを分離する。Blank Projectだけが両者の一致するDefault Sceneを生成する。
+
+version 1から2へのMigrationはProject Hubの「Project Formatを更新」確認操作からだけ明示実行する。
+Migrationは`defaultScene: null`を維持し、既存Sceneを暗黙選択または生成しない。公開前失敗では元Descriptorを維持し、
+Atomic置換後のDirectory Flushだけが失敗した場合は`PublishedButDurabilityUnknown`として、通常の失敗と区別する。
+完全なversion 2 Wire契約とPackage時の利用手順の正本はADR-0023とする。
+
 ## Context
 
 M09では、CueEngine Projectを空の場所から作成し、検証、登録、再Openできる共通基盤を確立する。

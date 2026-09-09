@@ -55,7 +55,8 @@ class InitializationFailureClient final : public cue::tool_host::ToolHostClient
             ImGui::Text("Domain: %.*s", static_cast<int>(domain.size()), domain.data());
             ImGui::Text("Code: %lld", static_cast<long long>(m_error.code().value()));
             ImGui::Spacing();
-            ImGui::TextWrapped("WorkspaceのPath、アクセス権、同名のFileまたはReparse Pointを確認してから再起動してください。");
+            ImGui::TextWrapped(
+                "WorkspaceのPath、アクセス権、同名のFileまたはReparse Pointを確認してから再起動してください。");
             ImGui::Spacing();
             if (ImGui::Button("終了") || ImGui::IsKeyPressed(ImGuiKey_Escape))
             {
@@ -246,7 +247,8 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
         return cue::Result<cue::project_hub::ProjectHubConfiguration>::failure(std::move(*snapshot.try_error()));
     }
     cue::project_hub::ProjectHubConfiguration configuration{
-        1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value()),
+        cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()),
+        std::move(*snapshot.try_value()),
         cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}};
     return cue::Result<cue::project_hub::ProjectHubConfiguration>::success(std::move(configuration));
 }

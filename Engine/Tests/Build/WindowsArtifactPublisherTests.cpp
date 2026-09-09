@@ -179,7 +179,8 @@ template <typename T>
 {
     cue::ProjectId projectId = take_value(cue::ProjectId::parse(k_projectId, a_assertContext));
     return take_value(cue::create_blank_project_descriptor(projectId, "Artifact Publisher Test",
-                                                           {{1U, 0U, 0U}, std::nullopt}, a_assertContext));
+                                                           {{1U, 0U, 0U}, std::nullopt},
+                                                           "00000000-0000-4000-8000-000000000099", a_assertContext));
 }
 
 /// @brief Test用Build PlanをOperation ID別に構築する

@@ -46,9 +46,8 @@ class TestDirectory final
     /// @brief Temporary Root下へProcess固有Directoryを作成する
     TestDirectory()
     {
-        m_path = std::filesystem::temp_directory_path() /
-                 (L"CueFilesImGui-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                  std::to_wstring(GetTickCount64()));
+        m_path = std::filesystem::temp_directory_path() / (L"CueFilesImGui-" + std::to_wstring(GetCurrentProcessId()) +
+                                                           L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(m_path);
     }
 
@@ -99,7 +98,8 @@ void require(bool a_condition, int a_code) noexcept
     cue::Result<cue::ProjectCapabilityProfile> profile = cue::ProjectCapabilityProfile::create({}, a_context);
     cue::Result<cue::ProjectCapabilitySnapshot> snapshot = cue::ProjectCapabilitySnapshot::create({}, a_context);
     require(profile && snapshot, 3);
-    return {1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value())};
+    return {cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U},
+            std::move(*profile.try_value()), std::move(*snapshot.try_value())};
 }
 
 /// @brief 生成Projectへ対応するEditor起動値を作る
@@ -107,14 +107,12 @@ void require(bool a_condition, int a_code) noexcept
     const std::filesystem::path &a_projectPath, std::string_view a_projectId,
     const cue::EngineCompatibility &a_compatibility, const cue::AssertContext &a_context)
 {
-    return {cue::k_editorLaunchProtocolVersion,
-            to_utf8(a_projectPath / L"CueProject.json", a_context.fatal_handler()), std::string(a_projectId),
-            cue::make_engine_compatibility_id(a_compatibility, a_context), std::nullopt};
+    return {cue::k_editorLaunchProtocolVersion, to_utf8(a_projectPath / L"CueProject.json", a_context.fatal_handler()),
+            std::string(a_projectId), cue::make_engine_compatibility_id(a_compatibility, a_context), std::nullopt};
 }
 
 /// @brief Files ViewModelに指定Locatorが操作可能Entryとして存在するか返す
-[[nodiscard]] bool contains_entry(const cue::editor_core::FilesViewModel &a_view,
-                                  std::string_view a_locator) noexcept
+[[nodiscard]] bool contains_entry(const cue::editor_core::FilesViewModel &a_view, std::string_view a_locator) noexcept
 {
     for (const cue::project_files::ProjectFileDirectorySnapshot &directory : a_view.directories())
     {
@@ -144,20 +142,18 @@ void test_files_presenter(const cue::AssertContext &a_context)
     TestDirectory directory;
     cue::Result<std::unique_ptr<cue::FilesystemRoot>> parent =
         cue::create_windows_filesystem_root(to_utf8(directory.path(), a_context.fatal_handler()), a_context);
-    cue::Result<cue::ProjectId> projectId =
-        cue::ProjectId::parse("00000000-0000-4000-8000-000000000902", a_context);
-    const cue::EngineCompatibility compatibility{cue::EngineVersion{1U, 0U, 0U},
-                                                  cue::EngineVersion{2U, 0U, 0U}};
+    cue::Result<cue::ProjectId> projectId = cue::ProjectId::parse("00000000-0000-4000-8000-000000000902", a_context);
+    const cue::EngineCompatibility compatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}};
     require(parent && projectId, 4);
     auto generated = cue::generate_blank_project(**parent.try_value(), "FilesImGuiProject", "Files ImGui Project",
-                                                 *projectId.try_value(), {compatibility}, a_context);
+                                                 *projectId.try_value(), "00000000-0000-4000-8000-000000000099",
+                                                 {compatibility}, a_context);
     require(generated.has_value(), 5);
 
     const std::filesystem::path projectPath = directory.path() / L"FilesImGuiProject";
-    cue::Result<std::unique_ptr<cue::editor::WindowsEditorSession>> session =
-        cue::editor::WindowsEditorSession::create(
-            make_parameters(projectPath, projectId.try_value()->text(), compatibility, a_context),
-            make_configuration(a_context), a_context);
+    cue::Result<std::unique_ptr<cue::editor::WindowsEditorSession>> session = cue::editor::WindowsEditorSession::create(
+        make_parameters(projectPath, projectId.try_value()->text(), compatibility, a_context),
+        make_configuration(a_context), a_context);
     require(session.has_value(), 6);
     cue::editor::FilesPresenter presenter((*session.try_value())->files_workspace(), a_context);
 
@@ -168,8 +164,7 @@ void test_files_presenter(const cue::AssertContext &a_context)
     require(presenter.submit({cue::editor::FilesIntentKind::Copy, "Folder/Moved.txt", "Copy.txt"}).has_value(), 11);
     require(contains_entry((*session.try_value())->files_workspace().view_model(), "Copy.txt"), 12);
 
-    cue::Result<void> outside =
-        presenter.submit({cue::editor::FilesIntentKind::Move, "Copy.txt", "../Outside.txt"});
+    cue::Result<void> outside = presenter.submit({cue::editor::FilesIntentKind::Move, "Copy.txt", "../Outside.txt"});
     require(!outside && presenter.has_error_message() && presenter.message().starts_with("Files操作に失敗しました") &&
                 contains_entry((*session.try_value())->files_workspace().view_model(), "Copy.txt"),
             13);
@@ -190,10 +185,9 @@ void test_files_presenter(const cue::AssertContext &a_context)
     input.AddKeyEvent(ImGuiKey_Delete, true);
     draw_frame(presenter);
     draw_frame(presenter);
-    const bool didOpenDelete = presenter.is_delete_confirmation_pending() &&
-                               ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
-                               presenter.delete_confirmation_entry_count() == 1U &&
-                               presenter.delete_confirmation_byte_size() == 0U;
+    const bool didOpenDelete =
+        presenter.is_delete_confirmation_pending() && ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+        presenter.delete_confirmation_entry_count() == 1U && presenter.delete_confirmation_byte_size() == 0U;
     input.AddKeyEvent(ImGuiKey_Delete, false);
     draw_frame(presenter);
     input.AddKeyEvent(ImGuiKey_Escape, true);

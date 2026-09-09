@@ -185,6 +185,7 @@ struct EditorToolOptions final
     bool hasExpectedProjectId = false;
     bool hasCompatibilityId = false;
     bool hasInitialScene = false;
+    bool hasExpectedInitialSceneAssetId = false;
     bool hasMaximumFrameCount = false;
     bool hasProcessTestAction = false;
 };
@@ -512,6 +513,21 @@ struct PlayWorkflowDocumentState final
                 options.parameters.initialSceneLocator = std::move(*converted.try_value());
                 options.hasInitialScene = true;
             }
+            else if (option == L"--expected-initial-scene-asset-id")
+            {
+                if (options.hasExpectedInitialSceneAssetId)
+                {
+                    return cue::Result<EditorToolOptions>::failure(make_tool_error(
+                        a_context, k_invalidArguments, "Expected initial SceneAssetId option is duplicated"));
+                }
+                cue::Result<std::string> converted = convert_argument(value, a_context);
+                if (!converted)
+                {
+                    return cue::Result<EditorToolOptions>::failure(std::move(*converted.try_error()));
+                }
+                options.parameters.expectedInitialSceneAssetId = std::move(*converted.try_value());
+                options.hasExpectedInitialSceneAssetId = true;
+            }
             else if (option == L"--maximum-frame-count")
             {
                 const std::optional<std::uint64_t> frameCount = cue::parse_unsigned_decimal<std::uint64_t>(value);
@@ -550,6 +566,11 @@ struct PlayWorkflowDocumentState final
             return cue::Result<EditorToolOptions>::failure(
                 make_tool_error(a_context, k_invalidArguments, "Required Editor launch options are missing"));
         }
+        if (options.hasExpectedInitialSceneAssetId && !options.hasInitialScene)
+        {
+            return cue::Result<EditorToolOptions>::failure(make_tool_error(
+                a_context, k_invalidArguments, "Expected initial SceneAssetId requires an initial scene locator"));
+        }
         if (options.hasProcessTestAction &&
             (!options.hasInitialScene || !options.hasMaximumFrameCount ||
              (*options.processTestAction != "autosave-recovery" && *options.processTestAction != "autosave-new-scene" &&
@@ -584,7 +605,8 @@ struct PlayWorkflowDocumentState final
         return cue::Result<cue::editor::WindowsEditorEngineConfiguration>::failure(std::move(*snapshot.try_error()));
     }
     return cue::Result<cue::editor::WindowsEditorEngineConfiguration>::success(
-        {1U, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()), std::move(*snapshot.try_value())});
+        {cue::k_currentProjectDescriptorSchemaVersion, cue::EngineVersion{1U, 0U, 0U}, std::move(*profile.try_value()),
+         std::move(*snapshot.try_value())});
 }
 
 /// @brief Project-only ShellとActive EditorPresenterをFile Workflowへ接続する

@@ -34,8 +34,7 @@ constexpr std::size_t k_maxWindowsPathLength = 32767;
 }
 
 /// @brief UTF-8 LocatorをStrict UTF-16へ変換する
-[[nodiscard]] cue::Result<std::wstring> to_utf16(std::string_view a_text,
-                                                 const cue::AssertContext &a_context) noexcept
+[[nodiscard]] cue::Result<std::wstring> to_utf16(std::string_view a_text, const cue::AssertContext &a_context) noexcept
 {
     std::wstring converted;
     const cue::WindowsUtfConversionResult result =
@@ -49,8 +48,7 @@ constexpr std::size_t k_maxWindowsPathLength = 32767;
 }
 
 /// @brief UTF-16 LocatorをStrict UTF-8へ変換する
-[[nodiscard]] cue::Result<std::string> to_utf8(std::wstring_view a_text,
-                                               const cue::AssertContext &a_context) noexcept
+[[nodiscard]] cue::Result<std::string> to_utf8(std::wstring_view a_text, const cue::AssertContext &a_context) noexcept
 {
     std::string converted;
     const cue::WindowsUtfConversionResult result =
@@ -143,6 +141,23 @@ constexpr std::size_t k_maxWindowsPathLength = 32767;
     return text;
 }
 
+/// @brief Cryptographic Random Sourceからcanonical UUID Version 4文字列を生成する
+[[nodiscard]] cue::Result<std::string> generate_identity_text(const cue::AssertContext &a_assertContext) noexcept
+{
+    std::array<std::uint8_t, 16> bytes{};
+    const NTSTATUS status =
+        BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (status < 0)
+    {
+        return cue::Result<std::string>::failure(cue::make_io_error(a_assertContext, cue::IoError::IoFailure,
+                                                                    "Identity random generation failed",
+                                                                    static_cast<std::int64_t>(status)));
+    }
+    bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fU) | 0x40U);
+    bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fU) | 0x80U);
+    return cue::Result<std::string>::success(format_project_id(bytes, a_assertContext));
+}
+
 /// @brief Windows APIをProject HubのPlatform非依存Service境界へ接続する
 class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
 {
@@ -181,8 +196,7 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
         {
             terminate_allocation(*m_assertContext);
         }
-        const DWORD written =
-            GetFullPathNameW(converted.try_value()->c_str(), required, absolute.data(), nullptr);
+        const DWORD written = GetFullPathNameW(converted.try_value()->c_str(), required, absolute.data(), nullptr);
         if (written == 0 || written >= required)
         {
             return cue::Result<std::string>::failure(
@@ -255,8 +269,7 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
         cue::Result<std::string> normalized = normalize_project_locator(a_locator);
         if (!normalized)
         {
-            return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(
-                std::move(*normalized.try_error()));
+            return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(std::move(*normalized.try_error()));
         }
         cue::Result<std::wstring> path = to_utf16(*normalized.try_value(), *m_assertContext);
         if (!path)
@@ -286,18 +299,18 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
     /// @brief Cryptographic Random SourceからRFC 4122 Version 4 ProjectIdを生成する
     [[nodiscard]] cue::Result<cue::ProjectId> next_project_id() noexcept override
     {
-        std::array<std::uint8_t, 16> bytes{};
-        const NTSTATUS status = BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()),
-                                                BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-        if (status < 0)
+        cue::Result<std::string> identity = generate_identity_text(*m_assertContext);
+        if (!identity)
         {
-            return cue::Result<cue::ProjectId>::failure(cue::make_io_error(
-                *m_assertContext, cue::IoError::IoFailure, "ProjectId random generation failed",
-                static_cast<std::int64_t>(status)));
+            return cue::Result<cue::ProjectId>::failure(std::move(*identity.try_error()));
         }
-        bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fU) | 0x40U);
-        bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fU) | 0x80U);
-        return cue::ProjectId::parse(format_project_id(bytes, *m_assertContext), *m_assertContext);
+        return cue::ProjectId::parse(*identity.try_value(), *m_assertContext);
+    }
+
+    /// @brief Cryptographic Random SourceからDefault SceneAssetId文字列を生成する
+    [[nodiscard]] cue::Result<std::string> next_scene_asset_id() noexcept override
+    {
+        return generate_identity_text(*m_assertContext);
     }
 
   private:
@@ -312,8 +325,7 @@ Result<std::unique_ptr<ProjectHubPlatform>> create_windows_project_hub_platform(
 {
     try
     {
-        std::unique_ptr<ProjectHubPlatform> platform =
-            std::make_unique<WindowsProjectHubPlatform>(a_assertContext);
+        std::unique_ptr<ProjectHubPlatform> platform = std::make_unique<WindowsProjectHubPlatform>(a_assertContext);
         return Result<std::unique_ptr<ProjectHubPlatform>>::success(std::move(platform));
     }
     catch (...)

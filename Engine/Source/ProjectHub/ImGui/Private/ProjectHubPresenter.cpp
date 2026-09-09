@@ -454,6 +454,7 @@ void ProjectHubPresenter::draw(bool a_canLaunchEditor) noexcept
     draw_create_dialog();
     draw_register_dialog();
     draw_remove_dialog();
+    draw_migrate_dialog();
 }
 
 void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
@@ -575,6 +576,14 @@ void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
         if (ImGui::Button("Editorで開く") || canActivateWithEnter)
         {
             openProjectId = selected->projectId;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(selected == nullptr || !selected->canMigrate);
+        if (ImGui::Button("Project Formatを更新"))
+        {
+            m_pendingMigrateProjectId = selected->projectId;
+            m_openMigrateDialog = true;
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -810,6 +819,51 @@ void ProjectHubPresenter::draw_remove_dialog() noexcept
     ImGui::SameLine();
     if (ImGui::Button("キャンセル") || ImGui::IsKeyPressed(ImGuiKey_Escape))
     {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void ProjectHubPresenter::draw_migrate_dialog() noexcept
+{
+    if (m_openMigrateDialog)
+    {
+        ImGui::OpenPopup("Project Formatを更新");
+        m_openMigrateDialog = false;
+    }
+    bool isOpen = true;
+    if (!ImGui::BeginPopupModal("Project Formatを更新", &isOpen, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        return;
+    }
+    ImGui::TextUnformatted("CueProject.jsonを現在のFormatへAtomicに更新します。");
+    ImGui::TextWrapped("version 1のdefaultSceneはnullのまま保持されます。更新後にStartup Sceneを明示選択してください。");
+    if (ImGui::Button("更新する"))
+    {
+        Result<ProjectDescriptorMigrationOutcome> migrated = m_service->migrate_project(m_pendingMigrateProjectId);
+        if (migrated)
+        {
+            m_pendingMigrateProjectId.clear();
+            if (migrated.try_value()->try_durability_error() != nullptr)
+            {
+                set_warning("Project Formatを更新しましたが、Diskへの耐久性を確認できませんでした。"
+                            "CueProject.jsonを確認し、次回起動後にもversion 2が保持されているか再確認してください。");
+            }
+            else
+            {
+                set_status("Project Formatを更新しました。Startup Sceneを明示選択してください。");
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        else
+        {
+            set_error(*migrated.try_error());
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("キャンセル") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    {
+        m_pendingMigrateProjectId.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

@@ -112,7 +112,8 @@ class TestProject final
         }
         cue::Result<cue::ProjectDescriptor> descriptor = cue::create_blank_project_descriptor(
             *id.try_value(), "Watcher Service Test",
-            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, a_assertContext);
+            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+            "00000000-0000-4000-8000-000000000099", a_assertContext);
         if (!descriptor)
         {
             return;

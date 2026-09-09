@@ -241,7 +241,8 @@ class SequenceOperationIdSource final : public cue::project_files::ProjectFileOp
     }
     return cue::create_blank_project_descriptor(
         *id.try_value(), "Project Files Test",
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, a_assertContext);
+        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+        "00000000-0000-4000-8000-000000000099", a_assertContext);
 }
 
 /// @brief 決定的Operation ID SourceをPolymorphic所有権で返す
@@ -799,7 +800,8 @@ class SequenceOperationIdSource final : public cue::project_files::ProjectFileOp
     }
     auto otherDescriptor = cue::create_blank_project_descriptor(
         *otherId.try_value(), "Other Project",
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, a_assertContext);
+        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+        "00000000-0000-4000-8000-000000000099", a_assertContext);
     if (!otherDescriptor || !write_project_descriptor(directory, *otherDescriptor.try_value(), a_assertContext))
     {
         return false;

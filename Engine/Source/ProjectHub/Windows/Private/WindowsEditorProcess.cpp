@@ -153,8 +153,8 @@ class WindowsEditorProcessImpl final : public cue::project_hub::WindowsEditorPro
         DWORD exitCode = 0;
         if (!GetExitCodeProcess(m_process, &exitCode))
         {
-            return cue::Result<bool>::failure(make_monitor_error(*m_assertContext, "Editor process exit code failed",
-                                                                 "Win32", GetLastError()));
+            return cue::Result<bool>::failure(
+                make_monitor_error(*m_assertContext, "Editor process exit code failed", "Win32", GetLastError()));
         }
         if (exitCode != 0)
         {
@@ -180,11 +180,10 @@ Result<std::unique_ptr<WindowsEditorProcess>> launch_windows_editor_process(
     Result<std::wstring> executable = to_utf16(a_editorExecutableLocator, a_assertContext);
     if (!executable || executable.try_value()->empty())
     {
-        return executable ? Result<std::unique_ptr<WindowsEditorProcess>>::failure(make_project_hub_error(
-                                a_assertContext, ProjectHubError::EditorLaunchFailed,
-                                "Editor executable locator is empty"))
-                          : Result<std::unique_ptr<WindowsEditorProcess>>::failure(
-                                std::move(*executable.try_error()));
+        return executable
+                   ? Result<std::unique_ptr<WindowsEditorProcess>>::failure(make_project_hub_error(
+                         a_assertContext, ProjectHubError::EditorLaunchFailed, "Editor executable locator is empty"))
+                   : Result<std::unique_ptr<WindowsEditorProcess>>::failure(std::move(*executable.try_error()));
     }
 
     std::wstring commandLine;
@@ -249,11 +248,28 @@ Result<std::unique_ptr<WindowsEditorProcess>> launch_windows_editor_process(
             return Result<std::unique_ptr<WindowsEditorProcess>>::failure(std::move(*scene.try_error()));
         }
     }
+    if (a_request.expected_initial_scene_asset_id().has_value())
+    {
+        try
+        {
+            append_argument(commandLine, L"--expected-initial-scene-asset-id");
+        }
+        catch (...)
+        {
+            terminate_allocation(a_assertContext);
+        }
+        Result<void> sceneAssetId =
+            append_utf8_argument(commandLine, *a_request.expected_initial_scene_asset_id(), a_assertContext);
+        if (!sceneAssetId)
+        {
+            return Result<std::unique_ptr<WindowsEditorProcess>>::failure(std::move(*sceneAssetId.try_error()));
+        }
+    }
     if (commandLine.size() >= k_maxCommandLineLength)
     {
-        return Result<std::unique_ptr<WindowsEditorProcess>>::failure(make_project_hub_error(
-            a_assertContext, ProjectHubError::EditorLaunchFailed,
-            "Editor process command line exceeds the Windows limit"));
+        return Result<std::unique_ptr<WindowsEditorProcess>>::failure(
+            make_project_hub_error(a_assertContext, ProjectHubError::EditorLaunchFailed,
+                                   "Editor process command line exceeds the Windows limit"));
     }
 
     STARTUPINFOW startup{};

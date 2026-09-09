@@ -75,6 +75,24 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     /// @brief 所有 Byte 列を解放する
     ~MemoryFilesystemRoot() override = default;
 
+    /// @brief 次のAtomic Writeを失敗させる設定を切り替える
+    void set_write_failure(bool a_shouldFail) noexcept
+    {
+        m_shouldFailWrite = a_shouldFail;
+    }
+
+    /// @brief 次のAtomic Writeを公開後DurabilityUnknownとして返す設定を切り替える
+    void set_write_durability_unknown(bool a_shouldFail) noexcept
+    {
+        m_shouldReportDurabilityUnknown = a_shouldFail;
+    }
+
+    /// @brief 現在保持するDescriptor Byte列を文字列として返す
+    [[nodiscard]] std::string contents() const
+    {
+        return std::string(reinterpret_cast<const char *>(m_bytes.data()), m_bytes.size());
+    }
+
     /// @brief Test Double InstanceをMemory Root Identityとして返す
     [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
     {
@@ -121,16 +139,26 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
             return cue::Result<void>::failure(
                 cue::make_io_error(*m_assertContext, cue::IoError::InvalidPath, "Unexpected memory file path"));
         }
+        if (m_shouldFailWrite)
+        {
+            return cue::Result<void>::failure(
+                cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, "Injected atomic write failure"));
+        }
         m_bytes.assign(a_bytes.begin(), a_bytes.end());
+        if (m_shouldReportDurabilityUnknown)
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::DurabilityUnknown, "Injected post-publication durability failure"));
+        }
         return cue::Result<void>::success();
     }
 
     /// @brief Project Test対象外のRecovery Backup公開を明示的に拒否する
-    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(
-        const cue::RelativePath &, std::span<const std::byte>, const cue::AssertContext &) noexcept override
+    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(const cue::RelativePath &, std::span<const std::byte>,
+                                                                 const cue::AssertContext &) noexcept override
     {
-        return cue::Result<void>::failure(cue::make_io_error(
-            *m_assertContext, cue::IoError::InvalidPath, "Recovery backup is not used by project tests"));
+        return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::InvalidPath,
+                                                             "Recovery backup is not used by project tests"));
     }
 
     [[nodiscard]] cue::Result<cue::FileWriteLease> acquire_file_write_lease(const cue::RelativePath &) noexcept override
@@ -178,6 +206,8 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
   private:
     std::vector<std::byte> m_bytes;
     const cue::AssertContext *m_assertContext;
+    bool m_shouldFailWrite = false;
+    bool m_shouldReportDurabilityUnknown = false;
 };
 
 /// @brief Result が期待する Project Error Code を保持するか検証する
@@ -256,7 +286,7 @@ template <typename Value>
         replace_once(k_validDescriptor, "\"schemaVersion\": 1,", "\"schemaVersion\": 1,\"futureRequired\":true,");
     const std::string nestedUnknown =
         replace_once(k_validDescriptor, "\"minimum\": \"0.1.0\",", "\"minimum\": \"0.1.0\",\"futureRequired\":true,");
-    const std::string future = replace_once(k_validDescriptor, "\"schemaVersion\": 1", "\"schemaVersion\": 2");
+    const std::string future = replace_once(k_validDescriptor, "\"schemaVersion\": 1", "\"schemaVersion\": 3");
     const std::string futureWithField =
         replace_once(future, "\"projectId\":", "\"futureRequired\":true,\"projectId\":");
     const std::string badId =
@@ -298,9 +328,62 @@ template <typename Value>
            has_project_error(cue::parse_project_descriptor(descriptorCollision, a_assertContext),
                              cue::ProjectError::InvalidRoots) &&
            has_project_error(cue::parse_project_descriptor(defaultScene, a_assertContext),
-                             cue::ProjectError::InvalidFormat) &&
+                             cue::ProjectError::InvalidDefaultScene) &&
            has_project_error(cue::parse_project_descriptor(capabilities, a_assertContext),
                              cue::ProjectError::InvalidFormat);
+}
+
+/// @brief Descriptor v2がScene IdentityとSource Locatorを別値として保持し未知ExtensionをRound-tripするか検証する
+[[nodiscard]] bool test_version_two_startup_scene(const cue::AssertContext &a_assertContext)
+{
+    const std::string descriptor = replace_once(
+        replace_once(k_validDescriptor, "\"schemaVersion\": 1", "\"schemaVersion\": 2"), "\"defaultScene\": null",
+        "\"defaultScene\":{\"sceneAssetId\":\"00000000-0000-4000-8000-000000000099\","
+        "\"sourceLocator\":\"Scenes/Default.cuescene\"}");
+    auto parsed = cue::parse_project_descriptor(descriptor, a_assertContext);
+    if (!parsed || parsed.try_value()->schema_version() != cue::k_currentProjectDescriptorSchemaVersion ||
+        !parsed.try_value()->default_scene().has_value() ||
+        parsed.try_value()->default_scene()->scene_asset_id() != "00000000-0000-4000-8000-000000000099" ||
+        parsed.try_value()->default_scene()->source_locator().text() != "Scenes/Default.cuescene")
+    {
+        return false;
+    }
+    auto serialized = cue::serialize_project_descriptor(*parsed.try_value(), a_assertContext);
+    auto reparsed = serialized ? cue::parse_project_descriptor(*serialized.try_value(), a_assertContext)
+                               : cue::Result<cue::ProjectDescriptor>::failure(std::move(*serialized.try_error()));
+    return reparsed && parsed.try_value()->equivalent_to(*reparsed.try_value());
+}
+
+/// @brief v1 Migrationが明示実行時だけv2へ置換され、Write失敗時は元Byte列を保つか検証する
+[[nodiscard]] bool test_explicit_migration_preserves_source_on_failure(const cue::AssertContext &a_assertContext)
+{
+    MemoryFilesystemRoot successful(k_validDescriptor, a_assertContext);
+    auto migrated = cue::migrate_project_descriptor(successful, a_assertContext);
+    if (!migrated || migrated.try_value()->status() != cue::ProjectDescriptorMigrationStatus::Committed ||
+        migrated.try_value()->descriptor().schema_version() != cue::k_currentProjectDescriptorSchemaVersion ||
+        migrated.try_value()->descriptor().default_scene().has_value() ||
+        successful.contents().find("\"schemaVersion\":2") == std::string::npos)
+    {
+        return false;
+    }
+
+    MemoryFilesystemRoot failed(k_validDescriptor, a_assertContext);
+    const std::string original = failed.contents();
+    failed.set_write_failure(true);
+    auto failedMigration = cue::migrate_project_descriptor(failed, a_assertContext);
+    if (failedMigration || failed.contents() != original)
+    {
+        return false;
+    }
+
+    MemoryFilesystemRoot uncertain(k_validDescriptor, a_assertContext);
+    uncertain.set_write_durability_unknown(true);
+    auto uncertainMigration = cue::migrate_project_descriptor(uncertain, a_assertContext);
+    return uncertainMigration &&
+           uncertainMigration.try_value()->status() ==
+               cue::ProjectDescriptorMigrationStatus::PublishedButDurabilityUnknown &&
+           uncertainMigration.try_value()->try_durability_error() != nullptr &&
+           uncertain.contents().find("\"schemaVersion\":2") != std::string::npos;
 }
 
 /// @brief BOM、Control 文字、Resource Limit、UTF-8 不正を Parse 前後で拒否することを検証する
@@ -350,7 +433,7 @@ template <typename Value>
 }
 } // namespace
 
-/// @brief Project Descriptor v1 の解析、検証、Round-trip、Storage 契約を統合検証する
+/// @brief Project Descriptor v1／v2 の解析、Migration、Round-trip、Storage 契約を統合検証する
 int main()
 {
     TestFatalHandler fatalHandler;
@@ -358,6 +441,8 @@ int main()
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     return test_valid_descriptor(assertContext) && test_schema_rejections(assertContext) &&
+                   test_version_two_startup_scene(assertContext) &&
+                   test_explicit_migration_preserves_source_on_failure(assertContext) &&
                    test_encoding_and_limits(assertContext) && test_storage_and_move_identity(assertContext)
                ? 0
                : 1;

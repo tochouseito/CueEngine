@@ -49,8 +49,7 @@ template <typename Value>
 {
     for (const cue::ProjectCompatibilityReason &reason : a_report.reasons())
     {
-        if (reason.code == a_code && reason.capability == a_capability &&
-            reason.minimumVersion == a_minimumVersion)
+        if (reason.code == a_code && reason.capability == a_capability && reason.minimumVersion == a_minimumVersion)
         {
             return true;
         }
@@ -60,8 +59,7 @@ template <typename Value>
 
 /// @brief 一要件と一観測を使って互換性EvaluatorをSynthetic実行する
 [[nodiscard]] cue::Result<cue::ProjectCompatibilityReport> evaluate_single(
-    const cue::ProjectCapabilityRequirement &a_requirement,
-    const cue::ProjectCapabilityObservation &a_observation,
+    const cue::ProjectCapabilityRequirement &a_requirement, const cue::ProjectCapabilityObservation &a_observation,
     const cue::AssertContext &a_assertContext) noexcept
 {
     auto profile = cue::ProjectCapabilityProfile::create(std::span(&a_requirement, 1U), a_assertContext);
@@ -95,8 +93,7 @@ template <typename Value>
     auto report = evaluate_single(requirement, observation, a_assertContext);
     return report && report.try_value()->status() == cue::ProjectCompatibilityStatus::Compatible &&
            report.try_value()->can_open() && report.try_value()->reasons().empty() &&
-           report.try_value()->runtime_decisions().size() == 1U &&
-           report.try_value()->runtime_decisions()[0].isEnabled;
+           report.try_value()->runtime_decisions().size() == 1U && report.try_value()->runtime_decisions()[0].isEnabled;
 }
 
 /// @brief Hardware未対応とEngine未実装を異なる理由でUnsupportedへ分類することを検証する
@@ -179,8 +176,7 @@ template <typename Value>
            preferredReport.try_value()->status() == cue::ProjectCompatibilityStatus::Degraded &&
            preferredReport.try_value()->can_open() &&
            disabledReport.try_value()->status() == cue::ProjectCompatibilityStatus::Degraded &&
-           disabledReport.try_value()->can_open() &&
-           !disabledReport.try_value()->runtime_decisions()[0].isEnabled &&
+           disabledReport.try_value()->can_open() && !disabledReport.try_value()->runtime_decisions()[0].isEnabled &&
            has_reason(*disabledReport.try_value(), cue::ProjectCompatibilityReasonCode::RuntimeDisabled,
                       cue::ProjectCapability::EnhancedBarriers);
 }
@@ -195,8 +191,8 @@ template <typename Value>
         return false;
     }
     auto formatReport = cue::evaluate_project_compatibility(
-        2U, 1U, cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
-        cue::EngineVersion{1U, 0U, 0U}, *profile.try_value(), *snapshot.try_value(), a_assertContext);
+        2U, 1U, cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt}, cue::EngineVersion{1U, 0U, 0U},
+        *profile.try_value(), *snapshot.try_value(), a_assertContext);
     auto engineReport = cue::evaluate_project_compatibility(
         1U, 1U, cue::EngineCompatibility{cue::EngineVersion{2U, 0U, 0U}, cue::EngineVersion{3U, 0U, 0U}},
         cue::EngineVersion{1U, 9U, 0U}, *profile.try_value(), *snapshot.try_value(), a_assertContext);
@@ -241,14 +237,14 @@ template <typename Value>
 [[nodiscard]] bool test_duplicate_inputs(const cue::AssertContext &a_assertContext)
 {
     constexpr std::array requirements = {
-        cue::ProjectCapabilityRequirement{cue::ProjectCapability::Baseline3D,
-                                          cue::CapabilityRequirementKind::Required, std::nullopt},
-        cue::ProjectCapabilityRequirement{cue::ProjectCapability::Baseline3D,
-                                          cue::CapabilityRequirementKind::Preferred, std::nullopt},
+        cue::ProjectCapabilityRequirement{cue::ProjectCapability::Baseline3D, cue::CapabilityRequirementKind::Required,
+                                          std::nullopt},
+        cue::ProjectCapabilityRequirement{cue::ProjectCapability::Baseline3D, cue::CapabilityRequirementKind::Preferred,
+                                          std::nullopt},
     };
     const std::array observations = {
-        cue::ProjectCapabilityObservation{cue::ProjectCapability::Baseline3D,
-                                          cue::CapabilityState::supported_enabled(), std::nullopt},
+        cue::ProjectCapabilityObservation{cue::ProjectCapability::Baseline3D, cue::CapabilityState::supported_enabled(),
+                                          std::nullopt},
         cue::ProjectCapabilityObservation{cue::ProjectCapability::Baseline3D,
                                           cue::CapabilityState::supported_disabled(), std::nullopt},
     };
@@ -266,9 +262,10 @@ template <typename Value>
     {
         return false;
     }
-    auto descriptor = cue::create_blank_project_descriptor(
-        *projectId.try_value(), "Compatibility Test",
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt}, a_assertContext);
+    auto descriptor =
+        cue::create_blank_project_descriptor(*projectId.try_value(), "Compatibility Test",
+                                             cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
+                                             "00000000-0000-4000-8000-000000000099", a_assertContext);
     auto serialized = descriptor ? cue::serialize_project_descriptor(*descriptor.try_value(), a_assertContext)
                                  : cue::Result<std::string>::failure(std::move(*descriptor.try_error()));
     return serialized && serialized.try_value()->find("\"requiredCapabilities\":[]") != std::string::npos &&
@@ -287,11 +284,10 @@ template <typename Value>
         return false;
     }
     auto invalidFormat = cue::evaluate_project_compatibility(
-        0U, 1U, cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
-        cue::EngineVersion{1U, 0U, 0U}, *profile.try_value(), *snapshot.try_value(), a_assertContext);
+        0U, 1U, cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt}, cue::EngineVersion{1U, 0U, 0U},
+        *profile.try_value(), *snapshot.try_value(), a_assertContext);
     auto invalidRange = cue::evaluate_project_compatibility(
-        1U, 1U,
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{1U, 0U, 0U}},
+        1U, 1U, cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{1U, 0U, 0U}},
         cue::EngineVersion{1U, 0U, 0U}, *profile.try_value(), *snapshot.try_value(), a_assertContext);
     return has_project_error(invalidFormat, cue::ProjectError::InvalidCompatibilityInput) &&
            has_project_error(invalidRange, cue::ProjectError::InvalidCompatibilityInput);

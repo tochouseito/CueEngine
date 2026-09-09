@@ -194,17 +194,20 @@ class TestDirectory final
     {
         return false;
     }
-    auto generated = cue::generate_blank_project(**parent.try_value(), "SampleProject", "Sample Project",
-                                                 *projectId.try_value(), projectTemplate, a_assertContext);
+    auto generated =
+        cue::generate_blank_project(**parent.try_value(), "SampleProject", "Sample Project", *projectId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", projectTemplate, a_assertContext);
     if (!generated)
     {
         return false;
     }
 
-    constexpr std::array paths = {
-        std::wstring_view(L"SampleProject\\Assets\\Source"), std::wstring_view(L"SampleProject\\Assets\\Runtime"),
-        std::wstring_view(L"SampleProject\\Generated"), std::wstring_view(L"SampleProject\\Saved"),
-        std::wstring_view(L"SampleProject\\Source\\Game")};
+    constexpr std::array paths = {std::wstring_view(L"SampleProject\\Assets\\Source"),
+                                  std::wstring_view(L"SampleProject\\Assets\\Source\\Scenes"),
+                                  std::wstring_view(L"SampleProject\\Assets\\Runtime"),
+                                  std::wstring_view(L"SampleProject\\Generated"),
+                                  std::wstring_view(L"SampleProject\\Saved"),
+                                  std::wstring_view(L"SampleProject\\Source\\Game")};
     for (const std::wstring_view path : paths)
     {
         if (!is_directory(directory.child(path)))
@@ -215,9 +218,9 @@ class TestDirectory final
     if (!is_file(directory.child(L"SampleProject\\CueProject.json")) ||
         !is_file(directory.child(L"SampleProject\\CMakeLists.txt")) ||
         !is_file(directory.child(L"SampleProject\\CMakePresets.json")) ||
+        !is_file(directory.child(L"SampleProject\\Assets\\Source\\Scenes\\Default.cuescene")) ||
         !is_file(directory.child(L"SampleProject\\Source\\Game\\CMakeLists.txt")) ||
-        !is_file(directory.child(L"SampleProject\\Source\\Game\\GameModule.cpp")) ||
-        GetFileAttributesW(directory.child(L"SampleProject\\DefaultScene.cue").c_str()) != INVALID_FILE_ATTRIBUTES)
+        !is_file(directory.child(L"SampleProject\\Source\\Game\\GameModule.cpp")))
     {
         return false;
     }
@@ -302,8 +305,9 @@ class TestDirectory final
     }
 
     auto duplicateId = cue::ProjectId::parse("87654321-4321-4abc-8def-ba0987654321", a_assertContext);
-    auto duplicate = cue::generate_blank_project(**parent.try_value(), "SampleProject", "Replacement",
-                                                 *duplicateId.try_value(), projectTemplate, a_assertContext);
+    auto duplicate =
+        cue::generate_blank_project(**parent.try_value(), "SampleProject", "Replacement", *duplicateId.try_value(),
+                                    "00000000-0000-4000-8000-000000000099", projectTemplate, a_assertContext);
     auto reloaded = cue::load_project_descriptor(**projectRoot.try_value(), a_assertContext);
     return !duplicate && reloaded && generated.try_value()->equivalent_to(*reloaded.try_value());
 }

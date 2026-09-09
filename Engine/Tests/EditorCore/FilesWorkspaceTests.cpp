@@ -147,7 +147,8 @@ class TestProject final
         }
         cue::Result<cue::ProjectDescriptor> descriptor = cue::create_blank_project_descriptor(
             *id.try_value(), "Files Workspace Test",
-            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, a_assertContext);
+            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+            "00000000-0000-4000-8000-000000000099", a_assertContext);
         if (!descriptor)
         {
             return;
@@ -366,7 +367,7 @@ class TestProject final
         mismatchedId ? cue::create_blank_project_descriptor(
                            *mismatchedId.try_value(), "Mismatched Files Workspace Test",
                            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
-                           a_assertContext)
+                           "00000000-0000-4000-8000-000000000099", a_assertContext)
                      : cue::Result<cue::ProjectDescriptor>::failure(cue::editor_core::make_editor_core_error(
                            a_assertContext, cue::editor_core::EditorCoreError::InvalidWorkspaceRequest,
                            "Files workspace test mismatched ProjectId is unavailable"));
@@ -506,8 +507,7 @@ class TestProject final
     {
         return fail_stage("delete-preview-directory");
     }
-    cue::Result<cue::project_files::ProjectFileDeletePreview> invalidPreview =
-        service.preview_delete("../Outside");
+    cue::Result<cue::project_files::ProjectFileDeletePreview> invalidPreview = service.preview_delete("../Outside");
     if (invalidPreview || service.view_model().try_error() == nullptr ||
         service.view_model().try_error()->code().value() !=
             static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidWorkspaceRequest) ||
@@ -595,9 +595,9 @@ class TestProject final
     if (pollAfterStop || !service.view_model().is_stale() || service.view_model().try_error() == nullptr ||
         service.view_model().try_error()->code().value() !=
             static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable) ||
-        pollAfterStop.try_error() == nullptr || pollAfterStop.try_error()->code().value() !=
-                                                  static_cast<std::int64_t>(
-                                                      cue::editor_core::EditorCoreError::WorkspaceUnavailable))
+        pollAfterStop.try_error() == nullptr ||
+        pollAfterStop.try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable))
     {
         return fail_stage("poll-after-stop");
     }
@@ -606,9 +606,9 @@ class TestProject final
     if (!service.refresh() || !service.select("Folder/Nested.txt") || !service.set_search_filter("nested") ||
         !createdAfterStop || !is_published(*createdAfterStop.try_value()) ||
         !contains_entry(service.view_model(), "AfterStop.txt") || !service.view_model().is_stale() ||
-        service.view_model().try_error() == nullptr || service.view_model().try_error()->code().value() !=
-                                                         static_cast<std::int64_t>(
-                                                             cue::editor_core::EditorCoreError::WorkspaceUnavailable))
+        service.view_model().try_error() == nullptr ||
+        service.view_model().try_error()->code().value() !=
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::WorkspaceUnavailable))
     {
         return fail_stage("operation-after-stop");
     }

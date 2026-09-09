@@ -214,9 +214,10 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> &&a_result) noex
 {
     cue::ProjectId projectId =
         take_value(cue::ProjectId::parse("00000000-0000-4000-8000-000000000214", a_assertContext));
-    return take_value(cue::create_blank_project_descriptor(
-        std::move(projectId), "Editor Play Test",
-        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt}, a_assertContext));
+    return take_value(
+        cue::create_blank_project_descriptor(std::move(projectId), "Editor Play Test",
+                                             cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, std::nullopt},
+                                             "00000000-0000-4000-8000-000000000099", a_assertContext));
 }
 
 /// @brief 一Objectを持つ検証済みAuthoring Sceneを生成する

@@ -41,10 +41,12 @@ namespace cue::project_hub
 {
 EditorLaunchRequest::EditorLaunchRequest(std::string &&a_projectDescriptorLocator, std::string &&a_expectedProjectId,
                                          std::string &&a_engineCompatibilityId,
-                                         std::optional<std::string> &&a_initialSceneLocator) noexcept
+                                         std::optional<std::string> &&a_initialSceneLocator,
+                                         std::optional<std::string> &&a_expectedInitialSceneAssetId) noexcept
     : m_projectDescriptorLocator(std::move(a_projectDescriptorLocator)),
       m_expectedProjectId(std::move(a_expectedProjectId)), m_engineCompatibilityId(std::move(a_engineCompatibilityId)),
-      m_initialSceneLocator(std::move(a_initialSceneLocator))
+      m_initialSceneLocator(std::move(a_initialSceneLocator)),
+      m_expectedInitialSceneAssetId(std::move(a_expectedInitialSceneAssetId))
 {
 }
 
@@ -71,6 +73,11 @@ std::string_view EditorLaunchRequest::engine_compatibility_id() const noexcept
 const std::optional<std::string> &EditorLaunchRequest::initial_scene_locator() const noexcept
 {
     return m_initialSceneLocator;
+}
+
+const std::optional<std::string> &EditorLaunchRequest::expected_initial_scene_asset_id() const noexcept
+{
+    return m_expectedInitialSceneAssetId;
 }
 
 ProjectHubService::ProjectHubService(ConstructionKey, FilesystemRoot &a_workspaceFilesystem,
@@ -215,6 +222,7 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
                                ProjectEntryProblem::None,
                                ProjectCompatibilityStatus::Unknown,
                                false,
+                               false,
                                std::nullopt,
                                {}};
 
@@ -283,6 +291,9 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
             }
             row.compatibilityStatus = compatibility.try_value()->status();
             row.canOpen = compatibility.try_value()->can_open();
+            row.canMigrate = descriptor.try_value()->schema_version() < k_currentProjectDescriptorSchemaVersion &&
+                             m_configuration.supportedProjectFormatVersion ==
+                                 k_currentProjectDescriptorSchemaVersion;
             row.compatibilityReasons.assign(compatibility.try_value()->reasons().begin(),
                                             compatibility.try_value()->reasons().end());
             projects.push_back(std::move(row));
@@ -339,9 +350,14 @@ Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::stri
     {
         return Result<ProjectCreationOutcome>::failure(std::move(*projectId.try_error()));
     }
-    auto descriptor =
-        generate_blank_project(**parentRoot.try_value(), a_projectName, a_displayName, *projectId.try_value(),
-                               BlankProjectTemplate{m_configuration.blankProjectCompatibility}, *m_assertContext);
+    auto sceneAssetId = m_platform->next_scene_asset_id();
+    if (!sceneAssetId)
+    {
+        return Result<ProjectCreationOutcome>::failure(std::move(*sceneAssetId.try_error()));
+    }
+    auto descriptor = generate_blank_project(
+        **parentRoot.try_value(), a_projectName, a_displayName, *projectId.try_value(), *sceneAssetId.try_value(),
+        BlankProjectTemplate{m_configuration.blankProjectCompatibility}, *m_assertContext);
     std::optional<Error> creationDurabilityError;
     if (!descriptor)
     {
@@ -549,6 +565,7 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
             return Result<EditorLaunchRequest>::failure(std::move(primary));
         }
         std::optional<std::string> sceneLocator;
+        std::optional<std::string> expectedSceneAssetId;
         if (a_initialSceneLocator.has_value())
         {
             auto parsedSceneLocator = RelativePath::parse(*a_initialSceneLocator, *m_assertContext);
@@ -559,6 +576,11 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
                     std::move(*parsedSceneLocator.try_error())));
             }
             sceneLocator = std::string(parsedSceneLocator.try_value()->text());
+        }
+        else if (descriptor.try_value()->default_scene().has_value())
+        {
+            sceneLocator = std::string(descriptor.try_value()->default_scene()->source_locator().text());
+            expectedSceneAssetId = std::string(descriptor.try_value()->default_scene()->scene_asset_id());
         }
         auto descriptorLocator = m_platform->compose_descriptor_locator(found->locator());
         if (!descriptorLocator)
@@ -589,11 +611,100 @@ Result<EditorLaunchRequest> ProjectHubService::open_project(
         }
         return Result<EditorLaunchRequest>::success(
             EditorLaunchRequest(std::move(*descriptorLocator.try_value()), std::move(expectedProjectId),
-                                std::move(compatibilityId), std::move(sceneLocator)));
+                                std::move(compatibilityId), std::move(sceneLocator), std::move(expectedSceneAssetId)));
     }
     catch (...)
     {
         m_assertContext->fatal_handler().terminate("Cue.ProjectHub open request generation failed");
+    }
+    std::terminate();
+}
+
+Result<ProjectDescriptorMigrationOutcome> ProjectHubService::migrate_project(std::string_view a_projectId) noexcept
+{
+    try
+    {
+        auto projectId = parse_project_id(a_projectId);
+        if (!projectId)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(std::move(*projectId.try_error()));
+        }
+        const auto entry = std::find_if(m_registry.entries().begin(), m_registry.entries().end(),
+                                        [&projectId](const RecentProject &a_candidate)
+                                        { return a_candidate.project_id() == *projectId.try_value(); });
+        if (entry == m_registry.entries().end())
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectNotFound, "Project is not in the Recent registry"));
+        }
+        auto root = m_platform->open_root(entry->locator());
+        if (!root)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(reclassify_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectBroken, "Project locator could not be opened",
+                std::move(*root.try_error())));
+        }
+        if (*root.try_value() == nullptr)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectMissing, "Project locator does not exist"));
+        }
+        auto source = load_project_descriptor(**root.try_value(), *m_assertContext);
+        if (!source)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(reclassify_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectBroken, "Project descriptor could not be loaded",
+                std::move(*source.try_error())));
+        }
+        if (source.try_value()->project_id() != *projectId.try_value())
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectIdentityMismatch,
+                "Project descriptor identity differs from the Recent registry"));
+        }
+        if (source.try_value()->schema_version() >= k_currentProjectDescriptorSchemaVersion ||
+            m_configuration.supportedProjectFormatVersion != k_currentProjectDescriptorSchemaVersion)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectUnsupported,
+                "Project does not have an explicitly supported descriptor migration"));
+        }
+
+        auto migrated = migrate_project_descriptor(**root.try_value(), *m_assertContext);
+        if (!migrated)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(std::move(*migrated.try_error()));
+        }
+        const ProjectDescriptor &descriptor = migrated.try_value()->descriptor();
+        auto compatibility = evaluate_project_compatibility(
+            descriptor.schema_version(), m_configuration.supportedProjectFormatVersion,
+            descriptor.engine_compatibility(), m_configuration.currentEngineVersion, m_configuration.capabilityProfile,
+            m_configuration.capabilitySnapshot, *m_assertContext);
+        if (!compatibility)
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(std::move(*compatibility.try_error()));
+        }
+        const auto row = std::find_if(m_projects.begin(), m_projects.end(), [&a_projectId](const ProjectRowView &a_row)
+                                      { return a_row.projectId == a_projectId; });
+        if (row == m_projects.end())
+        {
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
+                *m_assertContext, ProjectHubError::ProjectNotFound, "Project view disappeared during migration"));
+        }
+        row->displayName = std::string(descriptor.display_name());
+        row->state = ProjectEntryState::Available;
+        row->problem = ProjectEntryProblem::None;
+        row->compatibilityStatus = compatibility.try_value()->status();
+        row->canOpen = compatibility.try_value()->can_open();
+        row->canMigrate = false;
+        row->engineCompatibility = descriptor.engine_compatibility();
+        row->compatibilityReasons.assign(compatibility.try_value()->reasons().begin(),
+                                         compatibility.try_value()->reasons().end());
+        return std::move(migrated);
+    }
+    catch (...)
+    {
+        m_assertContext->fatal_handler().terminate("Cue.ProjectHub descriptor migration failed");
     }
     std::terminate();
 }

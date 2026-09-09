@@ -45,6 +45,8 @@ class ProjectHubPlatform
     [[nodiscard]] virtual Result<std::unique_ptr<FilesystemRoot>> open_root(std::string_view a_locator) noexcept = 0;
     /// @brief 新規Project用のUUID Version 4を返す
     [[nodiscard]] virtual Result<ProjectId> next_project_id() noexcept = 0;
+    /// @brief Blank Default Scene用のcanonical SceneAssetId UUID Version 4文字列を返す
+    [[nodiscard]] virtual Result<std::string> next_scene_asset_id() noexcept = 0;
 
   protected:
     ProjectHubPlatform() noexcept = default;
@@ -99,6 +101,7 @@ struct ProjectRowView final
     ProjectEntryProblem problem;
     ProjectCompatibilityStatus compatibilityStatus;
     bool canOpen;
+    bool canMigrate;
     std::optional<EngineCompatibility> engineCompatibility;
     std::vector<ProjectCompatibilityReason> compatibilityReasons;
 };
@@ -151,17 +154,19 @@ class EditorLaunchRequest final
     [[nodiscard]] std::string_view expected_project_id() const noexcept;
     [[nodiscard]] std::string_view engine_compatibility_id() const noexcept;
     [[nodiscard]] const std::optional<std::string> &initial_scene_locator() const noexcept;
+    [[nodiscard]] const std::optional<std::string> &expected_initial_scene_asset_id() const noexcept;
 
   private:
     friend class ProjectHubService;
     EditorLaunchRequest(std::string &&a_projectDescriptorLocator, std::string &&a_expectedProjectId,
-                        std::string &&a_engineCompatibilityId,
-                        std::optional<std::string> &&a_initialSceneLocator) noexcept;
+                        std::string &&a_engineCompatibilityId, std::optional<std::string> &&a_initialSceneLocator,
+                        std::optional<std::string> &&a_expectedInitialSceneAssetId) noexcept;
 
     std::string m_projectDescriptorLocator;
     std::string m_expectedProjectId;
     std::string m_engineCompatibilityId;
     std::optional<std::string> m_initialSceneLocator;
+    std::optional<std::string> m_expectedInitialSceneAssetId;
 };
 
 /// @brief Project Registry、Descriptor、Compatibilityを束ねるUI非依存Application Service
@@ -209,11 +214,16 @@ class ProjectHubService final
     /// @brief Descriptorを再検証し、互換ProjectのEditor Launch Requestを生成する
     /// @note 戻り値にかかわらず再検証でViewModelが更新され得るため、呼出し前に取得したprojectsのSpanは再利用しない
     /// @note ErrorのRoot CodeがCue.IO/IoError::DurabilityUnknownならOpen時刻は公開済みでprojectsの旧Spanは無効
-    /// @note Error CodeがOpenRejectedViewDurabilityUnknownならLaunch RequestとOpen時刻更新は未生成だが、拒否後の一覧状態は
-    /// 公開済みでprojectsの旧Spanは無効。Immediate Causeは元のOpen拒否Categoryを保持する
+    /// @note Error CodeがOpenRejectedViewDurabilityUnknownならLaunch
+    /// RequestとOpen時刻更新は未生成だが、拒否後の一覧状態は 公開済みでprojectsの旧Spanは無効。Immediate
+    /// Causeは元のOpen拒否Categoryを保持する
     [[nodiscard]] Result<EditorLaunchRequest> open_project(
         std::string_view a_projectId, std::uint64_t a_openedMilliseconds,
         std::optional<std::string_view> a_initialSceneLocator = std::nullopt) noexcept;
+    /// @brief 選択Projectの旧DescriptorをUser確認後にCurrent Schemaへ明示Migrationする
+    ///
+    /// 公開後のDurabilityUnknownは成功Outcomeで返し、Project一覧はMigration後Modelへ更新する。
+    [[nodiscard]] Result<ProjectDescriptorMigrationOutcome> migrate_project(std::string_view a_projectId) noexcept;
     /// @brief Recent EntryのPin状態を変更する
     /// @note ErrorのRoot CodeがCue.IO/IoError::DurabilityUnknownならPin変更は公開済みでprojectsの旧Spanは無効
     [[nodiscard]] Result<void> set_project_pinned(std::string_view a_projectId, bool a_isPinned) noexcept;

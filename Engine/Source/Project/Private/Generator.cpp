@@ -441,12 +441,24 @@ void rollback_staging(cue::FilesystemRoot &a_filesystem, cue::StagingArea &a_sta
             GeneratedProjectFile{"Source/Game/CMakeLists.txt", std::string(k_gameCMake)},
             GeneratedProjectFile{"Source/Game/GameModule.cpp", make_game_module_source(a_projectId)}};
 }
+
+/// @brief Blank ProjectのDefault SceneをScene Serializerと同じcanonical最小JSONとして生成する
+[[nodiscard]] std::string make_default_scene(std::string_view a_sceneAssetId)
+{
+    std::string scene;
+    scene.reserve(112U);
+    scene.append("{\"formatVersion\":1,\"sceneAssetId\":\"");
+    scene.append(a_sceneAssetId);
+    scene.append("\",\"objects\":[],\"extensions\":{}}");
+    return scene;
+}
 } // namespace
 
 namespace cue
 {
 Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesystem, std::string_view a_projectName,
                                                  std::string_view a_displayName, const ProjectId &a_projectId,
+                                                 std::string_view a_defaultSceneAssetId,
                                                  BlankProjectTemplate a_template,
                                                  const AssertContext &a_assertContext) noexcept
 {
@@ -465,7 +477,7 @@ Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesys
         }
 
         auto descriptor = create_blank_project_descriptor(a_projectId, a_displayName, a_template.engineCompatibility,
-                                                          a_assertContext);
+                                                          a_defaultSceneAssetId, a_assertContext);
         if (!descriptor)
         {
             return Result<ProjectDescriptor>::failure(std::move(*descriptor.try_error()));
@@ -477,9 +489,13 @@ Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesys
         }
 
         GameWorkspaceFiles gameWorkspaceFiles = make_game_workspace_files(a_projectId);
-        const std::array files = {GeneratedProjectFile{"CueProject.json", *serialized.try_value()},
-                                  std::move(gameWorkspaceFiles[0U]), std::move(gameWorkspaceFiles[1U]),
-                                  std::move(gameWorkspaceFiles[2U]), std::move(gameWorkspaceFiles[3U])};
+        const std::array files = {
+            GeneratedProjectFile{"CueProject.json", *serialized.try_value()},
+            GeneratedProjectFile{"Assets/Source/Scenes/Default.cuescene", make_default_scene(a_defaultSceneAssetId)},
+            std::move(gameWorkspaceFiles[0U]),
+            std::move(gameWorkspaceFiles[1U]),
+            std::move(gameWorkspaceFiles[2U]),
+            std::move(gameWorkspaceFiles[3U])};
 
         auto staging = a_parentFilesystem.create_staging_area(*destination.try_value());
         if (!staging)
@@ -488,8 +504,8 @@ Result<ProjectDescriptor> generate_blank_project(FilesystemRoot &a_parentFilesys
                 a_assertContext, "Project staging directory creation failed", std::move(*staging.try_error())));
         }
 
-        constexpr std::array<std::string_view, 5U> directories = {"Assets/Source", "Assets/Runtime", "Generated",
-                                                                  "Saved", "Source/Game"};
+        constexpr std::array<std::string_view, 6U> directories = {
+            "Assets/Source", "Assets/Source/Scenes", "Assets/Runtime", "Generated", "Saved", "Source/Game"};
         for (const std::string_view directory : directories)
         {
             auto path = make_staging_path(*staging.try_value(), directory, a_assertContext);
