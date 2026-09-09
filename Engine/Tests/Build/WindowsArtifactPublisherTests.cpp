@@ -137,6 +137,24 @@ template <typename T>
 [[nodiscard]] T take_value(cue::Result<T> a_result,
                            const std::source_location a_location = std::source_location::current()) noexcept
 {
+    if (!a_result.has_value() && a_result.try_error() != nullptr)
+    {
+        const cue::Error &error = *a_result.try_error();
+        std::fprintf(stderr, "Result error: %.*s/%lld %.*s\n",
+                     static_cast<int>(error.root_code().domain().size()), error.root_code().domain().data(),
+                     static_cast<long long>(error.root_code().value()), static_cast<int>(error.summary().size()),
+                     error.summary().data());
+        for (const cue::ErrorContext &context : error.contexts())
+        {
+            std::fprintf(stderr, "  Context: %.*s\n", static_cast<int>(context.message().size()),
+                         context.message().data());
+        }
+        if (const cue::NativeError *native = error.try_native_error(); native != nullptr)
+        {
+            std::fprintf(stderr, "  Native: %.*s/%lld\n", static_cast<int>(native->domain().size()),
+                         native->domain().data(), static_cast<long long>(native->value()));
+        }
+    }
     require(a_result.has_value(), a_location);
     return std::move(*a_result.try_value());
 }
