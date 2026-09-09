@@ -51,7 +51,34 @@ configure_file(
     @ONLY
 )
 
+add_executable(CueGameModuleProbe Private/GameModuleProbe.cpp)
+target_link_libraries(CueGameModuleProbe PRIVATE Cue.GameModule.Abi)
+target_compile_features(CueGameModuleProbe PRIVATE cxx_std_20)
+target_compile_definitions(CueGameModuleProbe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+set_target_properties(
+    CueGameModuleProbe
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+)
+
+if(MSVC)
+    target_compile_options(
+        CueGameModuleProbe
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
+    target_link_options(CueGameModuleProbe PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+endif()
+
 add_library(Cue.Build.Windows STATIC)
+add_dependencies(Cue.Build.Windows CueGameModuleProbe)
 
 target_sources(
     Cue.Build.Windows
@@ -73,6 +100,7 @@ target_link_libraries(
     PRIVATE
         Cue.Foundation.Windows
         Cue.GameModule.Abi
+        Cue.Platform.Windows
         Cue.Project
         bcrypt
         version

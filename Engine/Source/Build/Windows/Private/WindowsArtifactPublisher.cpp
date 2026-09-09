@@ -1,7 +1,7 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 
 #include <Cue/Foundation/Assert.h>
-#include <Cue/GameModule/GameModuleAbi.h>
+#include <Cue/Platform/Windows/WindowsProcess.h>
 #include <Cue/Project/Descriptor.h>
 
 #include <Windows.h>
@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -54,6 +53,15 @@ constexpr DWORD k_lockRetryMilliseconds = 10U;
         cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Build.Publisher",
                                static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut));
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
+}
+
+/// @brief Game Module ProbeのTimeoutをServiceが識別できるErrorへ変換する
+[[nodiscard]] cue::Error make_module_probe_timeout_error(const cue::AssertContext &a_assertContext) noexcept
+{
+    cue::ErrorCode code =
+        cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Build.Publisher",
+                               static_cast<std::int64_t>(cue::BuildArtifactPublisherError::ModuleProbeTimedOut));
+    return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), "Game Module ABI probe timed out");
 }
 
 /// @brief Win32 Codeを保持するWindows Artifact Errorを構築する
@@ -135,36 +143,6 @@ class UniqueHandle final
     }
 
     HANDLE m_handle = INVALID_HANDLE_VALUE;
-};
-
-/// @brief HMODULEを一意所有し全経路でUnloadする
-class UniqueModule final
-{
-  public:
-    /// @brief Native Moduleの一意所有権を取得する
-    explicit UniqueModule(HMODULE a_module) noexcept : m_module(a_module)
-    {
-    }
-    /// @brief Module所有権のCopy構築を禁止する
-    UniqueModule(const UniqueModule &) = delete;
-    /// @brief Module所有権のCopy代入を禁止する
-    UniqueModule &operator=(const UniqueModule &) = delete;
-    /// @brief 所有ModuleをUnloadする
-    ~UniqueModule()
-    {
-        if (m_module != nullptr)
-        {
-            FreeLibrary(m_module);
-        }
-    }
-    /// @brief Native API呼出し用Moduleを返す
-    [[nodiscard]] HMODULE get() const noexcept
-    {
-        return m_module;
-    }
-
-  private:
-    HMODULE m_module = nullptr;
 };
 
 /// @brief Offset 0、Length 1のWindows File LockをHandle寿命へ束ねる
@@ -258,29 +236,23 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return {};
 }
 
-/// @brief Project IDの16 byte値をModule ABI比較用に復元する
-[[nodiscard]] std::array<std::uint8_t, 16U> project_id_bytes(std::string_view a_projectId) noexcept
+/// @brief Filesystem PathをEngine内部のUTF-8表示へ変換する
+[[nodiscard]] std::string path_to_utf8(const std::filesystem::path &a_path)
 {
-    /// @brief UUID Hex文字を4-bit値へ変換する
-    const auto nibble = [](char a_value) noexcept -> std::uint8_t
+    const std::u8string text = a_path.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(text.data()), text.size());
+}
+
+/// @brief 現在のEngine Processと同じDirectoryを返す
+[[nodiscard]] std::optional<std::filesystem::path> current_process_directory()
+{
+    std::vector<wchar_t> path(32768U, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0U || length >= path.size())
     {
-        return a_value <= '9' ? static_cast<std::uint8_t>(a_value - '0')
-                              : static_cast<std::uint8_t>(a_value - 'a' + 10);
-    };
-    std::array<std::uint8_t, 16U> bytes{};
-    std::size_t output = 0U;
-    for (std::size_t index = 0U; index < a_projectId.size();)
-    {
-        if (a_projectId[index] == '-')
-        {
-            ++index;
-            continue;
-        }
-        bytes[output++] =
-            static_cast<std::uint8_t>((nibble(a_projectId[index]) << 4U) | nibble(a_projectId[index + 1U]));
-        index += 2U;
+        return std::nullopt;
     }
-    return bytes;
+    return std::filesystem::path(std::wstring_view(path.data(), length)).parent_path();
 }
 
 /// @brief Engine VersionをMetadata用major.minor.patchへ変換する
@@ -631,66 +603,75 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return cue::Result<void>::success();
 }
 
-/// @brief Candidate DLLの公開ABIがBuild PlanとProject契約に一致するか検証する
-[[nodiscard]] cue::Result<void> validate_module(const std::filesystem::path &a_path, const cue::BuildPlan &a_plan,
-                                                std::span<const std::uint8_t, 16U> a_projectId,
-                                                const cue::AssertContext &a_assertContext) noexcept
+/// @brief 別ProcessでのGame Module検証完了種別
+enum class ModuleProbeStatus : std::uint8_t
 {
-    UniqueModule module(
-        LoadLibraryExW(a_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS));
-    if (module.get() == nullptr)
+    Valid,
+    Cancelled
+};
+
+/// @brief 絶対DeadlineをChild Process Runner用の残り時間へ変換する
+[[nodiscard]] std::optional<std::chrono::milliseconds> remaining_timeout(
+    cue::BuildArtifactLockDeadline a_deadline) noexcept
+{
+    if (!a_deadline)
     {
-        return cue::Result<void>::failure(make_windows_error(a_assertContext,
-                                                             cue::WindowsBuildArtifactError::ModuleContractMismatch,
-                                                             GetLastError(), "Game Module could not be loaded"));
+        return std::nullopt;
     }
-    using Query = CueGameModuleResult(CUE_GAME_MODULE_CALL *)(uint32_t, CueGameModuleQueryOutputV1 *,
-                                                              CueGameModuleDiagnosticV1 *) noexcept;
-    const FARPROC address = GetProcAddress(module.get(), "cue_game_module_query");
-    if (address == nullptr)
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= *a_deadline)
     {
-        return cue::Result<void>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch,
-                               ERROR_PROC_NOT_FOUND, "Game Module entry symbol is missing"));
+        return std::chrono::milliseconds(0);
     }
-    const Query query = std::bit_cast<Query>(address);
-    CueGameModuleQueryOutputV1 output{sizeof(output), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, {0U, 0U}};
-    CueGameModuleDiagnosticV1 diagnostic{sizeof(diagnostic),
-                                         CUE_GAME_MODULE_STRUCTURE_VERSION_1,
-                                         0U,
-                                         0U,
-                                         {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, 0U}};
-    const CueGameModuleResult result = query(CUE_GAME_MODULE_ABI_VERSION_1, &output, &diagnostic);
-    if (result != CUE_GAME_MODULE_RESULT_SUCCESS || output.structSize != sizeof(CueGameModuleQueryOutputV1) ||
-        output.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || output.api == nullptr || output.reserved[0] != 0U ||
-        output.reserved[1] != 0U)
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*a_deadline - now);
+    return std::max(remaining, std::chrono::milliseconds(1));
+}
+
+/// @brief Candidate DLLの公開ABIを取消／Timeout可能な別Processで検証する
+[[nodiscard]] cue::Result<ModuleProbeStatus> validate_module(const std::filesystem::path &a_path,
+                                                             const cue::BuildPlan &a_plan, std::string_view a_projectId,
+                                                             std::string_view a_probeExecutable,
+                                                             cue::ChildProcessRunner &a_processRunner,
+                                                             const cue::ChildProcessCancellation &a_cancellation,
+                                                             cue::BuildArtifactLockDeadline a_deadline,
+                                                             const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::optional<std::chrono::milliseconds> timeout = remaining_timeout(a_deadline);
+    if (timeout && timeout->count() <= 0)
     {
-        return cue::Result<void>::failure(make_error(a_assertContext,
-                                                     cue::WindowsBuildArtifactError::ModuleContractMismatch,
-                                                     "Game Module query rejected the current ABI"));
+        return cue::Result<ModuleProbeStatus>::failure(make_module_probe_timeout_error(a_assertContext));
     }
-    const CueGameModuleApiV1 &api = *output.api;
-    const std::uint32_t expectedConfiguration =
-        a_plan.profile().configuration() == cue::BuildConfiguration::Debug
-            ? CUE_GAME_MODULE_CONFIGURATION_DEBUG
-            : (a_plan.profile().configuration() == cue::BuildConfiguration::Development
-                   ? CUE_GAME_MODULE_CONFIGURATION_DEVELOPMENT
-                   : CUE_GAME_MODULE_CONFIGURATION_RELEASE);
-    if (api.structSize != sizeof(CueGameModuleApiV1) || api.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
-        api.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || api.configuration != expectedConfiguration ||
-        api.architecture != CUE_GAME_MODULE_ARCHITECTURE_X64 || api.reserved != 0U ||
-        api.projectId.structSize != sizeof(CueGameUuidV1) ||
-        api.projectId.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || api.createModule == nullptr ||
-        api.registerSchemas == nullptr || api.registerComponents == nullptr || api.registerSystems == nullptr ||
-        api.destroyModule == nullptr || api.reservedTail[0] != 0U || api.reservedTail[1] != 0U ||
-        api.reservedTail[2] != 0U || api.reservedTail[3] != 0U ||
-        !std::equal(a_projectId.begin(), a_projectId.end(), api.projectId.bytes))
+    cue::ChildProcessRequest request(std::string(a_probeExecutable),
+                                     {path_to_utf8(a_path),
+                                      std::string(configuration_name(a_plan.profile().configuration())),
+                                      std::string(a_projectId)},
+                                     path_to_utf8(a_path.parent_path()), {}, timeout);
+    auto process = a_processRunner.run(request, a_cancellation);
+    if (!process)
     {
-        return cue::Result<void>::failure(make_error(a_assertContext,
-                                                     cue::WindowsBuildArtifactError::ModuleContractMismatch,
-                                                     "Game Module identity does not match the Build Plan"));
+        return cue::Result<ModuleProbeStatus>::failure(std::move(*process.try_error()));
     }
-    return cue::Result<void>::success();
+    switch (process.try_value()->outcome())
+    {
+    case cue::ChildProcessOutcome::Cancelled:
+        return cue::Result<ModuleProbeStatus>::success(ModuleProbeStatus::Cancelled);
+    case cue::ChildProcessOutcome::TimedOut:
+        return cue::Result<ModuleProbeStatus>::failure(make_module_probe_timeout_error(a_assertContext));
+    case cue::ChildProcessOutcome::Exited:
+        break;
+    }
+    if (!process.try_value()->exit_code() || *process.try_value()->exit_code() != 0U)
+    {
+        std::string summary("Game Module ABI probe rejected the candidate");
+        if (process.try_value()->exit_code())
+        {
+            summary.append(" with exit code ");
+            summary.append(std::to_string(*process.try_value()->exit_code()));
+        }
+        return cue::Result<ModuleProbeStatus>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
+    }
+    return cue::Result<ModuleProbeStatus>::success(ModuleProbeStatus::Valid);
 }
 
 /// @brief Metadata v1を決定的なUTF-8 JSONへ直列化する
@@ -784,16 +765,29 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         std::ifstream visible(current, std::ios::binary);
         const std::string visibleBytes{std::istreambuf_iterator<char>(visible), std::istreambuf_iterator<char>()};
         const bool newManifestVisible = visible.is_open() && !visible.bad() && visibleBytes == a_content;
-        static_cast<void>(DeleteFileW(temporary.c_str()));
-        if (newManifestVisible)
+        std::optional<cue::Error> cleanupError;
+        if (DeleteFileW(temporary.c_str()) == FALSE)
         {
-            return cue::Result<void>::failure(
-                make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown,
-                                   code, "Current artifact manifest is visible but durability is unknown"));
+            const DWORD cleanupCode = GetLastError();
+            if (cleanupCode != ERROR_FILE_NOT_FOUND && cleanupCode != ERROR_PATH_NOT_FOUND)
+            {
+                cleanupError.emplace(
+                    make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                                       cleanupCode, "Current artifact temporary manifest rollback failed"));
+            }
         }
-        return cue::Result<void>::failure(make_windows_error(a_assertContext,
-                                                             cue::WindowsBuildArtifactError::CurrentManifestFailed,
-                                                             code, "Current artifact manifest was not published"));
+        cue::Error publicationError =
+            newManifestVisible
+                ? make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestDurabilityUnknown,
+                                     code, "Current artifact manifest is visible but durability is unknown")
+                : make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, code,
+                                     "Current artifact manifest was not published");
+        if (cleanupError)
+        {
+            publicationError.append_secondary_diagnostics(
+                a_assertContext, *cleanupError, "Current temporary manifest could not be removed", "Rollback");
+        }
+        return cue::Result<void>::failure(std::move(publicationError));
     }
     return cue::Result<void>::success();
 }
@@ -804,11 +798,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
   public:
     /// @brief 検証済みProject契約をPublisher全寿命へ所有する
     WindowsBuildArtifactPublisher(std::filesystem::path a_projectRoot, std::string a_projectId,
-                                  cue::EngineCompatibility a_compatibility,
+                                  cue::EngineCompatibility a_compatibility, std::string a_probeExecutable,
+                                  std::unique_ptr<cue::ChildProcessRunner> a_processRunner,
                                   const cue::AssertContext &a_assertContext) noexcept
         : m_projectRoot(std::move(a_projectRoot)), m_projectId(std::move(a_projectId)),
-          m_projectIdBytes(project_id_bytes(m_projectId)), m_compatibility(std::move(a_compatibility)),
-          m_assertContext(&a_assertContext)
+          m_compatibility(std::move(a_compatibility)), m_probeExecutable(std::move(a_probeExecutable)),
+          m_processRunner(std::move(a_processRunner)), m_assertContext(&a_assertContext)
     {
     }
     /// @brief 所有Project契約を解放する
@@ -931,12 +926,40 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     filesystemError ? static_cast<DWORD>(filesystemError.value()) : ERROR_ALREADY_EXISTS,
                     "Operation candidate directory is unavailable"));
             }
+            using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
+            /// @brief Primary Errorを保持したまま未公開CandidateをRollbackする
+            const auto failCandidate = [&](cue::Error a_error) -> PublishResult
+            {
+                std::error_code cleanupCode;
+                static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
+                if (cleanupCode)
+                {
+                    cue::Error cleanupError = make_windows_error(
+                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                        static_cast<DWORD>(cleanupCode.value()), "Unpublished Candidate rollback failed");
+                    a_error.append_secondary_diagnostics(*m_assertContext, cleanupError,
+                                                         "Unpublished Candidate could not be removed", "Rollback");
+                }
+                return PublishResult::failure(std::move(a_error));
+            };
+            /// @brief 取消前に未公開CandidateをRollbackしCleanup失敗だけをErrorとして返す
+            const auto cancelCandidate = [&]() -> PublishResult
+            {
+                std::error_code cleanupCode;
+                static_cast<void>(std::filesystem::remove_all(candidate, cleanupCode));
+                if (cleanupCode)
+                {
+                    return PublishResult::failure(make_windows_error(
+                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                        static_cast<DWORD>(cleanupCode.value()), "Cancelled Candidate rollback failed"));
+                }
+                return PublishResult::success(std::nullopt);
+            };
             const std::filesystem::path candidateModule = candidate / "CueGameModule.dll";
             cue::Result<void> moduleCopied = copy_new_file_durable(source, candidateModule, *m_assertContext);
             if (!moduleCopied)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*moduleCopied.try_error()));
+                return failCandidate(std::move(*moduleCopied.try_error()));
             }
             if (hasPdb)
             {
@@ -944,15 +967,19 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     copy_new_file_durable(sourcePdb, candidate / "CueGameModule.pdb", *m_assertContext);
                 if (!pdbCopied)
                 {
-                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                        std::move(*pdbCopied.try_error()));
+                    return failCandidate(std::move(*pdbCopied.try_error()));
                 }
             }
-            cue::Result<void> validated = validate_module(candidateModule, a_plan, m_projectIdBytes, *m_assertContext);
+            cue::Result<ModuleProbeStatus> validated =
+                validate_module(candidateModule, a_plan, m_projectId, m_probeExecutable, *m_processRunner,
+                                a_cancellation, a_deadline, *m_assertContext);
             if (!validated)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*validated.try_error()));
+                return failCandidate(std::move(*validated.try_error()));
+            }
+            if (*validated.try_value() == ModuleProbeStatus::Cancelled)
+            {
+                return cancelCandidate();
             }
             const std::string metadata =
                 serialize_metadata(a_plan.operation_id(), m_projectId, m_compatibility,
@@ -962,8 +989,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                                cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
             if (!metadataWritten)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*metadataWritten.try_error()));
+                return failCandidate(std::move(*metadataWritten.try_error()));
             }
             auto candidateModuleHash = hash_file(candidateModule, "CueGameModule.dll", *m_assertContext);
             std::optional<cue::BuildArtifactFile> candidatePdbHash;
@@ -972,8 +998,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 auto hashed = hash_file(candidate / "CueGameModule.pdb", "CueGameModule.pdb", *m_assertContext);
                 if (!hashed)
                 {
-                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                        std::move(*hashed.try_error()));
+                    return failCandidate(std::move(*hashed.try_error()));
                 }
                 candidatePdbHash.emplace(std::move(*hashed.try_value()));
             }
@@ -981,18 +1006,16 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 hash_file(candidate / "CueGameModule.metadata.json", "CueGameModule.metadata.json", *m_assertContext);
             if (!candidateModuleHash)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*candidateModuleHash.try_error()));
+                return failCandidate(std::move(*candidateModuleHash.try_error()));
             }
             if (!candidateMetadataHash)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*candidateMetadataHash.try_error()));
+                return failCandidate(std::move(*candidateMetadataHash.try_error()));
             }
             a_buildLease.reset();
             if (a_cancellation.is_cancel_requested())
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+                return cancelCandidate();
             }
 
             const std::filesystem::path store = *storePath;
@@ -1000,32 +1023,29 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!storeCreated)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*storeCreated.try_error()));
+                return failCandidate(std::move(*storeCreated.try_error()));
             }
             auto artifactLock =
                 acquire_exclusive_lock(store / "Access.lock", a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!artifactLock)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(*artifactLock.try_error()));
+                return failCandidate(std::move(*artifactLock.try_error()));
             }
             if (!artifactLock.try_value()->has_value())
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+                return cancelCandidate();
             }
             ByteRangeLease mutationLease(std::move(**artifactLock.try_value()));
             const std::filesystem::path version = store / "Versions" / std::string(a_plan.operation_id());
             if (std::filesystem::exists(version, filesystemError) || filesystemError)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::ArtifactAlreadyExists,
-                               "Artifact Version already exists"));
+                return failCandidate(make_error(*m_assertContext, cue::WindowsBuildArtifactError::ArtifactAlreadyExists,
+                                                "Artifact Version already exists"));
             }
             if (a_cancellation.is_cancel_requested())
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+                return cancelCandidate();
             }
             if (MoveFileExW(candidate.c_str(), version.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
             {
@@ -1043,9 +1063,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                         *m_assertContext, cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown, code,
                         "Artifact Version is visible but directory publication durability is unknown"));
                 }
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_windows_error(*m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, code,
-                                       "Artifact Version could not be published"));
+                return failCandidate(make_windows_error(*m_assertContext,
+                                                        cue::WindowsBuildArtifactError::CandidateInvalid, code,
+                                                        "Artifact Version could not be published"));
             }
             auto versionModuleHash = hash_file(version / "CueGameModule.dll", "CueGameModule.dll", *m_assertContext);
             std::optional<cue::BuildArtifactFile> versionPdbHash;
@@ -1103,9 +1123,11 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 {
                     cue::Result<void> inventoryVerified =
                         verify_inventory_files(version, *inventory.try_value(), *m_assertContext);
-                    cue::Result<void> moduleVerified =
-                        validate_module(version / "CueGameModule.dll", a_plan, m_projectIdBytes, *m_assertContext);
-                    if (inventoryVerified && moduleVerified)
+                    cue::ChildProcessCancellation validationCancellation;
+                    cue::Result<ModuleProbeStatus> moduleVerified =
+                        validate_module(version / "CueGameModule.dll", a_plan, m_projectId, m_probeExecutable,
+                                        *m_processRunner, validationCancellation, a_deadline, *m_assertContext);
+                    if (inventoryVerified && moduleVerified && *moduleVerified.try_value() == ModuleProbeStatus::Valid)
                     {
                         std::string context("Visible Current artifact ");
                         context.append(inventory.try_value()->artifact_id());
@@ -1150,8 +1172,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
   private:
     std::filesystem::path m_projectRoot;
     std::string m_projectId;
-    std::array<std::uint8_t, 16U> m_projectIdBytes;
     cue::EngineCompatibility m_compatibility;
+    std::string m_probeExecutable;
+    std::unique_ptr<cue::ChildProcessRunner> m_processRunner;
     const cue::AssertContext *m_assertContext;
     bool m_isAvailable = true;
 };
@@ -1172,8 +1195,22 @@ Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_pu
                 a_assertContext, WindowsBuildArtifactError::InvalidSettings, "Artifact Project Root is invalid"));
         }
         const EngineCompatibility &compatibility = a_descriptor.engine_compatibility();
+        const std::optional<std::filesystem::path> processDirectory = current_process_directory();
+        if (!processDirectory)
+        {
+            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(
+                make_windows_error(a_assertContext, WindowsBuildArtifactError::InvalidSettings, GetLastError(),
+                                   "Engine process path could not be resolved"));
+        }
+        auto processRunner = create_windows_child_process_runner(a_assertContext);
+        if (!processRunner)
+        {
+            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(std::move(*processRunner.try_error()));
+        }
+        const std::string probeExecutable = path_to_utf8(*processDirectory / L"CueGameModuleProbe.exe");
         return Result<std::unique_ptr<BuildArtifactPublisher>>::success(std::make_unique<WindowsBuildArtifactPublisher>(
-            *root, std::string(a_descriptor.project_id().text()), compatibility, a_assertContext));
+            *root, std::string(a_descriptor.project_id().text()), compatibility, probeExecutable,
+            std::move(*processRunner.try_value()), a_assertContext));
     }
     catch (...)
     {

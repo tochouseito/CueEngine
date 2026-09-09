@@ -27,13 +27,14 @@ enum class GameBuildServiceError : std::int64_t
     ArtifactPublicationFailed
 };
 
-/// @brief Platform非依存なArtifact Publisher待機失敗の分類
+/// @brief Platform非依存なArtifact Publisher Timeoutの分類
 enum class BuildArtifactPublisherError : std::int64_t
 {
-    LockWaitTimedOut = 1
+    LockWaitTimedOut = 1,
+    ModuleProbeTimedOut
 };
 
-/// @brief Lock待機を単調Clock上で打ち切る絶対時刻
+/// @brief Publisherの取消可能処理を単調Clock上で打ち切る絶対時刻
 using BuildArtifactLockDeadline = std::optional<std::chrono::steady_clock::time_point>;
 
 /// @brief Artifact Version Directory内の一FileをHash付きで識別する
@@ -123,8 +124,8 @@ class BuildArtifactPublisher
     /// Workerから直列に呼ばれ、返却Inventoryが
     /// 全値を所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
     /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。DeadlineはArtifact Mutation
-    /// Lock待機だけを制限し、到達時は
-    /// BuildArtifactPublisherError::LockWaitTimedOutを返す。回復可能な検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
+    /// Lock待機とGame Module Probeを制限し、到達時は対応するBuildArtifactPublisherErrorを返す。回復可能な
+    /// 検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
     [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
         const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,
         std::unique_ptr<BuildWorkspaceLease> a_buildLease, BuildArtifactLockDeadline a_deadline) noexcept = 0;

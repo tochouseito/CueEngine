@@ -101,6 +101,8 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
 
 /// @brief Artifact公開、Lock取消、失敗時Current保全を一つのProject Rootで検証する
 void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const std::filesystem::path &a_invalidProbe,
+                                     const std::filesystem::path &a_crashingProbe,
+                                     const std::filesystem::path &a_hangingProbe,
                                      const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path projectRoot =
@@ -193,6 +195,52 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(std::filesystem::copy_file(a_invalidProbe, outputDirectory / "CueGameModule.dll"));
     require(!publisher->publish(invalidPlan, cancellation, std::move(*invalidLease), std::nullopt).has_value());
     require(read_text(currentPath) == current);
+    require(!std::filesystem::exists(std::filesystem::path(invalidPlan.candidate_directory())));
+
+    cue::BuildPlan crashingPlan = make_plan(projectRoot, "51234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto crashingLease = take_value(publisher->acquire_build_lease(crashingPlan, cancellation, std::nullopt));
+    require(crashingLease.has_value());
+    require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
+    require(std::filesystem::copy_file(a_crashingProbe, outputDirectory / "CueGameModule.dll"));
+    require(!publisher
+                 ->publish(crashingPlan, cancellation, std::move(*crashingLease),
+                           std::chrono::steady_clock::now() + std::chrono::seconds(2))
+                 .has_value());
+    require(read_text(currentPath) == current);
+    require(!std::filesystem::exists(std::filesystem::path(crashingPlan.candidate_directory())));
+
+    cue::BuildPlan hangingPlan = make_plan(projectRoot, "61234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto hangingLease = take_value(publisher->acquire_build_lease(hangingPlan, cancellation, std::nullopt));
+    require(hangingLease.has_value());
+    require(std::filesystem::remove(outputDirectory / "CueGameModule.dll"));
+    require(std::filesystem::copy_file(a_hangingProbe, outputDirectory / "CueGameModule.dll"));
+    auto timedOutProbe = publisher->publish(hangingPlan, cancellation, std::move(*hangingLease),
+                                            std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    require(!timedOutProbe && timedOutProbe.try_error()->root_code().domain() == "Cue.Build.Publisher" &&
+            timedOutProbe.try_error()->root_code().value() ==
+                static_cast<std::int64_t>(cue::BuildArtifactPublisherError::ModuleProbeTimedOut));
+    require(read_text(currentPath) == current);
+    require(!std::filesystem::exists(std::filesystem::path(hangingPlan.candidate_directory())));
+
+    cue::BuildPlan cancelledPlan = make_plan(projectRoot, "71234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto cancelledLease = take_value(publisher->acquire_build_lease(cancelledPlan, cancellation, std::nullopt));
+    require(cancelledLease.has_value());
+    using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
+    std::unique_ptr<PublishResult> cancelledResult;
+    cue::ChildProcessCancellation probeCancellation;
+    std::thread probeThread(
+        [&]()
+        {
+            cancelledResult = std::make_unique<PublishResult>(
+                publisher->publish(cancelledPlan, probeCancellation, std::move(*cancelledLease),
+                                   std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+        });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    probeCancellation.request_cancel();
+    probeThread.join();
+    require(cancelledResult != nullptr && cancelledResult->has_value() && !cancelledResult->try_value()->has_value());
+    require(read_text(currentPath) == current);
+    require(!std::filesystem::exists(std::filesystem::path(cancelledPlan.candidate_directory())));
 
     cue::BuildPlan missingPlan = make_plan(projectRoot, "21234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     auto missingLease = take_value(publisher->acquire_build_lease(missingPlan, cancellation, std::nullopt));
@@ -209,12 +257,13 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
 /// @brief Windows Artifact PublisherのProcess間契約とAtomic Current保全を検証する
 int main(int a_argumentCount, char **a_arguments)
 {
-    require(a_argumentCount == 3);
+    require(a_argumentCount == 5);
     TestFatalHandler fatalHandler;
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), std::filesystem::path(a_arguments[2]),
+                                    std::filesystem::path(a_arguments[3]), std::filesystem::path(a_arguments[4]),
                                     assertContext);
     return 0;
 }

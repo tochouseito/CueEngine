@@ -44,12 +44,16 @@ constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
     return std::chrono::steady_clock::now() + *a_timeout;
 }
 
-/// @brief Error ChainのRootがPublisher Lock待機Timeoutか判定する
-[[nodiscard]] bool is_publisher_lock_timeout(const cue::Error &a_error) noexcept
+/// @brief Error ChainのRootがPublisher内のTimeoutか判定する
+[[nodiscard]] bool is_publisher_timeout(const cue::Error &a_error) noexcept
 {
     const cue::ErrorCode &root = a_error.root_code();
-    return root.domain() == "Cue.Build.Publisher" &&
-           root.value() == static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut);
+    if (root.domain() != "Cue.Build.Publisher")
+    {
+        return false;
+    }
+    return root.value() == static_cast<std::int64_t>(cue::BuildArtifactPublisherError::LockWaitTimedOut) ||
+           root.value() == static_cast<std::int64_t>(cue::BuildArtifactPublisherError::ModuleProbeTimedOut);
 }
 
 /// @brief Artifact IDとHashで許可するlowercase hexadecimal文字か判定する
@@ -371,8 +375,8 @@ struct GameBuildService::Impl final
             {
                 current.activeStage.reset();
                 current.diagnostics = std::move(diagnostics);
-                current.state = is_publisher_lock_timeout(a_error) ? GameBuildOperationState::TimedOut
-                                                                   : GameBuildOperationState::Failed;
+                current.state =
+                    is_publisher_timeout(a_error) ? GameBuildOperationState::TimedOut : GameBuildOperationState::Failed;
             }
         }
         catch (...)
