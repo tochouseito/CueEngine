@@ -12,6 +12,7 @@ namespace cue
 {
 class AssertContext;
 class FilesystemRoot;
+class ProjectDescriptorMigrationOutcome;
 
 inline constexpr std::uint32_t k_currentProjectDescriptorSchemaVersion = 2U;
 
@@ -184,7 +185,8 @@ class ProjectDescriptor final
     friend Result<ProjectDescriptor> create_blank_project_descriptor(const ProjectId &, std::string_view,
                                                                      EngineCompatibility, std::string_view,
                                                                      const AssertContext &) noexcept;
-    friend Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &, const AssertContext &) noexcept;
+    friend Result<ProjectDescriptorMigrationOutcome> migrate_project_descriptor(FilesystemRoot &,
+                                                                                 const AssertContext &) noexcept;
 
     /// @brief Parser が検証した Descriptor v1／v2 の所有値を束ねる
     ProjectDescriptor(std::uint32_t a_schemaVersion, ProjectId &&a_projectId, std::string &&a_displayName,
@@ -198,6 +200,45 @@ class ProjectDescriptor final
     ProjectRoots m_roots;
     std::optional<StartupSceneReference> m_defaultScene;
     std::string m_extensionsJson;
+};
+
+/// @brief Project Descriptor MigrationがDiskへ到達した状態
+enum class ProjectDescriptorMigrationStatus : std::uint8_t
+{
+    Unchanged,
+    Committed,
+    PublishedButDurabilityUnknown
+};
+
+/// @brief Migration後ModelとAtomic公開結果を一つの診断可能なOutcomeとして所有する
+class ProjectDescriptorMigrationOutcome final
+{
+  public:
+    ProjectDescriptorMigrationOutcome() = delete;
+    ProjectDescriptorMigrationOutcome(const ProjectDescriptorMigrationOutcome &) = delete;
+    ProjectDescriptorMigrationOutcome &operator=(const ProjectDescriptorMigrationOutcome &) = delete;
+    ProjectDescriptorMigrationOutcome(ProjectDescriptorMigrationOutcome &&) noexcept = default;
+    ProjectDescriptorMigrationOutcome &operator=(ProjectDescriptorMigrationOutcome &&) noexcept = default;
+    ~ProjectDescriptorMigrationOutcome() = default;
+
+    /// @brief Current SchemaのMigration後Descriptorを返す
+    [[nodiscard]] const ProjectDescriptor &descriptor() const noexcept;
+    /// @brief Descriptorが未変更、Commit済み、または公開済みで耐久性不明か返す
+    [[nodiscard]] ProjectDescriptorMigrationStatus status() const noexcept;
+    /// @brief 公開後の耐久性確認失敗を返す。通常Commitまたは未変更ならnullptr
+    [[nodiscard]] const Error *try_durability_error() const noexcept;
+
+  private:
+    friend Result<ProjectDescriptorMigrationOutcome> migrate_project_descriptor(FilesystemRoot &,
+                                                                                 const AssertContext &) noexcept;
+
+    /// @brief Migration後Descriptor、公開状態、任意の耐久性診断を所有する
+    ProjectDescriptorMigrationOutcome(ProjectDescriptor &&a_descriptor, ProjectDescriptorMigrationStatus a_status,
+                                      std::optional<Error> &&a_durabilityError) noexcept;
+
+    ProjectDescriptor m_descriptor;
+    ProjectDescriptorMigrationStatus m_status;
+    std::optional<Error> m_durabilityError;
 };
 
 /// @brief UTF-8 JSON を一度だけ解析し、検証済み Descriptor v1 を構築する
@@ -229,7 +270,8 @@ class ProjectDescriptor final
 
 /// @brief CueProject.jsonを明示的に一段ずつCurrent SchemaへMigrationしAtomic置換する
 ///
-/// Current Schemaは書込せずそのまま返す。Migration失敗時はAtomic Storageにより元Descriptorを維持する
-[[nodiscard]] Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesystem,
-                                                                   const AssertContext &a_assertContext) noexcept;
+/// Current Schemaは書込せずそのまま返す。公開前失敗は元Descriptorを維持し、公開後のDurabilityUnknownは
+/// 成功OutcomeとしてDisk状態の不確実性を明示する
+[[nodiscard]] Result<ProjectDescriptorMigrationOutcome> migrate_project_descriptor(
+    FilesystemRoot &a_filesystem, const AssertContext &a_assertContext) noexcept;
 } // namespace cue

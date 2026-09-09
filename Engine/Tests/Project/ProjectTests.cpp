@@ -81,6 +81,12 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
         m_shouldFailWrite = a_shouldFail;
     }
 
+    /// @brief 次のAtomic Writeを公開後DurabilityUnknownとして返す設定を切り替える
+    void set_write_durability_unknown(bool a_shouldFail) noexcept
+    {
+        m_shouldReportDurabilityUnknown = a_shouldFail;
+    }
+
     /// @brief 現在保持するDescriptor Byte列を文字列として返す
     [[nodiscard]] std::string contents() const
     {
@@ -139,6 +145,11 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
                 cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, "Injected atomic write failure"));
         }
         m_bytes.assign(a_bytes.begin(), a_bytes.end());
+        if (m_shouldReportDurabilityUnknown)
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::DurabilityUnknown, "Injected post-publication durability failure"));
+        }
         return cue::Result<void>::success();
     }
 
@@ -196,6 +207,7 @@ class MemoryFilesystemRoot final : public cue::FilesystemRoot
     std::vector<std::byte> m_bytes;
     const cue::AssertContext *m_assertContext;
     bool m_shouldFailWrite = false;
+    bool m_shouldReportDurabilityUnknown = false;
 };
 
 /// @brief Result が期待する Project Error Code を保持するか検証する
@@ -347,8 +359,9 @@ template <typename Value>
 {
     MemoryFilesystemRoot successful(k_validDescriptor, a_assertContext);
     auto migrated = cue::migrate_project_descriptor(successful, a_assertContext);
-    if (!migrated || migrated.try_value()->schema_version() != cue::k_currentProjectDescriptorSchemaVersion ||
-        migrated.try_value()->default_scene().has_value() ||
+    if (!migrated || migrated.try_value()->status() != cue::ProjectDescriptorMigrationStatus::Committed ||
+        migrated.try_value()->descriptor().schema_version() != cue::k_currentProjectDescriptorSchemaVersion ||
+        migrated.try_value()->descriptor().default_scene().has_value() ||
         successful.contents().find("\"schemaVersion\":2") == std::string::npos)
     {
         return false;
@@ -358,7 +371,19 @@ template <typename Value>
     const std::string original = failed.contents();
     failed.set_write_failure(true);
     auto failedMigration = cue::migrate_project_descriptor(failed, a_assertContext);
-    return !failedMigration && failed.contents() == original;
+    if (failedMigration || failed.contents() != original)
+    {
+        return false;
+    }
+
+    MemoryFilesystemRoot uncertain(k_validDescriptor, a_assertContext);
+    uncertain.set_write_durability_unknown(true);
+    auto uncertainMigration = cue::migrate_project_descriptor(uncertain, a_assertContext);
+    return uncertainMigration &&
+           uncertainMigration.try_value()->status() ==
+               cue::ProjectDescriptorMigrationStatus::PublishedButDurabilityUnknown &&
+           uncertainMigration.try_value()->try_durability_error() != nullptr &&
+           uncertain.contents().find("\"schemaVersion\":2") != std::string::npos;
 }
 
 /// @brief BOM、Control 文字、Resource Limit、UTF-8 不正を Parse 前後で拒否することを検証する

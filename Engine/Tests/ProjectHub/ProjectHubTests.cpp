@@ -500,9 +500,37 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     constexpr std::string_view echoId = "00000000-0000-4000-8000-000000000005";
     const auto *alpha = find_project(service.try_value()->get()->projects(), alphaId);
     if (alpha == nullptr || alpha->state != cue::project_hub::ProjectEntryState::Available || !alpha->canOpen ||
+        alpha->canMigrate ||
         alpha->compatibilityStatus != cue::ProjectCompatibilityStatus::Compatible ||
         !alpha->engineCompatibility.has_value() ||
         alpha->engineCompatibility->minimum != cue::EngineVersion{1U, 0U, 0U})
+    {
+        return false;
+    }
+
+    constexpr std::string_view legacyBravoDescriptor =
+        "{\"schemaVersion\":1,\"projectId\":\"00000000-0000-4000-8000-000000000002\","
+        "\"displayName\":\"Bravo Project\",\"engineCompatibility\":{\"minimum\":\"1.0.0\","
+        "\"maximumExclusive\":\"2.0.0\"},\"roots\":{\"sourceAssets\":\"Assets/Source\","
+        "\"runtimeAssets\":\"Assets/Runtime\",\"generated\":\"Generated\",\"saved\":\"Saved\"},"
+        "\"defaultScene\":null,\"requiredCapabilities\":[],\"extensions\":{}}";
+    if (!overwrite_descriptor(directory.path() / "Projects" / "Bravo" / "CueProject.json", legacyBravoDescriptor) ||
+        !service.try_value()->get()->refresh())
+    {
+        return false;
+    }
+    const auto *legacyBravo = find_project(service.try_value()->get()->projects(), bravoId);
+    if (legacyBravo == nullptr || legacyBravo->canOpen || !legacyBravo->canMigrate ||
+        legacyBravo->compatibilityStatus != cue::ProjectCompatibilityStatus::Unsupported)
+    {
+        return false;
+    }
+    auto migratedBravo = service.try_value()->get()->migrate_project(bravoId);
+    const auto *currentBravo = find_project(service.try_value()->get()->projects(), bravoId);
+    if (!migratedBravo ||
+        migratedBravo.try_value()->status() != cue::ProjectDescriptorMigrationStatus::Committed ||
+        migratedBravo.try_value()->descriptor().default_scene().has_value() || currentBravo == nullptr ||
+        !currentBravo->canOpen || currentBravo->canMigrate)
     {
         return false;
     }

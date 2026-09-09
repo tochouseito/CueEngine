@@ -3,6 +3,7 @@
 #include "Json.h"
 
 #include <Cue/Foundation/Assert.h>
+#include <Cue/IO/Error.h>
 #include <Cue/IO/Filesystem.h>
 #include <Cue/Project/Error.h>
 
@@ -1408,19 +1409,44 @@ Result<void> save_project_descriptor(FilesystemRoot &a_filesystem, const Project
     return Result<void>::success();
 }
 
-Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesystem,
-                                                     const AssertContext &a_assertContext) noexcept
+ProjectDescriptorMigrationOutcome::ProjectDescriptorMigrationOutcome(
+    ProjectDescriptor &&a_descriptor, ProjectDescriptorMigrationStatus a_status,
+    std::optional<Error> &&a_durabilityError) noexcept
+    : m_descriptor(std::move(a_descriptor)), m_status(a_status), m_durabilityError(std::move(a_durabilityError))
+{
+}
+
+const ProjectDescriptor &ProjectDescriptorMigrationOutcome::descriptor() const noexcept
+{
+    return m_descriptor;
+}
+
+ProjectDescriptorMigrationStatus ProjectDescriptorMigrationOutcome::status() const noexcept
+{
+    return m_status;
+}
+
+const Error *ProjectDescriptorMigrationOutcome::try_durability_error() const noexcept
+{
+    return m_durabilityError ? &*m_durabilityError : nullptr;
+}
+
+Result<ProjectDescriptorMigrationOutcome> migrate_project_descriptor(FilesystemRoot &a_filesystem,
+                                                                      const AssertContext &a_assertContext) noexcept
 {
     try
     {
         Result<ProjectDescriptor> source = load_project_descriptor(a_filesystem, a_assertContext);
         if (!source)
         {
-            return Result<ProjectDescriptor>::failure(std::move(*source.try_error()));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(std::move(*source.try_error()));
         }
         if (source.try_value()->schema_version() == k_currentProjectDescriptorSchemaVersion)
         {
-            return source;
+            std::optional<Error> noDurabilityError;
+            return Result<ProjectDescriptorMigrationOutcome>::success(ProjectDescriptorMigrationOutcome(
+                std::move(*source.try_value()), ProjectDescriptorMigrationStatus::Unchanged,
+                std::move(noDurabilityError)));
         }
 
         Result<ProjectId> projectId = ProjectId::parse(source.try_value()->project_id().text(), a_assertContext);
@@ -1432,8 +1458,8 @@ Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesyste
         if (!projectId || !std::ranges::all_of(rootResults, [](const Result<RelativePath> &a_result) noexcept
                                                { return a_result.has_value(); }))
         {
-            return Result<ProjectDescriptor>::failure(make_project_error(a_assertContext, ProjectError::InvalidFormat,
-                                                                         "Validated descriptor could not be migrated"));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_error(
+                a_assertContext, ProjectError::InvalidFormat, "Validated descriptor could not be migrated"));
         }
 
         ProjectRoots roots(std::move(*rootResults[0].try_value()), std::move(*rootResults[1].try_value()),
@@ -1446,9 +1472,20 @@ Result<ProjectDescriptor> migrate_project_descriptor(FilesystemRoot &a_filesyste
         Result<void> saved = save_project_descriptor(a_filesystem, migrated, a_assertContext);
         if (!saved)
         {
-            return Result<ProjectDescriptor>::failure(std::move(*saved.try_error()));
+            const ErrorCode &rootCode = saved.try_error()->root_code();
+            if (rootCode.domain() == "Cue.IO" &&
+                rootCode.value() == static_cast<std::int64_t>(IoError::DurabilityUnknown))
+            {
+                std::optional<Error> durabilityError(std::in_place, std::move(*saved.try_error()));
+                return Result<ProjectDescriptorMigrationOutcome>::success(ProjectDescriptorMigrationOutcome(
+                    std::move(migrated), ProjectDescriptorMigrationStatus::PublishedButDurabilityUnknown,
+                    std::move(durabilityError)));
+            }
+            return Result<ProjectDescriptorMigrationOutcome>::failure(std::move(*saved.try_error()));
         }
-        return Result<ProjectDescriptor>::success(std::move(migrated));
+        std::optional<Error> noDurabilityError;
+        return Result<ProjectDescriptorMigrationOutcome>::success(ProjectDescriptorMigrationOutcome(
+            std::move(migrated), ProjectDescriptorMigrationStatus::Committed, std::move(noDurabilityError)));
     }
     catch (...)
     {

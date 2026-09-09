@@ -101,6 +101,7 @@ struct ProjectRowView final
     ProjectEntryProblem problem;
     ProjectCompatibilityStatus compatibilityStatus;
     bool canOpen;
+    bool canMigrate;
     std::optional<EngineCompatibility> engineCompatibility;
     std::vector<ProjectCompatibilityReason> compatibilityReasons;
 };
@@ -219,6 +220,10 @@ class ProjectHubService final
     [[nodiscard]] Result<EditorLaunchRequest> open_project(
         std::string_view a_projectId, std::uint64_t a_openedMilliseconds,
         std::optional<std::string_view> a_initialSceneLocator = std::nullopt) noexcept;
+    /// @brief 選択Projectの旧DescriptorをUser確認後にCurrent Schemaへ明示Migrationする
+    ///
+    /// 公開後のDurabilityUnknownは成功Outcomeで返し、Project一覧はMigration後Modelへ更新する。
+    [[nodiscard]] Result<ProjectDescriptorMigrationOutcome> migrate_project(std::string_view a_projectId) noexcept;
     /// @brief Recent EntryのPin状態を変更する
     /// @note ErrorのRoot CodeがCue.IO/IoError::DurabilityUnknownならPin変更は公開済みでprojectsの旧Spanは無効
     [[nodiscard]] Result<void> set_project_pinned(std::string_view a_projectId, bool a_isPinned) noexcept;

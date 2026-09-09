@@ -60,6 +60,8 @@ class ProjectHubPresenter final
     void draw_register_dialog() noexcept;
     /// @brief 一覧除外確認Dialogを描画する
     void draw_remove_dialog() noexcept;
+    /// @brief 旧Project Descriptorの明示Migration確認Dialogを描画する
+    void draw_migrate_dialog() noexcept;
     /// @brief 選択Projectを再検証してEditor Launch Requestを生成する
     void open_selected_project() noexcept;
     /// @brief Service Errorを日本語のUser Messageへ変換する
@@ -76,6 +78,7 @@ class ProjectHubPresenter final
     std::string m_selectedProjectId;
     std::string m_selectedTemplateId;
     std::string m_pendingRemoveProjectId;
+    std::string m_pendingMigrateProjectId;
     std::string m_message;
     std::optional<EditorLaunchRequest> m_launchRequest;
     std::string m_parentLocator;
@@ -85,6 +88,7 @@ class ProjectHubPresenter final
     bool m_openCreateDialog = false;
     bool m_openRegisterDialog = false;
     bool m_openRemoveDialog = false;
+    bool m_openMigrateDialog = false;
     bool m_confirmMovedProject = false;
     bool m_hasError = false;
     bool m_hasWarning = false;
