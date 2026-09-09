@@ -170,14 +170,19 @@ struct ThunkValidationContext final
     const std::size_t optionalOffset = peOffset + 24U;
     std::uint16_t magic = 0U;
     std::uint32_t sectionAlignment = 0U;
+    std::uint32_t fileAlignment = 0U;
     std::uint32_t sizeOfImage = 0U;
     std::uint32_t sizeOfHeaders = 0U;
     std::uint32_t directoryCount = 0U;
     if (!read_u16(a_bytes, optionalOffset, magic) || magic != k_pe32PlusMagic ||
         !read_u32(a_bytes, optionalOffset + 32U, sectionAlignment) || sectionAlignment == 0U ||
+        (sectionAlignment & (sectionAlignment - 1U)) != 0U ||
+        !read_u32(a_bytes, optionalOffset + 36U, fileAlignment) || fileAlignment < 512U ||
+        fileAlignment > 65536U || (fileAlignment & (fileAlignment - 1U)) != 0U ||
+        sectionAlignment < fileAlignment || (sectionAlignment < 4096U && sectionAlignment != fileAlignment) ||
         !read_u32(a_bytes, optionalOffset + 56U, sizeOfImage) || sizeOfImage == 0U ||
         !read_u32(a_bytes, optionalOffset + 60U, sizeOfHeaders) || sizeOfHeaders > a_bytes.size() ||
-        sizeOfHeaders > sizeOfImage ||
+        sizeOfHeaders > sizeOfImage || sizeOfHeaders % fileAlignment != 0U ||
         !read_u32(a_bytes, optionalOffset + 108U, directoryCount) || directoryCount < 14U)
     {
         return false;
@@ -188,20 +193,31 @@ struct ThunkValidationContext final
     {
         return false;
     }
+    const std::size_t sectionTableEnd = sectionTableOffset + sectionCount * k_sectionHeaderBytes;
+    if (sizeOfHeaders < sectionTableEnd)
+    {
+        return false;
+    }
     std::uint64_t requiredImageSize = 0U;
     if (!align_up(sizeOfHeaders, sectionAlignment, requiredImageSize))
     {
         return false;
     }
+    std::uint64_t previousSectionEnd = requiredImageSize;
+    std::array<std::pair<std::uint64_t, std::uint64_t>, k_maximumSectionCount> rawRanges{};
+    std::size_t rawRangeCount = 0U;
     for (std::size_t index = 0U; index < sectionCount; ++index)
     {
         const std::size_t section = sectionTableOffset + index * k_sectionHeaderBytes;
         std::uint32_t virtualSize = 0U;
         std::uint32_t virtualAddress = 0U;
         std::uint32_t rawSize = 0U;
+        std::uint32_t rawOffset = 0U;
         if (!read_u32(a_bytes, section + 8U, virtualSize) ||
             !read_u32(a_bytes, section + 12U, virtualAddress) ||
-            !read_u32(a_bytes, section + 16U, rawSize))
+            !read_u32(a_bytes, section + 16U, rawSize) ||
+            !read_u32(a_bytes, section + 20U, rawOffset) || virtualAddress % sectionAlignment != 0U ||
+            virtualAddress < previousSectionEnd)
         {
             return false;
         }
@@ -212,6 +228,24 @@ struct ThunkValidationContext final
         {
             return false;
         }
+        if (rawSize != 0U)
+        {
+            const std::uint64_t rawEnd = static_cast<std::uint64_t>(rawOffset) + rawSize;
+            if (rawSize % fileAlignment != 0U || rawOffset % fileAlignment != 0U || rawOffset < sizeOfHeaders ||
+                rawEnd > a_bytes.size())
+            {
+                return false;
+            }
+            for (std::size_t rangeIndex = 0U; rangeIndex < rawRangeCount; ++rangeIndex)
+            {
+                if (rawOffset < rawRanges[rangeIndex].second && rawEnd > rawRanges[rangeIndex].first)
+                {
+                    return false;
+                }
+            }
+            rawRanges[rawRangeCount++] = {rawOffset, rawEnd};
+        }
+        previousSectionEnd = alignedSectionEnd;
         requiredImageSize = (std::max)(requiredImageSize, alignedSectionEnd);
     }
     if (sizeOfImage < requiredImageSize || sizeOfImage % sectionAlignment != 0U)
