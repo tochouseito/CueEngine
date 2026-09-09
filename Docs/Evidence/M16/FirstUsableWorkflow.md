@@ -30,4 +30,3 @@ Runtime Systemを追加登録しない。外部Assetまたは第三者Codeを必
 
 M16の実WindowEnd-to-End確認結果はCompletion Gate #237でこの文書へ追記する。M12、M13、M14の既存手動確認は、
 Project Hub、Editor Scene、Files、Play／Stopまでの個別操作根拠として維持する。
-
