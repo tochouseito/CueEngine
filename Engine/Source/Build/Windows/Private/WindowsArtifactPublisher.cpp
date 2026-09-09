@@ -506,6 +506,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 
 /// @brief Write-through Handleで固定中のCandidateを同一IdentityのままVersionへRenameする
 [[nodiscard]] cue::Result<void> rename_guarded_directory(DirectoryChainGuard &a_guard,
+                                                         const std::filesystem::path &a_source,
                                                          const std::filesystem::path &a_destination,
                                                          const cue::AssertContext &a_assertContext) noexcept
 {
@@ -524,18 +525,26 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                        static_cast<DWORD>(byteSize)) == FALSE)
         {
             const DWORD renameCode = GetLastError();
-            UniqueHandle visible(CreateFileW(
+            UniqueHandle destinationVisible(CreateFileW(
                 destination.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            const std::wstring source = native_path(a_source).native();
+            UniqueHandle sourceVisible(CreateFileW(
+                source.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            const bool isDestinationIdentity = destinationVisible.is_valid() &&
+                                               has_same_file_identity(a_guard.leaf_handle(), destinationVisible.get());
+            const bool isSourceIdentity =
+                sourceVisible.is_valid() && has_same_file_identity(a_guard.leaf_handle(), sourceVisible.get());
             const cue::WindowsBuildArtifactError error =
-                visible.is_valid() && has_same_file_identity(a_guard.leaf_handle(), visible.get())
-                    ? cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown
-                    : cue::WindowsBuildArtifactError::CandidateInvalid;
+                isSourceIdentity && !isDestinationIdentity ? cue::WindowsBuildArtifactError::CandidateInvalid
+                                                           : cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown;
             return cue::Result<void>::failure(make_windows_error(
                 a_assertContext, error, renameCode,
                 error == cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown
-                    ? "Artifact Version is visible but guarded write-through rename completion is unknown"
+                    ? "Guarded write-through rename completion could not be classified from both namespaces"
                     : "Artifact Version could not be published through the guarded write-through Candidate handle"));
         }
         return cue::Result<void>::success();
@@ -1642,7 +1651,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cancelCandidate();
             }
             cue::Result<void> versionPublished =
-                rename_guarded_directory(*candidateGuard, version, *m_assertContext);
+                rename_guarded_directory(*candidateGuard, candidate, version, *m_assertContext);
             if (!versionPublished)
             {
                 cue::Error publicationError = std::move(*versionPublished.try_error());
