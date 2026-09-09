@@ -322,16 +322,23 @@ Build時の正本PathからStagingへCopyし、`runtimeDependency`としてHash�
 
 現行BuildはCMake／MSVC既定のDynamic Runtimeを使用するため、`CueRuntimeHost.exe`のLoad-time ImportはWindows System DLLに加え、
 使用Compilerに対応するMicrosoft Visual C++ Runtimeを許可する。Development／Release Packageの実行Hostには対応するx64
-Visual C++ Redistributable、Debug Packageの実行Hostには対応するVisual Studio C++ Debug Runtimeを前提とする。これらはToolchainの
-実行前提でありPackageへCopyせず、Debug Packageを配布物として扱わない。M16のStandaloneはProject SourceやBuild Treeからの独立を
-意味し、OS／Toolchain RuntimeまでDirectory内へ複製するInstaller契約は含まない。Production配布でのStatic Runtimeまたは
-Redistributable Installer方針は別ADRで決定する。
+Visual C++ Redistributable、Debug Packageの実行Hostには対応するVisual Studio C++ Debug Runtimeを前提とし、どちらもWindows
+System DirectoryへInstallされた正本だけを使用する。`CueRuntimeHost.exe`はMSVC Linkerの`/DEPENDENTLOADFLAG:0x800`を必須とし、
+Process起動時のLoad-time Importを`LOAD_LIBRARY_SEARCH_SYSTEM32`へ限定する。Package Root、Current Directory、`PATH`、User Directoryを
+Host起動前の依存解決へ含めない。これらはToolchainの実行前提でありPackageへCopyせず、Debug Packageを配布物として扱わない。
+M16のStandaloneはProject SourceやBuild Treeからの独立を意味し、OS／Toolchain RuntimeまでDirectory内へ複製するInstaller契約は
+含まない。Production配布でのStatic RuntimeまたはRedistributable Installer方針は別ADRで決定する。
 
 M16 PublisherのHost Import検証は、Windows System DLLと上記MSVC Runtimeの既知Import名だけを許可する。Host自身がそれ以外の
 App-local DLLを直接Importしている場合、Windows LoaderはManifest検証や`Runtime` Directory登録より前に解決を要求するため、
 M16 Publisherはその構成をPackageせず失敗させる。
-Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryをProcess-localな
-DLL検索Directoryへ登録する。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
+RuntimeHostはPackage処理の最初に`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 |
+LOAD_LIBRARY_SEARCH_USER_DIRS)`を成功させ、Application Directory、Current Directory、`PATH`をProcessの既定DLL検索対象から除外する。
+Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryを`AddDllDirectory`で
+Process-localなUser Directoryへ登録する。Game Module自体は検証済み絶対Pathを
+`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)`で開き、
+`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`を指定しない。これにより、Game Moduleの隣接`Game/`、Package Root、Current Directory、`PATH`を
+依存DLLの候補へ含めない。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
 静的Bootstrapを別ADRで決定する。
 
 `Runtime/`をDLL検索Directoryへ登録する直前に、RuntimeHostはDirectoryを非再帰で列挙し、通常Fileだけで構成されること、Reparse
@@ -492,6 +499,8 @@ M16では次を検証する。
 - Manifest version 1の必須Member、Role、Path、Size、Hash、Resource LimitをWriterとReaderで一致させる
 - 絶対Path、Drive、UNC、Traversal、予約Device名、Case Alias、Reparse Pointを拒否する
 - RuntimeHost、Game Module、Metadata、Runtime Dataの欠損、重複、Size／Hash不一致をDLL Load前に拒否する
+- RuntimeHostのLoad-time Importが`/DEPENDENTLOADFLAG:0x800`でSystem Directoryへ限定され、Game Module依存解決が検証済み
+  `Runtime/`とSystem Directory以外を検索しない
 - Debug、Development、ReleaseのArtifactとRuntime Dependencyが混在しない
 - Artifact Shared Read Lease中に参照VersionをCleanupできず、Copy後にLeaseを解放する
 - Publish前失敗とCancelがDestinationを作成せず、Operation-owned StagingだけをCleanupする
