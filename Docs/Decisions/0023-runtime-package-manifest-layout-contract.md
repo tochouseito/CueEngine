@@ -359,8 +359,8 @@ RuntimeHostはPackage Rootを確定した後、次の順序でFail-closedに起�
 3. HostのEngine Version、Architecture、ConfigurationをManifestと照合する
 4. Game Module MetadataをADR-0022の順序で検証する
 5. Runtime Project DataとStartup Scene Runtime DataをParseし、IdentityとCompatibilityを照合する
-6. Runtime Application Project Scopeを構築する
-7. Game ModuleをLoadし、Schema、Component、System Factoryを登録する
+6. Game ModuleをLoadし、Schema、Component、System Factoryを一時Registrationへ登録する
+7. 登録済みの不変System Factory集合からRuntime Application Project Scopeを構築する
 8. Startup Sceneを新しいRuntime Worldへ実体化する
 9. Runtime Application SessionをStartし、Loopへ入る
 
