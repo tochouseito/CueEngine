@@ -261,7 +261,10 @@ ReaderはMember順と意味を持たない空白には依存しないが、必�
 | `runtimeDependency` | zero or more | `Runtime`直下 |
 
 Entryは`path`のUTF-8 Byte昇順で整列する。同一Pathの重複、ASCII case-insensitive Alias、同一必須Roleの重複を拒否する。
-`sizeBytes`はCopy後Fileの未変換Byte数、`sha256`は同じByte列に対する64文字lowercase SHA-256とする。
+`sizeBytes`はCopy後Fileの未変換Byte数を表す、符号なしの10進JSON整数とする。値域は`0`以上`8,589,934,592`
+（8 GiB）以下であり、負数、小数、指数表現、先頭`+`、上限超過をReader／Writerの双方で拒否する。ReaderはJSON Numberを
+binary floating-pointへ変換してから判定せず、Tokenの整数表現と値域を直接検証する。`sha256`は同じByte列に対する64文字lowercase
+SHA-256とする。
 Manifest自身は自己参照Hashを避けるため`files`へ含めない。
 
 Game Module MetadataのProjectId、Configuration、Architecture、ABI、Toolset、Runtime Libraryと、Manifest、RuntimeHostの期待値を
@@ -303,8 +306,14 @@ Publisherは入力Fileを開いたHandleからSizeとHashを測定し、検証�
 
 ### Runtime Dependency Inventory
 
-Runtime Dependency Collectorは`CueRuntimeHost.exe`とGame ModuleのBuild Metadata、およびM16で明示的に登録したApp-local Runtime Fileを
-入力にする。Project Directory、`PATH`全体、Windows System Directory、Visual Studio Installation、vcpkg Install Treeを再帰探索しない。
+Runtime Dependency Collectorは`CueRuntimeHost.exe`、Game Module本体、Game ModuleのBuild Metadata、およびM16で明示的に登録した
+App-local Runtime Fileを入力にする。CollectorはPublish前にGame Moduleと各App-local Runtime FileのPE Import Tableを読み、通常Importと
+Delay-load Importの直接・推移閉包を構築する。Import名はASCII case-insensitiveで比較し、System DLL／許可済みMSVC Runtimeを除く各Importが、
+明示登録された`Runtime/`直下Fileへ一意に対応することを要求する。対応FileのPE Headerを同じ規則で再帰検査し、Cycleは検査済み集合で
+打ち切る。Import Tableが不正、対象Architecture不一致、同名Alias、未登録Import、登録済みだが閉包から到達しないFile、または閉包計算に
+失敗した場合はPackage Publish前に拒否する。検査対象FileはBuild Artifactおよび明示登録Dependencyの検証済みHandleから読み、OS Loaderや
+検索Pathによる解決結果を入力にしない。Project Directory、`PATH`全体、Windows System Directory、Visual Studio Installation、vcpkg
+Install Treeを再帰探索しない。
 
 OSが提供するSystem DLLと、下記のMSVC Runtime前提はPackage Entryにしない。Game ModuleのApp-local DLLが必要な場合は、
 Build時の正本PathからStagingへCopyし、`runtimeDependency`としてHash／Sizeを記録する。M16ではWindows DLL Loaderが再帰探索しない
