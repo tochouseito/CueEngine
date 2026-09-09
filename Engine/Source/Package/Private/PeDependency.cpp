@@ -253,6 +253,35 @@ struct ThunkValidationContext final
     return false;
 }
 
+/// @brief IMAGE_IMPORT_BY_NAMEのNUL終端ASCII Symbol名を検証する
+[[nodiscard]] bool validate_import_symbol_name(const PeLayout &a_layout, std::uint32_t a_rva,
+                                               std::size_t &a_remainingStringBytes) noexcept
+{
+    for (std::size_t index = 0U; index <= k_maximumImportNameBytes; ++index)
+    {
+        if (a_remainingStringBytes == 0U || a_rva > (std::numeric_limits<std::uint32_t>::max)() - index)
+        {
+            return false;
+        }
+        --a_remainingStringBytes;
+        const auto offset = rva_to_offset(a_layout, a_rva + static_cast<std::uint32_t>(index), 1U);
+        if (!offset)
+        {
+            return false;
+        }
+        const unsigned char value = std::to_integer<unsigned char>(a_layout.bytes[*offset]);
+        if (value == 0U)
+        {
+            return index != 0U;
+        }
+        if (value < 0x20U || value > 0x7eU)
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
 /// @brief PE32+ Import Thunk TableをRVA単位で一度だけ走査しEntry数を返す
 [[nodiscard]] std::optional<std::size_t> validate_import_thunk_table(
     const PeLayout &a_layout, std::uint32_t a_tableRva, ThunkValidationContext &a_context)
@@ -330,8 +359,8 @@ struct ThunkValidationContext final
         }
         const std::uint32_t nameRva = static_cast<std::uint32_t>(thunk);
         const auto hintOffset = rva_to_offset(a_layout, nameRva, 2U);
-        std::string symbolName;
-        if (!hintOffset || !read_import_name(a_layout, nameRva + 2U, symbolName, a_context.remainingStringBytes))
+        if (!hintOffset ||
+            !validate_import_symbol_name(a_layout, nameRva + 2U, a_context.remainingStringBytes))
         {
             return false;
         }

@@ -446,7 +446,7 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     std::vector<std::byte> namedImportGame = game;
     write_u64(namedImportGame, 0x700U, 0x1a00U);
     write_u16(namedImportGame, 0xc00U, 7U);
-    write_ascii(namedImportGame, 0xc02U, "CueImportedFunction");
+    write_ascii(namedImportGame, 0xc02U, "Cue/Imported:Function\\Alias");
     auto validNamedImport = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", namedImportGame},
         dependencies, a_assertContext);
