@@ -58,6 +58,7 @@ struct ValidatedThunkTable final
 {
     std::uint32_t rva = 0U;
     std::vector<std::uint64_t> entries;
+    bool lookupEntriesValidated = false;
 };
 
 struct ThunkValidationContext final
@@ -282,7 +283,7 @@ struct ThunkValidationContext final
         }
         if (thunk == 0U)
         {
-            a_context.tables.push_back({a_tableRva, std::move(entries)});
+            a_context.tables.push_back({a_tableRva, std::move(entries), false});
             return index;
         }
         entries.push_back(thunk);
@@ -302,6 +303,10 @@ struct ThunkValidationContext final
     if (cached == a_context.tables.end())
     {
         return false;
+    }
+    if (cached->lookupEntriesValidated)
+    {
+        return true;
     }
     for (const std::uint64_t thunk : cached->entries)
     {
@@ -327,6 +332,7 @@ struct ThunkValidationContext final
             return false;
         }
     }
+    cached->lookupEntriesValidated = true;
     return true;
 }
 
