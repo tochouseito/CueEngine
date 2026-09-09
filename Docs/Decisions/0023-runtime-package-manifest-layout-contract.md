@@ -145,7 +145,7 @@ M16は一般Asset Cookではなく、二つのVersion付きCanonical JSONを生�
 | File | Role | Minimum Data |
 | --- | --- | --- |
 | `Data/CueProject.runtime.json` | Runtime Project Data | schema version、ProjectId、Engine Compatibility、Required Capability、Startup SceneAssetId |
-| `Data/Scenes/<scene-asset-id>.cueruntime.json` | Runtime Scene Data | schema version、SceneAssetId、ObjectId、Hierarchy、Active、Core Transform、実体化可能なComponent Data |
+| `Data/Scenes/<scene-asset-id>.cueruntime.json` | Runtime Scene Data | schema version、SceneAssetId、ObjectId、Hierarchy、Active、Core Transform、予約済み空Component配列 |
 
 Runtime Project Data schema version 1の完全なWire Objectを次に固定する。UTF-8、BOMなし、LF、末尾改行ありとし、
 Writerは例示順でMemberを出力する。ReaderもM16ではこのCanonical Member順だけを受理し、未知Member、欠落、重複、末尾Dataを拒否する。
@@ -163,14 +163,11 @@ Writerは例示順でMemberを出力する。ReaderもM16ではこのCanonical M
 Runtime Scene Data schema version 1の完全なWire Objectを次に固定する。空白、Encoding、Member検証はRuntime Project Dataと同じとする。
 
 ```json
-{"schemaVersion":1,"sceneAssetId":"22345678-1234-4abc-8def-1234567890ab","objects":[{"objectId":"32345678-1234-4abc-8def-1234567890ab","parentObjectId":null,"active":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":[{"componentInstanceId":"42345678-1234-4abc-8def-1234567890ab","typeId":"52345678-1234-4abc-8def-1234567890ab","schemaVersion":1,"fields":[{"fieldId":1,"kind":"boolean","value":true}]}]}]}
+{"schemaVersion":1,"sceneAssetId":"22345678-1234-4abc-8def-1234567890ab","objects":[{"objectId":"32345678-1234-4abc-8def-1234567890ab","parentObjectId":null,"active":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":[]}]}
 ```
 
-- `sceneAssetId`、`objectId`、`componentInstanceId`、`typeId`はlowercase UUID v4とし、nilを拒否する
-- `objects`は`ObjectId`のByte辞書順、`components`は`ComponentInstanceId`順、`fields`は符号なし`fieldId`昇順とする
-- `objectId`はScene内、`componentInstanceId`はScene内、`fieldId`は同一Component内で一意とする。加えて、同一Object内で
-  `typeId`を重複させない。各配列は同値を許さないstrict ascending orderとし、IdentityまたはComponent Typeの重複を
-  Reader／Writerとも`UnsupportedRuntimeSceneData`で拒否する
+- `sceneAssetId`と`objectId`はlowercase UUID v4とし、nilを拒否する
+- `objects`は重複しない`ObjectId`のByte辞書順とする
 - `parentObjectId`は同じ`objects`内の別Object IDまたは`null`とし、循環、自己Parent、欠損Parentを拒否する
 - `active`はJSON booleanとする
 - `translation`、`rotation`、`scale`はそれぞれ3、4、3個の、有限IEEE 754 binary32へround-trip可能なJSON numberとする。
@@ -178,15 +175,10 @@ Runtime Scene Data schema version 1の完全なWire Objectを次に固定する�
 - `rotation`はbinary32へ変換した4成分から`cue::math::length`で求めた長さを`1.0F`と比較し、絶対Tolerance
   `0.00001F`、相対Tolerance `0.00001F`の`cue::math::is_unit_rotation`を満たす単位Quaternionだけを受理する。
   条件を満たさない値はReader／Writerとも`UnsupportedRuntimeSceneData`で拒否し、暗黙に正規化しない
-- `schemaVersion`と`fieldId`は`1`以上`4294967295`以下のJSON整数とし、それぞれ`uint32_t`のComponent Schema Version、
-  Field Identityを表す。範囲外、符号、小数表現を拒否する
-- `kind`は`boolean`、`signedInteger`、`unsignedInteger`、`floatingPoint`、`string`、`assetReference`のいずれかとし、`value`のJSON型を一致させる
-- `signedInteger`は`-9223372036854775808`以上`9223372036854775807`以下のJSON整数、`unsignedInteger`は`0`以上
-  `18446744073709551615`以下のJSON整数とし、範囲外、小数表現を拒否する。`floatingPoint`は有限IEEE 754 binary64へ
-  round-trip可能なJSON numberだけを許可し、overflow、NaN、Infinityを拒否する
-- `assetReference`はM16では解決可能なRuntime RegistryとPackage Inventoryが存在しないため、値にかかわらず
-  `UnsupportedRuntimeSceneData`で拒否する。一般Asset DatabaseのIdentity契約は確定しない
-- RuntimeHost v1が登録していないComponent Type、Schema Version、Field、Asset Referenceを含む場合、WriterまたはReaderは省略せず`UnsupportedRuntimeSceneData`で拒否する
+- `components`は将来のRuntime Component Data用予約Memberであり、schema version 1では空Arrayだけを受理する。Authoring
+  SceneにComponentが一件でもある場合、Writer／Readerは省略せず`UnsupportedRuntimeSceneData`で拒否する
+- Component Type、Schema Version、Field、Asset ReferenceのRuntime Wire契約は、Component Storage／Builderを決定する
+  後続Researchまで確定しない
 
 Runtime Data WriterはRaw Source Byte列をCopyせず、検証済みProject Modelと`SceneDocumentSnapshot`から新しいWire表現を生成する。
 Runtime SceneはAuthoring FileのExtension、Editor状態、未知Extension、Undo履歴、Locator、保存用Migration情報を含めない。
@@ -293,9 +285,8 @@ schema version 1はParseまたはMemory確保前に可能な限り次を適用�
 | Runtime Project Data | 1 MiB |
 | Runtime Scene Data | 64 MiB |
 | Runtime Scene objects | 1,000,000 |
-| Components per object | 4,096 |
 
-Size加算、Object数、Component数はOverflowを検査する。上限超過を部分読込み、切捨て、警告付き成功に変換しない。
+Size加算とObject数はOverflowを検査する。上限超過を部分読込み、切捨て、警告付き成功に変換しない。
 上限変更はManifestまたはRuntime Dataの対応Schema Versionと互換性を先に判断する。
 
 ### Relative Path and Filesystem Boundary
