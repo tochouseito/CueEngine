@@ -9,6 +9,27 @@ add_library(
 target_link_libraries(CueRuntimeHostRhiOwnershipCompile PRIVATE Cue.RHI.D3D12)
 target_compile_features(CueRuntimeHostRhiOwnershipCompile PRIVATE cxx_std_20)
 
+add_library(CueRuntimePackageProbe SHARED RuntimePackageProbe.cpp)
+target_link_libraries(CueRuntimePackageProbe PRIVATE Cue.GameModule.Abi)
+target_compile_features(CueRuntimePackageProbe PRIVATE cxx_std_20)
+target_compile_definitions(
+    CueRuntimePackageProbe
+    PRIVATE
+        CUE_GAME_MODULE_BUILD=1
+        $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+        $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+        $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+)
+set_target_properties(CueRuntimePackageProbe PROPERTIES OUTPUT_NAME CueGameModule)
+
+string(REPLACE "." ";" cueRuntimeHostCompilerParts "${CMAKE_CXX_COMPILER_VERSION}")
+list(GET cueRuntimeHostCompilerParts 0 cueRuntimeHostCompilerMajor)
+list(GET cueRuntimeHostCompilerParts 1 cueRuntimeHostCompilerMinor)
+list(GET cueRuntimeHostCompilerParts 2 cueRuntimeHostCompilerPatch)
+list(GET cueRuntimeHostCompilerParts 3 cueRuntimeHostCompilerBuild)
+math(EXPR cueRuntimeHostCompilerVersion "${cueRuntimeHostCompilerMajor} * 100 + ${cueRuntimeHostCompilerMinor}")
+math(EXPR cueRuntimeHostCompilerFullVersion "${cueRuntimeHostCompilerVersion} * 100000 + ${cueRuntimeHostCompilerPatch}")
+
 set_target_properties(
     CueRuntimeHostRhiOwnershipCompile
     PROPERTIES
@@ -18,6 +39,17 @@ set_target_properties(
 if(MSVC)
     target_compile_options(
         CueRuntimeHostRhiOwnershipCompile
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
+    target_compile_options(
+        CueRuntimePackageProbe
         PRIVATE
             /W4
             /WX
@@ -45,6 +77,7 @@ add_custom_target(
     DEPENDS
         CueRhiD3d12AdapterSelectionProcess
         CueRuntimeHost
+        CueRuntimePackageProbe
         CueRuntimeHostRhiOwnershipCompile
 )
 
@@ -63,6 +96,20 @@ add_test(
         -DREPORT_FILE=${cueRuntimeHostDependencyReport}
         -DRUNTIME_HOST_SOURCE_DIR=${PROJECT_SOURCE_DIR}/Engine/Source/RuntimeHost
         -P ${CMAKE_CURRENT_SOURCE_DIR}/VerifyRuntimeHostDependencies.cmake
+)
+
+add_test(
+    NAME Cue.RuntimeHost.Package.Process
+    COMMAND
+        ${CMAKE_COMMAND}
+        -DTEST_EXECUTABLE=$<TARGET_FILE:CueRuntimeHost>
+        -DMODULE_LIBRARY=$<TARGET_FILE:CueRuntimePackageProbe>
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/RuntimePackageProcess/$<CONFIG>
+        -DCONFIGURATION=$<CONFIG>
+        -DCOMPILER_VERSION=${cueRuntimeHostCompilerVersion}
+        -DCOMPILER_FULL_VERSION=${cueRuntimeHostCompilerFullVersion}
+        -DCOMPILER_BUILD=${cueRuntimeHostCompilerBuild}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/VerifyRuntimePackage.cmake
 )
 
 add_test(
@@ -159,6 +206,7 @@ set_tests_properties(
 set_tests_properties(
     Cue.RuntimeHost.Dependencies
     Cue.RuntimeHost.InitializationFailure
+    Cue.RuntimeHost.Package.Process
     PROPERTIES
         LABELS RuntimeHost
         TIMEOUT 10

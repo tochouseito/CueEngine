@@ -176,6 +176,11 @@ class PackageManifest final
 [[nodiscard]] Result<PackageManifest> parse_package_manifest(std::string_view a_json,
                                                              const AssertContext &a_assertContext) noexcept;
 
+/// @brief Manifest EntryとMemory上の同一File Byte列をSizeとSHA-256へ照合する
+[[nodiscard]] Result<void> verify_package_file_bytes(const PackageFileEntry &a_entry,
+                                                     std::span<const std::byte> a_bytes,
+                                                     const AssertContext &a_assertContext) noexcept;
+
 /// @brief Package Rootの列挙FileをManifestのSizeとSHA-256へ照合する
 ///
 /// Package RootとManifestは呼出中だけ借用する。Manifest外Fileは探索せず、各Entryを一度だけ開いて検証する。

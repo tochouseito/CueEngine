@@ -6,6 +6,8 @@ target_sources(
         Main.cpp
         RuntimeHostApplication.cpp
         RuntimeHostApplication.h
+        RuntimePackage.cpp
+        RuntimePackage.h
 )
 
 target_link_libraries(
@@ -13,7 +15,10 @@ target_link_libraries(
     PRIVATE
         Cue.Foundation
         Cue.GameCore
+        Cue.GameModule.Abi
         Cue.Input.Windows
+        Cue.IO.Windows
+        Cue.Package
         Cue.Platform.Windows
         Cue.RHI.D3D12.Windows
         Cue.Runtime
@@ -31,8 +36,11 @@ target_compile_definitions(
     CueRuntimeHost
     PRIVATE
         $<$<CONFIG:Debug>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=1>
+        $<$<CONFIG:Debug>:CUE_RUNTIME_BUILD_CONFIGURATION=1>
         $<$<CONFIG:Development>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=1>
+        $<$<CONFIG:Development>:CUE_RUNTIME_BUILD_CONFIGURATION=2>
         $<$<CONFIG:Release>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=0>
+        $<$<CONFIG:Release>:CUE_RUNTIME_BUILD_CONFIGURATION=3>
 )
 
 set_target_properties(

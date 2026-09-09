@@ -14,6 +14,13 @@ class Window;
 
 namespace cue::runtime_host
 {
+/// @brief Runtime Applicationへ与えるStartup Dataの取得元
+enum class RuntimeHostStartupSource : std::uint8_t
+{
+    FixedSmoke,
+    ExecutableRelativePackage
+};
+
 /// @brief Standalone Host固有のProcess ScopeとPortable Runtime Sessionを明示所有するComposition
 class RuntimeHostApplication final
 {
@@ -44,9 +51,10 @@ class RuntimeHostApplication final
         ConstructionKey() noexcept = default;
     };
 
-    /// @brief 固定M14 Startup SceneとWindows Input AdapterからRunning Sessionを構築する
+    /// @brief 固定SmokeまたはExecutable相対PackageとWindows Input AdapterからRunning Sessionを構築する
     [[nodiscard]] static Result<std::unique_ptr<RuntimeHostApplication>> start(
-        Window &a_window, const AssertContext &a_assertContext) noexcept;
+        Window &a_window, RuntimeHostStartupSource a_source,
+        const AssertContext &a_assertContext) noexcept;
 
     /// @brief Factory外からの既定構築を禁止する
     RuntimeHostApplication() = delete;
