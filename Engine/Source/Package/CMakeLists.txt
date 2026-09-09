@@ -10,6 +10,7 @@ target_sources(
         Private/RuntimeData.cpp
         Private/Sha256.cpp
         Private/Sha256.h
+        Private/Workflow.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS Public
@@ -18,6 +19,7 @@ target_sources(
             Public/Cue/Package/Manifest.h
             Public/Cue/Package/Publisher.h
             Public/Cue/Package/RuntimeData.h
+            Public/Cue/Package/Workflow.h
 )
 
 target_compile_features(Cue.Package PUBLIC cxx_std_20)

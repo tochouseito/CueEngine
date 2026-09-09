@@ -6,6 +6,7 @@ target_sources(
         Private/BuildPresenter.cpp
         Private/EditorPresenter.cpp
         Private/FilesPresenter.cpp
+        Private/PackagePresenter.cpp
         Private/PlaySessionPresenter.cpp
         Private/SessionLog.cpp
     PUBLIC
@@ -15,6 +16,7 @@ target_sources(
             Public/Cue/Editor/ImGui/BuildPresenter.h
             Public/Cue/Editor/ImGui/EditorPresenter.h
             Public/Cue/Editor/ImGui/FilesPresenter.h
+            Public/Cue/Editor/ImGui/PackagePresenter.h
             Public/Cue/Editor/ImGui/PlaySessionPresenter.h
             Public/Cue/Editor/ImGui/SessionLog.h
 )
@@ -24,6 +26,7 @@ target_link_libraries(
     PUBLIC
         Cue.Build
         Cue.EditorCore
+        Cue.Package
     PRIVATE
         Cue.ImGui.Core
 )

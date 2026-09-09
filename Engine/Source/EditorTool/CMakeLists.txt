@@ -14,6 +14,7 @@ target_link_libraries(
         Cue.Build.Windows
         Cue.Foundation.Windows
         Cue.ImGui.Core
+        Cue.IO.Windows
         Cue.Platform.Windows
         Cue.ToolHost.WindowsD3D12
         bcrypt

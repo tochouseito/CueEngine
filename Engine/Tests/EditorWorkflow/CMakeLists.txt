@@ -39,7 +39,7 @@ if(MSVC)
 endif()
 
 add_custom_target(Cue.Editor.Workflow.Tests DEPENDS CueEditorWorkflowProcessTests)
-add_dependencies(CueEditorWorkflowProcessTests CueEditorTool)
+add_dependencies(CueEditorWorkflowProcessTests CueEditorTool CueRuntimeHost)
 
 add_test(NAME Cue.Editor.Workflow.ProcessRoundTrip COMMAND CueEditorWorkflowProcessTests $<TARGET_FILE:CueEditorTool>)
 set_tests_properties(
