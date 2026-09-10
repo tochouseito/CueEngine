@@ -151,6 +151,7 @@ struct PublisherState final
 struct RecoveryFilesystemState final
 {
     std::atomic<std::uint32_t> writeFailuresRemaining = 0U;
+    std::atomic<std::uint32_t> durabilityFailuresRemaining = 0U;
     std::atomic<std::uint32_t> rollbackFailuresRemaining = 0U;
     std::atomic<std::uint32_t> rollbackCalls = 0U;
 };
@@ -257,7 +258,14 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
         cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
         const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
     {
-        return m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
+        cue::Result<void> published =
+            m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
+        if (published && consume(m_state->durabilityFailuresRemaining))
+        {
+            return cue::Result<void>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::DurabilityUnknown, "Published Package durability is unknown"));
+        }
+        return published;
     }
 
     /// @brief 呼出回数を記録し、指定回数だけRollbackを失敗させる
@@ -572,6 +580,22 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     return false;
 }
 
+/// @brief 指定回数目のProcessが終了しBuild Serviceへ結果を渡すまで上限付きで待つ
+[[nodiscard]] bool wait_until_completed_call(const RunnerState &a_state, std::uint32_t a_minimumCalls) noexcept
+{
+    for (std::uint32_t attempt = 0U; attempt < 1000U; ++attempt)
+    {
+        if (a_state.calls.load(std::memory_order_acquire) >= a_minimumCalls &&
+            !a_state.active.load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
 /// @brief Build・Package・Runの成功、失敗保全、停止をHeadlessで検証する
 [[nodiscard]] bool test_workflow(const cue::AssertContext &a_assertContext)
 {
@@ -643,6 +667,29 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
     const std::string firstDestination = first.package->destination;
 
+    const std::uint32_t buildCallsBeforeCancel = buildRunner.calls.load(std::memory_order_acquire);
+    constexpr std::string_view cancelledOperation = "09234567-89ab-4cde-8f01-23456789abcd";
+    if (!require(service->start(make_request(projectRoot.generic_string(), std::string(cancelledOperation),
+                                             a_assertContext),
+                                cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 wait_until_completed_call(buildRunner, buildCallsBeforeCancel + 1U) && service->request_cancel() &&
+                 service->wait_for_package()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot transitionCancelled = service->snapshot();
+    if (!require(transitionCancelled.state == cue::package::PackageWorkflowState::Cancelled &&
+                 !transitionCancelled.package && transitionCancelled.latestSuccessfulPackage &&
+                 transitionCancelled.latestSuccessfulPackage->destination == firstDestination &&
+                 !std::filesystem::exists(projectRoot / L"Generated" / L"Packages" / L"Debug" /
+                                          std::filesystem::path(cancelledOperation))))
+    {
+        return false;
+    }
+    const std::uint32_t publisherCallsAfterTransitionCancel =
+        publisher.calls.load(std::memory_order_acquire);
+
     buildRunner.mode.store(RunnerMode::Fail, std::memory_order_release);
     if (!require(service->start(make_request(projectRoot.generic_string(),
                                              "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
@@ -656,7 +703,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     if (!require(buildFailed.state == cue::package::PackageWorkflowState::Failed && !buildFailed.package &&
                  buildFailed.latestSuccessfulPackage &&
                  buildFailed.latestSuccessfulPackage->destination == firstDestination &&
-                 publisher.calls.load(std::memory_order_acquire) == 1U))
+                 publisher.calls.load(std::memory_order_acquire) == publisherCallsAfterTransitionCancel))
     {
         return false;
     }
@@ -690,6 +737,31 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
 
     publisher.corruptInventory.store(false, std::memory_order_release);
+    recoveryFilesystem.durabilityFailuresRemaining.store(1U, std::memory_order_release);
+    constexpr std::string_view durabilityOperation = "23234567-89ab-4cde-8f01-23456789abcd";
+    if (!require(service->retry(std::string(durabilityOperation)) && service->wait_for_package()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot durabilityUnknown = service->snapshot();
+    if (!require(durabilityUnknown.state == cue::package::PackageWorkflowState::Failed &&
+                 !durabilityUnknown.package && durabilityUnknown.publicationDiagnostic &&
+                 durabilityUnknown.publicationDiagnostic->stage == cue::package::PackagePublishStage::Publish &&
+                 durabilityUnknown.publicationDiagnostic->outcome ==
+                     cue::package::PackagePublishOutcome::PublishedButDurabilityUnknown &&
+                 durabilityUnknown.publicationDiagnostic->destination ==
+                     std::string("Generated/Packages/Debug/") + std::string(durabilityOperation) &&
+                 durabilityUnknown.publicationDiagnostic->manifest.projectId == k_projectId &&
+                 durabilityUnknown.publicationDiagnostic->manifest.fileCount != 0U &&
+                 durabilityUnknown.latestSuccessfulPackage &&
+                 durabilityUnknown.latestSuccessfulPackage->destination == firstDestination &&
+                 std::filesystem::exists(projectRoot /
+                                         std::filesystem::path(durabilityUnknown.publicationDiagnostic->destination) /
+                                         L"CuePackage.json")))
+    {
+        return false;
+    }
+
     recoveryFilesystem.writeFailuresRemaining.store(1U, std::memory_order_release);
     recoveryFilesystem.rollbackFailuresRemaining.store(2U, std::memory_order_release);
     if (!require(service->retry("26234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
