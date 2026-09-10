@@ -8,6 +8,9 @@
 #include <new>
 #include <string_view>
 
+/// @brief Game ModuleのManifest登録済みApp-local依存を実Loadさせる
+extern "C" __declspec(dllimport) int cue_runtime_package_dependency_probe() noexcept;
+
 namespace
 {
 constexpr char k_probeModeEnvironment[] = "CUE_RUNTIME_PACKAGE_PROBE_MODE";
@@ -55,6 +58,10 @@ CueGameModuleResult CUE_GAME_MODULE_CALL create_module(
     if (a_module == nullptr || *a_module != nullptr)
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+    }
+    if (cue_runtime_package_dependency_probe() != 42)
+    {
+        return CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
     }
     *a_module = new (std::nothrow) ModuleState{};
     return *a_module == nullptr ? CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY : CUE_GAME_MODULE_RESULT_SUCCESS;

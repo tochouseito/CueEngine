@@ -106,10 +106,18 @@ struct RuntimePeImageView final
     std::span<const std::byte> bytes;
 };
 
+/// @brief Game Moduleから到達するApp-local DLLを依存先優先の安全な事前Load順へ検証する
+///
+/// 通常ImportとDelay-load Importを再帰検査し、固定Allowlist外のImport、未登録／未到達DLL、循環、
+/// 不正PE、Export Forwarderを拒否する。成功時のIndex列は`a_appLocalDependencies`を参照する。
+[[nodiscard]] Result<std::vector<std::size_t>> create_runtime_dependency_load_order(
+    BuildConfiguration a_configuration, RuntimePeImageView a_gameModule,
+    std::span<const RuntimePeImageView> a_appLocalDependencies, const AssertContext &a_assertContext) noexcept;
+
 /// @brief Runtime Host、Game Module、App-local DLLのx64 PE Import閉包を固定Allowlistへ照合する
 ///
 /// 通常ImportとDelay-load Importを再帰検査する。Hostの非System Import、構成違いMSVC Runtime、未登録／未到達
-/// App-local DLL、不正PE、Export ForwarderをPublish前に拒否する。全Viewは呼出中だけ借用する。
+/// App-local DLL、循環、不正PE、Export ForwarderをPublish前に拒否する。全Viewは呼出中だけ借用する。
 [[nodiscard]] Result<void> validate_runtime_dependency_closure(
     BuildConfiguration a_configuration, RuntimePeImageView a_runtimeHost, RuntimePeImageView a_gameModule,
     std::span<const RuntimePeImageView> a_appLocalDependencies, const AssertContext &a_assertContext) noexcept;
