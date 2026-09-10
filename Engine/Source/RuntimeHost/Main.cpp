@@ -254,24 +254,28 @@ template <typename Value>
 [[nodiscard]] cue::Result<bool> parse_options(int a_argumentCount, wchar_t **a_arguments, RuntimeOptions &a_options,
                                               const cue::AssertContext &a_assertContext) noexcept
 {
+    int modeArgumentCount = 0;
     for (int index = 1; index < a_argumentCount; ++index)
     {
         std::wstring_view argument = a_arguments[index];
 
         if (argument == L"--smoke-test")
         {
+            ++modeArgumentCount;
             a_options.isSmokeTest = true;
             continue;
         }
 
         if (argument == L"--package")
         {
+            ++modeArgumentCount;
             a_options.isPackageRuntime = true;
             continue;
         }
 
         if (argument == L"--package-smoke-test")
         {
+            ++modeArgumentCount;
             a_options.isPackageRuntime = true;
             a_options.isSmokeTest = true;
             a_options.graphicsAdapterPolicy = cue::D3d12AdapterPolicy::Warp;
@@ -306,6 +310,7 @@ template <typename Value>
                 return cue::Result<bool>::success(false);
             }
 
+            ++modeArgumentCount;
             if (argument == L"--graphics-smoke")
             {
                 a_options.isGraphicsSmoke = true;
@@ -373,13 +378,7 @@ template <typename Value>
         }
     }
 
-    int modeCount = static_cast<int>(a_options.isPackageRuntime || a_options.isSmokeTest) +
-                    static_cast<int>(a_options.isGraphicsSmoke) +
-                    static_cast<int>(a_options.isPresentationSmoke) + static_cast<int>(a_options.isRenderSmoke);
-#if defined(CUE_RUNTIME_RESIZE_SMOKE_SUPPORT) && CUE_RUNTIME_RESIZE_SMOKE_SUPPORT
-    modeCount += static_cast<int>(a_options.isResizeSmoke);
-#endif
-    return cue::Result<bool>::success(modeCount <= 1);
+    return cue::Result<bool>::success(modeArgumentCount <= 1);
 }
 
 /// @brief 無効な Command Line に対して利用可能な Runtime Host 引数を標準 Error へ表示する
@@ -1257,11 +1256,11 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     // Test Buildでは実WindowへWM_CLOSEを発行し、Window EventからRuntime停止へ到達する経路を検証する
     if (a_options.isSmokeTest)
     {
-        cue::Result<void> closeResult =
-            hostError ? cue::Result<void>::success()
-                      : cue::issue_windows_window_lifecycle_probe_action(
-                            *window, cue::WindowsWindowLifecycleProbeAction::ResizeThenClose, a_options.clientSize,
-                            a_options.clientSize, a_assertContext);
+        cue::Result<void> closeResult = hostError
+                                            ? cue::Result<void>::success()
+                                            : cue::issue_windows_window_lifecycle_probe_action(
+                                                  *window, cue::WindowsWindowLifecycleProbeAction::ResizeThenClose,
+                                                  a_options.clientSize, a_options.clientSize, a_assertContext);
         if (!closeResult)
         {
             hostError.emplace(std::move(*closeResult.try_error()));
