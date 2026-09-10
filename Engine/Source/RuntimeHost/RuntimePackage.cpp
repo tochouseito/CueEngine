@@ -48,8 +48,6 @@ namespace
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
 constexpr std::size_t k_maximumRuntimeSystems = 256U;
 constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
-constexpr std::uint64_t k_maximumRuntimePeImageBytes = 128ULL * 1024ULL * 1024ULL;
-constexpr std::uint64_t k_maximumRuntimePeInventoryBytes = 256ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 
 /// @brief lowercase hexadecimal文字か判定する
@@ -268,8 +266,8 @@ void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
         {
             continue;
         }
-        if (entry.byte_size() > k_maximumRuntimePeImageBytes ||
-            totalBytes > k_maximumRuntimePeInventoryBytes - entry.byte_size())
+        if (entry.byte_size() > cue::package::k_maximumRuntimePeImageBytes ||
+            totalBytes > cue::package::k_maximumRuntimePeInventoryBytes - entry.byte_size())
         {
             return cue::Result<void>::failure(package_error(
                 a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
