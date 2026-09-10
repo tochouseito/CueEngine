@@ -614,9 +614,11 @@ if(unlistedRuntimeResult EQUAL 0)
 endif()
 file(REMOVE "${packageRoot}/Runtime/Unlisted.dll")
 
-file(APPEND "${packageRoot}/Data/CueProject.runtime.json" "tampered")
+set(tamperedPackageRoot "${TEST_ROOT}/TamperedPackage")
+file(COPY "${packageRoot}/" DESTINATION "${tamperedPackageRoot}")
+file(APPEND "${tamperedPackageRoot}/Data/CueProject.runtime.json" "tampered")
 execute_process(
-    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    COMMAND "${tamperedPackageRoot}/CueRuntimeHost.exe" --package-smoke-test
     WORKING_DIRECTORY "${workingRoot}"
     RESULT_VARIABLE tamperedResult
     OUTPUT_VARIABLE tamperedOutput

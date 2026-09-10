@@ -9,11 +9,16 @@
 #include <Windows.h>
 #endif
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -682,16 +687,117 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(mismatched, cue::package::PackageError::PackageFileMismatch) &&
            is_package_error(missing, cue::package::PackageError::PackageFileMissing) && !error;
 }
+
+/// @brief Binary File全体をBenchmark入力として読み込む
+[[nodiscard]] std::string read_file(const std::filesystem::path &a_path)
+{
+    std::ifstream input(a_path, std::ios::binary | std::ios::ate);
+    require(static_cast<bool>(input));
+    const std::streampos end = input.tellg();
+    require(end >= 0);
+    std::string bytes(static_cast<std::size_t>(end), '\0');
+    input.seekg(0, std::ios::beg);
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    require(static_cast<bool>(input));
+    return bytes;
+}
+
+/// @brief Release PackageのManifest Parseと全File Hash検証時間を表示する
+[[nodiscard]] bool run_manifest_benchmark(const std::filesystem::path &a_packageRoot,
+                                          const cue::AssertContext &a_assertContext)
+{
+    constexpr std::size_t parseIterations = 10000U;
+    constexpr std::size_t hashIterations = 20U;
+    const std::string manifestBytes = read_file(a_packageRoot / "CuePackage.json");
+    auto manifestResult = cue::package::parse_package_manifest(manifestBytes, a_assertContext);
+    if (!manifestResult)
+    {
+        const cue::Error &error = *manifestResult.try_error();
+        std::cerr << "manifest_parse_error=" << error.summary() << " root_code=" << error.root_code().domain() << ':'
+                  << error.root_code().value() << '\n';
+        return false;
+    }
+    const cue::package::PackageManifest &manifest = *manifestResult.try_value();
+    std::uint64_t packageBytes = 0U;
+    for (const cue::package::PackageFileEntry &entry : manifest.files())
+    {
+        packageBytes += entry.byte_size();
+    }
+    auto warmVerification =
+        cue::package::verify_package_manifest_files(a_packageRoot.generic_string(), manifest, a_assertContext);
+    if (!warmVerification)
+    {
+        const cue::Error &error = *warmVerification.try_error();
+        std::cerr << "hash_verification_error=" << error.summary() << " root_code=" << error.root_code().domain()
+                  << ':' << error.root_code().value() << '\n';
+        return false;
+    }
+
+    using Clock = std::chrono::steady_clock;
+    std::vector<double> parseMicroseconds;
+    parseMicroseconds.reserve(parseIterations);
+    for (std::size_t index = 0U; index < parseIterations; ++index)
+    {
+        const Clock::time_point begin = Clock::now();
+        auto parsed = cue::package::parse_package_manifest(manifestBytes, a_assertContext);
+        const Clock::time_point end = Clock::now();
+        if (!parsed)
+        {
+            return false;
+        }
+        parseMicroseconds.push_back(std::chrono::duration<double, std::micro>(end - begin).count());
+    }
+
+    std::vector<double> hashMilliseconds;
+    hashMilliseconds.reserve(hashIterations);
+    for (std::size_t index = 0U; index < hashIterations; ++index)
+    {
+        const Clock::time_point begin = Clock::now();
+        auto verified =
+            cue::package::verify_package_manifest_files(a_packageRoot.generic_string(), manifest, a_assertContext);
+        const Clock::time_point end = Clock::now();
+        if (!verified)
+        {
+            return false;
+        }
+        hashMilliseconds.push_back(std::chrono::duration<double, std::milli>(end - begin).count());
+    }
+
+    std::ranges::sort(parseMicroseconds);
+    std::ranges::sort(hashMilliseconds);
+    const auto mean = [](const std::vector<double> &a_samples) noexcept
+    {
+        return std::accumulate(a_samples.begin(), a_samples.end(), 0.0) / static_cast<double>(a_samples.size());
+    };
+    const auto percentile = [](const std::vector<double> &a_samples, std::size_t a_percentile) noexcept
+    {
+        return a_samples[((a_samples.size() - 1U) * a_percentile) / 100U];
+    };
+    std::cout << std::fixed << std::setprecision(3) << "manifest_bytes=" << manifestBytes.size()
+              << " file_count=" << manifest.files().size() << " package_bytes=" << packageBytes
+              << " parse_iterations=" << parseIterations << " parse_mean_us=" << mean(parseMicroseconds)
+              << " parse_p50_us=" << percentile(parseMicroseconds, 50U)
+              << " parse_p95_us=" << percentile(parseMicroseconds, 95U)
+              << " hash_iterations=" << hashIterations << " hash_mean_ms=" << mean(hashMilliseconds)
+              << " hash_p50_ms=" << percentile(hashMilliseconds, 50U)
+              << " hash_p95_ms=" << percentile(hashMilliseconds, 95U) << '\n';
+    return true;
+}
 } // namespace
 
 /// @brief Package Manifest、Runtime Dependency Inventory、File照合契約を検証する
 int main(int a_argumentCount, char **a_arguments)
 {
-    require(a_argumentCount == 2);
+    require(a_argumentCount == 2 || a_argumentCount == 3);
     TestFatalHandler fatalHandler;
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
+    if (a_argumentCount == 3)
+    {
+        require(std::string_view(a_arguments[1]) == "--benchmark");
+        return run_manifest_benchmark(a_arguments[2], assertContext) ? 0 : 1;
+    }
     const std::filesystem::path testRoot = std::filesystem::path(a_arguments[1]) / "CuePackageManifestTests";
     return test_manifest_wire_contract(assertContext) && test_manifest_validation(assertContext) &&
                    test_runtime_dependency_inventory(assertContext) &&

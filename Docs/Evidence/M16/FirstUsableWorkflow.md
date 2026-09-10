@@ -28,5 +28,9 @@ Runtime Systemを追加登録しない。外部Assetまたは第三者Codeを必
 
 ## Manual Status
 
-M16の実WindowEnd-to-End確認結果はCompletion Gate #237でこの文書へ追記する。M12、M13、M14の既存手動確認は、
-Project Hub、Editor Scene、Files、Play／Stopまでの個別操作根拠として維持する。
+2026-09-11にユーザーが`Docs/Testing/M16-first-usable-engine-workflow.md`の実Window End-to-End手順を実行し、
+「問題なし」と確認した。Blank 3D作成からScene編集・保存・再Open、Files操作、Play／Stop、3構成の
+Build & Package、Standalone Run／Stop、失敗後Retry、実行中終了確認までを一続きの制作LoopとしてPassした。
+
+Screenshotまたは動画は保存していない。M12、M13、M14の既存手動確認は、Project Hub、Editor Scene、Files、
+Play／Stopまでの個別操作根拠として維持する。
