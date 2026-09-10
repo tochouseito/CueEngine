@@ -52,8 +52,8 @@ class LoadedRuntimePackage final
     LoadedRuntimePackage &operator=(const LoadedRuntimePackage &) = delete;
     /// @brief Package Ownerを同一Thread内で移動する
     LoadedRuntimePackage(LoadedRuntimePackage &&) noexcept = default;
-    /// @brief Package Ownerを同一Thread内で移動代入する
-    LoadedRuntimePackage &operator=(LoadedRuntimePackage &&) noexcept = default;
+    /// @brief Package Ownerを寿命依存順序を維持して同一Thread内で移動代入する
+    LoadedRuntimePackage &operator=(LoadedRuntimePackage &&a_other) noexcept;
     /// @brief System定義、Scene、Registry、Moduleの逆順で所有値を破棄する
     ~LoadedRuntimePackage() noexcept;
 
