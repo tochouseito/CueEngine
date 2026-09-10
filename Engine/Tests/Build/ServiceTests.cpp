@@ -260,6 +260,44 @@ class TestPublisher final : public cue::BuildArtifactPublisher
            !missing && !emptyMetadata && !oversizedFile;
 }
 
+/// @brief Current Manifest Readerが順序と空白を無視しSchema不一致をFail-closedにするか検証する
+[[nodiscard]] bool test_current_manifest_validation(const cue::AssertContext &a_assertContext)
+{
+    auto profile =
+        cue::BuildProfile::create(cue::BuildConfiguration::Release, cue::BuildTarget::GameModule, a_assertContext);
+    cue::BuildRequest request{std::filesystem::current_path().generic_string(), *profile.try_value(),
+                              "01234567-89ab-4cde-8f01-23456789abcd", k_workspaceCompatibility};
+    auto plan = cue::create_build_plan(request, a_assertContext);
+    auto inventory = cue::BuildArtifactInventory::create(
+        *plan.try_value(), "11234567-89ab-4cde-8f01-23456789abcd",
+        {{"CueGameModule.metadata.json", 10U, std::string(64U, 'b')},
+         {"CueGameModule.dll", 20U, std::string(64U, 'a')}},
+        a_assertContext);
+    if (!inventory)
+    {
+        return false;
+    }
+    const std::string valid =
+        "{\n\"files\":[{\"contentHash\":\"" + std::string(64U, 'a') +
+        "\",\"path\":\"CueGameModule\\u002edll\",\"hashAlgorithm\":\"sha256\",\"sizeBytes\":20},"
+        "{\"sizeBytes\":10,\"hashAlgorithm\":\"sha256\",\"path\":\"CueGameModule.metadata.json\","
+        "\"contentHash\":\"" +
+        std::string(64U, 'b') +
+        "\"}],\n\"configuration\":\"Release\",\"schemaVersion\":1,\"artifactId\":"
+        "\"11234567-89ab-4cde-8f01-23456789abcd\"}\n";
+    const std::string unknown = valid.substr(0U, valid.size() - 2U) + ",\"unknown\":true}\n";
+    const std::string duplicate =
+        "{\"schemaVersion\":1,\"schemaVersion\":1,\"configuration\":\"Release\",\"files\":[]}";
+    const std::string wrongHash = valid.substr(0U, valid.find(std::string(64U, 'a'))) + std::string(64U, 'c') +
+                                  valid.substr(valid.find(std::string(64U, 'a')) + 64U);
+    const std::string trailing = valid + "null";
+    return cue::validate_build_artifact_current_manifest(valid, *inventory.try_value(), a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(unknown, *inventory.try_value(), a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(duplicate, *inventory.try_value(), a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(wrongHash, *inventory.try_value(), a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(trailing, *inventory.try_value(), a_assertContext);
+}
+
 /// @brief 単一Active、Cancel、Retry、Latest成功Artifact保全をHeadless検証する
 [[nodiscard]] bool test_service_lifecycle(const cue::AssertContext &a_assertContext)
 {
@@ -453,7 +491,8 @@ int main()
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
-    return test_artifact_model(assertContext) && test_service_lifecycle(assertContext) &&
+    return test_artifact_model(assertContext) && test_current_manifest_validation(assertContext) &&
+                   test_service_lifecycle(assertContext) &&
                    test_native_error_snapshot(assertContext) && test_publisher_lock_timeout(assertContext) &&
                    test_publisher_module_probe_timeout(assertContext) && test_shutdown(assertContext)
                ? 0

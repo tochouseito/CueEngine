@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -155,6 +156,335 @@ constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
     return a_left.relativePath < a_right.relativePath;
 }
 
+/// @brief Current Manifest用のConfiguration文字列を返す
+[[nodiscard]] std::string_view current_configuration_name(cue::BuildConfiguration a_configuration) noexcept
+{
+    switch (a_configuration)
+    {
+    case cue::BuildConfiguration::Debug:
+        return "Debug";
+    case cue::BuildConfiguration::Development:
+        return "Development";
+    case cue::BuildConfiguration::Release:
+        return "Release";
+    }
+    return {};
+}
+
+/// @brief Current Manifest v1を意味的に読む上限付きJSON Cursor
+class CurrentManifestReader final
+{
+  public:
+    /// @brief 借用JSON全体をCursorへ設定する
+    explicit CurrentManifestReader(std::string_view a_input) noexcept : m_input(a_input)
+    {
+    }
+
+    /// @brief 空白後に固定記号があれば消費する
+    [[nodiscard]] bool consume(char a_expected) noexcept
+    {
+        skip_space();
+        if (m_cursor >= m_input.size() || m_input[m_cursor] != a_expected)
+        {
+            return false;
+        }
+        ++m_cursor;
+        return true;
+    }
+
+    /// @brief JSON StringをUnicode Escapeを含む意味値へ復号する
+    [[nodiscard]] bool read_string(std::string &a_output)
+    {
+        skip_space();
+        if (m_cursor >= m_input.size() || m_input[m_cursor] != '"')
+        {
+            return false;
+        }
+        ++m_cursor;
+        a_output.clear();
+        while (m_cursor < m_input.size())
+        {
+            const unsigned char value = static_cast<unsigned char>(m_input[m_cursor++]);
+            if (value == '"')
+            {
+                return true;
+            }
+            if (value < 0x20U)
+            {
+                return false;
+            }
+            if (value != '\\')
+            {
+                a_output.push_back(static_cast<char>(value));
+                continue;
+            }
+            if (m_cursor >= m_input.size())
+            {
+                return false;
+            }
+            const char escaped = m_input[m_cursor++];
+            switch (escaped)
+            {
+            case '"':
+            case '\\':
+            case '/':
+                a_output.push_back(escaped);
+                break;
+            case 'b':
+                a_output.push_back('\b');
+                break;
+            case 'f':
+                a_output.push_back('\f');
+                break;
+            case 'n':
+                a_output.push_back('\n');
+                break;
+            case 'r':
+                a_output.push_back('\r');
+                break;
+            case 't':
+                a_output.push_back('\t');
+                break;
+            case 'u':
+            {
+                std::uint32_t scalar = 0U;
+                if (!read_hex_quad(scalar))
+                {
+                    return false;
+                }
+                if (scalar >= 0xd800U && scalar <= 0xdbffU)
+                {
+                    if (m_cursor + 2U > m_input.size() || m_input[m_cursor] != '\\' ||
+                        m_input[m_cursor + 1U] != 'u')
+                    {
+                        return false;
+                    }
+                    m_cursor += 2U;
+                    std::uint32_t low = 0U;
+                    if (!read_hex_quad(low) || low < 0xdc00U || low > 0xdfffU)
+                    {
+                        return false;
+                    }
+                    scalar = 0x10000U + ((scalar - 0xd800U) << 10U) + (low - 0xdc00U);
+                }
+                else if (scalar >= 0xdc00U && scalar <= 0xdfffU)
+                {
+                    return false;
+                }
+                append_utf8(a_output, scalar);
+                break;
+            }
+            default:
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// @brief 指数、小数、符号、先頭Zeroを許さず符号なしJSON整数を読む
+    [[nodiscard]] bool read_unsigned(std::uint64_t &a_output) noexcept
+    {
+        skip_space();
+        if (m_cursor >= m_input.size() || m_input[m_cursor] < '0' || m_input[m_cursor] > '9')
+        {
+            return false;
+        }
+        if (m_input[m_cursor] == '0' && m_cursor + 1U < m_input.size() && m_input[m_cursor + 1U] >= '0' &&
+            m_input[m_cursor + 1U] <= '9')
+        {
+            return false;
+        }
+        std::uint64_t value = 0U;
+        do
+        {
+            const std::uint64_t digit = static_cast<std::uint64_t>(m_input[m_cursor] - '0');
+            if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+            {
+                return false;
+            }
+            value = value * 10U + digit;
+            ++m_cursor;
+        } while (m_cursor < m_input.size() && m_input[m_cursor] >= '0' && m_input[m_cursor] <= '9');
+        if (m_cursor < m_input.size() &&
+            (m_input[m_cursor] == '.' || m_input[m_cursor] == 'e' || m_input[m_cursor] == 'E'))
+        {
+            return false;
+        }
+        a_output = value;
+        return true;
+    }
+
+    /// @brief 意味を持たない末尾空白以外が残っていないか返す
+    [[nodiscard]] bool at_end() noexcept
+    {
+        skip_space();
+        return m_cursor == m_input.size();
+    }
+
+  private:
+    /// @brief JSON空白を読み飛ばす
+    void skip_space() noexcept
+    {
+        while (m_cursor < m_input.size() &&
+               (m_input[m_cursor] == ' ' || m_input[m_cursor] == '\t' || m_input[m_cursor] == '\r' ||
+                m_input[m_cursor] == '\n'))
+        {
+            ++m_cursor;
+        }
+    }
+
+    /// @brief 4桁のUnicode Hex Escapeを読む
+    [[nodiscard]] bool read_hex_quad(std::uint32_t &a_output) noexcept
+    {
+        if (m_cursor + 4U > m_input.size())
+        {
+            return false;
+        }
+        std::uint32_t value = 0U;
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            const char character = m_input[m_cursor++];
+            std::uint32_t digit = 0U;
+            if (character >= '0' && character <= '9')
+            {
+                digit = static_cast<std::uint32_t>(character - '0');
+            }
+            else if (character >= 'a' && character <= 'f')
+            {
+                digit = static_cast<std::uint32_t>(character - 'a' + 10);
+            }
+            else if (character >= 'A' && character <= 'F')
+            {
+                digit = static_cast<std::uint32_t>(character - 'A' + 10);
+            }
+            else
+            {
+                return false;
+            }
+            value = (value << 4U) | digit;
+        }
+        a_output = value;
+        return true;
+    }
+
+    /// @brief Unicode ScalarをCanonical UTF-8 Byte列として追加する
+    static void append_utf8(std::string &a_output, std::uint32_t a_scalar)
+    {
+        if (a_scalar <= 0x7fU)
+        {
+            a_output.push_back(static_cast<char>(a_scalar));
+        }
+        else if (a_scalar <= 0x7ffU)
+        {
+            a_output.push_back(static_cast<char>(0xc0U | (a_scalar >> 6U)));
+            a_output.push_back(static_cast<char>(0x80U | (a_scalar & 0x3fU)));
+        }
+        else if (a_scalar <= 0xffffU)
+        {
+            a_output.push_back(static_cast<char>(0xe0U | (a_scalar >> 12U)));
+            a_output.push_back(static_cast<char>(0x80U | ((a_scalar >> 6U) & 0x3fU)));
+            a_output.push_back(static_cast<char>(0x80U | (a_scalar & 0x3fU)));
+        }
+        else
+        {
+            a_output.push_back(static_cast<char>(0xf0U | (a_scalar >> 18U)));
+            a_output.push_back(static_cast<char>(0x80U | ((a_scalar >> 12U) & 0x3fU)));
+            a_output.push_back(static_cast<char>(0x80U | ((a_scalar >> 6U) & 0x3fU)));
+            a_output.push_back(static_cast<char>(0x80U | (a_scalar & 0x3fU)));
+        }
+    }
+
+    std::string_view m_input;
+    std::size_t m_cursor = 0U;
+};
+
+/// @brief Current Manifest v1の一File Entryを厳格に読む
+[[nodiscard]] bool read_current_file(CurrentManifestReader &a_reader, cue::BuildArtifactFile &a_output)
+{
+    if (!a_reader.consume('{'))
+    {
+        return false;
+    }
+    bool hasPath = false;
+    bool hasSize = false;
+    bool hasAlgorithm = false;
+    bool hasHash = false;
+    std::string algorithm;
+    for (std::size_t memberIndex = 0U; memberIndex < 4U; ++memberIndex)
+    {
+        if (memberIndex != 0U && !a_reader.consume(','))
+        {
+            return false;
+        }
+        std::string name;
+        if (!a_reader.read_string(name) || !a_reader.consume(':'))
+        {
+            return false;
+        }
+        if (name == "path" && !hasPath)
+        {
+            hasPath = a_reader.read_string(a_output.relativePath);
+        }
+        else if (name == "sizeBytes" && !hasSize)
+        {
+            hasSize = a_reader.read_unsigned(a_output.byteSize);
+        }
+        else if (name == "hashAlgorithm" && !hasAlgorithm)
+        {
+            hasAlgorithm = a_reader.read_string(algorithm);
+        }
+        else if (name == "contentHash" && !hasHash)
+        {
+            hasHash = a_reader.read_string(a_output.contentHash);
+        }
+        else
+        {
+            return false;
+        }
+        if ((!hasPath && name == "path") || (!hasSize && name == "sizeBytes") ||
+            (!hasAlgorithm && name == "hashAlgorithm") || (!hasHash && name == "contentHash"))
+        {
+            return false;
+        }
+    }
+    return hasPath && hasSize && hasAlgorithm && hasHash && algorithm == "sha256" && a_reader.consume('}');
+}
+
+/// @brief Current Manifest v1のFile配列を順序を保持して読む
+[[nodiscard]] bool read_current_files(CurrentManifestReader &a_reader,
+                                      std::vector<cue::BuildArtifactFile> &a_output)
+{
+    if (!a_reader.consume('['))
+    {
+        return false;
+    }
+    if (a_reader.consume(']'))
+    {
+        return true;
+    }
+    for (;;)
+    {
+        if (a_output.size() >= k_maximumArtifactFiles)
+        {
+            return false;
+        }
+        cue::BuildArtifactFile file;
+        if (!read_current_file(a_reader, file))
+        {
+            return false;
+        }
+        a_output.push_back(std::move(file));
+        if (a_reader.consume(']'))
+        {
+            return true;
+        }
+        if (!a_reader.consume(','))
+        {
+            return false;
+        }
+    }
+}
+
 /// @brief Native ErrorがあればUI再表示可能な所有Snapshotへ変換する
 [[nodiscard]] std::optional<cue::BuildNativeErrorSnapshot> flatten_native_error(const cue::NativeError *a_nativeError)
 {
@@ -279,6 +609,96 @@ std::string_view BuildArtifactInventory::version_directory() const noexcept
 std::span<const BuildArtifactFile> BuildArtifactInventory::files() const noexcept
 {
     return m_files;
+}
+
+Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
+                                                      const BuildArtifactInventory &a_expected,
+                                                      const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        CurrentManifestReader reader(a_json);
+        if (!reader.consume('{'))
+        {
+            return Result<void>::failure(make_service_error(
+                a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
+        }
+        bool hasSchema = false;
+        bool hasArtifactId = false;
+        bool hasConfiguration = false;
+        bool hasFiles = false;
+        std::uint64_t schemaVersion = 0U;
+        std::string artifactId;
+        std::string configuration;
+        std::vector<BuildArtifactFile> files;
+        files.reserve(a_expected.files().size());
+        for (std::size_t memberIndex = 0U; memberIndex < 4U; ++memberIndex)
+        {
+            if (memberIndex != 0U && !reader.consume(','))
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
+            }
+            std::string name;
+            if (!reader.read_string(name) || !reader.consume(':'))
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
+            }
+            bool memberValid = false;
+            if (name == "schemaVersion" && !hasSchema)
+            {
+                hasSchema = reader.read_unsigned(schemaVersion);
+                memberValid = hasSchema;
+            }
+            else if (name == "artifactId" && !hasArtifactId)
+            {
+                hasArtifactId = reader.read_string(artifactId);
+                memberValid = hasArtifactId;
+            }
+            else if (name == "configuration" && !hasConfiguration)
+            {
+                hasConfiguration = reader.read_string(configuration);
+                memberValid = hasConfiguration;
+            }
+            else if (name == "files" && !hasFiles)
+            {
+                hasFiles = read_current_files(reader, files);
+                memberValid = hasFiles;
+            }
+            if (!memberValid)
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
+            }
+        }
+        if (!hasSchema || !hasArtifactId || !hasConfiguration || !hasFiles || !reader.consume('}') ||
+            !reader.at_end() || schemaVersion != 1U || artifactId != a_expected.artifact_id() ||
+            configuration != current_configuration_name(a_expected.configuration()) ||
+            files.size() != a_expected.files().size())
+        {
+            return Result<void>::failure(make_service_error(
+                a_assertContext, GameBuildServiceError::InvalidArtifact,
+                "Current artifact manifest does not select the expected inventory"));
+        }
+        for (std::size_t index = 0U; index < files.size(); ++index)
+        {
+            const BuildArtifactFile &actual = files[index];
+            const BuildArtifactFile &expected = a_expected.files()[index];
+            if (actual.relativePath != expected.relativePath || actual.byteSize != expected.byteSize ||
+                actual.contentHash != expected.contentHash)
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact,
+                    "Current artifact manifest does not select the expected inventory"));
+            }
+        }
+        return Result<void>::success();
+    }
+    catch (...)
+    {
+        terminate_service_exception(a_assertContext);
+    }
 }
 
 struct GameBuildService::Impl final

@@ -150,14 +150,15 @@ struct GamePackageWorkflowService::Impl final
     };
 
     /// @brief 検証済み依存とRoot Locatorの所有権をWorkflow実装へ移す
-    Impl(std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<FilesystemRoot> a_projectFilesystem,
-         std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
+    Impl(std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<BuildArtifactReader> a_artifactReader,
+         std::unique_ptr<FilesystemRoot> a_projectFilesystem, std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
          std::unique_ptr<ChildProcessRunner> a_runProcessRunner, std::string a_projectRoot,
          std::vector<ChildProcessEnvironmentEntry> a_runEnvironment, const AssertContext &a_assertContext) noexcept
-        : buildService(std::move(a_buildService)), projectFilesystem(std::move(a_projectFilesystem)),
-          engineBinaryFilesystem(std::move(a_engineBinaryFilesystem)), runProcessRunner(std::move(a_runProcessRunner)),
-          projectRoot(std::move(a_projectRoot)), runEnvironment(std::move(a_runEnvironment)),
-          assertContext(&a_assertContext), ownerThread(std::this_thread::get_id())
+        : buildService(std::move(a_buildService)), artifactReader(std::move(a_artifactReader)),
+          projectFilesystem(std::move(a_projectFilesystem)), engineBinaryFilesystem(std::move(a_engineBinaryFilesystem)),
+          runProcessRunner(std::move(a_runProcessRunner)), projectRoot(std::move(a_projectRoot)),
+          runEnvironment(std::move(a_runEnvironment)), assertContext(&a_assertContext),
+          ownerThread(std::this_thread::get_id())
     {
     }
 
@@ -241,6 +242,21 @@ struct GamePackageWorkflowService::Impl final
                     "Build artifact directory is outside the package project root"));
             }
 
+            Result<std::optional<std::unique_ptr<BuildArtifactReadLease>>> acquired =
+                artifactReader->acquire_current_read_lease(a_artifact, a_cancellation, std::nullopt);
+            if (!acquired)
+            {
+                return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*acquired.try_error()));
+            }
+            if (!acquired.try_value()->has_value())
+            {
+                return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
+                    *assertContext, WorkflowError::PackagePublicationFailed,
+                    "Package publication was cancelled while waiting for the artifact read lease"));
+            }
+            std::unique_ptr<BuildArtifactReadLease> artifactReadLease =
+                std::move(**acquired.try_value());
+
             for (const BuildArtifactFile &file : a_artifact.files())
             {
                 if (a_cancellation.is_cancel_requested())
@@ -281,6 +297,7 @@ struct GamePackageWorkflowService::Impl final
                 }
                 payloads.push_back(std::move(*payload.try_value()));
             }
+            artifactReadLease.reset();
 
             const RuntimeDataFile &projectData = a_inputs.runtimeData.project_data();
             Result<PackageFilePayload> projectPayload = PackageFilePayload::create(
@@ -410,6 +427,7 @@ struct GamePackageWorkflowService::Impl final
     }
 
     std::unique_ptr<GameBuildService> buildService;
+    std::unique_ptr<BuildArtifactReader> artifactReader;
     std::unique_ptr<FilesystemRoot> projectFilesystem;
     std::unique_ptr<FilesystemRoot> engineBinaryFilesystem;
     std::unique_ptr<ChildProcessRunner> runProcessRunner;
@@ -460,22 +478,23 @@ GamePackageWorkflowService::~GamePackageWorkflowService()
 }
 
 Result<std::unique_ptr<GamePackageWorkflowService>> GamePackageWorkflowService::create(
-    std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<FilesystemRoot> a_projectFilesystem,
-    std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem, std::unique_ptr<ChildProcessRunner> a_runProcessRunner,
-    std::string a_projectRoot, std::vector<ChildProcessEnvironmentEntry> a_runEnvironment,
-    const AssertContext &a_assertContext) noexcept
+    std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<BuildArtifactReader> a_artifactReader,
+    std::unique_ptr<FilesystemRoot> a_projectFilesystem, std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
+    std::unique_ptr<ChildProcessRunner> a_runProcessRunner, std::string a_projectRoot,
+    std::vector<ChildProcessEnvironmentEntry> a_runEnvironment, const AssertContext &a_assertContext) noexcept
 {
     try
     {
-        if (!a_buildService || !a_projectFilesystem || !a_engineBinaryFilesystem || !a_runProcessRunner ||
-            a_projectRoot.empty())
+        if (!a_buildService || !a_artifactReader || !a_projectFilesystem || !a_engineBinaryFilesystem ||
+            !a_runProcessRunner || a_projectRoot.empty())
         {
             return Result<std::unique_ptr<GamePackageWorkflowService>>::failure(make_workflow_error(
                 a_assertContext, WorkflowError::MissingDependency, "Package workflow dependency is missing"));
         }
-        auto impl = std::make_unique<Impl>(std::move(a_buildService), std::move(a_projectFilesystem),
-                                           std::move(a_engineBinaryFilesystem), std::move(a_runProcessRunner),
-                                           std::move(a_projectRoot), std::move(a_runEnvironment), a_assertContext);
+        auto impl = std::make_unique<Impl>(
+            std::move(a_buildService), std::move(a_artifactReader), std::move(a_projectFilesystem),
+            std::move(a_engineBinaryFilesystem), std::move(a_runProcessRunner), std::move(a_projectRoot),
+            std::move(a_runEnvironment), a_assertContext);
         return Result<std::unique_ptr<GamePackageWorkflowService>>::success(
             std::unique_ptr<GamePackageWorkflowService>(new GamePackageWorkflowService(std::move(impl))));
     }
@@ -758,8 +777,10 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
         std::shared_ptr<ChildProcessCancellation> cancellation = std::make_shared<ChildProcessCancellation>();
         {
             std::scoped_lock lock(m_impl->mutex);
+            const bool failedRunCanRetry =
+                m_impl->current.state == PackageWorkflowState::Failed && m_impl->current.package.has_value();
             if (m_impl->current.state != PackageWorkflowState::PackageReady &&
-                m_impl->current.state != PackageWorkflowState::RunSucceeded)
+                m_impl->current.state != PackageWorkflowState::RunSucceeded && !failedRunCanRetry)
             {
                 return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
                                                                   WorkflowError::NoPublishedPackage,
