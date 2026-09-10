@@ -289,9 +289,15 @@ schema version 1はParseまたはMemory確保前に可能な限り次を適用�
 | Runtime Project Data | 1 MiB |
 | Runtime Scene Data | 64 MiB |
 | Runtime Scene objects | 1,000,000 |
+| RuntimeHost one Game Module／Runtime Dependency PE image | 128 MiB |
+| RuntimeHost Game Module／Runtime Dependency PE inventory | 256 MiB |
 
 Size加算とObject数はOverflowを検査する。上限超過を部分読込み、切捨て、警告付き成功に変換しない。
 上限変更はManifestまたはRuntime Dataの対応Schema Versionと互換性を先に判断する。
+
+Manifest schema version 1の一般File上限は大容量Runtime Dataを表現できるよう維持する。一方、RuntimeHostはImport Graph検証で
+Game Moduleと全`runtimeDependency`のByte Snapshotを同時保持するため、上表のPE専用上限をManifest全FileのSize／Hash検証より前に
+適用する。これにより、巨大Overlayを持つPEが一般File上限内でも、非現実的なAllocationを開始せず回復可能なPackage Errorとして拒否する。
 
 ### Relative Path and Filesystem Boundary
 
