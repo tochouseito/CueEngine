@@ -66,6 +66,8 @@ struct PackageWorkflowSnapshot final
     BuildOperationSnapshot build;
     std::optional<PublishedRuntimePackageSnapshot> package;
     std::optional<PublishedRuntimePackageSnapshot> latestSuccessfulPackage;
+    /// @brief 自動Rollbackを再試行しても残ったProject Root相対Staging Locator
+    std::optional<std::string> recoveryStagingLocator;
     std::vector<ChildProcessOutputChunk> runOutput;
     std::string message;
 };

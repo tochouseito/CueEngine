@@ -176,6 +176,20 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
         }
         else
         {
+            const editor_core::EditorDocument *document =
+                m_activeDocumentId ? m_session->find_document(*m_activeDocumentId) : nullptr;
+            if (document == nullptr)
+            {
+                set_status("Package対象のSceneを開いてください。");
+                m_hasError = true;
+                return false;
+            }
+            if (document->is_dirty() || !document->has_saved_destination())
+            {
+                set_status("Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
+                m_hasError = true;
+                return false;
+            }
             Result<std::string> operationId = m_operationIdSource->next_operation_id();
             if (!operationId)
             {
@@ -188,14 +202,6 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
             }
             else
             {
-                const editor_core::EditorDocument *document =
-                    m_activeDocumentId ? m_session->find_document(*m_activeDocumentId) : nullptr;
-                if (document == nullptr)
-                {
-                    set_status("Package対象のSceneを開いてください。");
-                    m_hasError = true;
-                    return false;
-                }
                 Result<scene::SceneSnapshot> sceneSnapshot =
                     scene::create_scene_snapshot(document->scene_document(), *m_assertContext);
                 Result<package::MinimalRuntimeDataPublication> runtimeData =
@@ -495,6 +501,27 @@ void PackagePresenter::draw_result() noexcept
     if (!m_current.build.operationId.empty())
     {
         ImGui::Text("Operation: %s", m_current.build.operationId.c_str());
+    }
+    if (!m_current.build.diagnostics.empty())
+    {
+        ImGui::SeparatorText("Build Diagnostics");
+        for (const BuildDiagnosticSnapshot &diagnostic : m_current.build.diagnostics)
+        {
+            ImGui::TextWrapped("%s", diagnostic.summary.c_str());
+        }
+    }
+    if (!m_current.build.logs.empty())
+    {
+        ImGui::SeparatorText("Build Output");
+        for (const BuildLogSnapshot &log : m_current.build.logs)
+        {
+            ImGui::TextUnformatted(log.bytes.data(), log.bytes.data() + log.bytes.size());
+        }
+    }
+    if (m_current.recoveryStagingLocator)
+    {
+        ImGui::SeparatorText("Recovery Staging");
+        ImGui::TextWrapped("Locator: %s", m_current.recoveryStagingLocator->c_str());
     }
     const std::optional<package::PublishedRuntimePackageSnapshot> &shown =
         m_current.package ? m_current.package : m_current.latestSuccessfulPackage;

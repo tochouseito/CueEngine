@@ -3,6 +3,7 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
+#include <Cue/IO/Error.h>
 #include <Cue/IO/Windows/WindowsFilesystem.h>
 #include <Cue/Project/Generator.h>
 #include <Cue/Scene/Identity.h>
@@ -141,6 +142,145 @@ struct PublisherState final
     std::atomic<bool> corruptInventory = false;
     std::atomic<bool> invalidPortableExecutable = false;
     std::atomic<std::uint32_t> calls = 0U;
+};
+
+struct RecoveryFilesystemState final
+{
+    std::atomic<std::uint32_t> writeFailuresRemaining = 0U;
+    std::atomic<std::uint32_t> rollbackFailuresRemaining = 0U;
+    std::atomic<std::uint32_t> rollbackCalls = 0U;
+};
+
+/// @brief Package WriteとRollbackの連続失敗を注入し、保持Tokenの再試行を検証するRoot
+class RecoveryFilesystemRoot final : public cue::FilesystemRoot
+{
+  public:
+    /// @brief 委譲先Rootと共有Failure状態を所有する
+    RecoveryFilesystemRoot(std::unique_ptr<cue::FilesystemRoot> a_inner, RecoveryFilesystemState &a_state,
+                           const cue::AssertContext &a_assertContext) noexcept
+        : m_inner(std::move(a_inner)), m_state(&a_state), m_assertContext(&a_assertContext)
+    {
+    }
+
+    /// @brief 委譲先Rootを解放する
+    ~RecoveryFilesystemRoot() override = default;
+
+    /// @brief 委譲先Root Identityを返す
+    [[nodiscard]] cue::Result<cue::FilesystemIdentity> root_identity() const noexcept override
+    {
+        return m_inner->root_identity();
+    }
+
+    /// @brief Entry照会を委譲する
+    [[nodiscard]] cue::Result<cue::EntryType> query_entry(const cue::RelativePath &a_path) noexcept override
+    {
+        return m_inner->query_entry(a_path);
+    }
+
+    /// @brief File読取りを委譲する
+    [[nodiscard]] cue::Result<std::vector<std::byte>> read_file(const cue::RelativePath &a_path,
+                                                                std::size_t a_maxBytes) noexcept override
+    {
+        return m_inner->read_file(a_path, a_maxBytes);
+    }
+
+    /// @brief Directory作成を委譲する
+    [[nodiscard]] cue::Result<void> create_directories(const cue::RelativePath &a_path) noexcept override
+    {
+        return m_inner->create_directories(a_path);
+    }
+
+    /// @brief 指定回数だけPackage Writeを失敗させ、それ以外を委譲する
+    [[nodiscard]] cue::Result<void> write_file_atomic(const cue::RelativePath &a_path,
+                                                      std::span<const std::byte> a_bytes) noexcept override
+    {
+        if (consume(m_state->writeFailuresRemaining))
+        {
+            return cue::Result<void>::failure(make_failure("Package content write failed"));
+        }
+        return m_inner->write_file_atomic(a_path, a_bytes);
+    }
+
+    /// @brief Recovery Backup書込みを委譲する
+    [[nodiscard]] cue::Result<void> write_recovery_backup_atomic(
+        const cue::RelativePath &a_destination, std::span<const std::byte> a_bytes,
+        const cue::AssertContext &a_assertContext) noexcept override
+    {
+        return m_inner->write_recovery_backup_atomic(a_destination, a_bytes, a_assertContext);
+    }
+
+    /// @brief File Write Lease取得を委譲する
+    [[nodiscard]] cue::Result<cue::FileWriteLease> acquire_file_write_lease(
+        const cue::RelativePath &a_path) noexcept override
+    {
+        return m_inner->acquire_file_write_lease(a_path);
+    }
+
+    /// @brief Conditional Atomic Writeを委譲する
+    [[nodiscard]] cue::Result<void> write_file_atomic_if_unchanged(
+        cue::FileWriteLease &a_lease, const cue::RelativePath &a_path, cue::FileFingerprint a_expected,
+        std::size_t a_maximumExpectedBytes, std::span<const std::byte> a_bytes) noexcept override
+    {
+        return m_inner->write_file_atomic_if_unchanged(a_lease, a_path, a_expected, a_maximumExpectedBytes, a_bytes);
+    }
+
+    /// @brief Regular File削除を委譲する
+    [[nodiscard]] cue::Result<void> remove_file(const cue::RelativePath &a_path) noexcept override
+    {
+        return m_inner->remove_file(a_path);
+    }
+
+    /// @brief Staging作成を委譲する
+    [[nodiscard]] cue::Result<cue::StagingArea> create_staging_area(
+        const cue::RelativePath &a_destination) noexcept override
+    {
+        return m_inner->create_staging_area(a_destination);
+    }
+
+    /// @brief Staging公開を委譲する
+    [[nodiscard]] cue::Result<void> publish_staging_area(
+        cue::StagingArea &&a_staging, const cue::RelativePath &a_destination,
+        const cue::StagingPublishAuthorization *a_authorization = nullptr) noexcept override
+    {
+        return m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
+    }
+
+    /// @brief 呼出回数を記録し、指定回数だけRollbackを失敗させる
+    [[nodiscard]] cue::Result<void> rollback_staging_area(cue::StagingArea &&a_staging) noexcept override
+    {
+        m_state->rollbackCalls.fetch_add(1U, std::memory_order_relaxed);
+        if (consume(m_state->rollbackFailuresRemaining))
+        {
+            return cue::Result<void>::failure(make_failure("Package staging rollback failed"));
+        }
+        return m_inner->rollback_staging_area(std::move(a_staging));
+    }
+
+  private:
+    /// @brief 残りFailure回数を一つ消費できたか返す
+    [[nodiscard]] static bool consume(std::atomic<std::uint32_t> &a_remaining) noexcept
+    {
+        std::uint32_t remaining = a_remaining.load(std::memory_order_acquire);
+        while (remaining != 0U)
+        {
+            if (a_remaining.compare_exchange_weak(remaining, remaining - 1U, std::memory_order_acq_rel,
+                                                  std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief Test用Portable IO Errorを構築する
+    [[nodiscard]] cue::Error make_failure(std::string_view a_summary) const noexcept
+    {
+        return cue::make_io_error(*m_assertContext, cue::IoError::IoFailure, a_summary);
+    }
+
+    std::unique_ptr<cue::FilesystemRoot> m_inner;
+    RecoveryFilesystemState *m_state;
+    const cue::AssertContext *m_assertContext;
 };
 
 /// @brief 失敗した検証の呼出位置を標準エラーへ出す
@@ -386,6 +526,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     RunnerState buildRunner;
     RunnerState runRunner;
     PublisherState publisher;
+    RecoveryFilesystemState recoveryFilesystem;
     auto build = cue::GameBuildService::create(make_settings(), std::make_unique<ControlledRunner>(buildRunner),
                                                 std::make_unique<MaterializingPublisher>(publisher, a_assertContext),
                                                 a_assertContext);
@@ -396,8 +537,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         return false;
     }
     std::unique_ptr<cue::GameBuildService> buildService = std::move(*build.try_value());
+    auto guardedProjectFilesystem = std::make_unique<RecoveryFilesystemRoot>(
+        std::move(*projectFilesystem.try_value()), recoveryFilesystem, a_assertContext);
     auto workflow = cue::package::GamePackageWorkflowService::create(
-        std::move(buildService), std::move(*projectFilesystem.try_value()), std::move(*engineFilesystem.try_value()),
+        std::move(buildService), std::move(guardedProjectFilesystem), std::move(*engineFilesystem.try_value()),
         std::make_unique<ControlledRunner>(runRunner), projectRoot.generic_string(), {}, a_assertContext);
     auto runtimeData = make_runtime_data(a_assertContext);
     if (!require(workflow && runtimeData))
@@ -477,6 +620,23 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
 
     publisher.corruptInventory.store(false, std::memory_order_release);
+    recoveryFilesystem.writeFailuresRemaining.store(1U, std::memory_order_release);
+    recoveryFilesystem.rollbackFailuresRemaining.store(2U, std::memory_order_release);
+    if (!require(service->retry("26234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot recoveryFailed = service->snapshot();
+    if (!require(recoveryFailed.state == cue::package::PackageWorkflowState::Failed &&
+                 recoveryFailed.recoveryStagingLocator &&
+                 std::filesystem::exists(projectRoot /
+                                         std::filesystem::path(*recoveryFailed.recoveryStagingLocator)) &&
+                 recoveryFilesystem.rollbackCalls.load(std::memory_order_acquire) == 2U))
+    {
+        return false;
+    }
+    const std::string recoveryStaging = *recoveryFailed.recoveryStagingLocator;
+
     if (!require(service->retry("31234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package() &&
                  service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
     {
@@ -484,6 +644,9 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
     const cue::package::PackageWorkflowSnapshot runSucceeded = service->snapshot();
     if (!require(runSucceeded.state == cue::package::PackageWorkflowState::RunSucceeded &&
+                 !runSucceeded.recoveryStagingLocator &&
+                 !std::filesystem::exists(projectRoot / std::filesystem::path(recoveryStaging)) &&
+                 recoveryFilesystem.rollbackCalls.load(std::memory_order_acquire) == 3U &&
                  runSucceeded.runOutput.size() == 1U &&
                  runRunner.maximumCapturedOutputBytes.load(std::memory_order_acquire) == 4U * 1024U * 1024U))
     {

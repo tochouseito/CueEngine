@@ -749,11 +749,18 @@ template <std::size_t Size>
                                             a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                                             "Runtime Scene object has no parent"));
             auto tolerance = cue::math::Tolerance::create(a_assertContext.fatal_handler(), 0.00001F, 0.00001F);
+            const cue::math::Quaternion parsedRotation{rotation[0], rotation[1], rotation[2], rotation[3]};
+            if (tolerance && !cue::math::is_unit_rotation(parsedRotation, *tolerance.try_value()))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                    "Runtime Scene rotation is not a supported unit Quaternion"));
+            }
             auto transform = tolerance
                                  ? cue::math::Transform::create(
                                        a_assertContext.fatal_handler(),
                                        {translation[0], translation[1], translation[2]},
-                                       {rotation[0], rotation[1], rotation[2], rotation[3]},
+                                       parsedRotation,
                                        {scale[0], scale[1], scale[2]}, *tolerance.try_value())
                                  : cue::Result<cue::math::Transform>::failure(std::move(*tolerance.try_error()));
             if (!objectId || (hasParent && !parentId) || !transform)
@@ -803,6 +810,42 @@ template <std::size_t Size>
     {
         terminate_package_exception(a_assertContext);
     }
+}
+
+/// @brief Parse済みRuntime DataがPublisherのCanonical Byte列と完全一致するか検証する
+[[nodiscard]] cue::Result<void> validate_canonical_runtime_data(
+    const RuntimeProjectInfo &a_project, const cue::scene::SceneSnapshot &a_scene, std::string_view a_projectBytes,
+    std::string_view a_sceneBytes, const cue::AssertContext &a_assertContext) noexcept
+{
+    auto projectId = cue::ProjectId::parse(a_project.projectId, a_assertContext);
+    auto descriptor = projectId ? cue::create_blank_project_descriptor(
+                                      *projectId.try_value(), "Runtime Package", a_project.compatibility,
+                                      a_project.startupSceneAssetId, a_assertContext)
+                                : cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
+    auto publication = descriptor
+                           ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), a_scene,
+                                                                         a_assertContext)
+                           : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(
+                                 std::move(*descriptor.try_error()));
+    if (!publication)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Data could not be reproduced by the canonical Publisher"));
+    }
+    if (publication.try_value()->project_data().bytes() != a_projectBytes)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Project Data is not the canonical Publisher representation"));
+    }
+    if (publication.try_value()->startup_scene_data().bytes() != a_sceneBytes)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Scene Data is not the canonical Publisher representation"));
+    }
+    return cue::Result<void>::success();
 }
 
 /// @brief Game Module MetadataのEngine互換Rangeを所有する
@@ -1939,6 +1982,13 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         if (!startupScene)
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*startupScene.try_error()));
+        }
+        auto canonicalRuntimeData = validate_canonical_runtime_data(
+            *project.try_value(), *startupScene.try_value(), text_view(*projectBytes.try_value()),
+            text_view(*sceneBytes.try_value()), a_assertContext);
+        if (!canonicalRuntimeData)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*canonicalRuntimeData.try_error()));
         }
 
         auto rootGuard = guard_directory(root, a_assertContext);
