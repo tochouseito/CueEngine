@@ -69,6 +69,11 @@ set(roles
     "runtimeDependency"
 )
 function(write_package_manifest packageDirectory projectSizeOverride metadataSizeOverride)
+    if(ARGC GREATER 3)
+        set(moduleSizeOverride "${ARGV3}")
+    else()
+        set(moduleSizeOverride "")
+    endif()
     set(filesJson "")
     list(LENGTH paths fileCount)
     math(EXPR lastFileIndex "${fileCount} - 1")
@@ -81,6 +86,8 @@ function(write_package_manifest packageDirectory projectSizeOverride metadataSiz
             set(sizeBytes "${projectSizeOverride}")
         elseif(role STREQUAL "gameModuleMetadata" AND NOT metadataSizeOverride STREQUAL "")
             set(sizeBytes "${metadataSizeOverride}")
+        elseif(role STREQUAL "gameModule" AND NOT moduleSizeOverride STREQUAL "")
+            set(sizeBytes "${moduleSizeOverride}")
         endif()
         file(SHA256 "${absolutePath}" sha256)
         if(NOT filesJson STREQUAL "")
@@ -301,6 +308,25 @@ string(FIND "${oversizedMetadataCombined}" "Game Module Metadata role exceeds it
 if(oversizedMetadataResult EQUAL 0 OR oversizedMetadataMessagePosition EQUAL -1)
     message(FATAL_ERROR
         "Oversized Game Module Metadata declaration was not rejected before read\n${oversizedMetadataCombined}")
+endif()
+write_package_manifest("${packageRoot}" "" "")
+
+math(EXPR oversizedRuntimePeBytes "128 * 1024 * 1024 + 1")
+write_package_manifest("${packageRoot}" "" "" "${oversizedRuntimePeBytes}")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE oversizedRuntimePeResult
+    OUTPUT_VARIABLE oversizedRuntimePeOutput
+    ERROR_VARIABLE oversizedRuntimePeError
+    TIMEOUT 15
+)
+set(oversizedRuntimePeCombined "${oversizedRuntimePeOutput}\n${oversizedRuntimePeError}")
+string(FIND "${oversizedRuntimePeCombined}" "Runtime PE image inventory exceeds the RuntimeHost memory contract"
+    oversizedRuntimePeMessagePosition)
+if(oversizedRuntimePeResult EQUAL 0 OR oversizedRuntimePeMessagePosition EQUAL -1)
+    message(FATAL_ERROR
+        "Oversized Runtime PE declaration was not rejected before read\n${oversizedRuntimePeCombined}")
 endif()
 write_package_manifest("${packageRoot}" "" "")
 

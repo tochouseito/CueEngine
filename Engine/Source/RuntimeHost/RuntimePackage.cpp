@@ -47,6 +47,8 @@ namespace
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
 constexpr std::size_t k_maximumRuntimeSystems = 256U;
 constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
+constexpr std::uint64_t k_maximumRuntimePeImageBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumRuntimePeInventoryBytes = 256ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 
 /// @brief lowercase hexadecimal文字か判定する
@@ -251,6 +253,30 @@ void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
         }
     }
     a_libraries.clear();
+}
+
+/// @brief RuntimeHostが同時保持するGame Moduleと依存PEの宣言Sizeを全体読込前に制限する
+[[nodiscard]] cue::Result<void> validate_runtime_pe_memory_contract(
+    const cue::package::PackageManifest &a_manifest, const cue::AssertContext &a_assertContext) noexcept
+{
+    std::uint64_t totalBytes = 0U;
+    for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+    {
+        if (entry.role() != cue::package::PackageFileRole::GameModule &&
+            entry.role() != cue::package::PackageFileRole::RuntimeDependency)
+        {
+            continue;
+        }
+        if (entry.byte_size() > k_maximumRuntimePeImageBytes ||
+            totalBytes > k_maximumRuntimePeInventoryBytes - entry.byte_size())
+        {
+            return cue::Result<void>::failure(package_error(
+                a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
+                "Runtime PE image inventory exceeds the RuntimeHost memory contract"));
+        }
+        totalBytes += entry.byte_size();
+    }
+    return cue::Result<void>::success();
 }
 
 /// @brief Canonical Runtime JSONを順序、重複、末尾Data込みでFail-closedに読むCursor
@@ -1841,6 +1867,13 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             return Result<LoadedRuntimePackage>::failure(package_error(
                 a_assertContext, package::PackageError::InvalidPackageManifest,
                 "Game Module Metadata role exceeds its Package startup size limit"));
+        }
+        auto runtimePeMemoryContract =
+            validate_runtime_pe_memory_contract(*manifest.try_value(), a_assertContext);
+        if (!runtimePeMemoryContract)
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                std::move(*runtimePeMemoryContract.try_error()));
         }
         if (executable.try_value()->filename() !=
             detail::filesystem_path_from_utf8(runtimeHostEntry->relative_path()))
