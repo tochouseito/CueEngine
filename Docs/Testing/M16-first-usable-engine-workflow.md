@@ -74,7 +74,8 @@ Blank 3Dは、Version付き`CueProject.json`、Default Scene、3構成のCMake P
 7. DevelopmentとReleaseも同じ手順でBuild／Packageできることを確認する。
 
 Packageは`Generated/Packages/<Configuration>/<operation-id>`へ新規公開される。既存Packageを上書きせず、
-`CuePackage.json`、`CueRuntimeHost.exe`、Game Module、Runtime Project Data、Runtime Scene Dataだけで起動する。
+`CuePackage.json`、`CueRuntimeHost.exe`、Game Module、`Game/CueGameModule.metadata.json`、Runtime Project Data、
+Runtime Scene Dataだけで起動する。
 
 ## Failure and Recovery
 
