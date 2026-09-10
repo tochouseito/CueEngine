@@ -296,7 +296,8 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     const std::filesystem::path savedScenePath = sourceAssetsPath / L"Scenes" / L"Main.cuescene";
     const std::string savedSceneBytes = read_file(savedScenePath);
     if (!replace_file_text(projectPath / L"CueProject.json", "00000000-0000-4000-8000-000000000099",
-                           std::string_view(sceneText.data(), sceneText.size())))
+                           std::string_view(sceneText.data(), sceneText.size())) ||
+        !replace_file_text(projectPath / L"CueProject.json", "Scenes/Default.cuescene", "Scenes/Main.cuescene"))
     {
         std::_Exit(54);
     }

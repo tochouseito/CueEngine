@@ -81,18 +81,18 @@ namespace
 namespace cue::editor
 {
 PackagePresenter::PackagePresenter(package::GamePackageWorkflowService &a_service,
-                                   const editor_core::ProjectWorkspaceSession &a_session, std::string a_projectRoot,
+                                   editor_core::EditorController &a_controller, std::string a_projectRoot,
                                    BuildWorkspaceCompatibility a_workspaceCompatibility,
                                    std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
                                    const AssertContext &a_assertContext) noexcept
-    : m_service(&a_service), m_session(&a_session), m_assertContext(&a_assertContext),
+    : m_service(&a_service), m_controller(&a_controller), m_assertContext(&a_assertContext),
       m_operationIdSource(std::move(a_operationIdSource)), m_projectRoot(std::move(a_projectRoot)),
       m_workspaceCompatibility(a_workspaceCompatibility), m_current(a_service.snapshot())
 {
 }
 
 std::unique_ptr<PackagePresenter> PackagePresenter::create(
-    package::GamePackageWorkflowService &a_service, const editor_core::ProjectWorkspaceSession &a_session,
+    package::GamePackageWorkflowService &a_service, editor_core::EditorController &a_controller,
     std::string a_projectRoot, BuildWorkspaceCompatibility a_workspaceCompatibility,
     std::unique_ptr<BuildOperationIdSource> a_operationIdSource, const AssertContext &a_assertContext) noexcept
 {
@@ -103,7 +103,7 @@ std::unique_ptr<PackagePresenter> PackagePresenter::create(
             a_assertContext.fatal_handler().terminate("Package Presenter operation identity source is missing");
         }
         return std::unique_ptr<PackagePresenter>(new PackagePresenter(
-            a_service, a_session, std::move(a_projectRoot), a_workspaceCompatibility,
+            a_service, a_controller, std::move(a_projectRoot), a_workspaceCompatibility,
             std::move(a_operationIdSource), a_assertContext));
     }
     catch (...)
@@ -177,7 +177,7 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
         else
         {
             const editor_core::EditorDocument *document =
-                m_activeDocumentId ? m_session->find_document(*m_activeDocumentId) : nullptr;
+                m_activeDocumentId ? m_controller->session().find_document(*m_activeDocumentId) : nullptr;
             if (document == nullptr)
             {
                 set_status("Package対象のSceneを開いてください。");
@@ -202,11 +202,10 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
             }
             else
             {
-                Result<scene::SceneSnapshot> sceneSnapshot =
-                    scene::create_scene_snapshot(document->scene_document(), *m_assertContext);
+                Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
                 Result<package::MinimalRuntimeDataPublication> runtimeData =
-                    sceneSnapshot ? package::publish_minimal_runtime_data(m_session->project_descriptor(),
-                                                                          *sceneSnapshot.try_value(), *m_assertContext)
+                    sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
+                                                                           *sceneSnapshot.try_value(), *m_assertContext)
                                   : Result<package::MinimalRuntimeDataPublication>::failure(
                                         std::move(*sceneSnapshot.try_error()));
                 Result<BuildProfile> profile =
@@ -222,7 +221,7 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
                 result = m_service->start(
                     std::move(request), m_forceConfigure ? CMakeConfigureMode::Required
                                                          : CMakeConfigureMode::ReuseCompatibleTree,
-                    {1U, 0U, 0U}, std::string(m_session->project_descriptor().project_id().text()),
+                    {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
                     std::move(*runtimeData.try_value()));
             }
         }

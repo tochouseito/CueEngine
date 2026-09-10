@@ -38,7 +38,7 @@ enum class EditorPackageShutdownDecision : std::uint8_t
 
 /// @brief Build・Package・Run Coordinatorの状態を一つのImGui Windowへ変換するAdapter
 ///
-/// Workflow ServiceとProject SessionはPresenterより長く生存させる。PresenterはFilesystemまたはProcess APIを
+/// Workflow ServiceとEditor ControllerはPresenterより長く生存させる。PresenterはFilesystemまたはProcess APIを
 /// 直接参照せず、生成Threadだけで操作する。
 class PackagePresenter final
 {
@@ -52,7 +52,7 @@ class PackagePresenter final
 
     /// @brief Workflow、Project Session、Build設定を一つのPresentation Ownerへ束ねる
     [[nodiscard]] static std::unique_ptr<PackagePresenter> create(
-        package::GamePackageWorkflowService &a_service, const editor_core::ProjectWorkspaceSession &a_session,
+        package::GamePackageWorkflowService &a_service, editor_core::EditorController &a_controller,
         std::string a_projectRoot, BuildWorkspaceCompatibility a_workspaceCompatibility,
         std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
         const AssertContext &a_assertContext) noexcept;
@@ -99,7 +99,7 @@ class PackagePresenter final
   private:
     /// @brief 検証済み依存とUI状態からPresenterを構築する
     PackagePresenter(package::GamePackageWorkflowService &a_service,
-                     const editor_core::ProjectWorkspaceSession &a_session, std::string a_projectRoot,
+                     editor_core::EditorController &a_controller, std::string a_projectRoot,
                      BuildWorkspaceCompatibility a_workspaceCompatibility,
                      std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
                      const AssertContext &a_assertContext) noexcept;
@@ -120,7 +120,7 @@ class PackagePresenter final
     [[noreturn]] void terminate_exception() const noexcept;
 
     package::GamePackageWorkflowService *m_service;
-    const editor_core::ProjectWorkspaceSession *m_session;
+    editor_core::EditorController *m_controller;
     const AssertContext *m_assertContext;
     std::unique_ptr<BuildOperationIdSource> m_operationIdSource;
     std::string m_projectRoot;
