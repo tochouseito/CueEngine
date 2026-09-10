@@ -359,7 +359,14 @@ bool PackagePresenter::respond_to_editor_shutdown(EditorPackageShutdownDecision 
             m_isShutdownWaitingForCancel = false;
             return false;
         }
-        Result<void> cancelled = m_service->request_cancel();
+        refresh();
+        if (!is_active(m_current.state))
+        {
+            mark_shutdown_ready();
+            return true;
+        }
+        Result<void> cancelled =
+            m_current.state == package::PackageWorkflowState::Running ? m_service->stop() : m_service->request_cancel();
         if (!cancelled)
         {
             refresh();
