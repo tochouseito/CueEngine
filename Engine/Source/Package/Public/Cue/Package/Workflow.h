@@ -58,6 +58,15 @@ struct PublishedRuntimePackageSnapshot final
     PackageManifestSummary manifest;
 };
 
+/// @brief Package公開失敗時にも可視DestinationとManifest診断を保持する所有Snapshot
+struct PackagePublishDiagnosticSnapshot final
+{
+    PackagePublishStage stage;
+    PackagePublishOutcome outcome;
+    std::string destination;
+    PackageManifestSummary manifest;
+};
+
 /// @brief UIがLockなしで保持できるBuild・Package・Run全体の所有Snapshot
 struct PackageWorkflowSnapshot final
 {
@@ -66,6 +75,8 @@ struct PackageWorkflowSnapshot final
     BuildOperationSnapshot build;
     std::optional<PublishedRuntimePackageSnapshot> package;
     std::optional<PublishedRuntimePackageSnapshot> latestSuccessfulPackage;
+    /// @brief 最後のPackage公開失敗が到達したStageと可視Destination診断
+    std::optional<PackagePublishDiagnosticSnapshot> publicationDiagnostic;
     /// @brief 自動Rollbackを再試行しても残ったProject Root相対Staging Locator
     std::optional<std::string> recoveryStagingLocator;
     std::vector<ChildProcessOutputChunk> runOutput;

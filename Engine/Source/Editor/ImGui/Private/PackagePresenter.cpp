@@ -70,6 +70,48 @@ namespace
     return "Unknown";
 }
 
+/// @brief Package公開StageをUI表示名へ変換する
+[[nodiscard]] const char *publish_stage_label(cue::package::PackagePublishStage a_stage) noexcept
+{
+    using cue::package::PackagePublishStage;
+    switch (a_stage)
+    {
+    case PackagePublishStage::ValidateInput:
+        return "Validate Input";
+    case PackagePublishStage::CreateStaging:
+        return "Create Staging";
+    case PackagePublishStage::WriteContent:
+        return "Write Content";
+    case PackagePublishStage::WriteManifest:
+        return "Write Manifest";
+    case PackagePublishStage::ValidateStaging:
+        return "Validate Staging";
+    case PackagePublishStage::Publish:
+        return "Publish";
+    case PackagePublishStage::ValidatePublished:
+        return "Validate Published";
+    case PackagePublishStage::Completed:
+        return "Completed";
+    }
+    return "Unknown";
+}
+
+/// @brief Package公開OutcomeをUI表示名へ変換する
+[[nodiscard]] const char *publish_outcome_label(cue::package::PackagePublishOutcome a_outcome) noexcept
+{
+    using cue::package::PackagePublishOutcome;
+    switch (a_outcome)
+    {
+    case PackagePublishOutcome::Committed:
+        return "Committed";
+    case PackagePublishOutcome::NotPublished:
+        return "Not Published";
+    case PackagePublishOutcome::PublishedButDurabilityUnknown:
+        return "Published but Durability Unknown";
+    }
+    return "Unknown";
+}
+
 /// @brief Workflow状態がBuild、Package、RunのActive状態か返す
 [[nodiscard]] bool is_active(cue::package::PackageWorkflowState a_state) noexcept
 {
@@ -177,20 +219,6 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
         }
         else
         {
-            const editor_core::EditorDocument *document =
-                m_activeDocumentId ? m_controller->session().find_document(*m_activeDocumentId) : nullptr;
-            if (document == nullptr)
-            {
-                set_status("Package対象のSceneを開いてください。");
-                m_hasError = true;
-                return false;
-            }
-            if (document->is_dirty() || !document->has_saved_destination())
-            {
-                set_status("Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
-                m_hasError = true;
-                return false;
-            }
             Result<std::string> operationId = m_operationIdSource->next_operation_id();
             if (!operationId)
             {
@@ -358,7 +386,7 @@ bool PackagePresenter::has_error_message() const noexcept
 
 bool PackagePresenter::can_start() const noexcept
 {
-    return m_activeDocumentId.has_value() && !is_active(m_current.state);
+    return !is_active(m_current.state);
 }
 
 bool PackagePresenter::can_cancel() const noexcept
@@ -529,6 +557,18 @@ void PackagePresenter::draw_result() noexcept
     {
         ImGui::SeparatorText("Recovery Staging");
         ImGui::TextWrapped("Locator: %s", m_current.recoveryStagingLocator->c_str());
+    }
+    if (m_current.publicationDiagnostic)
+    {
+        const package::PackagePublishDiagnosticSnapshot &diagnostic = *m_current.publicationDiagnostic;
+        ImGui::SeparatorText("Package Publication Diagnostic");
+        ImGui::Text("Stage: %s", publish_stage_label(diagnostic.stage));
+        ImGui::Text("Outcome: %s", publish_outcome_label(diagnostic.outcome));
+        ImGui::Text("Project: %s", diagnostic.manifest.projectId.c_str());
+        ImGui::Text("Configuration: %s", configuration_label(diagnostic.manifest.configuration));
+        ImGui::Text("Files: %zu", diagnostic.manifest.fileCount);
+        ImGui::Text("Bytes: %llu", static_cast<unsigned long long>(diagnostic.manifest.inventoryBytes));
+        ImGui::TextWrapped("Destination: %s", diagnostic.destination.c_str());
     }
     const std::optional<package::PublishedRuntimePackageSnapshot> &shown =
         m_current.package ? m_current.package : m_current.latestSuccessfulPackage;
