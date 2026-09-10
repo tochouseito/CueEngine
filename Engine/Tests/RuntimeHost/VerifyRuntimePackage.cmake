@@ -208,6 +208,29 @@ foreach(queryOutputMode IN ITEMS query-output-size query-output-version)
     endif()
 endforeach()
 
+foreach(ignoredSinkFailureMode IN ITEMS
+    ignored-schema-sink-failure
+    ignored-component-sink-failure
+    ignored-system-sink-failure
+)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=${ignoredSinkFailureMode}"
+            "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE ignoredSinkFailureResult
+        OUTPUT_VARIABLE ignoredSinkFailureOutput
+        ERROR_VARIABLE ignoredSinkFailureError
+        TIMEOUT 15
+    )
+    set(ignoredSinkFailureCombined "${ignoredSinkFailureOutput}\n${ignoredSinkFailureError}")
+    string(FIND "${ignoredSinkFailureCombined}" "Game Module registration failed"
+        ignoredSinkFailureMessagePosition)
+    if(ignoredSinkFailureResult EQUAL 0 OR ignoredSinkFailureMessagePosition EQUAL -1)
+        message(FATAL_ERROR
+            "Ignored Sink failure ${ignoredSinkFailureMode} was accepted\n${ignoredSinkFailureCombined}")
+    endif()
+endforeach()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=invalid-system-id"
         "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
