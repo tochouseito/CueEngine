@@ -129,7 +129,8 @@ Descriptorへ保存する。Project生成全体の失敗では最終Project Dire
 
 Package Operationは開始時にProject DescriptorとStartup Sceneをそれぞれ一度だけ読込み、Parser、Resource Limit、Identityの一致を
 検証して所有するImmutable Snapshotへ変換する。Editorの未保存変更を暗黙にPackageへ混ぜない。Editor WorkflowはDirty Documentを
-明示SaveするかPackageをCancelし、Headless Publisherは保存済みSourceだけを入力にする。
+明示SaveするかPackageをCancelし、Headless Publisherは保存済みSourceだけを入力にする。Retryも新しいOperationとして現在の
+Project Descriptorと保存済みStartup Sceneを再読込し、最初のOperationが保持したRuntime Dataを暗黙に再利用しない。
 
 Game ModuleはADR-0022のArtifact Storeから取得する。PublisherはProject IdentityとConfigurationにBindingされたShared Read Leaseを
 取得してから`Current.json`を一度読み、参照Versionの全FileをSize／Hash再検証し、Package StagingへのCopyとCopy後検証が終わるまで
@@ -562,6 +563,7 @@ M16では次を検証する。
 - Executable相対でPackage Rootを解決し、Current Directoryを変更しても起動できる
 - Package移動後にManifestからGame ModuleをLoad、Start、Update、Stop、Unloadできる
 - Editorの`Stop`がRuntimeHostへ`WM_CLOSE`を送り、正常停止Markerを取得してからProcessを終了できる
+- 正常停止要求後もRuntimeHostの非ゼロExit Codeを失敗として保持し、停止成功へ変換しない
 - 正常停止へ応答しないRuntime Processを5秒後にJob Objectで強制終了できる
 - Project SourceとWorkspaceを参照不能にしたProcess Testでも起動できる
 - 同じ入力から再生成したManifestとRuntime DataのHashが一致する

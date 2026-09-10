@@ -230,44 +230,49 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
                 set_error(*operationId.try_error(), "Operation IDの生成");
                 return false;
             }
+            Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
+            if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
+                sceneSnapshot.try_error()->code().value() ==
+                    static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
+            {
+                m_message =
+                    "Startup "
+                    "Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。";
+                m_hasError = true;
+                m_hasPresenterDiagnostic = true;
+                return false;
+            }
+            Result<package::MinimalRuntimeDataPublication> runtimeData =
+                sceneSnapshot
+                    ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
+                                                            *sceneSnapshot.try_value(), *m_assertContext)
+                    : Result<package::MinimalRuntimeDataPublication>::failure(std::move(*sceneSnapshot.try_error()));
+            if (!runtimeData)
+            {
+                set_error(*runtimeData.try_error(), "Runtime Dataの生成");
+                return false;
+            }
+            const std::string projectId(m_controller->session().project_descriptor().project_id().text());
             if (a_command == EditorPackageCommand::Retry)
             {
-                result = m_service->retry(std::move(*operationId.try_value()));
+                result = m_service->retry(std::move(*operationId.try_value()), {1U, 0U, 0U}, projectId,
+                                          std::move(*runtimeData.try_value()));
             }
             else
             {
-                Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
-                if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
-                    sceneSnapshot.try_error()->code().value() ==
-                        static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
-                {
-                    m_message =
-                        "Startup "
-                        "Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。";
-                    m_hasError = true;
-                    m_hasPresenterDiagnostic = true;
-                    return false;
-                }
-                Result<package::MinimalRuntimeDataPublication> runtimeData =
-                    sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
-                                                                          *sceneSnapshot.try_value(), *m_assertContext)
-                                  : Result<package::MinimalRuntimeDataPublication>::failure(
-                                        std::move(*sceneSnapshot.try_error()));
                 Result<BuildProfile> profile =
                     BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
-                if (!runtimeData || !profile)
+                if (!profile)
                 {
-                    set_error(runtimeData ? *profile.try_error() : *runtimeData.try_error(),
-                              runtimeData ? "Build Profileの作成" : "Runtime Dataの生成");
+                    set_error(*profile.try_error(), "Build Profileの作成");
                     return false;
                 }
                 BuildRequest request{m_projectRoot, std::move(*profile.try_value()),
                                      std::move(*operationId.try_value()), m_workspaceCompatibility};
-                result = m_service->start(
-                    std::move(request),
-                    m_forceConfigure ? CMakeConfigureMode::Required : CMakeConfigureMode::ReuseCompatibleTree,
-                    {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
-                    std::move(*runtimeData.try_value()));
+                result = m_service->start(std::move(request),
+                                          m_forceConfigure ? CMakeConfigureMode::Required
+                                                           : CMakeConfigureMode::ReuseCompatibleTree,
+                                          {1U, 0U, 0U}, projectId, std::move(*runtimeData.try_value()));
             }
         }
         if (!result)

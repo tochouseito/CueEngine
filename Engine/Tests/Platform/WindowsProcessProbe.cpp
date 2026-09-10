@@ -119,7 +119,7 @@ void append_argument(std::wstring &a_commandLine, std::wstring_view a_argument)
 }
 
 /// @brief Top-level WindowでWM_CLOSEを受けるまでMessage Loopを実行する
-[[nodiscard]] int run_graceful_window_probe() noexcept
+[[nodiscard]] int run_graceful_window_probe(int a_exitCode) noexcept
 {
     constexpr wchar_t k_windowClass[] = L"CuePlatformGracefulStopProbe";
     WNDCLASSW windowClass{};
@@ -142,7 +142,7 @@ void append_argument(std::wstring &a_commandLine, std::wstring_view a_argument)
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
-    return 0;
+    return a_exitCode;
 }
 } // namespace
 
@@ -229,7 +229,11 @@ int wmain(int a_count, wchar_t **a_arguments)
     }
     if (mode == L"graceful-window")
     {
-        return run_graceful_window_probe();
+        return run_graceful_window_probe(0);
+    }
+    if (mode == L"graceful-window-fail")
+    {
+        return run_graceful_window_probe(42);
     }
     return 98;
 }
