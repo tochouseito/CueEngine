@@ -134,10 +134,12 @@ PackagePresenter::PackagePresenter(package::GamePackageWorkflowService &a_servic
 {
 }
 
-std::unique_ptr<PackagePresenter> PackagePresenter::create(
-    package::GamePackageWorkflowService &a_service, editor_core::EditorController &a_controller,
-    std::string a_projectRoot, BuildWorkspaceCompatibility a_workspaceCompatibility,
-    std::unique_ptr<BuildOperationIdSource> a_operationIdSource, const AssertContext &a_assertContext) noexcept
+std::unique_ptr<PackagePresenter> PackagePresenter::create(package::GamePackageWorkflowService &a_service,
+                                                           editor_core::EditorController &a_controller,
+                                                           std::string a_projectRoot,
+                                                           BuildWorkspaceCompatibility a_workspaceCompatibility,
+                                                           std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
+                                                           const AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -145,9 +147,9 @@ std::unique_ptr<PackagePresenter> PackagePresenter::create(
         {
             a_assertContext.fatal_handler().terminate("Package Presenter operation identity source is missing");
         }
-        return std::unique_ptr<PackagePresenter>(new PackagePresenter(
-            a_service, a_controller, std::move(a_projectRoot), a_workspaceCompatibility,
-            std::move(a_operationIdSource), a_assertContext));
+        return std::unique_ptr<PackagePresenter>(new PackagePresenter(a_service, a_controller, std::move(a_projectRoot),
+                                                                      a_workspaceCompatibility,
+                                                                      std::move(a_operationIdSource), a_assertContext));
     }
     catch (...)
     {
@@ -162,11 +164,14 @@ void PackagePresenter::refresh() noexcept
     {
         m_service->advance();
         m_current = m_service->snapshot();
-        if (!m_current.message.empty())
+        if (!m_hasPresenterDiagnostic)
         {
-            m_message = m_current.message;
+            if (!m_current.message.empty())
+            {
+                m_message = m_current.message;
+            }
+            m_hasError = m_current.state == package::PackageWorkflowState::Failed;
         }
-        m_hasError = m_current.state == package::PackageWorkflowState::Failed;
         if (m_isShutdownWaitingForCancel && !is_active(m_current.state))
         {
             mark_shutdown_ready();
@@ -188,8 +193,7 @@ void PackagePresenter::draw() noexcept
             draw_toolbar();
             if (!m_message.empty())
             {
-                const ImVec4 color = m_hasError ? ImVec4(1.0F, 0.35F, 0.35F, 1.0F)
-                                                : ImVec4(0.45F, 0.85F, 0.55F, 1.0F);
+                const ImVec4 color = m_hasError ? ImVec4(1.0F, 0.35F, 0.35F, 1.0F) : ImVec4(0.45F, 0.85F, 0.55F, 1.0F);
                 ImGui::TextColored(color, "%s", m_message.c_str());
             }
             ImGui::Separator();
@@ -208,6 +212,7 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
 {
     try
     {
+        m_hasPresenterDiagnostic = false;
         Result<void> result = Result<void>::success();
         if (a_command == EditorPackageCommand::Cancel || a_command == EditorPackageCommand::Stop)
         {
@@ -225,36 +230,45 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
                 set_error(*operationId.try_error(), "Operation IDの生成");
                 return false;
             }
-            Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
-            if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
-                sceneSnapshot.try_error()->code().value() ==
-                    static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
+            if (a_command == EditorPackageCommand::Retry)
             {
-                set_status(
-                    "Startup Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
-                m_hasError = true;
-                return false;
+                result = m_service->retry(std::move(*operationId.try_value()));
             }
-            Result<package::MinimalRuntimeDataPublication> runtimeData =
-                sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
-                                                                       *sceneSnapshot.try_value(), *m_assertContext)
-                              : Result<package::MinimalRuntimeDataPublication>::failure(
-                                    std::move(*sceneSnapshot.try_error()));
-            Result<BuildProfile> profile =
-                BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
-            if (!runtimeData || !profile)
+            else
             {
-                set_error(runtimeData ? *profile.try_error() : *runtimeData.try_error(),
-                          runtimeData ? "Build Profileの作成" : "Runtime Dataの生成");
-                return false;
+                Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
+                if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
+                    sceneSnapshot.try_error()->code().value() ==
+                        static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
+                {
+                    m_message =
+                        "Startup "
+                        "Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。";
+                    m_hasError = true;
+                    m_hasPresenterDiagnostic = true;
+                    return false;
+                }
+                Result<package::MinimalRuntimeDataPublication> runtimeData =
+                    sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
+                                                                          *sceneSnapshot.try_value(), *m_assertContext)
+                                  : Result<package::MinimalRuntimeDataPublication>::failure(
+                                        std::move(*sceneSnapshot.try_error()));
+                Result<BuildProfile> profile =
+                    BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
+                if (!runtimeData || !profile)
+                {
+                    set_error(runtimeData ? *profile.try_error() : *runtimeData.try_error(),
+                              runtimeData ? "Build Profileの作成" : "Runtime Dataの生成");
+                    return false;
+                }
+                BuildRequest request{m_projectRoot, std::move(*profile.try_value()),
+                                     std::move(*operationId.try_value()), m_workspaceCompatibility};
+                result = m_service->start(
+                    std::move(request),
+                    m_forceConfigure ? CMakeConfigureMode::Required : CMakeConfigureMode::ReuseCompatibleTree,
+                    {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
+                    std::move(*runtimeData.try_value()));
             }
-            BuildRequest request{m_projectRoot, std::move(*profile.try_value()),
-                                 std::move(*operationId.try_value()), m_workspaceCompatibility};
-            result = m_service->start(
-                std::move(request), m_forceConfigure ? CMakeConfigureMode::Required
-                                                     : CMakeConfigureMode::ReuseCompatibleTree,
-                {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
-                std::move(*runtimeData.try_value()));
         }
         if (!result)
         {
@@ -402,10 +416,9 @@ bool PackagePresenter::can_retry() const noexcept
 
 bool PackagePresenter::can_run() const noexcept
 {
-    return m_current.package.has_value() &&
-           (m_current.state == package::PackageWorkflowState::PackageReady ||
-            m_current.state == package::PackageWorkflowState::RunSucceeded ||
-            m_current.state == package::PackageWorkflowState::Failed);
+    return m_current.package.has_value() && (m_current.state == package::PackageWorkflowState::PackageReady ||
+                                             m_current.state == package::PackageWorkflowState::RunSucceeded ||
+                                             m_current.state == package::PackageWorkflowState::Failed);
 }
 
 bool PackagePresenter::can_stop() const noexcept
@@ -428,12 +441,14 @@ void PackagePresenter::set_error(const Error &a_error, std::string_view a_operat
     m_message.push_back(' ');
     m_message.append(a_error.summary());
     m_hasError = true;
+    m_hasPresenterDiagnostic = true;
 }
 
 void PackagePresenter::set_status(std::string_view a_status)
 {
     m_message.assign(a_status);
     m_hasError = false;
+    m_hasPresenterDiagnostic = false;
 }
 
 void PackagePresenter::draw_toolbar() noexcept
@@ -445,9 +460,8 @@ void PackagePresenter::draw_toolbar() noexcept
     }
     if (ImGui::BeginCombo("Configuration", configuration_label(m_configuration)))
     {
-        constexpr BuildConfiguration configurations[] = {BuildConfiguration::Debug,
-                                                          BuildConfiguration::Development,
-                                                          BuildConfiguration::Release};
+        constexpr BuildConfiguration configurations[] = {BuildConfiguration::Debug, BuildConfiguration::Development,
+                                                         BuildConfiguration::Release};
         for (const BuildConfiguration configuration : configurations)
         {
             const bool selected = configuration == m_configuration;

@@ -96,6 +96,54 @@ void append_argument(std::wstring &a_commandLine, std::wstring_view a_argument)
     CloseHandle(process.hProcess);
     return true;
 }
+
+/// @brief 正常停止ProbeのWindow Closeを観測し、終了Markerを残す
+[[nodiscard]] LRESULT CALLBACK graceful_window_procedure(HWND a_window, UINT a_message, WPARAM a_wParam,
+                                                         LPARAM a_lParam) noexcept
+{
+    if (a_message == WM_CLOSE)
+    {
+        if (!write_stream(STD_OUTPUT_HANDLE, "WINDOW_STOPPED\n"))
+        {
+            std::_Exit(89);
+        }
+        DestroyWindow(a_window);
+        return 0;
+    }
+    if (a_message == WM_DESTROY)
+    {
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(a_window, a_message, a_wParam, a_lParam);
+}
+
+/// @brief Top-level WindowでWM_CLOSEを受けるまでMessage Loopを実行する
+[[nodiscard]] int run_graceful_window_probe() noexcept
+{
+    constexpr wchar_t k_windowClass[] = L"CuePlatformGracefulStopProbe";
+    WNDCLASSW windowClass{};
+    windowClass.lpfnWndProc = graceful_window_procedure;
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpszClassName = k_windowClass;
+    if (RegisterClassW(&windowClass) == 0U)
+    {
+        return 88;
+    }
+    const HWND window = CreateWindowExW(0U, k_windowClass, L"Cue graceful stop probe", WS_OVERLAPPED, 0, 0, 1, 1,
+                                        nullptr, nullptr, windowClass.hInstance, nullptr);
+    if (window == nullptr || !write_stream(STD_OUTPUT_HANDLE, "WINDOW_READY\n"))
+    {
+        return 87;
+    }
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0U, 0U) > 0)
+    {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Windows Process RunnerのCapture、Quoting、Environment、Tree終了を検証するChild Probe
@@ -178,6 +226,10 @@ int wmain(int a_count, wchar_t **a_arguments)
         }
         Sleep(10000U);
         return 0;
+    }
+    if (mode == L"graceful-window")
+    {
+        return run_graceful_window_probe();
     }
     return 98;
 }

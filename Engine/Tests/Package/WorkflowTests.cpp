@@ -95,6 +95,7 @@ enum class RunnerMode : std::uint8_t
 struct RunnerState final
 {
     std::atomic<RunnerMode> mode = RunnerMode::Succeed;
+    std::atomic<cue::ChildProcessCancellationMode> lastCancellationMode = cue::ChildProcessCancellationMode::None;
     std::atomic<std::uint32_t> calls = 0U;
     std::atomic<std::size_t> maximumCapturedOutputBytes = 0U;
     std::atomic<bool> active = false;
@@ -124,6 +125,7 @@ class ControlledRunner final : public cue::ChildProcessRunner
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         m_state->active.store(false, std::memory_order_release);
+        m_state->lastCancellationMode.store(a_cancellation.cancellation_mode(), std::memory_order_release);
         if (a_cancellation.is_cancel_requested())
         {
             return cue::Result<cue::ChildProcessResult>::success(cue::ChildProcessResult::cancelled({}));
@@ -233,9 +235,11 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     }
 
     /// @brief Conditional Atomic Writeを委譲する
-    [[nodiscard]] cue::Result<void> write_file_atomic_if_unchanged(
-        cue::FileWriteLease &a_lease, const cue::RelativePath &a_path, cue::FileFingerprint a_expected,
-        std::size_t a_maximumExpectedBytes, std::span<const std::byte> a_bytes) noexcept override
+    [[nodiscard]] cue::Result<void> write_file_atomic_if_unchanged(cue::FileWriteLease &a_lease,
+                                                                   const cue::RelativePath &a_path,
+                                                                   cue::FileFingerprint a_expected,
+                                                                   std::size_t a_maximumExpectedBytes,
+                                                                   std::span<const std::byte> a_bytes) noexcept override
     {
         return m_inner->write_file_atomic_if_unchanged(a_lease, a_path, a_expected, a_maximumExpectedBytes, a_bytes);
     }
@@ -262,8 +266,8 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
             m_inner->publish_staging_area(std::move(a_staging), a_destination, a_authorization);
         if (published && consume(m_state->durabilityFailuresRemaining))
         {
-            return cue::Result<void>::failure(cue::make_io_error(
-                *m_assertContext, cue::IoError::DurabilityUnknown, "Published Package durability is unknown"));
+            return cue::Result<void>::failure(cue::make_io_error(*m_assertContext, cue::IoError::DurabilityUnknown,
+                                                                 "Published Package durability is unknown"));
         }
         return published;
     }
@@ -308,8 +312,7 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
 };
 
 /// @brief 失敗した検証の呼出位置を標準エラーへ出す
-[[nodiscard]] bool require(bool a_condition,
-                           std::source_location a_location = std::source_location::current()) noexcept
+[[nodiscard]] bool require(bool a_condition, std::source_location a_location = std::source_location::current()) noexcept
 {
     if (!a_condition)
     {
@@ -403,26 +406,25 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
         }
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
-        const std::vector<std::byte> moduleBytes =
-            m_state->invalidPortableExecutable.load(std::memory_order_acquire)
-                ? text_bytes("test-game-module")
-                : make_test_pe();
+        const std::vector<std::byte> moduleBytes = m_state->invalidPortableExecutable.load(std::memory_order_acquire)
+                                                       ? text_bytes("test-game-module")
+                                                       : make_test_pe();
         const std::vector<std::byte> pdbBytes = text_bytes("test-debug-symbols");
         const std::vector<std::byte> metadataBytes = text_bytes("{\"schemaVersion\":1}\n");
         auto modulePayload = cue::package::PackageFilePayload::create(
             cue::package::PackageFileRole::GameModule, "CueGameModule.dll", moduleBytes, *m_assertContext);
-        auto metadataPayload = cue::package::PackageFilePayload::create(
-            cue::package::PackageFileRole::GameModuleMetadata, "CueGameModule.metadata.json", metadataBytes,
-            *m_assertContext);
+        auto metadataPayload =
+            cue::package::PackageFilePayload::create(cue::package::PackageFileRole::GameModuleMetadata,
+                                                     "CueGameModule.metadata.json", metadataBytes, *m_assertContext);
         if (!modulePayload || !metadataPayload)
         {
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                 modulePayload ? std::move(*metadataPayload.try_error()) : std::move(*modulePayload.try_error()));
         }
         const std::string artifactId(a_plan.operation_id());
-        const std::filesystem::path versionDirectory =
-            std::filesystem::path(a_plan.project_root()) / std::filesystem::path(a_plan.artifact_store_directory()) /
-            L"Versions" / std::filesystem::path(artifactId);
+        const std::filesystem::path versionDirectory = std::filesystem::path(a_plan.project_root()) /
+                                                       std::filesystem::path(a_plan.artifact_store_directory()) /
+                                                       L"Versions" / std::filesystem::path(artifactId);
         std::error_code error;
         std::filesystem::create_directories(versionDirectory, error);
         if (error || !write_file(versionDirectory / L"CueGameModule.dll", moduleBytes) ||
@@ -430,25 +432,24 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
             !write_file(versionDirectory / L"CueGameModule.metadata.json", metadataBytes))
         {
             cue::ErrorCode code = cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Package.Test", 1);
-            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                cue::Error::create(m_assertContext->fatal_handler(), std::move(code), "Artifact materialization failed"));
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(cue::Error::create(
+                m_assertContext->fatal_handler(), std::move(code), "Artifact materialization failed"));
         }
         std::string moduleHash(modulePayload.try_value()->entry().sha256());
         if (m_state->corruptInventory.load(std::memory_order_acquire))
         {
             moduleHash.assign(64U, 'f');
         }
-        auto inventory = cue::BuildArtifactInventory::create(
-            a_plan, artifactId,
-            {{"CueGameModule.dll", moduleBytes.size(), std::move(moduleHash)},
-             {"CueGameModule.pdb", pdbBytes.size(), std::string(64U, 'a')},
-             {"CueGameModule.metadata.json", metadataBytes.size(),
-              std::string(metadataPayload.try_value()->entry().sha256())}},
-            *m_assertContext);
+        auto inventory =
+            cue::BuildArtifactInventory::create(a_plan, artifactId,
+                                                {{"CueGameModule.dll", moduleBytes.size(), std::move(moduleHash)},
+                                                 {"CueGameModule.pdb", pdbBytes.size(), std::string(64U, 'a')},
+                                                 {"CueGameModule.metadata.json", metadataBytes.size(),
+                                                  std::string(metadataPayload.try_value()->entry().sha256())}},
+                                                *m_assertContext);
         if (!inventory)
         {
-            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                std::move(*inventory.try_error()));
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(*inventory.try_error()));
         }
         return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(
             std::optional<cue::BuildArtifactInventory>(std::move(*inventory.try_value())));
@@ -506,10 +507,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
 
     /// @brief 取消前なら読込範囲を可視化する空Leaseを返す
-    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>
-    acquire_current_read_lease(const cue::BuildArtifactInventory &,
-                               const cue::BuildArtifactReadCancellation &a_cancellation,
-                               cue::BuildArtifactLockDeadline) noexcept override
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>> acquire_current_read_lease(
+        const cue::BuildArtifactInventory &, const cue::BuildArtifactReadCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline) noexcept override
     {
         m_state->readerCalls.fetch_add(1U, std::memory_order_relaxed);
         if (a_cancellation.is_cancel_requested())
@@ -533,7 +533,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 
 /// @brief Debug Game Module用Build Requestを作る
 [[nodiscard]] cue::BuildRequest make_request(std::string a_projectRoot, std::string a_operationId,
-                                              const cue::AssertContext &a_assertContext)
+                                             const cue::AssertContext &a_assertContext)
 {
     auto profile =
         cue::BuildProfile::create(cue::BuildConfiguration::Debug, cue::BuildTarget::GameModule, a_assertContext);
@@ -545,13 +545,12 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     const cue::AssertContext &a_assertContext) noexcept
 {
     auto projectId = cue::ProjectId::parse(k_projectId, a_assertContext);
-    auto descriptor = projectId ? cue::create_blank_project_descriptor(
-                                      *projectId.try_value(), "Workflow Test",
-                                      cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U},
-                                                               cue::EngineVersion{2U, 0U, 0U}},
-                                      k_sceneId,
-                                      a_assertContext)
-                                : cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
+    auto descriptor =
+        projectId ? cue::create_blank_project_descriptor(
+                        *projectId.try_value(), "Workflow Test",
+                        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}},
+                        k_sceneId, a_assertContext)
+                  : cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
     auto sceneId = cue::scene::SceneAssetId::parse(k_sceneId, a_assertContext);
     if (!descriptor || !sceneId)
     {
@@ -560,10 +559,10 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
     cue::scene::SceneDocument scene = cue::scene::SceneDocument::create(*sceneId.try_value(), a_assertContext);
     auto snapshot = cue::scene::create_scene_snapshot(scene, a_assertContext);
-    return snapshot ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
-                                                                 a_assertContext)
-                    : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(
-                          std::move(*snapshot.try_error()));
+    return snapshot
+               ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
+                                                            a_assertContext)
+               : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(std::move(*snapshot.try_error()));
 }
 
 /// @brief RunnerがProcess実行中になるまで上限付きで待つ
@@ -608,8 +607,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     {
         const std::vector<std::byte> hostBytes = make_test_pe();
         std::ofstream host(hostPath, std::ios::binary);
-        host.write(reinterpret_cast<const char *>(hostBytes.data()),
-                   static_cast<std::streamsize>(hostBytes.size()));
+        host.write(reinterpret_cast<const char *>(hostBytes.data()), static_cast<std::streamsize>(hostBytes.size()));
     }
 
     RunnerState buildRunner;
@@ -617,8 +615,8 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     PublisherState publisher;
     RecoveryFilesystemState recoveryFilesystem;
     auto build = cue::GameBuildService::create(make_settings(), std::make_unique<ControlledRunner>(buildRunner),
-                                                std::make_unique<MaterializingPublisher>(publisher, a_assertContext),
-                                                a_assertContext);
+                                               std::make_unique<MaterializingPublisher>(publisher, a_assertContext),
+                                               a_assertContext);
     auto projectFilesystem = cue::create_windows_filesystem_root(projectRoot.generic_string(), a_assertContext);
     auto engineFilesystem = cue::create_windows_filesystem_root(engineRoot.generic_string(), a_assertContext);
     if (!require(build && projectFilesystem && engineFilesystem))
@@ -639,11 +637,11 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
     std::unique_ptr<cue::package::GamePackageWorkflowService> service = std::move(*workflow.try_value());
     constexpr std::string_view firstOperation = "01234567-89ab-4cde-8f01-23456789abcd";
-    if (!require(service->start(make_request(projectRoot.generic_string(), std::string(firstOperation),
-                                             a_assertContext),
-                                cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
-                                *runtimeData.try_value()) &&
-                 service->wait_for_package()))
+    if (!require(
+            service->start(make_request(projectRoot.generic_string(), std::string(firstOperation), a_assertContext),
+                           cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
+                           *runtimeData.try_value()) &&
+            service->wait_for_package()))
     {
         return false;
     }
@@ -660,8 +658,8 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
                  !publisher.packageWriteWithLease.load(std::memory_order_acquire) &&
                  std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
                                          L"CuePackage.json") &&
-                 !std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
-                                          L"Runtime" / L"CueGameModule.pdb")))
+                 !std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) / L"Runtime" /
+                                          L"CueGameModule.pdb")))
     {
         return false;
     }
@@ -669,12 +667,12 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 
     const std::uint32_t buildCallsBeforeCancel = buildRunner.calls.load(std::memory_order_acquire);
     constexpr std::string_view cancelledOperation = "09234567-89ab-4cde-8f01-23456789abcd";
-    if (!require(service->start(make_request(projectRoot.generic_string(), std::string(cancelledOperation),
-                                             a_assertContext),
-                                cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
-                                *runtimeData.try_value()) &&
-                 wait_until_completed_call(buildRunner, buildCallsBeforeCancel + 1U) && service->request_cancel() &&
-                 service->wait_for_package()))
+    if (!require(
+            service->start(make_request(projectRoot.generic_string(), std::string(cancelledOperation), a_assertContext),
+                           cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
+                           *runtimeData.try_value()) &&
+            wait_until_completed_call(buildRunner, buildCallsBeforeCancel + 1U) && service->request_cancel() &&
+            service->wait_for_package()))
     {
         return false;
     }
@@ -687,12 +685,11 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     {
         return false;
     }
-    const std::uint32_t publisherCallsAfterTransitionCancel =
-        publisher.calls.load(std::memory_order_acquire);
+    const std::uint32_t publisherCallsAfterTransitionCancel = publisher.calls.load(std::memory_order_acquire);
 
     buildRunner.mode.store(RunnerMode::Fail, std::memory_order_release);
-    if (!require(service->start(make_request(projectRoot.generic_string(),
-                                             "11234567-89ab-4cde-8f01-23456789abcd", a_assertContext),
+    if (!require(service->start(make_request(projectRoot.generic_string(), "11234567-89ab-4cde-8f01-23456789abcd",
+                                             a_assertContext),
                                 cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
                                 *runtimeData.try_value()) &&
                  service->wait_for_package()))
@@ -744,8 +741,8 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
         return false;
     }
     const cue::package::PackageWorkflowSnapshot durabilityUnknown = service->snapshot();
-    if (!require(durabilityUnknown.state == cue::package::PackageWorkflowState::Failed &&
-                 !durabilityUnknown.package && durabilityUnknown.publicationDiagnostic &&
+    if (!require(durabilityUnknown.state == cue::package::PackageWorkflowState::Failed && !durabilityUnknown.package &&
+                 durabilityUnknown.publicationDiagnostic &&
                  durabilityUnknown.publicationDiagnostic->stage == cue::package::PackagePublishStage::Publish &&
                  durabilityUnknown.publicationDiagnostic->outcome ==
                      cue::package::PackagePublishOutcome::PublishedButDurabilityUnknown &&
@@ -771,8 +768,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     const cue::package::PackageWorkflowSnapshot recoveryFailed = service->snapshot();
     if (!require(recoveryFailed.state == cue::package::PackageWorkflowState::Failed &&
                  recoveryFailed.recoveryStagingLocator &&
-                 std::filesystem::exists(projectRoot /
-                                         std::filesystem::path(*recoveryFailed.recoveryStagingLocator)) &&
+                 std::filesystem::exists(projectRoot / std::filesystem::path(*recoveryFailed.recoveryStagingLocator)) &&
                  recoveryFilesystem.rollbackCalls.load(std::memory_order_acquire) == 2U))
     {
         return false;
@@ -816,7 +812,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
         return false;
     }
     if (!require(service->snapshot().state == cue::package::PackageWorkflowState::PackageReady &&
-                 !runRunner.active.load(std::memory_order_acquire)))
+                 !runRunner.active.load(std::memory_order_acquire) &&
+                 runRunner.lastCancellationMode.load(std::memory_order_acquire) ==
+                     cue::ChildProcessCancellationMode::Graceful))
     {
         return false;
     }
@@ -826,7 +824,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
         return false;
     }
     service.reset();
-    return require(!runRunner.active.load(std::memory_order_acquire));
+    return require(!runRunner.active.load(std::memory_order_acquire) &&
+                   runRunner.lastCancellationMode.load(std::memory_order_acquire) ==
+                       cue::ChildProcessCancellationMode::Immediate);
 }
 } // namespace
 

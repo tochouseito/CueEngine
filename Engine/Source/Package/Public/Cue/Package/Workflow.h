@@ -119,7 +119,7 @@ class GamePackageWorkflowService final
     [[nodiscard]] Result<void> request_cancel() noexcept;
     /// @brief 公開済みPackageのRuntime Hostを別Workerで起動する
     [[nodiscard]] Result<void> run(PackageRunMode a_mode) noexcept;
-    /// @brief 起動中Runtime Processへ停止を通知する
+    /// @brief 起動中Runtime Processへ正常停止を通知し、応答しない場合だけPlatform境界で強制終了する
     [[nodiscard]] Result<void> stop() noexcept;
     /// @brief Owner ThreadでBuildまたはPackageの完了まで待つ
     [[nodiscard]] Result<void> wait_for_package() noexcept;

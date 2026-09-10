@@ -84,11 +84,23 @@ std::optional<std::size_t> ChildProcessRequest::maximum_captured_output_bytes() 
 
 void ChildProcessCancellation::request_cancel() noexcept
 {
-    m_requested.store(true, std::memory_order_release);
+    m_mode.store(ChildProcessCancellationMode::Immediate, std::memory_order_release);
+}
+
+void ChildProcessCancellation::request_graceful_stop() noexcept
+{
+    ChildProcessCancellationMode expected = ChildProcessCancellationMode::None;
+    static_cast<void>(m_mode.compare_exchange_strong(expected, ChildProcessCancellationMode::Graceful,
+                                                     std::memory_order_release, std::memory_order_relaxed));
 }
 
 bool ChildProcessCancellation::is_cancel_requested() const noexcept
 {
-    return m_requested.load(std::memory_order_acquire);
+    return cancellation_mode() != ChildProcessCancellationMode::None;
+}
+
+ChildProcessCancellationMode ChildProcessCancellation::cancellation_mode() const noexcept
+{
+    return m_mode.load(std::memory_order_acquire);
 }
 } // namespace cue
