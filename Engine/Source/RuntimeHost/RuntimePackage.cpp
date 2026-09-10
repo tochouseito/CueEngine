@@ -239,6 +239,19 @@ class UniqueHandle final
     HANDLE m_handle = INVALID_HANDLE_VALUE;
 };
 
+/// @brief 事前Load済みDLLを依存元より後まで保持して逆順解放する
+void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
+{
+    for (auto library = a_libraries.rbegin(); library != a_libraries.rend(); ++library)
+    {
+        if (*library != nullptr)
+        {
+            FreeLibrary(*library);
+        }
+    }
+    a_libraries.clear();
+}
+
 /// @brief Canonical Runtime JSONを順序、重複、末尾Data込みでFail-closedに読むCursor
 class JsonCursor final
 {
@@ -1161,6 +1174,13 @@ struct ModuleMetadataInfo final
     return {reinterpret_cast<const char *>(a_bytes.data()), a_bytes.size()};
 }
 
+/// @brief Package相対Pathから最後のFile Nameだけを借用する
+[[nodiscard]] std::string_view package_file_name(std::string_view a_relativePath) noexcept
+{
+    const std::size_t separator = a_relativePath.find_last_of('/');
+    return separator == std::string_view::npos ? a_relativePath : a_relativePath.substr(separator + 1U);
+}
+
 /// @brief ABI UUIDをlowercase canonical Textへ変換する
 [[nodiscard]] std::string uuid_text(const CueGameUuidV1 &a_uuid)
 {
@@ -1497,13 +1517,14 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
 class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePackageModule
 {
   public:
-    /// @brief DLLとProject Scope Handle、検索Directory Cookie、固定Handleを所有する
+    /// @brief DLLとProject Scope Handle、事前Load済み依存DLL、固定Handleを所有する
     WindowsRuntimePackageModule(HMODULE a_library, CueGameModuleHandle a_module, const CueGameModuleApiV1 &a_api,
-                                DLL_DIRECTORY_COOKIE a_runtimeCookie, UniqueHandle a_rootGuard,
-                                UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
-                                std::vector<UniqueHandle> a_runtimeDependencyGuards) noexcept
-        : m_library(a_library), m_module(a_module), m_api(&a_api), m_runtimeCookie(a_runtimeCookie),
-          m_rootGuard(std::move(a_rootGuard)), m_gameGuard(std::move(a_gameGuard)),
+                                 std::vector<HMODULE> a_runtimeLibraries, UniqueHandle a_rootGuard,
+                                 UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
+                                 std::vector<UniqueHandle> a_runtimeDependencyGuards) noexcept
+        : m_library(a_library), m_module(a_module), m_api(&a_api),
+          m_runtimeLibraries(std::move(a_runtimeLibraries)), m_rootGuard(std::move(a_rootGuard)),
+          m_gameGuard(std::move(a_gameGuard)),
           m_runtimeGuard(std::move(a_runtimeGuard)), m_moduleGuard(std::move(a_moduleGuard)),
           m_runtimeDependencyGuards(std::move(a_runtimeDependencyGuards))
     {
@@ -1519,17 +1540,14 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
         {
             FreeLibrary(m_library);
         }
-        if (m_runtimeCookie != nullptr)
-        {
-            RemoveDllDirectory(m_runtimeCookie);
-        }
+        unload_libraries(m_runtimeLibraries);
     }
 
   private:
     HMODULE m_library;
     CueGameModuleHandle m_module;
     const CueGameModuleApiV1 *m_api;
-    DLL_DIRECTORY_COOKIE m_runtimeCookie;
+    std::vector<HMODULE> m_runtimeLibraries;
     UniqueHandle m_rootGuard;
     UniqueHandle m_gameGuard;
     UniqueHandle m_runtimeGuard;
@@ -1756,7 +1774,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
 {
     try
     {
-        if (SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS) == FALSE)
+        if (SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) == FALSE)
         {
             return Result<LoadedRuntimePackage>::failure(windows_package_error(
                 a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
@@ -1879,7 +1897,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         }
         UniqueHandle runtimeGuard;
         std::vector<UniqueHandle> runtimeDependencyGuards;
-        DLL_DIRECTORY_COOKIE runtimeCookie = nullptr;
+        std::vector<const package::PackageFileEntry *> runtimeDependencyEntries;
         auto runtimeInventory =
             validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
         if (!runtimeInventory)
@@ -1909,6 +1927,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                         std::move(*dependencyGuard.try_error()));
                 }
                 runtimeDependencyGuards.push_back(std::move(*dependencyGuard.try_value()));
+                runtimeDependencyEntries.push_back(&entry);
             }
         }
         const std::filesystem::path modulePath = root / std::filesystem::path(moduleEntry->relative_path());
@@ -1916,6 +1935,37 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         if (!moduleGuard)
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
+        }
+        auto moduleBytes = read_manifest_file(**filesystem.try_value(), *moduleEntry, a_assertContext);
+        if (!moduleBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleBytes.try_error()));
+        }
+        std::vector<std::vector<std::byte>> runtimeDependencyBytes;
+        runtimeDependencyBytes.reserve(runtimeDependencyEntries.size());
+        for (const package::PackageFileEntry *entry : runtimeDependencyEntries)
+        {
+            auto bytes = read_manifest_file(**filesystem.try_value(), *entry, a_assertContext);
+            if (!bytes)
+            {
+                return Result<LoadedRuntimePackage>::failure(std::move(*bytes.try_error()));
+            }
+            runtimeDependencyBytes.push_back(std::move(*bytes.try_value()));
+        }
+        std::vector<package::RuntimePeImageView> runtimeDependencyViews;
+        runtimeDependencyViews.reserve(runtimeDependencyEntries.size());
+        for (std::size_t index = 0U; index < runtimeDependencyEntries.size(); ++index)
+        {
+            runtimeDependencyViews.push_back(
+                {package_file_name(runtimeDependencyEntries[index]->relative_path()), runtimeDependencyBytes[index]});
+        }
+        auto runtimeLoadOrder = package::create_runtime_dependency_load_order(
+            manifest.try_value()->configuration(),
+            {package_file_name(moduleEntry->relative_path()), *moduleBytes.try_value()}, runtimeDependencyViews,
+            a_assertContext);
+        if (!runtimeLoadOrder)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*runtimeLoadOrder.try_error()));
         }
         auto guardedInventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
         auto guardedRuntimeInventory = guardedInventory
@@ -1930,27 +1980,29 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                                     "Runtime dependency inventory changed after load targets were fixed")
                     : std::move(*guardedRuntimeInventory.try_error()));
         }
-        if (hasRuntimeDependencies)
+        std::vector<HMODULE> runtimeLibraries;
+        runtimeLibraries.reserve(runtimeLoadOrder.try_value()->size());
+        for (const std::size_t index : *runtimeLoadOrder.try_value())
         {
-            const std::filesystem::path runtimeLoadPath = extended_windows_path(root / "Runtime");
-            runtimeCookie = AddDllDirectory(runtimeLoadPath.c_str());
-            if (runtimeCookie == nullptr)
+            const std::filesystem::path dependencyPath = extended_windows_path(
+                root / std::filesystem::path(runtimeDependencyEntries[index]->relative_path()));
+            HMODULE dependency = LoadLibraryExW(dependencyPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (dependency == nullptr)
             {
+                const DWORD code = GetLastError();
+                unload_libraries(runtimeLibraries);
                 return Result<LoadedRuntimePackage>::failure(windows_package_error(
-                    a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
-                    "Runtime dependency directory could not be registered"));
+                    a_assertContext, package::PackageError::InvalidRuntimeData, code,
+                    "Manifest Runtime dependency could not be loaded from its fixed path"));
             }
+            runtimeLibraries.push_back(dependency);
         }
         const std::filesystem::path moduleLoadPath = extended_windows_path(modulePath);
-        HMODULE library = LoadLibraryExW(
-            moduleLoadPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
+        HMODULE library = LoadLibraryExW(moduleLoadPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (library == nullptr)
         {
             const DWORD code = GetLastError();
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
+            unload_libraries(runtimeLibraries);
             return Result<LoadedRuntimePackage>::failure(windows_package_error(
                 a_assertContext, package::PackageError::InvalidRuntimeData, code,
                 "Game Module could not be loaded from the Manifest path"));
@@ -1961,10 +2013,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         if (queryAddress == nullptr)
         {
             FreeLibrary(library);
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
+            unload_libraries(runtimeLibraries);
             return Result<LoadedRuntimePackage>::failure(windows_package_error(
                 a_assertContext, package::PackageError::InvalidRuntimeData, ERROR_PROC_NOT_FOUND,
                 "Game Module entry symbol is missing"));
@@ -1982,10 +2031,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
         {
             FreeLibrary(library);
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
+            unload_libraries(runtimeLibraries);
             return Result<LoadedRuntimePackage>::failure(package_error(
                 a_assertContext, package::PackageError::InvalidRuntimeData,
                 "Game Module rejected the RuntimeHost ABI"));
@@ -2003,10 +2049,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             api.destroyModule == nullptr)
         {
             FreeLibrary(library);
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
+            unload_libraries(runtimeLibraries);
             return Result<LoadedRuntimePackage>::failure(package_error(
                 a_assertContext, package::PackageError::InvalidRuntimeData,
                 "Game Module API identity or lifecycle is incompatible"));
@@ -2015,16 +2058,13 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         if (api.createModule(&moduleHandle, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
         {
             FreeLibrary(library);
-            if (runtimeCookie != nullptr)
-            {
-                RemoveDllDirectory(runtimeCookie);
-            }
+            unload_libraries(runtimeLibraries);
             return Result<LoadedRuntimePackage>::failure(cue::runtime::make_runtime_error(
                 a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,
                 "Game Module Project Scope creation failed"));
         }
         auto module = std::make_unique<WindowsRuntimePackageModule>(
-            library, moduleHandle, api, runtimeCookie, std::move(*rootGuard.try_value()),
+            library, moduleHandle, api, std::move(runtimeLibraries), std::move(*rootGuard.try_value()),
             std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()),
             std::move(runtimeDependencyGuards));
         RegistrationContext registration;

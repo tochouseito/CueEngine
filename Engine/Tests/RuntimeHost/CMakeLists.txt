@@ -9,8 +9,12 @@ add_library(
 target_link_libraries(CueRuntimeHostRhiOwnershipCompile PRIVATE Cue.RHI.D3D12)
 target_compile_features(CueRuntimeHostRhiOwnershipCompile PRIVATE cxx_std_20)
 
+add_library(CueRuntimePackageDependencyProbe SHARED RuntimePackageDependencyProbe.cpp)
+target_compile_features(CueRuntimePackageDependencyProbe PRIVATE cxx_std_20)
+set_target_properties(CueRuntimePackageDependencyProbe PROPERTIES OUTPUT_NAME ProbeDependency)
+
 add_library(CueRuntimePackageProbe SHARED RuntimePackageProbe.cpp)
-target_link_libraries(CueRuntimePackageProbe PRIVATE Cue.GameModule.Abi)
+target_link_libraries(CueRuntimePackageProbe PRIVATE Cue.GameModule.Abi CueRuntimePackageDependencyProbe)
 target_compile_features(CueRuntimePackageProbe PRIVATE cxx_std_20)
 target_compile_definitions(
     CueRuntimePackageProbe
@@ -49,6 +53,17 @@ if(MSVC)
             $<$<CONFIG:Development>:/Zi>
     )
     target_compile_options(
+        CueRuntimePackageDependencyProbe
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
+    target_compile_options(
         CueRuntimePackageProbe
         PRIVATE
             /W4
@@ -77,6 +92,7 @@ add_custom_target(
     DEPENDS
         CueRhiD3d12AdapterSelectionProcess
         CueRuntimeHost
+        CueRuntimePackageDependencyProbe
         CueRuntimePackageProbe
         CueRuntimeHostRhiOwnershipCompile
 )
@@ -104,6 +120,7 @@ add_test(
         ${CMAKE_COMMAND}
         -DTEST_EXECUTABLE=$<TARGET_FILE:CueRuntimeHost>
         -DMODULE_LIBRARY=$<TARGET_FILE:CueRuntimePackageProbe>
+        -DDEPENDENCY_LIBRARY=$<TARGET_FILE:CueRuntimePackageDependencyProbe>
         -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/RuntimePackageProcess/$<CONFIG>
         -DCONFIGURATION=$<CONFIG>
         -DCOMPILER_VERSION=${cueRuntimeHostCompilerVersion}
