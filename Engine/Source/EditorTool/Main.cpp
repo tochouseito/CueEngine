@@ -1487,7 +1487,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
         m_packageService = std::move(*packageService.try_value());
         m_packagePresenter = cue::editor::PackagePresenter::create(
-            *m_packageService, m_session->controller().session(), std::string(m_session->project_locator()),
+            *m_packageService, m_session->controller(), std::string(m_session->project_locator()),
             compatibility, std::make_unique<WindowsBuildOperationIdSource>(*m_assertContext), *m_assertContext);
         m_packagePresenter->set_active_document(m_session->active_document_id());
     }
