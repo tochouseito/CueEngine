@@ -27,6 +27,8 @@ inline constexpr std::size_t k_maximumPackageRelativePathBytes = 1024U;
 inline constexpr std::size_t k_maximumPackagePathSegments = 32U;
 inline constexpr std::uint64_t k_maximumPackagedFileBytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t k_maximumPackageInventoryBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumRuntimePeImageBytes = 128ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumRuntimePeInventoryBytes = 256ULL * 1024ULL * 1024ULL;
 inline constexpr std::string_view k_windowsSystemImportAllowlistVersion = "windows-10-1903-x64-v1";
 
 /// @brief Package Manifestで一Fileの用途を固定するRole

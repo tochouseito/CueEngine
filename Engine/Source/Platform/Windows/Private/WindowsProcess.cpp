@@ -568,9 +568,9 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
             const DWORD wait = WaitForSingleObject(process.get(), k_pollMilliseconds);
             if (wait == WAIT_OBJECT_0)
             {
-                if (a_cancellation.cancellation_mode() == cue::ChildProcessCancellationMode::Graceful &&
-                    gracefulStopDeadline.has_value())
+                if (a_cancellation.cancellation_mode() == cue::ChildProcessCancellationMode::Graceful)
                 {
+                    outcome = cue::ChildProcessOutcome::Cancelled;
                     didCompleteGracefulStop = true;
                 }
                 else if (a_cancellation.is_cancel_requested())
