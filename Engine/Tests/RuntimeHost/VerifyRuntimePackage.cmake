@@ -4,6 +4,9 @@ endif()
 if(NOT DEFINED MODULE_LIBRARY OR NOT EXISTS "${MODULE_LIBRARY}")
     message(FATAL_ERROR "MODULE_LIBRARY must identify the test Game Module")
 endif()
+if(NOT DEFINED DEPENDENCY_LIBRARY OR NOT EXISTS "${DEPENDENCY_LIBRARY}")
+    message(FATAL_ERROR "DEPENDENCY_LIBRARY must identify the App-local dependency probe")
+endif()
 if(NOT DEFINED TEST_ROOT OR TEST_ROOT STREQUAL "")
     message(FATAL_ERROR "TEST_ROOT is required")
 endif()
@@ -30,7 +33,7 @@ file(MAKE_DIRECTORY "${stagingRoot}/Data/Scenes" "${stagingRoot}/Game" "${stagin
 file(WRITE "${workingRoot}/CuePackage.json" "{\"schemaVersion\":999}\n")
 file(COPY_FILE "${TEST_EXECUTABLE}" "${stagingRoot}/CueRuntimeHost.exe" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${MODULE_LIBRARY}" "${stagingRoot}/Game/CueGameModule.dll" ONLY_IF_DIFFERENT)
-file(COPY_FILE "${MODULE_LIBRARY}" "${stagingRoot}/Runtime/ProbeDependency.dll" ONLY_IF_DIFFERENT)
+file(COPY_FILE "${DEPENDENCY_LIBRARY}" "${stagingRoot}/Runtime/ProbeDependency.dll" ONLY_IF_DIFFERENT)
 
 file(WRITE "${projectPath}"
     "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineCompatibility\":{\"minimum\":\"1.0.0\",\"maximumExclusive\":\"2.0.0\"},\"requiredCapabilities\":[],\"startupSceneAssetId\":\"${sceneId}\"}\n")

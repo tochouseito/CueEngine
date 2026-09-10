@@ -8,8 +8,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <span>
 #include <string>
 #include <string_view>
@@ -732,47 +734,33 @@ struct ThunkValidationContext final
 
 namespace cue::package
 {
-Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configuration,
-                                                 RuntimePeImageView a_runtimeHost,
-                                                 RuntimePeImageView a_gameModule,
-                                                 std::span<const RuntimePeImageView> a_appLocalDependencies,
-                                                 const AssertContext &a_assertContext) noexcept
+Result<std::vector<std::size_t>> create_runtime_dependency_load_order(
+    BuildConfiguration a_configuration, RuntimePeImageView a_gameModule,
+    std::span<const RuntimePeImageView> a_appLocalDependencies, const AssertContext &a_assertContext) noexcept
 {
-    if (!is_valid_configuration(a_configuration) || ascii_lower(a_runtimeHost.fileName) != "cueruntimehost.exe" ||
-        ascii_lower(a_gameModule.fileName) != "cuegamemodule.dll" ||
+    if (!is_valid_configuration(a_configuration) || ascii_lower(a_gameModule.fileName) != "cuegamemodule.dll" ||
         a_appLocalDependencies.size() > k_maximumPackageFileEntries - k_requiredPackageFileEntries)
     {
-        return Result<void>::failure(make_package_error(
+        return Result<std::vector<std::size_t>>::failure(make_package_error(
             a_assertContext, PackageError::RuntimeDependencyViolation,
-            "Runtime dependency closure input identity or configuration is invalid"));
+            "Runtime dependency load input identity or configuration is invalid"));
     }
     try
     {
         std::size_t remainingThunkEntries = k_maximumImportThunkEntries;
         std::size_t remainingStringBytes = k_maximumImportStringBytes;
-        ParsedPeImage host;
         ParsedPeImage game;
-        if (!parse_pe_image(a_runtimeHost.bytes, host, remainingThunkEntries, remainingStringBytes) ||
-            !parse_pe_image(a_gameModule.bytes, game, remainingThunkEntries, remainingStringBytes))
+        if (!parse_pe_image(a_gameModule.bytes, game, remainingThunkEntries, remainingStringBytes))
         {
-            return Result<void>::failure(make_package_error(
+            return Result<std::vector<std::size_t>>::failure(make_package_error(
                 a_assertContext, PackageError::InvalidPortableExecutable,
-                "Runtime Host or Game Module is not a bounded x64 PE image"));
+                "Game Module is not a bounded x64 PE image"));
         }
-        if (host.hasExportForwarder || game.hasExportForwarder)
+        if (game.hasExportForwarder)
         {
-            return Result<void>::failure(make_package_error(
+            return Result<std::vector<std::size_t>>::failure(make_package_error(
                 a_assertContext, PackageError::RuntimeDependencyViolation,
-                "Runtime Host or Game Module contains an unsupported export forwarder"));
-        }
-        for (const std::string &name : host.imports)
-        {
-            if (!is_system_import(name) && !is_configuration_msvc_import(a_configuration, name))
-            {
-                return Result<void>::failure(make_package_error(
-                    a_assertContext, PackageError::RuntimeDependencyViolation,
-                    "Runtime Host imports a DLL outside the fixed system and MSVC allowlists"));
-            }
+                "Game Module contains an unsupported export forwarder"));
         }
 
         std::vector<std::string> dependencyNames;
@@ -785,20 +773,20 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
             if (!is_dll_file_name(dependency.fileName) ||
                 std::ranges::find(dependencyNames, name) != dependencyNames.end())
             {
-                return Result<void>::failure(make_package_error(
+                return Result<std::vector<std::size_t>>::failure(make_package_error(
                     a_assertContext, PackageError::RuntimeDependencyViolation,
                     "App-local Runtime dependency names are invalid or case aliases"));
             }
             ParsedPeImage parsed;
             if (!parse_pe_image(dependency.bytes, parsed, remainingThunkEntries, remainingStringBytes))
             {
-                return Result<void>::failure(make_package_error(
+                return Result<std::vector<std::size_t>>::failure(make_package_error(
                     a_assertContext, PackageError::InvalidPortableExecutable,
                     "App-local Runtime dependency is not a bounded x64 PE image"));
             }
             if (parsed.hasExportForwarder)
             {
-                return Result<void>::failure(make_package_error(
+                return Result<std::vector<std::size_t>>::failure(make_package_error(
                     a_assertContext, PackageError::RuntimeDependencyViolation,
                     "App-local Runtime dependency contains an unsupported export forwarder"));
             }
@@ -808,9 +796,12 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
 
         std::vector<bool> reached(a_appLocalDependencies.size(), false);
         std::vector<std::size_t> pending;
+        std::vector<std::size_t> gameDependencies;
+        std::vector<std::vector<std::size_t>> dependencyEdges(a_appLocalDependencies.size());
         pending.reserve(a_appLocalDependencies.size());
         /// @brief 一つのPE Import集合をAllowlistまたは登録Dependencyへ解決する
-        const auto resolveImports = [&](const std::vector<std::string> &a_imports) noexcept
+        const auto resolveImports = [&](const std::vector<std::string> &a_imports,
+                                        std::vector<std::size_t> &a_dependencies) noexcept
         {
             for (const std::string &name : a_imports)
             {
@@ -828,6 +819,10 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
                     return false;
                 }
                 const std::size_t index = static_cast<std::size_t>(dependency - dependencyNames.begin());
+                if (std::ranges::find(a_dependencies, index) == a_dependencies.end())
+                {
+                    a_dependencies.push_back(index);
+                }
                 if (!reached[index])
                 {
                     reached[index] = true;
@@ -836,26 +831,120 @@ Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configurat
             }
             return true;
         };
-        if (!resolveImports(game.imports))
+        if (!resolveImports(game.imports, gameDependencies))
         {
-            return Result<void>::failure(make_package_error(
+            return Result<std::vector<std::size_t>>::failure(make_package_error(
                 a_assertContext, PackageError::RuntimeDependencyViolation,
                 "Game Module has an unregistered or configuration-mismatched import"));
         }
         for (std::size_t cursor = 0U; cursor < pending.size(); ++cursor)
         {
-            if (!resolveImports(parsedDependencies[pending[cursor]].imports))
+            const std::size_t index = pending[cursor];
+            if (!resolveImports(parsedDependencies[index].imports, dependencyEdges[index]))
             {
-                return Result<void>::failure(make_package_error(
+                return Result<std::vector<std::size_t>>::failure(make_package_error(
                     a_assertContext, PackageError::RuntimeDependencyViolation,
                     "App-local Runtime dependency closure contains an unresolved import"));
             }
         }
         if (std::ranges::find(reached, false) != reached.end())
         {
-            return Result<void>::failure(make_package_error(
+            return Result<std::vector<std::size_t>>::failure(make_package_error(
                 a_assertContext, PackageError::RuntimeDependencyViolation,
                 "A registered App-local Runtime dependency is unreachable from the Game Module"));
+        }
+
+        std::vector<std::size_t> remainingDependencies(a_appLocalDependencies.size(), 0U);
+        std::vector<std::vector<std::size_t>> dependents(a_appLocalDependencies.size());
+        for (std::size_t index = 0U; index < dependencyEdges.size(); ++index)
+        {
+            remainingDependencies[index] = dependencyEdges[index].size();
+            for (const std::size_t dependency : dependencyEdges[index])
+            {
+                dependents[dependency].push_back(index);
+            }
+        }
+        std::priority_queue<std::size_t, std::vector<std::size_t>, std::greater<>> ready;
+        for (std::size_t index = 0U; index < remainingDependencies.size(); ++index)
+        {
+            if (remainingDependencies[index] == 0U)
+            {
+                ready.push(index);
+            }
+        }
+        std::vector<std::size_t> loadOrder;
+        loadOrder.reserve(a_appLocalDependencies.size());
+        while (!ready.empty())
+        {
+            const std::size_t dependency = ready.top();
+            ready.pop();
+            loadOrder.push_back(dependency);
+            for (const std::size_t dependent : dependents[dependency])
+            {
+                --remainingDependencies[dependent];
+                if (remainingDependencies[dependent] == 0U)
+                {
+                    ready.push(dependent);
+                }
+            }
+        }
+        if (loadOrder.size() != a_appLocalDependencies.size())
+        {
+            return Result<std::vector<std::size_t>>::failure(make_package_error(
+                a_assertContext, PackageError::RuntimeDependencyViolation,
+                "App-local Runtime dependency cycle cannot be preloaded from fixed absolute paths"));
+        }
+        return Result<std::vector<std::size_t>>::success(std::move(loadOrder));
+    }
+    catch (...)
+    {
+        terminate_pe_exception(a_assertContext);
+    }
+}
+
+Result<void> validate_runtime_dependency_closure(BuildConfiguration a_configuration,
+                                                 RuntimePeImageView a_runtimeHost,
+                                                 RuntimePeImageView a_gameModule,
+                                                 std::span<const RuntimePeImageView> a_appLocalDependencies,
+                                                 const AssertContext &a_assertContext) noexcept
+{
+    if (!is_valid_configuration(a_configuration) || ascii_lower(a_runtimeHost.fileName) != "cueruntimehost.exe")
+    {
+        return Result<void>::failure(make_package_error(
+            a_assertContext, PackageError::RuntimeDependencyViolation,
+            "Runtime dependency closure input identity or configuration is invalid"));
+    }
+    try
+    {
+        std::size_t remainingThunkEntries = k_maximumImportThunkEntries;
+        std::size_t remainingStringBytes = k_maximumImportStringBytes;
+        ParsedPeImage host;
+        if (!parse_pe_image(a_runtimeHost.bytes, host, remainingThunkEntries, remainingStringBytes))
+        {
+            return Result<void>::failure(make_package_error(
+                a_assertContext, PackageError::InvalidPortableExecutable,
+                "Runtime Host is not a bounded x64 PE image"));
+        }
+        if (host.hasExportForwarder)
+        {
+            return Result<void>::failure(make_package_error(
+                a_assertContext, PackageError::RuntimeDependencyViolation,
+                "Runtime Host contains an unsupported export forwarder"));
+        }
+        for (const std::string &name : host.imports)
+        {
+            if (!is_system_import(name) && !is_configuration_msvc_import(a_configuration, name))
+            {
+                return Result<void>::failure(make_package_error(
+                    a_assertContext, PackageError::RuntimeDependencyViolation,
+                    "Runtime Host imports a DLL outside the fixed system and MSVC allowlists"));
+            }
+        }
+        auto loadOrder = create_runtime_dependency_load_order(
+            a_configuration, a_gameModule, a_appLocalDependencies, a_assertContext);
+        if (!loadOrder)
+        {
+            return Result<void>::failure(std::move(*loadOrder.try_error()));
         }
         return Result<void>::success();
     }
