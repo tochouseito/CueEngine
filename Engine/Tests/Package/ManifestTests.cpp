@@ -428,7 +428,7 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
            is_package_error(tooMany, cue::package::PackageError::PackageManifestResourceLimitExceeded);
 }
 
-/// @brief x64 PE通常／Delay Import閉包、構成Allowlist、未登録／未到達、Forwarder拒否を検証する
+/// @brief x64 PE通常／Delay Import閉包、事前Load順、Allowlist、未登録／循環拒否を検証する
 [[nodiscard]] bool test_runtime_dependency_closure(const cue::AssertContext &a_assertContext)
 {
     constexpr std::array hostImports = {std::string_view("KERNEL32.dll"), std::string_view("VCRUNTIME140D.dll")};
@@ -445,6 +445,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto valid = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, dependencies,
         a_assertContext);
+    auto loadOrder = cue::package::create_runtime_dependency_load_order(
+        cue::BuildConfiguration::Debug, {"CueGameModule.dll", game}, dependencies, a_assertContext);
 
     std::vector<std::byte> namedImportGame = game;
     write_u64(namedImportGame, 0x700U, 0x1a00U);
@@ -488,6 +490,17 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto unreachable = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
         unreachableDependencies, a_assertContext);
+
+    constexpr std::array localAImports = {std::string_view("LocalB.dll")};
+    constexpr std::array localBImportsLocalA = {std::string_view("LocalA.dll")};
+    const std::vector<std::byte> cyclicLocalA = make_test_pe(localAImports, {});
+    const std::vector<std::byte> cyclicLocalB = make_test_pe(localBImportsLocalA, {});
+    const std::array cyclicDependencies = {
+        cue::package::RuntimePeImageView{"LocalA.dll", cyclicLocalA},
+        cue::package::RuntimePeImageView{"LocalB.dll", cyclicLocalB}};
+    auto cyclic = cue::package::validate_runtime_dependency_closure(
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
+        cyclicDependencies, a_assertContext);
 
     const std::vector<std::byte> forwarded = make_test_pe({}, {}, true);
     const std::array forwardedDependency = {cue::package::RuntimePeImageView{"LocalA.dll", forwarded}};
@@ -606,11 +619,13 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     auto invalidSectionOverlap = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
         {"CueGameModule.dll", overlappingSections}, {}, a_assertContext);
-    return valid && validNamedImport && validSpacedImport &&
+    return valid && loadOrder && loadOrder.try_value()->size() == 2U && (*loadOrder.try_value())[0] == 1U &&
+           (*loadOrder.try_value())[1] == 0U && validNamedImport && validSpacedImport &&
            is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(mixed, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(hostBoundary, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(unreachable, cue::package::PackageError::RuntimeDependencyViolation) &&
+           is_package_error(cyclic, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(forwarder, cue::package::PackageError::RuntimeDependencyViolation) &&
            is_package_error(invalidPe, cue::package::PackageError::InvalidPortableExecutable) &&
            is_package_error(invalidImportThunk, cue::package::PackageError::InvalidPortableExecutable) &&
