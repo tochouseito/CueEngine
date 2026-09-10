@@ -374,7 +374,8 @@ bool PackagePresenter::can_run() const noexcept
 {
     return m_current.package.has_value() &&
            (m_current.state == package::PackageWorkflowState::PackageReady ||
-            m_current.state == package::PackageWorkflowState::RunSucceeded);
+            m_current.state == package::PackageWorkflowState::RunSucceeded ||
+            m_current.state == package::PackageWorkflowState::Failed);
 }
 
 bool PackagePresenter::can_stop() const noexcept
