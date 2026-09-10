@@ -254,11 +254,11 @@ class TestDirectory final
     return packages;
 }
 
-/// @brief JSON TextにDriveまたはslash／backslash形式のWindows Absolute Pathが含まれるか返す
+/// @brief JSON TextにDriveまたはslash／backslash形式のWindows Rooted Pathが含まれるか返す
 [[nodiscard]] bool json_text_contains_windows_absolute_path(std::string_view a_bytes) noexcept
 {
     if (a_bytes.find("\\\\") != std::string_view::npos ||
-        a_bytes.find("\"//") != std::string_view::npos)
+        a_bytes.find("\"/") != std::string_view::npos)
     {
         return true;
     }
@@ -720,6 +720,7 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     const std::string firstManifest = read_file(packages[0] / L"CuePackage.json");
     const std::string secondManifest = read_file(packages[1] / L"CuePackage.json");
     if (!json_text_contains_windows_absolute_path("{\"path\":\"//server/share/runtime.json\"}") ||
+        !json_text_contains_windows_absolute_path("{\"path\":\"/Generated/Build/runtime.json\"}") ||
         !json_text_contains_windows_absolute_path("{\"path\":\"C:/workspace/runtime.json\"}") ||
         json_text_contains_windows_absolute_path("{\"url\":\"https://example.invalid/runtime\"}"))
     {
