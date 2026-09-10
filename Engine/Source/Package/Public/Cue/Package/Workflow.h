@@ -111,8 +111,9 @@ class GamePackageWorkflowService final
     [[nodiscard]] Result<void> start(BuildRequest a_buildRequest, CMakeConfigureMode a_configureMode,
                                      EngineVersion a_engineVersion, std::string a_projectId,
                                      MinimalRuntimeDataPublication a_runtimeData) noexcept;
-    /// @brief 最後の入力を新Operation IDでBuildから再実行する
-    [[nodiscard]] Result<void> retry(std::string a_operationId) noexcept;
+    /// @brief 現在の保存済みRuntime Dataを新Operation IDでBuildから再実行する
+    [[nodiscard]] Result<void> retry(std::string a_operationId, EngineVersion a_engineVersion, std::string a_projectId,
+                                     MinimalRuntimeDataPublication a_runtimeData) noexcept;
     /// @brief Build完了を観測し、Package Worker開始または完了WorkerのJoinを行う
     void advance() noexcept;
     /// @brief 現在のBuildまたはPackageまたはRuntime Processへ取消を通知する

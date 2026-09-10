@@ -558,7 +558,9 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
     }
 }
 
-Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexcept
+Result<void> GamePackageWorkflowService::retry(std::string a_operationId, EngineVersion a_engineVersion,
+                                               std::string a_projectId,
+                                               MinimalRuntimeDataPublication a_runtimeData) noexcept
 {
     try
     {
@@ -569,7 +571,6 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
                                                              "Package workflow retry requires owner thread"));
         }
         advance();
-        std::optional<Impl::PackageInputs> inputs;
         {
             std::scoped_lock lock(m_impl->mutex);
             if (!m_impl->retryInputs)
@@ -586,7 +587,6 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
                                                                  WorkflowError::OperationAlreadyRunning,
                                                                  "Package workflow operation is already running"));
             }
-            inputs = *m_impl->retryInputs;
         }
         Result<void> recovered = m_impl->retry_staging_recovery();
         if (!recovered)
@@ -598,9 +598,11 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
         {
             return restarted;
         }
+        Impl::PackageInputs inputs{a_engineVersion, std::move(a_projectId), std::move(a_runtimeData)};
         {
             std::scoped_lock lock(m_impl->mutex);
-            m_impl->pendingInputs = std::move(inputs);
+            m_impl->pendingInputs = inputs;
+            m_impl->retryInputs = std::move(inputs);
             m_impl->isCancellationRequested = false;
             m_impl->current.state = PackageWorkflowState::Building;
             m_impl->current.activeStage = PackageWorkflowStage::Build;

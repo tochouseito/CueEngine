@@ -1,17 +1,22 @@
 #include <Cue/Editor/ImGui/BuildPresenter.h>
 #include <Cue/Editor/ImGui/PackagePresenter.h>
 
+#include <Cue/EditorCore/EditorIntent.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 #include <Cue/IO/Windows/WindowsFilesystem.h>
 #include <Cue/Project/Generator.h>
+#include <Cue/Scene/ComponentData.h>
 #include <Cue/Scene/Identity.h>
 #include <Cue/Scene/Instantiation.h>
 #include <Cue/Scene/SceneDocument.h>
+#include <Cue/Scene/Serialization.h>
+#include <Cue/Schema/Registry.h>
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -45,6 +50,28 @@ class TestFatalHandler final : public cue::FatalHandler
     {
         std::_Exit(91);
     }
+};
+
+/// @brief Presenter TestのScene編集へ重複しないUUID Version 4候補を返す
+class TestSceneIdentitySource final : public cue::scene::SceneIdentitySource
+{
+  public:
+    /// @brief Counterを埋め込んだRFC 4122 UUID Version 4候補を返す
+    [[nodiscard]] cue::scene::IdentityBytes next_identity() noexcept override
+    {
+        cue::scene::IdentityBytes bytes{};
+        for (std::size_t index = 0U; index < sizeof(m_next); ++index)
+        {
+            bytes[bytes.size() - 1U - index] = static_cast<std::uint8_t>((m_next >> (index * 8U)) & 0xFFU);
+        }
+        bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U);
+        bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U);
+        ++m_next;
+        return bytes;
+    }
+
+  private:
+    std::uint64_t m_next = 0x100U;
 };
 
 /// @brief Test前提違反をSource Line由来のExit Codeで即時報告する
@@ -397,8 +424,15 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     TestDirectory directory;
     const std::filesystem::path projectRoot = directory.path() / "Project";
     const std::filesystem::path engineRoot = directory.path() / "Engine";
-    std::filesystem::create_directories(projectRoot);
     std::filesystem::create_directories(engineRoot);
+
+    auto parentFilesystem = cue::create_windows_filesystem_root(directory.path().generic_string(), a_assertContext);
+    auto projectId = cue::ProjectId::parse(k_packageProjectId, a_assertContext);
+    require(parentFilesystem.has_value() && projectId.has_value());
+    auto generated = cue::generate_blank_project(
+        **parentFilesystem.try_value(), "Project", "Package Presenter Test", *projectId.try_value(), k_packageSceneId,
+        {cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}}, a_assertContext);
+    require(generated.has_value());
 
     RunnerState runnerState;
     runnerState.mode.store(RunnerMode::Fail, std::memory_order_release);
@@ -427,8 +461,23 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     require(service->wait_for_package().has_value());
     require(service->snapshot().state == cue::package::PackageWorkflowState::Failed);
 
+    auto sourceAssets =
+        cue::create_windows_filesystem_root((projectRoot / "Assets" / "Source").generic_string(), a_assertContext);
+    auto savedRoot = cue::create_windows_filesystem_root((projectRoot / "Saved").generic_string(), a_assertContext);
+    cue::schema::SchemaRegistryIdentitySource schemaIdentitySource;
+    cue::schema::SchemaRegistryBuilder schemaBuilder(schemaIdentitySource, a_assertContext);
+    auto schemaRegistry = schemaBuilder.seal();
+    require(sourceAssets.has_value() && savedRoot.has_value() && schemaRegistry.has_value());
+    auto valueRegistry =
+        cue::scene::ComponentValueSchemaRegistry::create({}, **schemaRegistry.try_value(), a_assertContext);
+    require(valueRegistry.has_value());
+    cue::scene::SceneMigrationRegistry sceneMigrations;
+    cue::scene::ComponentMigrationRegistry componentMigrations;
+    cue::editor_core::ScenePersistenceServices persistence(**sourceAssets.try_value(), **savedRoot.try_value(),
+                                                           **schemaRegistry.try_value(), *valueRegistry.try_value(),
+                                                           sceneMigrations, componentMigrations);
     std::unique_ptr<cue::editor_core::EditorController> controller =
-        cue::editor_core::EditorController::create(make_package_descriptor(a_assertContext), a_assertContext);
+        cue::editor_core::EditorController::create(std::move(*generated.try_value()), persistence, a_assertContext);
     auto operationIds = std::make_unique<TestOperationIdSource>(
         std::vector<std::string>{"71234567-89ab-4cde-8f01-23456789abcd", "81234567-89ab-4cde-8f01-23456789abcd"});
     std::unique_ptr<cue::editor::PackagePresenter> presenter =
@@ -442,7 +491,16 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     require(presenter->current_snapshot().state == cue::package::PackageWorkflowState::Failed);
     require(presenter->current_snapshot().build.operationId == "71234567-89ab-4cde-8f01-23456789abcd");
 
-    require(!presenter->submit(cue::editor::EditorPackageCommand::Start));
+    auto locator = cue::RelativePath::parse("Scenes/Default.cuescene", a_assertContext);
+    require(locator.has_value());
+    auto documentId = controller->open_document_from_storage(std::move(*locator.try_value()));
+    require(documentId.has_value());
+    TestSceneIdentitySource identitySource;
+    require(controller
+                ->execute_intent(*documentId.try_value(), cue::editor_core::AddObjectIntent{std::nullopt, "Dirty"},
+                                 identitySource, {})
+                .has_value());
+    require(!presenter->submit(cue::editor::EditorPackageCommand::Retry));
     const std::string localDiagnostic(presenter->message());
     require(presenter->has_error_message());
     presenter->refresh();
