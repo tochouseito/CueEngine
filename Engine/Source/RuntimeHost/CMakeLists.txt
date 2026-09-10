@@ -8,6 +8,7 @@ target_sources(
         RuntimeHostApplication.h
         RuntimePackage.cpp
         RuntimePackage.h
+        RuntimePath.h
 )
 
 target_link_libraries(
