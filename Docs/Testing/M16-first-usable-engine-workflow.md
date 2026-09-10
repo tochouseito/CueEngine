@@ -32,12 +32,13 @@ Blank 3Dは、Version付き`CueProject.json`、Default Scene、3構成のCMake P
 
 ## Edit and Save the Default Scene
 
-1. `Hierarchy`の`Objectを追加`を押す。
-2. 追加Objectを選択し、`Inspector`で名前、Parent、Translation／Rotation／Scaleを編集する。
-3. `Transformを適用`を押し、TitleのDirty表示を確認する。
-4. `編集`Menuまたは`Ctrl+Z`／`Ctrl+Y`でUndo／Redoし、Hierarchy、Inspector、Selectionが対応する状態へ戻ることを確認する。
-5. `ファイル`Menuの`保存`または`Ctrl+S`でDefault Sceneを保存する。
-6. Editorを閉じてProject Hubから同じProjectを再Openし、Object Identityと編集内容が維持されることを確認する。
+1. `Hierarchy`の`Objectを追加`を二回押し、Parent候補と編集対象の二Objectを作成する。
+2. 編集対象Objectを選択し、`Inspector`で名前、Translation／Rotation／Scaleを編集し、Parentをもう一方のObjectへ変更する。
+3. `Transformを適用`を押す。
+4. Editor終了を要求し、未保存Sceneに対する`保存`／`破棄`／`キャンセル`確認が表示されることを確認して`キャンセル`を選ぶ。
+5. `編集`Menuまたは`Ctrl+Z`／`Ctrl+Y`でUndo／Redoし、Hierarchy、Inspector、Selectionが対応する状態へ戻ることを確認する。
+6. `ファイル`Menuの`保存`または`Ctrl+S`でDefault Sceneを保存する。
+7. Editorを閉じてProject Hubから同じProjectを再Openし、Object Identityと編集内容が維持されることを確認する。
 
 ## Operate Project Files
 
@@ -86,8 +87,9 @@ Packageは`Generated/Packages/<Configuration>/<operation-id>`へ新規公開さ�
 9. Project Hubから同じProjectを再Openし、Package中について手順8を繰り返す。
 10. Project Hubから同じProjectを再Openし、Run中について手順8を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
 
-Build Errorの詳細は`Game Build` WindowのConsoleとOperation表示で確認する。Package失敗時は不完全な最終Destinationを
-成功扱いせず、Rollbackに失敗したStagingがある場合だけRecovery Locatorを診断として保持する。
+Build Errorの詳細は`Build Package Run` Windowの`Build Diagnostics`と`Build Output`で確認する。Package失敗時は不完全な
+最終Destinationを成功扱いせず、Rollbackの即時再試行にも失敗したStagingがある場合だけ同Windowの`Recovery Staging`へ
+Project Root相対Locatorを表示して保持する。
 
 ## Acceptance Checklist
 
