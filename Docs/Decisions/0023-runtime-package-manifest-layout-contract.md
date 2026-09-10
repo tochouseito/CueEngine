@@ -440,6 +440,11 @@ Cancelは最終Rename直前まで受理し、StagingだけをCleanupする。Ren
 優先する。CleanupはOperationが作成した正確なStaging Rootだけを対象にし、Destination、Project Source、Build Artifact、別Operationを
 再帰削除しない。
 
+Rollbackが失敗した場合、Publisherは元のFilesystem Instanceでのみ使用できるStaging TokenをResultへ返す。Editor Workflowは同じ
+Filesystem InstanceとTokenを所有し、直ちに一度再試行する。再試行も失敗した場合はProject Root相対Recovery Staging Locatorを
+SnapshotとUIへ公開し、次のBuild／Package Retry前およびWorkflow終了時に同じTokenでRollbackを再試行する。Tokenを破棄して別Pathを
+推測削除したり、別Filesystem Instanceへ渡したりしない。
+
 Publish OutcomeはADR-0014と同じ分類を使用する。
 
 - `Committed`: 全FileのFlush、Write-through Rename、Destination再読込による完全性確認に成功し、Package成功として記録できる
