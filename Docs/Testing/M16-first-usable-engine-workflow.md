@@ -13,7 +13,9 @@ Game Build、Standalone Package公開、Standalone起動までを一つの制作
 2. Repository Rootで`pwsh -NoProfile -File Tools/Dependencies/RestoreVcpkg.ps1`を実行済みにする。
 3. `cmake --preset windows-vs2026`を実行する。
 4. `cmake --build --preset windows-vs2026-debug`を実行する。
-5. Test専用の空DirectoryをProject作成先として用意する。
+5. `cmake --build --preset windows-vs2026-development`を実行する。
+6. `cmake --build --preset windows-vs2026-release`を実行する。
+7. Test専用の空DirectoryをProject作成先として用意する。
 
 ## Create and Open a Blank Game
 
@@ -77,8 +79,12 @@ Packageは`Generated/Packages/<Configuration>/<operation-id>`へ新規公開さ�
 2. `Build & Package`を実行し、Build StageでFailedになり、新しいPackageが公開されないことを確認する。
 3. 直前の成功Package表示とDirectoryが維持されることを確認する。
 4. Sourceを元に戻して`Retry`を押し、新しいPackageが`Package Ready`になることを確認する。
-5. DirtyなSceneでEditor終了を要求し、`キャンセル`、`保存`、`破棄`の各判断が既存のScene保存契約に従うことを確認する。
-6. Build、Package、Run中にEditor終了を要求し、`Editorへ戻る`では処理とEditorが継続し、`停止して終了`では子Processと作業を停止して終了できることを確認する。
+5. DirtyなSceneでEditor終了を要求し、`キャンセル`を選んでEditorが継続することを確認する。
+6. 再度終了を要求して`保存`を選び、保存完了後にEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
+7. Sceneを再びDirtyにして終了を要求し、`破棄`を選んでEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
+8. Build中にEditor終了を要求し、`Editorへ戻る`で処理とEditorが継続することを確認する。再度終了を要求し、`停止して終了`で子Processと作業が終了することを確認する。
+9. Project Hubから同じProjectを再Openし、Package中について手順8を繰り返す。
+10. Project Hubから同じProjectを再Openし、Run中について手順8を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
 
 Build Errorの詳細は`Game Build` WindowのConsoleとOperation表示で確認する。Package失敗時は不完全な最終Destinationを
 成功扱いせず、Rollbackに失敗したStagingがある場合だけRecovery Locatorを診断として保持する。

@@ -18,11 +18,11 @@ Runtime Systemを追加登録しない。外部Assetまたは第三者Codeを必
 | --- | --- |
 | Blank Project／Default Scene | `Cue.Project.Generator`、`Cue.Project.Generator.Windows`、`Cue.ProjectHub.Service` |
 | Project HubからEditor Open／再Open | `Cue.ProjectHub.Windows.EditorProcess`、`Cue.Editor.Workflow.ProcessRoundTrip` |
-| Hierarchy／Inspector／Undo／Redo | `Cue.Editor.ImGui`、`Cue.EditorCore.Commands`、`Cue.EditorCore.Controller` |
-| Save／Reload／Recovery | `Cue.EditorCore.Persistence`、`Cue.Editor.Workflow.ProcessRoundTrip` |
-| Files／Trash／Root境界 | `Cue.EditorCore.FilesWorkspace`、`Cue.ProjectFiles.*`、`Cue.Editor.Workflow.ProcessRoundTrip` |
+| Hierarchy／Inspector／Undo／Redo | `Cue.EditorCore.DocumentState`、`Cue.Editor.ImGui.HierarchyInspector` |
+| Save／Reload／Recovery | `Cue.EditorCore.DocumentState`、`Cue.Editor.Workflow.ProcessRoundTrip` |
+| Files／Trash／Root境界 | `Cue.EditorCore.FilesWorkspace`、`Cue.ProjectFiles.Create`、`Cue.ProjectFiles.Recovery`、`Cue.ProjectFiles.TrashRecord`、`Cue.ProjectFiles.FileDialogRevalidation` |
 | Play／Stop／失敗後再試行 | `Cue.EditorCore.PlaySession`、`Cue.Editor.Workflow.ProcessRoundTrip` |
-| 3構成Game Build／失敗／Retry | `Cue.Build.*`、`Cue.Editor.Workflow.ProcessRoundTrip` |
+| 3構成Game Build／失敗／Retry | `Cue.Build.Plan`、`Cue.Build.CMakeRunner.Process`、`Cue.Build.Windows.ArtifactPublisher`、`Cue.Editor.Workflow.ProcessRoundTrip` |
 | Package Staging／失敗／Rollback | `Cue.Package.Publisher`、`Cue.Package.Workflow` |
 | Standalone起動／Relocation | `Cue.RuntimeHost.Package.Process`、`Cue.Editor.Workflow.ProcessRoundTrip` |
 
