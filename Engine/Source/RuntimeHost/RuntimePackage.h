@@ -67,8 +67,8 @@ class LoadedRuntimePackage final
     [[nodiscard]] const scene::SceneSnapshot &startup_scene() const noexcept;
     /// @brief Module Callbackを保持するSystem登録を呼出側へ一度だけ移す
     [[nodiscard]] std::vector<runtime::RuntimeSystemRegistration> take_systems() noexcept;
-    /// @brief Runtime Sessionより長く保持するGame Module Ownerを呼出側へ移す
-    [[nodiscard]] std::unique_ptr<RuntimePackageModule> take_module() noexcept;
+    /// @brief Runtime Systemと共有してDLL Callback寿命を保証するGame Module Ownerを呼出側へ移す
+    [[nodiscard]] std::shared_ptr<RuntimePackageModule> take_module() noexcept;
     /// @brief Runtime Sessionより長く保持するSchema Registryを呼出側へ移す
     [[nodiscard]] std::unique_ptr<schema::SchemaRegistry> take_schema_registry() noexcept;
     /// @brief Runtime Session開始まで保持するStartup Scene Snapshotを呼出側へ移す
@@ -80,14 +80,14 @@ class LoadedRuntimePackage final
 
     /// @brief 全起動入力の検証成功後だけPackage Ownerを構築する
     LoadedRuntimePackage(std::string a_packageRoot, std::string a_projectId,
-                         std::unique_ptr<RuntimePackageModule> a_module,
+                         std::shared_ptr<RuntimePackageModule> a_module,
                          std::unique_ptr<schema::SchemaRegistry> a_schemaRegistry,
                          scene::SceneSnapshot a_startupScene,
                          std::vector<runtime::RuntimeSystemRegistration> a_systems) noexcept;
 
     std::string m_packageRoot;
     std::string m_projectId;
-    std::unique_ptr<RuntimePackageModule> m_module;
+    std::shared_ptr<RuntimePackageModule> m_module;
     std::unique_ptr<schema::SchemaRegistry> m_schemaRegistry;
     scene::SceneSnapshot m_startupScene;
     std::vector<runtime::RuntimeSystemRegistration> m_systems;
