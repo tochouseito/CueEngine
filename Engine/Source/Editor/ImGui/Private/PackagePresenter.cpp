@@ -197,43 +197,36 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
                 set_error(*operationId.try_error(), "Operation IDの生成");
                 return false;
             }
-            if (a_command == EditorPackageCommand::Retry)
+            Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
+            if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
+                sceneSnapshot.try_error()->code().value() ==
+                    static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
             {
-                result = m_service->retry(std::move(*operationId.try_value()));
+                set_status(
+                    "Startup Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
+                m_hasError = true;
+                return false;
             }
-            else
+            Result<package::MinimalRuntimeDataPublication> runtimeData =
+                sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
+                                                                       *sceneSnapshot.try_value(), *m_assertContext)
+                              : Result<package::MinimalRuntimeDataPublication>::failure(
+                                    std::move(*sceneSnapshot.try_error()));
+            Result<BuildProfile> profile =
+                BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
+            if (!runtimeData || !profile)
             {
-                Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
-                if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
-                    sceneSnapshot.try_error()->code().value() ==
-                        static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
-                {
-                    set_status(
-                        "Startup Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
-                    m_hasError = true;
-                    return false;
-                }
-                Result<package::MinimalRuntimeDataPublication> runtimeData =
-                    sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
-                                                                           *sceneSnapshot.try_value(), *m_assertContext)
-                                  : Result<package::MinimalRuntimeDataPublication>::failure(
-                                        std::move(*sceneSnapshot.try_error()));
-                Result<BuildProfile> profile =
-                    BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
-                if (!runtimeData || !profile)
-                {
-                    set_error(runtimeData ? *profile.try_error() : *runtimeData.try_error(),
-                              runtimeData ? "Build Profileの作成" : "Runtime Dataの生成");
-                    return false;
-                }
-                BuildRequest request{m_projectRoot, std::move(*profile.try_value()),
-                                     std::move(*operationId.try_value()), m_workspaceCompatibility};
-                result = m_service->start(
-                    std::move(request), m_forceConfigure ? CMakeConfigureMode::Required
-                                                         : CMakeConfigureMode::ReuseCompatibleTree,
-                    {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
-                    std::move(*runtimeData.try_value()));
+                set_error(runtimeData ? *profile.try_error() : *runtimeData.try_error(),
+                          runtimeData ? "Build Profileの作成" : "Runtime Dataの生成");
+                return false;
             }
+            BuildRequest request{m_projectRoot, std::move(*profile.try_value()),
+                                 std::move(*operationId.try_value()), m_workspaceCompatibility};
+            result = m_service->start(
+                std::move(request), m_forceConfigure ? CMakeConfigureMode::Required
+                                                     : CMakeConfigureMode::ReuseCompatibleTree,
+                {1U, 0U, 0U}, std::string(m_controller->session().project_descriptor().project_id().text()),
+                std::move(*runtimeData.try_value()));
         }
         if (!result)
         {
@@ -451,7 +444,8 @@ void PackagePresenter::draw_toolbar() noexcept
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (!can_cancel())
+    const bool cancelEnabled = can_cancel();
+    if (!cancelEnabled)
     {
         ImGui::BeginDisabled();
     }
@@ -459,12 +453,13 @@ void PackagePresenter::draw_toolbar() noexcept
     {
         static_cast<void>(submit(EditorPackageCommand::Cancel));
     }
-    if (!can_cancel())
+    if (!cancelEnabled)
     {
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (!can_retry())
+    const bool retryEnabled = can_retry();
+    if (!retryEnabled)
     {
         ImGui::BeginDisabled();
     }
@@ -472,12 +467,13 @@ void PackagePresenter::draw_toolbar() noexcept
     {
         static_cast<void>(submit(EditorPackageCommand::Retry));
     }
-    if (!can_retry())
+    if (!retryEnabled)
     {
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (!can_run())
+    const bool runEnabled = can_run();
+    if (!runEnabled)
     {
         ImGui::BeginDisabled();
     }
@@ -485,12 +481,13 @@ void PackagePresenter::draw_toolbar() noexcept
     {
         static_cast<void>(submit(EditorPackageCommand::Run));
     }
-    if (!can_run())
+    if (!runEnabled)
     {
         ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (!can_stop())
+    const bool stopEnabled = can_stop();
+    if (!stopEnabled)
     {
         ImGui::BeginDisabled();
     }
@@ -498,7 +495,7 @@ void PackagePresenter::draw_toolbar() noexcept
     {
         static_cast<void>(submit(EditorPackageCommand::Stop));
     }
-    if (!can_stop())
+    if (!stopEnabled)
     {
         ImGui::EndDisabled();
     }
