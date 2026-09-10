@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -64,6 +65,23 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> a_result) noexce
     const std::span<const char> characters(a_text.data(), a_text.size());
     const std::span<const std::byte> raw = std::as_bytes(characters);
     return std::vector<std::byte>(raw.begin(), raw.end());
+}
+
+/// @brief 公開済みFileを再生成比較用Byte列として読む
+[[nodiscard]] std::vector<std::byte> read_bytes(const std::filesystem::path &a_path)
+{
+    std::ifstream stream(a_path, std::ios::binary | std::ios::ate);
+    require(stream.good());
+    const std::streamsize size = stream.tellg();
+    require(size >= 0);
+    stream.seekg(0, std::ios::beg);
+    std::vector<std::byte> result(static_cast<std::size_t>(size));
+    if (!result.empty())
+    {
+        stream.read(reinterpret_cast<char *>(result.data()), size);
+        require(stream.good());
+    }
+    return result;
 }
 
 /// @brief 5個の必須Roleを持つ最小Package Payloadを構築する
@@ -365,6 +383,48 @@ void test_publish_contract(const std::filesystem::path &a_root, const cue::packa
     require(!std::filesystem::exists(a_root / "CancelledPackage"));
 }
 
+/// @brief 同じManifestとPayloadから公開したPackageの全ContentがByte一致することを検証する
+void test_reproducible_publication(const std::filesystem::path &a_root,
+                                   const cue::package::PackageManifest &a_manifest,
+                                   std::span<const cue::package::PackageFilePayload> a_payloads,
+                                   const cue::AssertContext &a_assertContext)
+{
+    std::unique_ptr<cue::FilesystemRoot> filesystem = open_root(a_root, a_assertContext);
+    cue::RelativePath firstDestination =
+        take_value(cue::RelativePath::parse("ReproduciblePackageA", a_assertContext));
+    cue::RelativePath secondDestination =
+        take_value(cue::RelativePath::parse("ReproduciblePackageB", a_assertContext));
+    cue::package::PackageCancellation firstCancellation;
+    cue::package::PackageCancellation secondCancellation;
+    const cue::package::PackagePublishReport first = cue::package::publish_runtime_package(
+        *filesystem, firstDestination, a_manifest, a_payloads, firstCancellation, a_assertContext);
+    const cue::package::PackagePublishReport second = cue::package::publish_runtime_package(
+        *filesystem, secondDestination, a_manifest, a_payloads, secondCancellation, a_assertContext);
+    require(first.succeeded() && second.succeeded());
+
+    const std::filesystem::path firstRoot = a_root / "ReproduciblePackageA";
+    const std::filesystem::path secondRoot = a_root / "ReproduciblePackageB";
+    std::size_t firstFileCount = 0U;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::recursive_directory_iterator(firstRoot))
+    {
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        ++firstFileCount;
+        const std::filesystem::path relative = std::filesystem::relative(entry.path(), firstRoot);
+        const std::filesystem::path counterpart = secondRoot / relative;
+        require(std::filesystem::is_regular_file(counterpart));
+        require(read_bytes(entry.path()) == read_bytes(counterpart));
+    }
+    std::size_t secondFileCount = 0U;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::recursive_directory_iterator(secondRoot))
+    {
+        secondFileCount += entry.is_regular_file() ? 1U : 0U;
+    }
+    require(firstFileCount == a_payloads.size() + 1U && secondFileCount == firstFileCount);
+}
+
 /// @brief Publish前Failure、Rollback Recovery、Publish後DurabilityUnknownを検証する
 void test_failure_injection(const std::filesystem::path &a_root,
                             const cue::package::PackageManifest &a_manifest,
@@ -464,6 +524,7 @@ int main(int a_argumentCount, char **a_arguments)
     const std::vector<cue::package::PackageFilePayload> payloads = make_payloads(assertContext);
     const cue::package::PackageManifest manifest = make_manifest(payloads, assertContext);
     test_publish_contract(root, manifest, payloads, assertContext);
+    test_reproducible_publication(root, manifest, payloads, assertContext);
     test_failure_injection(root, manifest, payloads, assertContext);
     test_cancellation_publish_boundary(root, manifest, payloads, assertContext);
 
