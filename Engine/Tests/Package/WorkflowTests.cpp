@@ -143,11 +143,14 @@ struct PublisherState final
 {
     std::atomic<bool> corruptInventory = false;
     std::atomic<bool> invalidPortableExecutable = false;
+    std::atomic<bool> oversizedRuntimePeImage = false;
+    std::atomic<bool> oversizedRuntimePeInventory = false;
     std::atomic<bool> readerLeaseActive = false;
     std::atomic<bool> artifactReadWithoutLease = false;
     std::atomic<bool> packageWriteWithLease = false;
     std::atomic<std::uint32_t> calls = 0U;
     std::atomic<std::uint32_t> readerCalls = 0U;
+    std::atomic<std::uint32_t> artifactReadCalls = 0U;
 };
 
 struct RecoveryFilesystemState final
@@ -193,6 +196,10 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
             !m_publisherState->readerLeaseActive.load(std::memory_order_acquire))
         {
             m_publisherState->artifactReadWithoutLease.store(true, std::memory_order_release);
+        }
+        if (a_path.text().starts_with("Generated/Artifacts/"))
+        {
+            m_publisherState->artifactReadCalls.fetch_add(1U, std::memory_order_relaxed);
         }
         return m_inner->read_file(a_path, a_maxBytes);
     }
@@ -411,6 +418,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
                                                        : make_test_pe();
         const std::vector<std::byte> pdbBytes = text_bytes("test-debug-symbols");
         const std::vector<std::byte> metadataBytes = text_bytes("{\"schemaVersion\":1}\n");
+        const bool hasOversizedInventory = m_state->oversizedRuntimePeInventory.load(std::memory_order_acquire);
         auto modulePayload = cue::package::PackageFilePayload::create(
             cue::package::PackageFileRole::GameModule, "CueGameModule.dll", moduleBytes, *m_assertContext);
         auto metadataPayload =
@@ -429,7 +437,9 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         std::filesystem::create_directories(versionDirectory, error);
         if (error || !write_file(versionDirectory / L"CueGameModule.dll", moduleBytes) ||
             !write_file(versionDirectory / L"CueGameModule.pdb", pdbBytes) ||
-            !write_file(versionDirectory / L"CueGameModule.metadata.json", metadataBytes))
+            !write_file(versionDirectory / L"CueGameModule.metadata.json", metadataBytes) ||
+            (hasOversizedInventory && (!write_file(versionDirectory / L"RuntimeDependencyA.dll", moduleBytes) ||
+                                       !write_file(versionDirectory / L"RuntimeDependencyB.dll", moduleBytes))))
         {
             cue::ErrorCode code = cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Package.Test", 1);
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(cue::Error::create(
@@ -440,13 +450,20 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
         {
             moduleHash.assign(64U, 'f');
         }
-        auto inventory =
-            cue::BuildArtifactInventory::create(a_plan, artifactId,
-                                                {{"CueGameModule.dll", moduleBytes.size(), std::move(moduleHash)},
-                                                 {"CueGameModule.pdb", pdbBytes.size(), std::string(64U, 'a')},
-                                                 {"CueGameModule.metadata.json", metadataBytes.size(),
-                                                  std::string(metadataPayload.try_value()->entry().sha256())}},
-                                                *m_assertContext);
+        const std::uint64_t moduleSize = m_state->oversizedRuntimePeImage.load(std::memory_order_acquire)
+                                             ? cue::package::k_maximumRuntimePeImageBytes + 1U
+                                             : moduleBytes.size();
+        std::vector<cue::BuildArtifactFile> files = {{"CueGameModule.dll", moduleSize, std::move(moduleHash)},
+                                                     {"CueGameModule.pdb", pdbBytes.size(), std::string(64U, 'a')},
+                                                     {"CueGameModule.metadata.json", metadataBytes.size(),
+                                                      std::string(metadataPayload.try_value()->entry().sha256())}};
+        if (hasOversizedInventory)
+        {
+            const std::string dependencyHash(modulePayload.try_value()->entry().sha256());
+            files.push_back({"RuntimeDependencyA.dll", cue::package::k_maximumRuntimePeImageBytes, dependencyHash});
+            files.push_back({"RuntimeDependencyB.dll", cue::package::k_maximumRuntimePeImageBytes, dependencyHash});
+        }
+        auto inventory = cue::BuildArtifactInventory::create(a_plan, artifactId, std::move(files), *m_assertContext);
         if (!inventory)
         {
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(*inventory.try_error()));
@@ -722,6 +739,33 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
 
     publisher.invalidPortableExecutable.store(false, std::memory_order_release);
+    const std::uint32_t artifactReadsBeforeResourceLimits = publisher.artifactReadCalls.load(std::memory_order_acquire);
+    publisher.oversizedRuntimePeImage.store(true, std::memory_order_release);
+    if (!require(service->retry("17234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
+    {
+        return false;
+    }
+    if (!require(service->snapshot().state == cue::package::PackageWorkflowState::Failed &&
+                 publisher.artifactReadCalls.load(std::memory_order_acquire) == artifactReadsBeforeResourceLimits))
+    {
+        return false;
+    }
+    publisher.oversizedRuntimePeImage.store(false, std::memory_order_release);
+    publisher.oversizedRuntimePeInventory.store(true, std::memory_order_release);
+    if (!require(service->retry("18234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
+    {
+        return false;
+    }
+    if (!require(service->snapshot().state == cue::package::PackageWorkflowState::Failed &&
+                 publisher.artifactReadCalls.load(std::memory_order_acquire) == artifactReadsBeforeResourceLimits))
+    {
+        return false;
+    }
+    publisher.oversizedRuntimePeInventory.store(false, std::memory_order_release);
     publisher.corruptInventory.store(true, std::memory_order_release);
     if (!require(service->retry("21234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
                                 *runtimeData.try_value()) &&

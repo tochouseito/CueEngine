@@ -1,6 +1,7 @@
 #include <Cue/Package/Workflow.h>
 
 #include <Cue/Foundation/Assert.h>
+#include <Cue/Package/Error.h>
 
 #include <algorithm>
 #include <chrono>
@@ -136,6 +137,29 @@ enum class WorkflowError : std::int64_t
     return a_state == cue::GameBuildOperationState::Cancelled ? cue::package::PackageWorkflowState::Cancelled
                                                               : cue::package::PackageWorkflowState::Failed;
 }
+
+/// @brief Package化対象PEの宣言Sizeを全体読込前にRuntimeHostと同じ上限で検証する
+[[nodiscard]] cue::Result<void> validate_runtime_pe_memory_contract(std::span<const cue::BuildArtifactFile> a_files,
+                                                                    const cue::AssertContext &a_assertContext) noexcept
+{
+    std::uint64_t totalBytes = 0U;
+    for (const cue::BuildArtifactFile &file : a_files)
+    {
+        if (file.relativePath == "CueGameModule.pdb" || file.relativePath == "CueGameModule.metadata.json")
+        {
+            continue;
+        }
+        if (file.byteSize > cue::package::k_maximumRuntimePeImageBytes ||
+            totalBytes > cue::package::k_maximumRuntimePeInventoryBytes - file.byteSize)
+        {
+            return cue::Result<void>::failure(cue::package::make_package_error(
+                a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
+                "Runtime PE image inventory exceeds the RuntimeHost memory contract"));
+        }
+        totalBytes += file.byteSize;
+    }
+    return cue::Result<void>::success();
+}
 } // namespace
 
 namespace cue::package
@@ -220,12 +244,19 @@ struct GamePackageWorkflowService::Impl final
                 return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
                     *assertContext, WorkflowError::InvalidInput, "Package Build Configuration is invalid"));
             }
+            Result<void> runtimePeMemoryContract =
+                validate_runtime_pe_memory_contract(a_artifact.files(), *assertContext);
+            if (!runtimePeMemoryContract)
+            {
+                return Result<PublishedRuntimePackageSnapshot>::failure(
+                    std::move(*runtimePeMemoryContract.try_error()));
+            }
 
             std::vector<PackageFilePayload> payloads;
             payloads.reserve(a_artifact.files().size() + 3U);
             Result<PackageFilePayload> runtimeHost = read_payload(
                 *engineBinaryFilesystem, join_relative("bin", join_relative(configuration, "CueRuntimeHost.exe")),
-                PackageFileRole::RuntimeHost, "CueRuntimeHost.exe", k_maximumPackagedFileBytes);
+                PackageFileRole::RuntimeHost, "CueRuntimeHost.exe", k_maximumRuntimePeImageBytes);
             if (!runtimeHost)
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*runtimeHost.try_error()));
@@ -531,13 +562,13 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
             return recovered;
         }
         Impl::PackageInputs inputs{a_engineVersion, std::move(a_projectId), std::move(a_runtimeData)};
-        Result<void> started = m_impl->buildService->start(std::move(a_buildRequest), a_configureMode);
-        if (!started)
-        {
-            return started;
-        }
         {
             std::scoped_lock lock(m_impl->mutex);
+            Result<void> started = m_impl->buildService->start(std::move(a_buildRequest), a_configureMode);
+            if (!started)
+            {
+                return started;
+            }
             m_impl->pendingInputs = inputs;
             m_impl->retryInputs = std::move(inputs);
             m_impl->isCancellationRequested = false;
@@ -593,14 +624,14 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId, Engine
         {
             return recovered;
         }
-        Result<void> restarted = m_impl->buildService->retry(std::move(a_operationId));
-        if (!restarted)
-        {
-            return restarted;
-        }
         Impl::PackageInputs inputs{a_engineVersion, std::move(a_projectId), std::move(a_runtimeData)};
         {
             std::scoped_lock lock(m_impl->mutex);
+            Result<void> restarted = m_impl->buildService->retry(std::move(a_operationId));
+            if (!restarted)
+            {
+                return restarted;
+            }
             m_impl->pendingInputs = inputs;
             m_impl->retryInputs = std::move(inputs);
             m_impl->isCancellationRequested = false;
