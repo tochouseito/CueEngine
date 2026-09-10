@@ -384,7 +384,9 @@ Pointや子Directoryがないこと、各File NameのASCII case-insensitive集�
 LoaderへDirectory自体を登録しないためLoad候補にならない。
 
 Game Moduleと`Runtime`直下の依存DLLはWrite／Delete共有なしのHandleで固定し、固定後にManifestのSize／Hashと
-Runtime Directory Inventoryを再検証してからLoadする。固定Handleは少なくともDLL Load完了まで保持する。
+Runtime Directory Inventoryを再検証してからLoadする。固定Handleは少なくともDLL Load完了まで保持する。各
+`LoadLibraryExW`が返した`HMODULE`は、実際にLoadされたFileのVolume Serial Numberと128-bit File IDを固定Handleと照合し、
+同名の既存ModuleやKnown DLLが別実体へ解決された場合は起動を拒否する。
 
 新しい第三者LibraryをRuntime Dependencyへ追加またはVersion更新する場合は、AGENTS.mdの承認、vcpkg Manifest、License、Notice契約を
 別Issueで満たす。本ADRは新しい外部Library導入を承認しない。

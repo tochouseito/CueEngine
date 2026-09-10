@@ -1,4 +1,5 @@
 #include "RuntimePackage.h"
+#include "RuntimeModuleIdentity.h"
 #include "RuntimePath.h"
 
 #include <Cue/Foundation/Assert.h>
@@ -1735,6 +1736,27 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
     }
     return cue::Result<UniqueHandle>::success(std::move(handle));
 }
+
+/// @brief Load済みModuleが事前に固定したPackage Fileと同一実体か検証する
+[[nodiscard]] cue::Result<void> validate_loaded_module_identity(
+    HMODULE a_library, HANDLE a_guardedFile, const cue::AssertContext &a_assertContext) noexcept
+{
+    const cue::runtime_host::detail::RuntimeModuleIdentityResult identity =
+        cue::runtime_host::detail::inspect_loaded_module_identity(a_library, a_guardedFile);
+    if (identity.status == cue::runtime_host::detail::RuntimeModuleIdentityStatus::Match)
+    {
+        return cue::Result<void>::success();
+    }
+    if (identity.status == cue::runtime_host::detail::RuntimeModuleIdentityStatus::Mismatch)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::PackageFileMismatch,
+            "Loaded Runtime image identity differs from the guarded Package file"));
+    }
+    return cue::Result<void>::failure(windows_package_error(
+        a_assertContext, cue::package::PackageError::InvalidRuntimeData, identity.nativeError,
+        "Loaded Runtime image file identity could not be queried"));
+}
 } // namespace
 
 namespace cue::runtime_host
@@ -2027,6 +2049,14 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                     a_assertContext, package::PackageError::InvalidRuntimeData, code,
                     "Manifest Runtime dependency could not be loaded from its fixed path"));
             }
+            auto dependencyIdentity = validate_loaded_module_identity(
+                dependency, runtimeDependencyGuards[index].get(), a_assertContext);
+            if (!dependencyIdentity)
+            {
+                FreeLibrary(dependency);
+                unload_libraries(runtimeLibraries);
+                return Result<LoadedRuntimePackage>::failure(std::move(*dependencyIdentity.try_error()));
+            }
             runtimeLibraries.push_back(dependency);
         }
         const std::filesystem::path moduleLoadPath = extended_windows_path(modulePath);
@@ -2038,6 +2068,13 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
             return Result<LoadedRuntimePackage>::failure(windows_package_error(
                 a_assertContext, package::PackageError::InvalidRuntimeData, code,
                 "Game Module could not be loaded from the Manifest path"));
+        }
+        auto moduleIdentity = validate_loaded_module_identity(library, moduleGuard.try_value()->get(), a_assertContext);
+        if (!moduleIdentity)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleIdentity.try_error()));
         }
         using Query = CueGameModuleResult(CUE_GAME_MODULE_CALL *)(std::uint32_t, CueGameModuleQueryOutputV1 *,
                                                                   CueGameModuleDiagnosticV1 *) noexcept;
