@@ -24,7 +24,7 @@ target_link_libraries(CueEditorPlaySessionImGuiTests PRIVATE Cue.Editor.ImGui Cu
 target_compile_features(CueEditorPlaySessionImGuiTests PRIVATE cxx_std_20)
 
 add_executable(CueEditorBuildImGuiTests BuildImGuiTests.cpp)
-target_link_libraries(CueEditorBuildImGuiTests PRIVATE Cue.Editor.ImGui Cue.ImGui.Core)
+target_link_libraries(CueEditorBuildImGuiTests PRIVATE Cue.Editor.ImGui Cue.ImGui.Core Cue.IO.Windows)
 target_compile_features(CueEditorBuildImGuiTests PRIVATE cxx_std_20)
 
 set(

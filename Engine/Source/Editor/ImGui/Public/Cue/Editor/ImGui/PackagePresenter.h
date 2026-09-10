@@ -15,7 +15,7 @@ namespace cue
 {
 class AssertContext;
 class Error;
-}
+} // namespace cue
 
 namespace cue::editor
 {
@@ -54,8 +54,7 @@ class PackagePresenter final
     [[nodiscard]] static std::unique_ptr<PackagePresenter> create(
         package::GamePackageWorkflowService &a_service, editor_core::EditorController &a_controller,
         std::string a_projectRoot, BuildWorkspaceCompatibility a_workspaceCompatibility,
-        std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
-        const AssertContext &a_assertContext) noexcept;
+        std::unique_ptr<BuildOperationIdSource> a_operationIdSource, const AssertContext &a_assertContext) noexcept;
 
     /// @brief Coordinatorを進めてUI Snapshotと終了待ちを同期する
     void refresh() noexcept;
@@ -98,9 +97,8 @@ class PackagePresenter final
 
   private:
     /// @brief 検証済み依存とUI状態からPresenterを構築する
-    PackagePresenter(package::GamePackageWorkflowService &a_service,
-                     editor_core::EditorController &a_controller, std::string a_projectRoot,
-                     BuildWorkspaceCompatibility a_workspaceCompatibility,
+    PackagePresenter(package::GamePackageWorkflowService &a_service, editor_core::EditorController &a_controller,
+                     std::string a_projectRoot, BuildWorkspaceCompatibility a_workspaceCompatibility,
                      std::unique_ptr<BuildOperationIdSource> a_operationIdSource,
                      const AssertContext &a_assertContext) noexcept;
 
@@ -131,6 +129,7 @@ class PackagePresenter final
     BuildConfiguration m_configuration = BuildConfiguration::Debug;
     bool m_forceConfigure = true;
     bool m_hasError = false;
+    bool m_hasPresenterDiagnostic = false;
     bool m_openShutdownConfirmation = false;
     bool m_closeShutdownConfirmation = false;
     bool m_isShutdownConfirmationPending = false;

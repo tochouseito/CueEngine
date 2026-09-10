@@ -37,6 +37,14 @@ enum class ChildProcessOutcome : std::uint8_t
     TimedOut
 };
 
+/// @brief Child Processへ通知する停止要求の強度
+enum class ChildProcessCancellationMode : std::uint8_t
+{
+    None,
+    Graceful,
+    Immediate
+};
+
 /// @brief 一回のChild Process実行が所有する完了状態、Exit Code、Capture Log
 class ChildProcessResult final
 {
@@ -108,9 +116,9 @@ class ChildProcessRequest final
     std::optional<std::size_t> m_maximumCapturedOutputBytes;
 };
 
-/// @brief 別Threadから一方向に通知できる一回のProcess Cancel状態
+/// @brief 別Threadから強制Cancelまたは正常停止を通知できる一回のProcess状態
 ///
-/// `run`呼出しとCancel通知が終了するまで生存させる。Process終了後の通知は次回実行へ持ち越さない。
+/// `run`呼出しと停止通知が終了するまで生存させる。Process終了後の通知は次回実行へ持ち越さない。
 class ChildProcessCancellation final
 {
   public:
@@ -120,16 +128,20 @@ class ChildProcessCancellation final
     ChildProcessCancellation &operator=(const ChildProcessCancellation &) = delete;
     ChildProcessCancellation(ChildProcessCancellation &&) = delete;
     ChildProcessCancellation &operator=(ChildProcessCancellation &&) = delete;
-    /// @brief Cancel状態だけを解放する
+    /// @brief 停止要求状態だけを解放する
     ~ChildProcessCancellation() = default;
 
-    /// @brief 任意ThreadからCancelを通知する
+    /// @brief 任意Threadから即時Cancelを通知し、既存の正常停止要求を強制終了へ昇格する
     void request_cancel() noexcept;
-    /// @brief Cancelが通知済みか取得する
+    /// @brief 任意ThreadからPlatform固有の正常停止を通知する
+    void request_graceful_stop() noexcept;
+    /// @brief いずれかの停止要求が通知済みか取得する
     [[nodiscard]] bool is_cancel_requested() const noexcept;
+    /// @brief 現在通知されている停止要求の強度を返す
+    [[nodiscard]] ChildProcessCancellationMode cancellation_mode() const noexcept;
 
   private:
-    std::atomic<bool> m_requested = false;
+    std::atomic<ChildProcessCancellationMode> m_mode = ChildProcessCancellationMode::None;
 };
 
 /// @brief Platform固有Child ProcessをShell非依存の同期操作として隔離する境界
