@@ -707,7 +707,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 
     buildRunner.mode.store(RunnerMode::Succeed, std::memory_order_release);
     publisher.invalidPortableExecutable.store(true, std::memory_order_release);
-    if (!require(service->retry("16234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
+    if (!require(service->retry("16234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
     {
         return false;
     }
@@ -721,7 +723,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 
     publisher.invalidPortableExecutable.store(false, std::memory_order_release);
     publisher.corruptInventory.store(true, std::memory_order_release);
-    if (!require(service->retry("21234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
+    if (!require(service->retry("21234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
     {
         return false;
     }
@@ -736,7 +740,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     publisher.corruptInventory.store(false, std::memory_order_release);
     recoveryFilesystem.durabilityFailuresRemaining.store(1U, std::memory_order_release);
     constexpr std::string_view durabilityOperation = "23234567-89ab-4cde-8f01-23456789abcd";
-    if (!require(service->retry(std::string(durabilityOperation)) && service->wait_for_package()))
+    if (!require(service->retry(std::string(durabilityOperation), {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
     {
         return false;
     }
@@ -761,7 +767,9 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 
     recoveryFilesystem.writeFailuresRemaining.store(1U, std::memory_order_release);
     recoveryFilesystem.rollbackFailuresRemaining.store(2U, std::memory_order_release);
-    if (!require(service->retry("26234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package()))
+    if (!require(service->retry("26234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
     {
         return false;
     }
@@ -775,8 +783,10 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
     const std::string recoveryStaging = *recoveryFailed.recoveryStagingLocator;
 
-    if (!require(service->retry("31234567-89ab-4cde-8f01-23456789abcd") && service->wait_for_package() &&
-                 service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
+    if (!require(service->retry("31234567-89ab-4cde-8f01-23456789abcd", {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package() && service->run(cue::package::PackageRunMode::SmokeTest) &&
+                 service->wait_for_run_completion()))
     {
         return false;
     }
