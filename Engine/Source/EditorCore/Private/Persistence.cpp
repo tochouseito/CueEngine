@@ -583,6 +583,15 @@ Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot
                 *m_assertContext, EditorCoreError::ExternalConflict,
                 "Project roots changed while the Editor session was open; reopen the project before packaging"));
         }
+        const ProjectDescriptor &sessionDescriptor = m_session.project_descriptor();
+        if (currentDescriptor.try_value()->project_id() != sessionDescriptor.project_id() ||
+            currentDescriptor.try_value()->engine_compatibility() != sessionDescriptor.engine_compatibility())
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::ExternalConflict,
+                "Project identity or engine compatibility changed while the Editor session was open; reopen the "
+                "project before packaging"));
+        }
         m_session.m_descriptor = std::move(*currentDescriptor.try_value());
     }
 
