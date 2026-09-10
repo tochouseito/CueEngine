@@ -426,8 +426,8 @@ Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
         m_sceneMigrations = std::make_unique<scene::SceneMigrationRegistry>();
         m_componentMigrations = std::make_unique<scene::ComponentMigrationRegistry>();
         m_sceneIdentitySource = std::make_unique<WindowsSceneIdentitySource>(*m_assertContext);
-        editor_core::ScenePersistenceServices persistence(*m_sourceAssetsRoot, *m_savedRoot, *m_schemaRegistry,
-                                                          *m_valueSchemaRegistry, *m_sceneMigrations,
+        editor_core::ScenePersistenceServices persistence(*m_projectRoot, *m_sourceAssetsRoot, *m_savedRoot,
+                                                          *m_schemaRegistry, *m_valueSchemaRegistry, *m_sceneMigrations,
                                                           *m_componentMigrations);
         m_controller = editor_core::EditorController::create(std::move(a_descriptor), persistence, *m_assertContext);
 

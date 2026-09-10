@@ -34,6 +34,7 @@ namespace
 constexpr cue::BuildWorkspaceCompatibility k_workspaceCompatibility{
     cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, {19U, 51U, 0U, 0U}, 1U};
 constexpr std::string_view k_packageProjectId = "00000000-0000-4000-8000-000000000941";
+constexpr std::string_view k_reloadedPackageProjectId = "00000000-0000-4000-8000-000000000942";
 constexpr std::string_view k_packageSceneId = "10000000-0000-4000-8000-000000000941";
 
 class TestFatalHandler final : public cue::FatalHandler
@@ -464,18 +465,20 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     auto sourceAssets =
         cue::create_windows_filesystem_root((projectRoot / "Assets" / "Source").generic_string(), a_assertContext);
     auto savedRoot = cue::create_windows_filesystem_root((projectRoot / "Saved").generic_string(), a_assertContext);
+    auto descriptorRoot = cue::create_windows_filesystem_root(projectRoot.generic_string(), a_assertContext);
     cue::schema::SchemaRegistryIdentitySource schemaIdentitySource;
     cue::schema::SchemaRegistryBuilder schemaBuilder(schemaIdentitySource, a_assertContext);
     auto schemaRegistry = schemaBuilder.seal();
-    require(sourceAssets.has_value() && savedRoot.has_value() && schemaRegistry.has_value());
+    require(sourceAssets.has_value() && savedRoot.has_value() && descriptorRoot.has_value() &&
+            schemaRegistry.has_value());
     auto valueRegistry =
         cue::scene::ComponentValueSchemaRegistry::create({}, **schemaRegistry.try_value(), a_assertContext);
     require(valueRegistry.has_value());
     cue::scene::SceneMigrationRegistry sceneMigrations;
     cue::scene::ComponentMigrationRegistry componentMigrations;
-    cue::editor_core::ScenePersistenceServices persistence(**sourceAssets.try_value(), **savedRoot.try_value(),
-                                                           **schemaRegistry.try_value(), *valueRegistry.try_value(),
-                                                           sceneMigrations, componentMigrations);
+    cue::editor_core::ScenePersistenceServices persistence(
+        **descriptorRoot.try_value(), **sourceAssets.try_value(), **savedRoot.try_value(), **schemaRegistry.try_value(),
+        *valueRegistry.try_value(), sceneMigrations, componentMigrations);
     std::unique_ptr<cue::editor_core::EditorController> controller =
         cue::editor_core::EditorController::create(std::move(*generated.try_value()), persistence, a_assertContext);
     auto operationIds = std::make_unique<TestOperationIdSource>(
@@ -484,8 +487,21 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
         cue::editor::PackagePresenter::create(*service, *controller, projectRoot.generic_string(),
                                               k_workspaceCompatibility, std::move(operationIds), a_assertContext);
 
+    auto reloadedProjectId = cue::ProjectId::parse(k_reloadedPackageProjectId, a_assertContext);
+    require(reloadedProjectId.has_value());
+    auto reloadedDescriptor = cue::create_blank_project_descriptor(
+        std::move(*reloadedProjectId.try_value()), "Reloaded Package Presenter Test",
+        cue::EngineCompatibility{cue::EngineVersion{1U, 1U, 0U}, cue::EngineVersion{2U, 1U, 0U}}, k_packageSceneId,
+        a_assertContext);
+    require(reloadedDescriptor.has_value());
+    require(cue::save_project_descriptor(**descriptorRoot.try_value(), *reloadedDescriptor.try_value(), a_assertContext)
+                .has_value());
+
     require(presenter->can_retry());
     require(presenter->submit(cue::editor::EditorPackageCommand::Retry));
+    require(controller->session().project_descriptor().project_id().text() == k_reloadedPackageProjectId);
+    require(controller->session().project_descriptor().engine_compatibility() ==
+            cue::EngineCompatibility{cue::EngineVersion{1U, 1U, 0U}, cue::EngineVersion{2U, 1U, 0U}});
     require(service->wait_for_package().has_value());
     presenter->refresh();
     require(presenter->current_snapshot().state == cue::package::PackageWorkflowState::Failed);
