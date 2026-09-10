@@ -562,12 +562,18 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
         cue::ChildProcessOutcome outcome = cue::ChildProcessOutcome::Exited;
         DWORD waitError = ERROR_SUCCESS;
         std::optional<std::chrono::steady_clock::time_point> gracefulStopDeadline;
+        bool didCompleteGracefulStop = false;
         while (true)
         {
             const DWORD wait = WaitForSingleObject(process.get(), k_pollMilliseconds);
             if (wait == WAIT_OBJECT_0)
             {
-                if (a_cancellation.is_cancel_requested())
+                if (a_cancellation.cancellation_mode() == cue::ChildProcessCancellationMode::Graceful &&
+                    gracefulStopDeadline.has_value())
+                {
+                    didCompleteGracefulStop = true;
+                }
+                else if (a_cancellation.is_cancel_requested())
                 {
                     outcome = cue::ChildProcessOutcome::Cancelled;
                 }
@@ -612,7 +618,7 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
 
         std::optional<std::uint32_t> exitCode;
         DWORD exitCodeError = ERROR_SUCCESS;
-        if (outcome == cue::ChildProcessOutcome::Exited && waitError == ERROR_SUCCESS)
+        if ((outcome == cue::ChildProcessOutcome::Exited || didCompleteGracefulStop) && waitError == ERROR_SUCCESS)
         {
             DWORD nativeExitCode = 0U;
             if (GetExitCodeProcess(process.get(), &nativeExitCode) == FALSE)
@@ -653,6 +659,11 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
         }
         if (outcome == cue::ChildProcessOutcome::Cancelled)
         {
+            if (didCompleteGracefulStop && *exitCode != 0U)
+            {
+                return cue::Result<cue::ChildProcessResult>::success(
+                    cue::ChildProcessResult::exited(*exitCode, std::move(capture.chunks)));
+            }
             return cue::Result<cue::ChildProcessResult>::success(
                 cue::ChildProcessResult::cancelled(std::move(capture.chunks)));
         }
