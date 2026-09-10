@@ -15,6 +15,7 @@ GitHub上でClosedであり、本Gate Issue #237がMilestone最後の1件であ�
 | 全CTest／Headless／Process Test | Pass | Debug／Developmentは262/262、Releaseは258成功と既定4 Skip、失敗0 |
 | 新規Workspaceの手動End-to-End | Pass | 2026-09-11にユーザーが正本手順を実行し「問題なし」と確認 |
 | PackageのSource Assets／Workspace Cache非参照 | Pass | `Cue.Editor.Workflow.ProcessRoundTrip`のSource Root非表示、別Current Directory、Relocation Testが3構成成功 |
+| Package Manifest Parse／全File Hash時間 | Pass | Release実PackageでParse 10,000回、Hash検証20回を測定し、本文へ条件と結果を記録 |
 | ECS改良、Asset Import／Cook、Renderer、Sound、Effect、Physicsの非追加 | Pass | M16開始点からの変更一覧に対象Moduleの機能追加なし |
 | 未実行検証と残るRisk | Pass | 本文末尾へ明記 |
 
@@ -30,8 +31,8 @@ Git tree `f9341665d707f98ad71a20d0f4e753ac16d1f024`である。#237 Branchも同
 失敗0だった。最後のReview修正で追加したGame Module Diagnostic所有Copyは、RuntimeHost Test Targetの
 3構成Buildと`Cue.RuntimeHost.Package.Process`の3構成各1/1でも個別確認した。
 
-#237は検証結果と証跡文書だけを追加する。最終PR HeadはWindows CIでDebug／Development／Releaseを
-再検証する。
+#237は検証結果と証跡文書、再実行可能なManifest Benchmark経路、Tamper Test用Packageの分離だけを追加する。
+最終PR HeadはWindows CIでDebug／Development／Releaseを再検証する。
 
 ## Coverage Map
 
@@ -82,6 +83,7 @@ Editor Workflow、Scene Runtime Data接続、Test、CMake、ADR、利用手順�
 - `ctest --preset windows-vs2026-development --output-on-failure`
 - `cmake --build --preset windows-vs2026-release --parallel`
 - `ctest --preset windows-vs2026-release --output-on-failure`
+- `CuePackageManifestTests.exe --benchmark <absolute-package-root>`
 - `git diff --name-only 3dbd4dc3..d37628b2`
 - `git diff --check`
 
@@ -99,6 +101,24 @@ Editor Workflow、Scene Runtime Data接続、Test、CMake、ADR、利用手順�
   - `Cue.RHI.D3D12.SwapChain.InfoQueue`
   - `Cue.RHI.D3D12.SwapChain.DeviceRemovalDredFailure`
 
+## Package Manifest Timing Baseline
+
+ADR-0023のMitigationに従い、Release構成の`Cue.RuntimeHost.Package.Process`が生成・検証したPackageを使って
+Manifest Parseと全Manifest EntryのSize／SHA-256検証時間を測定した。測定は初回検証によるWarm-up後に行い、
+File読込み済みMemoryではなく、RuntimeHostと同じ`verify_package_manifest_files`によるFile Open／Read／Hash／照合を含む。
+
+- 測定日: 2026-09-11
+- OS: Windows 11 Home 10.0.26200（Build 26200）
+- CPU: AMD Ryzen 7 3700X、8 Core／16 Logical Processor
+- Build: Release、MSBuild 18.9.1
+- Manifest: 1,265 bytes、6 File Entry
+- Hash対象: 合計829,871 bytes
+- Manifest Parse 10,000回: 平均17.268 us、p50 15.700 us、p95 22.900 us
+- 全File Hash検証20回: 平均7.066 ms、p50 6.993 ms、p95 8.135 ms
+
+これは一台のMachine上のWarm filesystem cache Baselineであり、性能目標の達成や最適化効果を主張する値ではない。
+後続の最適化判断では同じ入力、Build、Machine条件を固定して比較する。
+
 ## Not Run
 
 - AddressSanitizer、ThreadSanitizer、UndefinedBehaviorSanitizer
@@ -110,6 +130,8 @@ Editor Workflow、Scene Runtime Data接続、Test、CMake、ADR、利用手順�
 - Game Rendering、3D Viewport、Gizmo、Sound、Effect、Physics
 - ECS並列化、Prefab、Scripting／Hot Reload
 - 手動UI操作のScreenshot保存または動画記録
+- Cold filesystem cache、低速Storage、大容量PackageでのManifest Parse／Hash測定
+- PublisherのCopy／Hashを分離したPackage作成時間測定
 
 ## Remaining Risks
 
@@ -119,3 +141,4 @@ Editor Workflow、Scene Runtime Data接続、Test、CMake、ADR、利用手順�
 - Package Contentは同一入力Snapshotで一致するが、別Machineで生成したMSVC BinaryのByte一致は保証しない
 - Build／PackageはLocalのVisual Studio、CMake、vcpkg環境へ依存し、Remote BuildとDistributed Cacheを含まない
 - ReleaseでSkipされた4件はM16変更とは無関係だが、Release構成のDebug Layer／InfoQueue／DRED経路は未実行
+- Parse／Hash Baselineは829,871 bytesの最小M16 Packageに限られ、将来のAsset追加時のCostを予測しない
