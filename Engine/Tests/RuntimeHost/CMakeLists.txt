@@ -206,6 +206,14 @@ add_test(
 )
 
 add_test(
+    NAME Cue.RuntimeHost.InvalidModeCombination
+    COMMAND
+        ${CMAKE_COMMAND}
+        -DTEST_EXECUTABLE=$<TARGET_FILE:CueRuntimeHost>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/VerifyRuntimeHostArguments.cmake
+)
+
+add_test(
     NAME Cue.RuntimeHost.D3D12DeviceSmoke.Hardware
     COMMAND
         ${CMAKE_COMMAND}
@@ -291,6 +299,7 @@ set_tests_properties(
 set_tests_properties(
     Cue.RuntimeHost.Dependencies
     Cue.RuntimeHost.InitializationFailure
+    Cue.RuntimeHost.InvalidModeCombination
     Cue.RuntimeHost.ModuleIdentity
     Cue.RuntimeHost.PathUtf8
     PROPERTIES
