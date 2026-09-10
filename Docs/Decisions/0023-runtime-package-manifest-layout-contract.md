@@ -285,12 +285,19 @@ schema version 1はParseまたはMemory確保前に可能な限り次を適用�
 | Path segments | 32 |
 | One packaged file | 8 GiB |
 | Sum of listed files | 16 GiB |
+| Game Module Metadata | 64 KiB |
 | Runtime Project Data | 1 MiB |
 | Runtime Scene Data | 64 MiB |
 | Runtime Scene objects | 1,000,000 |
+| RuntimeHost one Game Module／Runtime Dependency PE image | 128 MiB |
+| RuntimeHost Game Module／Runtime Dependency PE inventory | 256 MiB |
 
 Size加算とObject数はOverflowを検査する。上限超過を部分読込み、切捨て、警告付き成功に変換しない。
 上限変更はManifestまたはRuntime Dataの対応Schema Versionと互換性を先に判断する。
+
+Manifest schema version 1の一般File上限は大容量Runtime Dataを表現できるよう維持する。一方、RuntimeHostはImport Graph検証で
+Game Moduleと全`runtimeDependency`のByte Snapshotを同時保持するため、上表のPE専用上限をManifest全FileのSize／Hash検証より前に
+適用する。これにより、巨大Overlayを持つPEが一般File上限内でも、非現実的なAllocationを開始せず回復可能なPackage Errorとして拒否する。
 
 ### Relative Path and Filesystem Boundary
 
@@ -309,8 +316,9 @@ Publisherは入力Fileを開いたHandleからSizeとHashを測定し、検証�
 Runtime Dependency Collectorは`CueRuntimeHost.exe`、Game Module本体、Game ModuleのBuild Metadata、およびM16で明示的に登録した
 App-local Runtime Fileを入力にする。CollectorはPublish前にGame Moduleと各App-local Runtime FileのPE Import Tableを読み、通常Importと
 Delay-load Importの直接・推移閉包を構築する。Import名はASCII case-insensitiveで比較し、System DLL／許可済みMSVC Runtimeを除く各Importが、
-明示登録された`Runtime/`直下Fileへ一意に対応することを要求する。対応FileのPE Headerを同じ規則で再帰検査し、Cycleは検査済み集合で
-打ち切る。Import Tableが不正、対象Architecture不一致、同名Alias、未登録Import、登録済みだが閉包から到達しないFile、または閉包計算に
+明示登録された`Runtime/`直下Fileへ一意に対応することを要求する。対応FileのPE Headerを同じ規則で再帰検査する。App-local DLL間の
+Cycleは固定絶対Pathから安全な事前Load順を作れないため拒否する。Import Tableが不正、対象Architecture不一致、同名Alias、未登録Import、
+登録済みだが閉包から到達しないFile、または閉包計算に
 失敗した場合はPackage Publish前に拒否する。M16 CollectorはExport Forwarderの依存Edgeを解決しないため、Game ModuleまたはApp-local
 Runtime FileのPE Export DirectoryにForwarder RVAが一件でもあれば、転送先がSystem DLLかを推測せずPackage Publish前に拒否する。
 検査対象FileはBuild Artifactおよび明示登録Dependencyの検証済みHandleから読み、OS Loaderや
@@ -358,22 +366,27 @@ M16のStandaloneはProject SourceやBuild Treeからの独立を意味し、OS�
 含まない。Production配布でのStatic RuntimeまたはRedistributable Installer方針は別ADRで決定する。
 
 M16 PublisherのHost Import検証は、Windows System DLLと上記MSVC Runtimeの既知Import名だけを許可する。Host自身がそれ以外の
-App-local DLLを直接Importしている場合、Windows LoaderはManifest検証や`Runtime` Directory登録より前に解決を要求するため、
+App-local DLLを直接Importしている場合、Windows LoaderはManifest検証や依存DLLの事前Loadより前に解決を要求するため、
 M16 Publisherはその構成をPackageせず失敗させる。
-RuntimeHostはPackage処理の最初に`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 |
-LOAD_LIBRARY_SEARCH_USER_DIRS)`を成功させ、Application Directory、Current Directory、`PATH`をProcessの既定DLL検索対象から除外する。
-Game ModuleをLoadする前に追加できるApp-local Dependencyだけを`Runtime/`へ配置し、全Entry検証後にそのDirectoryを`AddDllDirectory`で
-Process-localなUser Directoryへ登録する。Game Module自体は検証済み絶対Pathを
-`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)`で開き、
-`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`を指定しない。これにより、Game Moduleの隣接`Game/`、Package Root、Current Directory、`PATH`を
+RuntimeHostはPackage処理の最初に`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`を成功させ、Application Directory、
+Current Directory、`PATH`、User DirectoryをProcessの既定DLL検索対象から除外する。Game ModuleをLoadする前にApp-local Dependencyの
+Import Graphから依存先優先の順序を作り、Manifestに列挙され固定Handleで保護した各DLLだけを検証済み絶対Pathから
+`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`で事前Loadする。全Dependencyの事前Load後、Game Moduleも同じFlagと検証済み
+絶対Pathで開く。`Runtime/`をDLL検索Directoryへ登録せず、`LOAD_LIBRARY_SEARCH_USER_DIRS`と`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`を
+指定しない。これにより、検証後に追加された未列挙Entry、Game Moduleの隣接`Game/`、Package Root、Current Directory、`PATH`を
 依存DLLの候補へ含めない。将来RuntimeHostへApp-local直接Dependencyが必要になった場合は、Executable隣接配置の信頼境界または
 静的Bootstrapを別ADRで決定する。
 
-`Runtime/`をDLL検索Directoryへ登録する直前に、RuntimeHostはDirectoryを非再帰で列挙し、通常Fileだけで構成されること、Reparse
+App-local DLLを事前Loadする直前に、RuntimeHostは`Runtime/`を非再帰で列挙し、通常Fileだけで構成されること、Reparse
 Pointや子Directoryがないこと、各File NameのASCII case-insensitive集合がManifestの`runtimeDependency` Entry集合と完全一致することを
-検証する。未列挙File、欠損Entry、Alias、列挙失敗が一つでもあればDirectoryを登録せず起動を拒否する。Manifestに
-`runtimeDependency`がない場合は`Runtime/`が存在しないか空であることを要求する。これにより、Package公開後に追加された未検証DLLを
-Windows Loaderの候補へ含めない。
+検証する。未列挙File、欠損Entry、Alias、列挙失敗が一つでもあれば事前Loadせず起動を拒否する。Manifestに
+`runtimeDependency`がない場合は`Runtime/`が存在しないか空であることを要求する。再検証後にDirectoryへ未列挙DLLが追加されても、
+LoaderへDirectory自体を登録しないためLoad候補にならない。
+
+Game Moduleと`Runtime`直下の依存DLLはWrite／Delete共有なしのHandleで固定し、固定後にManifestのSize／Hashと
+Runtime Directory Inventoryを再検証してからLoadする。固定Handleは少なくともDLL Load完了まで保持する。各
+`LoadLibraryExW`が返した`HMODULE`は、実際にLoadされたFileのVolume Serial Numberと128-bit File IDを固定Handleと照合し、
+同名の既存ModuleやKnown DLLが別実体へ解決された場合は起動を拒否する。
 
 新しい第三者LibraryをRuntime Dependencyへ追加またはVersion更新する場合は、AGENTS.mdの承認、vcpkg Manifest、License、Notice契約を
 別Issueで満たす。本ADRは新しい外部Library導入を承認しない。

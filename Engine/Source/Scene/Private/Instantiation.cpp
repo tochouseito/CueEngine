@@ -136,6 +136,14 @@ SceneSnapshot::SceneSnapshot(SceneAssetId a_sceneAssetId,
 {
 }
 
+/// @brief 検証済みRuntime入力をComponentなしScene Objectへ変換する
+SceneObject SceneSnapshot::make_runtime_object(RuntimeSceneObjectData a_object) noexcept
+{
+    const IdentityText name = a_object.id.canonical_text();
+    return SceneObject(std::move(a_object.id), std::string(name.data(), name.size()), a_object.isActive,
+                       std::move(a_object.parentId), std::move(a_object.transform), {});
+}
+
 /// @brief Snapshotが表す永続Scene Identityを返す
 const SceneAssetId &SceneSnapshot::scene_asset_id() const noexcept
 {
@@ -169,6 +177,128 @@ Result<SceneSnapshot> create_scene_snapshot(
         std::sort(objects.begin(), objects.end(), scene_object_id_less);
         return Result<SceneSnapshot>::success(SceneSnapshot(
             a_document.scene_asset_id(), std::move(objects)));
+    }
+    catch (const std::bad_alloc &)
+    {
+        terminate_allocation(a_assertContext.fatal_handler());
+    }
+    catch (...)
+    {
+        terminate_exception(a_assertContext.fatal_handler());
+    }
+}
+
+/// @brief Runtime Scene DataをAuthoring上限から独立した不変Snapshotへ変換する
+Result<SceneSnapshot> create_runtime_scene_snapshot(
+    SceneAssetId a_sceneAssetId, std::vector<RuntimeSceneObjectData> a_objects,
+    const AssertContext &a_assertContext) noexcept
+{
+    if (a_objects.size() > k_maximumRuntimeSceneObjectCount)
+    {
+        return Result<SceneSnapshot>::failure(make_scene_error(
+            a_assertContext, SceneError::ResourceLimitExceeded,
+            "Runtime Scene object count exceeds the 1000000 element limit"));
+    }
+
+    try
+    {
+        const auto objectIdLess = [](const RuntimeSceneObjectData &a_left,
+                                     const RuntimeSceneObjectData &a_right) noexcept
+        {
+            return a_left.id < a_right.id;
+        };
+        std::sort(a_objects.begin(), a_objects.end(), objectIdLess);
+        for (std::size_t index = 1U; index < a_objects.size(); ++index)
+        {
+            if (!(a_objects[index - 1U].id < a_objects[index].id))
+            {
+                return Result<SceneSnapshot>::failure(make_scene_error(
+                    a_assertContext, SceneError::DuplicateObjectId,
+                    "Runtime Scene object identities must be unique"));
+            }
+        }
+
+        constexpr std::size_t k_noParent = std::numeric_limits<std::size_t>::max();
+        std::vector<std::size_t> parentIndices(a_objects.size(), k_noParent);
+        for (std::size_t index = 0U; index < a_objects.size(); ++index)
+        {
+            if (!a_objects[index].parentId.has_value())
+            {
+                continue;
+            }
+            const ObjectId &parentId = *a_objects[index].parentId;
+            const auto parent = std::lower_bound(
+                a_objects.begin(), a_objects.end(), parentId,
+                [](const RuntimeSceneObjectData &a_object, const ObjectId &a_id) noexcept
+                {
+                    return a_object.id < a_id;
+                });
+            if (parent == a_objects.end() || parent->id != parentId)
+            {
+                return Result<SceneSnapshot>::failure(make_scene_error(
+                    a_assertContext, SceneError::DanglingParent,
+                    "Runtime Scene parent identity is not present in the object set"));
+            }
+            const std::size_t parentIndex = static_cast<std::size_t>(parent - a_objects.begin());
+            if (parentIndex == index)
+            {
+                return Result<SceneSnapshot>::failure(make_scene_error(
+                    a_assertContext, SceneError::HierarchyCycle,
+                    "Runtime Scene object cannot parent itself"));
+            }
+            parentIndices[index] = parentIndex;
+        }
+
+        std::vector<std::uint8_t> visitStates(a_objects.size(), 0U);
+        std::vector<std::size_t> hierarchyDepths(a_objects.size(), 0U);
+        std::vector<std::size_t> path;
+        path.reserve(std::min(a_objects.size(), SceneDocument::maximum_hierarchy_depth() + 1U));
+        for (std::size_t start = 0U; start < a_objects.size(); ++start)
+        {
+            if (visitStates[start] == 2U)
+            {
+                continue;
+            }
+            path.clear();
+            std::size_t current = start;
+            while (current != k_noParent && visitStates[current] == 0U)
+            {
+                visitStates[current] = 1U;
+                path.push_back(current);
+                current = parentIndices[current];
+            }
+            if (current != k_noParent && visitStates[current] == 1U)
+            {
+                return Result<SceneSnapshot>::failure(make_scene_error(
+                    a_assertContext, SceneError::HierarchyCycle,
+                    "Runtime Scene hierarchy contains a cycle"));
+            }
+
+            std::size_t depth = current == k_noParent ? 0U : hierarchyDepths[current];
+            while (!path.empty())
+            {
+                if (depth >= SceneDocument::maximum_hierarchy_depth())
+                {
+                    return Result<SceneSnapshot>::failure(make_scene_error(
+                        a_assertContext, SceneError::HierarchyDepthExceeded,
+                        "Runtime Scene hierarchy exceeds the supported depth"));
+                }
+                ++depth;
+                const std::size_t objectIndex = path.back();
+                path.pop_back();
+                hierarchyDepths[objectIndex] = depth;
+                visitStates[objectIndex] = 2U;
+            }
+        }
+
+        std::vector<SceneObject> sceneObjects;
+        sceneObjects.reserve(a_objects.size());
+        for (RuntimeSceneObjectData &object : a_objects)
+        {
+            sceneObjects.push_back(SceneSnapshot::make_runtime_object(std::move(object)));
+        }
+        return Result<SceneSnapshot>::success(
+            SceneSnapshot(std::move(a_sceneAssetId), std::move(sceneObjects)));
     }
     catch (const std::bad_alloc &)
     {

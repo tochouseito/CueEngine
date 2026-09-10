@@ -1,0 +1,2255 @@
+#include "RuntimePackage.h"
+#include "RuntimeModuleIdentity.h"
+#include "RuntimePath.h"
+
+#include <Cue/Foundation/Assert.h>
+#include <Cue/Foundation/Error.h>
+#include <Cue/GameModule/GameModuleAbi.h>
+#include <Cue/IO/RelativePath.h>
+#include <Cue/IO/Windows/WindowsFilesystem.h>
+#include <Cue/Math/Transform.h>
+#include <Cue/Package/Error.h>
+#include <Cue/Package/Manifest.h>
+#include <Cue/Package/RuntimeData.h>
+#include <Cue/Project/Descriptor.h>
+#include <Cue/Runtime/Error.h>
+#include <Cue/Runtime/RuntimeSchema.h>
+#include <Cue/Scene/Identity.h>
+#include <Cue/Scene/SceneDocument.h>
+#include <Cue/Schema/Registry.h>
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#ifndef CUE_RUNTIME_BUILD_CONFIGURATION
+#error CUE_RUNTIME_BUILD_CONFIGURATION must identify the RuntimeHost build configuration
+#endif
+
+namespace
+{
+constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
+constexpr std::size_t k_maximumRuntimeSystems = 256U;
+constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
+constexpr std::uint64_t k_maximumRuntimePeImageBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumRuntimePeInventoryBytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
+
+/// @brief lowercase hexadecimal文字か判定する
+[[nodiscard]] bool is_lower_hex(char a_value) noexcept
+{
+    return (a_value >= '0' && a_value <= '9') || (a_value >= 'a' && a_value <= 'f');
+}
+
+/// @brief lowercase canonical UUID Version 4文字列か判定する
+[[nodiscard]] bool is_canonical_uuid_v4(std::string_view a_text) noexcept
+{
+    if (a_text.size() != 36U || a_text[8] != '-' || a_text[13] != '-' || a_text[18] != '-' || a_text[23] != '-' ||
+        a_text[14] != '4' || (a_text[19] != '8' && a_text[19] != '9' && a_text[19] != 'a' && a_text[19] != 'b'))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < a_text.size(); ++index)
+    {
+        if (index != 8U && index != 13U && index != 18U && index != 23U && !is_lower_hex(a_text[index]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// @brief UTF-8 Byte列がUnicode Scalar Valueの正規Encodingだけを含むか返す
+[[nodiscard]] bool is_valid_utf8(std::string_view a_text) noexcept
+{
+    std::size_t offset = 0U;
+    while (offset < a_text.size())
+    {
+        const auto first = static_cast<unsigned char>(a_text[offset]);
+        if (first <= 0x7fU)
+        {
+            ++offset;
+            continue;
+        }
+        std::size_t length = 0U;
+        std::uint32_t value = 0U;
+        std::uint32_t minimum = 0U;
+        if (first >= 0xc2U && first <= 0xdfU)
+        {
+            length = 2U;
+            value = first & 0x1fU;
+            minimum = 0x80U;
+        }
+        else if (first >= 0xe0U && first <= 0xefU)
+        {
+            length = 3U;
+            value = first & 0x0fU;
+            minimum = 0x800U;
+        }
+        else if (first >= 0xf0U && first <= 0xf4U)
+        {
+            length = 4U;
+            value = first & 0x07U;
+            minimum = 0x10000U;
+        }
+        else
+        {
+            return false;
+        }
+        if (offset + length > a_text.size())
+        {
+            return false;
+        }
+        for (std::size_t index = 1U; index < length; ++index)
+        {
+            const auto continuation = static_cast<unsigned char>(a_text[offset + index]);
+            if ((continuation & 0xc0U) != 0x80U)
+            {
+                return false;
+            }
+            value = (value << 6U) | (continuation & 0x3fU);
+        }
+        if (value < minimum || value > 0x10ffffU || (value >= 0xd800U && value <= 0xdfffU))
+        {
+            return false;
+        }
+        offset += length;
+    }
+    return true;
+}
+
+/// @brief Filesystem PathをEngine内部契約のUTF-8表現へ変換する
+[[nodiscard]] std::string path_to_utf8(const std::filesystem::path &a_path)
+{
+    const std::u8string text = a_path.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(text.data()), text.size());
+}
+
+/// @brief Absolute Windows PathをExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path extended_windows_path(const std::filesystem::path &a_path)
+{
+    std::filesystem::path preferred = a_path;
+    preferred.make_preferred();
+    const std::wstring &native = preferred.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return preferred;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+}
+
+/// @brief Runtime Package処理中の予期しない例外をFatal境界へ渡す
+[[noreturn]] void terminate_package_exception(const cue::AssertContext &a_assertContext) noexcept
+{
+    a_assertContext.fatal_handler().terminate("Unexpected exception escaped Runtime Package loading");
+    std::abort();
+}
+
+/// @brief Runtime Package起動の失敗をPackage Domainへ分類する
+[[nodiscard]] cue::Error package_error(const cue::AssertContext &a_assertContext,
+                                       cue::package::PackageError a_code,
+                                       std::string_view a_summary) noexcept
+{
+    return cue::package::make_package_error(a_assertContext, a_code, a_summary);
+}
+
+/// @brief Win32失敗をRuntime Package起動Errorへ変換する
+[[nodiscard]] cue::Error windows_package_error(const cue::AssertContext &a_assertContext,
+                                               cue::package::PackageError a_code, DWORD a_nativeCode,
+                                               std::string_view a_summary) noexcept
+{
+    cue::ErrorCode code = cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Package",
+                                                 static_cast<std::int64_t>(a_code));
+    cue::NativeError native = cue::NativeError::create(a_assertContext.fatal_handler(), "Win32", a_nativeCode);
+    return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary, std::move(native));
+}
+
+/// @brief Win32 Handleを単一所有する
+class UniqueHandle final
+{
+  public:
+    /// @brief 無効Handleを構築する
+    UniqueHandle() noexcept = default;
+    /// @brief Native Handleの所有権を取得する
+    explicit UniqueHandle(HANDLE a_handle) noexcept : m_handle(a_handle)
+    {
+    }
+    /// @brief Handleの複製を禁止する
+    UniqueHandle(const UniqueHandle &) = delete;
+    /// @brief Handleの複製代入を禁止する
+    UniqueHandle &operator=(const UniqueHandle &) = delete;
+    /// @brief Handle所有権を移動する
+    UniqueHandle(UniqueHandle &&a_other) noexcept : m_handle(std::exchange(a_other.m_handle, INVALID_HANDLE_VALUE))
+    {
+    }
+    /// @brief 既存Handleを閉じて所有権を移動代入する
+    UniqueHandle &operator=(UniqueHandle &&a_other) noexcept
+    {
+        if (this != &a_other)
+        {
+            reset();
+            m_handle = std::exchange(a_other.m_handle, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+    /// @brief 所有Handleを閉じる
+    ~UniqueHandle() noexcept
+    {
+        reset();
+    }
+    /// @brief 有効Handleか返す
+    [[nodiscard]] bool is_valid() const noexcept
+    {
+        return m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE;
+    }
+    /// @brief 借用Native Handleを返す
+    [[nodiscard]] HANDLE get() const noexcept
+    {
+        return m_handle;
+    }
+
+  private:
+    /// @brief 所有Handleがあれば閉じて無効化する
+    void reset() noexcept
+    {
+        if (is_valid())
+        {
+            CloseHandle(m_handle);
+        }
+        m_handle = INVALID_HANDLE_VALUE;
+    }
+
+    HANDLE m_handle = INVALID_HANDLE_VALUE;
+};
+
+/// @brief 事前Load済みDLLを依存元より後まで保持して逆順解放する
+void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
+{
+    for (auto library = a_libraries.rbegin(); library != a_libraries.rend(); ++library)
+    {
+        if (*library != nullptr)
+        {
+            FreeLibrary(*library);
+        }
+    }
+    a_libraries.clear();
+}
+
+/// @brief RuntimeHostが同時保持するGame Moduleと依存PEの宣言Sizeを全体読込前に制限する
+[[nodiscard]] cue::Result<void> validate_runtime_pe_memory_contract(
+    const cue::package::PackageManifest &a_manifest, const cue::AssertContext &a_assertContext) noexcept
+{
+    std::uint64_t totalBytes = 0U;
+    for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+    {
+        if (entry.role() != cue::package::PackageFileRole::GameModule &&
+            entry.role() != cue::package::PackageFileRole::RuntimeDependency)
+        {
+            continue;
+        }
+        if (entry.byte_size() > k_maximumRuntimePeImageBytes ||
+            totalBytes > k_maximumRuntimePeInventoryBytes - entry.byte_size())
+        {
+            return cue::Result<void>::failure(package_error(
+                a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
+                "Runtime PE image inventory exceeds the RuntimeHost memory contract"));
+        }
+        totalBytes += entry.byte_size();
+    }
+    return cue::Result<void>::success();
+}
+
+/// @brief Canonical Runtime JSONを順序、重複、末尾Data込みでFail-closedに読むCursor
+class JsonCursor final
+{
+  public:
+    /// @brief Cursor寿命中だけ入力Byte列を借用する
+    explicit JsonCursor(std::string_view a_input) noexcept : m_input(a_input)
+    {
+    }
+
+    /// @brief 空白を除いた次Tokenが指定文字なら消費する
+    [[nodiscard]] bool consume(char a_value) noexcept
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset] != a_value)
+        {
+            return false;
+        }
+        ++m_offset;
+        return true;
+    }
+
+    /// @brief 空白を除いた次Tokenが指定文字か返す
+    [[nodiscard]] bool next_is(char a_value) noexcept
+    {
+        skip_whitespace();
+        return m_offset < m_input.size() && m_input[m_offset] == a_value;
+    }
+
+    /// @brief Object Member名とColonを固定順で読む
+    [[nodiscard]] bool member(std::string_view a_expected)
+    {
+        std::string name;
+        return string(name) && name == a_expected && consume(':');
+    }
+
+    /// @brief JSON StringをASCII Escape検証付きで復号する
+    [[nodiscard]] bool string(std::string &a_output)
+    {
+        skip_whitespace();
+        if (m_offset >= m_input.size() || m_input[m_offset++] != '"')
+        {
+            return false;
+        }
+        a_output.clear();
+        while (m_offset < m_input.size())
+        {
+            const unsigned char value = static_cast<unsigned char>(m_input[m_offset++]);
+            if (value == '"')
+            {
+                return a_output.size() <= cue::package::k_maximumPackageManifestStringBytes;
+            }
+            if (value < 0x20U)
+            {
+                return false;
+            }
+            if (value != '\\')
+            {
+                a_output.push_back(static_cast<char>(value));
+            }
+            else
+            {
+                if (m_offset >= m_input.size())
+                {
+                    return false;
+                }
+                const char escaped = m_input[m_offset++];
+                switch (escaped)
+                {
+                case '"':
+                case '\\':
+                case '/':
+                    a_output.push_back(escaped);
+                    break;
+                case 'b':
+                    a_output.push_back('\b');
+                    break;
+                case 'f':
+                    a_output.push_back('\f');
+                    break;
+                case 'n':
+                    a_output.push_back('\n');
+                    break;
+                case 'r':
+                    a_output.push_back('\r');
+                    break;
+                case 't':
+                    a_output.push_back('\t');
+                    break;
+                default:
+                    return false;
+                }
+            }
+            if (a_output.size() > cue::package::k_maximumPackageManifestStringBytes)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// @brief JSON unsigned整数を対象型へ完全変換する
+    template <typename Value> [[nodiscard]] bool unsigned_number(Value &a_output) noexcept
+    {
+        skip_whitespace();
+        const std::size_t begin = m_offset;
+        while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+        {
+            ++m_offset;
+        }
+        if (begin == m_offset || (m_offset - begin > 1U && m_input[begin] == '0'))
+        {
+            return false;
+        }
+        const auto converted = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_output);
+        return converted.ec == std::errc{} && converted.ptr == m_input.data() + m_offset;
+    }
+
+    /// @brief JSON有限floatを完全変換する
+    [[nodiscard]] bool floating(float &a_output) noexcept
+    {
+        skip_whitespace();
+        const std::size_t begin = m_offset;
+        if (m_offset < m_input.size() && m_input[m_offset] == '-')
+        {
+            ++m_offset;
+        }
+        if (m_offset >= m_input.size())
+        {
+            return false;
+        }
+        if (m_input[m_offset] == '0')
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                return false;
+            }
+        }
+        else if (m_input[m_offset] >= '1' && m_input[m_offset] <= '9')
+        {
+            do
+            {
+                ++m_offset;
+            } while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9');
+        }
+        else
+        {
+            return false;
+        }
+        if (m_offset < m_input.size() && m_input[m_offset] == '.')
+        {
+            ++m_offset;
+            const std::size_t fractionBegin = m_offset;
+            while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                ++m_offset;
+            }
+            if (fractionBegin == m_offset)
+            {
+                return false;
+            }
+        }
+        if (m_offset < m_input.size() && (m_input[m_offset] == 'e' || m_input[m_offset] == 'E'))
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() && (m_input[m_offset] == '+' || m_input[m_offset] == '-'))
+            {
+                ++m_offset;
+            }
+            const std::size_t exponentBegin = m_offset;
+            while (m_offset < m_input.size() && m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                ++m_offset;
+            }
+            if (exponentBegin == m_offset)
+            {
+                return false;
+            }
+        }
+        const auto converted = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_output,
+                                               std::chars_format::general);
+        return converted.ec == std::errc{} && converted.ptr == m_input.data() + m_offset && std::isfinite(a_output);
+    }
+
+    /// @brief JSON Booleanを読む
+    [[nodiscard]] bool boolean(bool &a_output) noexcept
+    {
+        skip_whitespace();
+        if (m_input.substr(m_offset, 4U) == "true")
+        {
+            m_offset += 4U;
+            a_output = true;
+            return true;
+        }
+        if (m_input.substr(m_offset, 5U) == "false")
+        {
+            m_offset += 5U;
+            a_output = false;
+            return true;
+        }
+        return false;
+    }
+
+    /// @brief JSON nullを読む
+    [[nodiscard]] bool null_value() noexcept
+    {
+        skip_whitespace();
+        if (m_input.substr(m_offset, 4U) != "null")
+        {
+            return false;
+        }
+        m_offset += 4U;
+        return true;
+    }
+
+    /// @brief 文書末尾まで空白以外がないか返す
+    [[nodiscard]] bool finished() noexcept
+    {
+        skip_whitespace();
+        return m_offset == m_input.size();
+    }
+
+  private:
+    /// @brief JSONで許可されるASCII空白を読み飛ばす
+    void skip_whitespace() noexcept
+    {
+        while (m_offset < m_input.size() && (m_input[m_offset] == ' ' || m_input[m_offset] == '\t' ||
+                                             m_input[m_offset] == '\r' || m_input[m_offset] == '\n'))
+        {
+            ++m_offset;
+        }
+    }
+
+    std::string_view m_input;
+    std::size_t m_offset = 0U;
+};
+
+/// @brief canonical major.minor.patch文字列をEngine Versionへ変換する
+[[nodiscard]] bool parse_engine_version(std::string_view a_text, cue::EngineVersion &a_output) noexcept
+{
+    const std::size_t first = a_text.find('.');
+    const std::size_t second = first == std::string_view::npos ? first : a_text.find('.', first + 1U);
+    if (first == std::string_view::npos || second == std::string_view::npos || a_text.find('.', second + 1U) !=
+                                                                          std::string_view::npos)
+    {
+        return false;
+    }
+    const auto parsePart = [](std::string_view a_part, std::uint32_t &a_value) noexcept
+    {
+        if (a_part.empty() || (a_part.size() > 1U && a_part.front() == '0'))
+        {
+            return false;
+        }
+        const auto converted = std::from_chars(a_part.data(), a_part.data() + a_part.size(), a_value);
+        return converted.ec == std::errc{} && converted.ptr == a_part.data() + a_part.size();
+    };
+    return parsePart(a_text.substr(0U, first), a_output.major) &&
+           parsePart(a_text.substr(first + 1U, second - first - 1U), a_output.minor) &&
+           parsePart(a_text.substr(second + 1U), a_output.patch);
+}
+
+/// @brief RuntimeHost Build ConfigurationをManifest表現へ変換する
+[[nodiscard]] constexpr cue::BuildConfiguration host_configuration() noexcept
+{
+#if CUE_RUNTIME_BUILD_CONFIGURATION == 1
+    return cue::BuildConfiguration::Debug;
+#elif CUE_RUNTIME_BUILD_CONFIGURATION == 2
+    return cue::BuildConfiguration::Development;
+#elif CUE_RUNTIME_BUILD_CONFIGURATION == 3
+    return cue::BuildConfiguration::Release;
+#else
+#error Unsupported CUE_RUNTIME_BUILD_CONFIGURATION value
+#endif
+}
+
+/// @brief RuntimeHost Build ConfigurationをGame Module ABI値へ変換する
+[[nodiscard]] constexpr std::uint32_t host_module_configuration() noexcept
+{
+#if CUE_RUNTIME_BUILD_CONFIGURATION == 1
+    return CUE_GAME_MODULE_CONFIGURATION_DEBUG;
+#elif CUE_RUNTIME_BUILD_CONFIGURATION == 2
+    return CUE_GAME_MODULE_CONFIGURATION_DEVELOPMENT;
+#else
+    return CUE_GAME_MODULE_CONFIGURATION_RELEASE;
+#endif
+}
+
+/// @brief Runtime Project Dataから起動に必要なIdentityとCompatibilityだけを所有する
+struct RuntimeProjectInfo final
+{
+    std::string projectId;
+    cue::EngineCompatibility compatibility;
+    std::string startupSceneAssetId;
+};
+
+/// @brief Runtime Project Data v1をCanonical Member順とResource Limitへ検証する
+[[nodiscard]] cue::Result<RuntimeProjectInfo> parse_runtime_project(
+    std::string_view a_bytes, const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        JsonCursor cursor(a_bytes);
+        std::uint32_t schemaVersion = 0U;
+        std::string minimumText;
+        std::string maximumText;
+        bool hasMaximum = false;
+        RuntimeProjectInfo info{{}, {{}, std::nullopt}, {}};
+        if (!cursor.consume('{') || !cursor.member("schemaVersion") || !cursor.unsigned_number(schemaVersion) ||
+            schemaVersion != cue::package::k_runtimeProjectDataSchemaVersion || !cursor.consume(',') ||
+            !cursor.member("projectId") || !cursor.string(info.projectId) || !cursor.consume(',') ||
+            !cursor.member("engineCompatibility") || !cursor.consume('{') || !cursor.member("minimum") ||
+            !cursor.string(minimumText) || !cursor.consume(',') || !cursor.member("maximumExclusive"))
+        {
+            return cue::Result<RuntimeProjectInfo>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Project Data members are invalid"));
+        }
+        if (cursor.next_is('"'))
+        {
+            hasMaximum = cursor.string(maximumText);
+        }
+        else if (!cursor.null_value())
+        {
+            return cue::Result<RuntimeProjectInfo>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Project maximum compatibility is invalid"));
+        }
+        if (!cursor.consume('}') || !cursor.consume(',') || !cursor.member("requiredCapabilities") ||
+            !cursor.consume('[') || !cursor.consume(']') || !cursor.consume(',') ||
+            !cursor.member("startupSceneAssetId") || !cursor.string(info.startupSceneAssetId) ||
+            !cursor.consume('}') || !cursor.finished() ||
+            !parse_engine_version(minimumText, info.compatibility.minimum))
+        {
+            return cue::Result<RuntimeProjectInfo>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Project Data is not a supported canonical v1 document"));
+        }
+        if (hasMaximum)
+        {
+            cue::EngineVersion maximum{};
+            if (!parse_engine_version(maximumText, maximum) || maximum <= info.compatibility.minimum)
+            {
+                return cue::Result<RuntimeProjectInfo>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Project compatibility range is invalid"));
+            }
+            info.compatibility.maximumExclusive = maximum;
+        }
+        if (k_engineVersion < info.compatibility.minimum ||
+            (info.compatibility.maximumExclusive.has_value() &&
+             k_engineVersion >= *info.compatibility.maximumExclusive))
+        {
+            return cue::Result<RuntimeProjectInfo>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Project is incompatible with this Engine version"));
+        }
+        return cue::Result<RuntimeProjectInfo>::success(std::move(info));
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief 固定要素数のfloat Arrayを読む
+template <std::size_t Size>
+[[nodiscard]] bool read_float_array(JsonCursor &a_cursor, std::array<float, Size> &a_values) noexcept
+{
+    if (!a_cursor.consume('['))
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < Size; ++index)
+    {
+        if ((index > 0U && !a_cursor.consume(',')) || !a_cursor.floating(a_values[index]))
+        {
+            return false;
+        }
+    }
+    return a_cursor.consume(']');
+}
+
+/// @brief Runtime Scene v1のCore ObjectをScene Snapshotへ復元する
+[[nodiscard]] cue::Result<cue::scene::SceneSnapshot> parse_runtime_scene(
+    std::string_view a_bytes, std::string_view a_expectedSceneId,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        JsonCursor cursor(a_bytes);
+        std::uint32_t schemaVersion = 0U;
+        std::string sceneIdText;
+        if (!cursor.consume('{') || !cursor.member("schemaVersion") || !cursor.unsigned_number(schemaVersion) ||
+            schemaVersion != cue::package::k_runtimeSceneDataSchemaVersion || !cursor.consume(',') ||
+            !cursor.member("sceneAssetId") || !cursor.string(sceneIdText) || sceneIdText != a_expectedSceneId ||
+            !cursor.consume(',') || !cursor.member("objects") || !cursor.consume('['))
+        {
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene identity or schema is invalid"));
+        }
+        std::vector<cue::scene::RuntimeSceneObjectData> objects;
+        while (!cursor.next_is(']'))
+        {
+            if (!objects.empty() && !cursor.consume(','))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object separator is invalid"));
+            }
+            if (objects.size() >= cue::scene::k_maximumRuntimeSceneObjectCount)
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::RuntimeDataResourceLimitExceeded,
+                    "Runtime Scene object count exceeds the supported limit"));
+            }
+            std::string objectIdText;
+            std::string parentIdText;
+            bool hasParent = false;
+            bool isActive = false;
+            std::array<float, 3U> translation{};
+            std::array<float, 4U> rotation{};
+            std::array<float, 3U> scale{};
+            if (!cursor.consume('{') || !cursor.member("objectId") || !cursor.string(objectIdText) ||
+                !cursor.consume(',') || !cursor.member("parentObjectId"))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object identity is invalid"));
+            }
+            if (cursor.next_is('"'))
+            {
+                hasParent = cursor.string(parentIdText);
+            }
+            else if (!cursor.null_value())
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene parent identity is invalid"));
+            }
+            if (!cursor.consume(',') || !cursor.member("active") || !cursor.boolean(isActive) ||
+                !cursor.consume(',') || !cursor.member("transform") || !cursor.consume('{') ||
+                !cursor.member("translation") || !read_float_array(cursor, translation) || !cursor.consume(',') ||
+                !cursor.member("rotation") || !read_float_array(cursor, rotation) || !cursor.consume(',') ||
+                !cursor.member("scale") || !read_float_array(cursor, scale) || !cursor.consume('}') ||
+                !cursor.consume(',') || !cursor.member("components") || !cursor.consume('['))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object values are invalid"));
+            }
+            if (!cursor.consume(']'))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                    "RuntimeHost v1 does not yet instantiate custom Scene components"));
+            }
+            if (!cursor.consume('}'))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object has unsupported members"));
+            }
+            auto objectId = cue::scene::ObjectId::parse(objectIdText, a_assertContext);
+            auto parentId = hasParent ? cue::scene::ObjectId::parse(parentIdText, a_assertContext)
+                                      : cue::Result<cue::scene::ObjectId>::failure(package_error(
+                                            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                            "Runtime Scene object has no parent"));
+            auto tolerance = cue::math::Tolerance::create(a_assertContext.fatal_handler(), 0.00001F, 0.00001F);
+            const cue::math::Quaternion parsedRotation{rotation[0], rotation[1], rotation[2], rotation[3]};
+            if (tolerance && !cue::math::is_unit_rotation(parsedRotation, *tolerance.try_value()))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                    "Runtime Scene rotation is not a supported unit Quaternion"));
+            }
+            auto transform = tolerance
+                                 ? cue::math::Transform::create(
+                                       a_assertContext.fatal_handler(),
+                                       {translation[0], translation[1], translation[2]},
+                                       parsedRotation,
+                                       {scale[0], scale[1], scale[2]}, *tolerance.try_value())
+                                 : cue::Result<cue::math::Transform>::failure(std::move(*tolerance.try_error()));
+            if (!objectId || (hasParent && !parentId) || !transform)
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene contains an invalid Object identity or Transform"));
+            }
+            if (!objects.empty() && !(objects.back().id < *objectId.try_value()))
+            {
+                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                    "Runtime Scene object order is not canonical"));
+            }
+            std::optional<cue::scene::ObjectId> parsedParent;
+            if (hasParent)
+            {
+                parsedParent.emplace(std::move(*parentId.try_value()));
+            }
+            objects.push_back({std::move(*objectId.try_value()), std::move(parsedParent), isActive,
+                               std::move(*transform.try_value())});
+        }
+        if (!cursor.consume(']') || !cursor.consume('}') || !cursor.finished())
+        {
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene has trailing or unsupported data"));
+        }
+        auto sceneId = cue::scene::SceneAssetId::parse(sceneIdText, a_assertContext);
+        if (!sceneId)
+        {
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene identity is invalid"));
+        }
+        auto snapshot = cue::scene::create_runtime_scene_snapshot(
+            std::move(*sceneId.try_value()), std::move(objects), a_assertContext);
+        if (!snapshot)
+        {
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene object set or hierarchy is invalid"));
+        }
+        return snapshot;
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief Parse済みRuntime DataがPublisherのCanonical Byte列と完全一致するか検証する
+[[nodiscard]] cue::Result<void> validate_canonical_runtime_data(
+    const RuntimeProjectInfo &a_project, const cue::scene::SceneSnapshot &a_scene, std::string_view a_projectBytes,
+    std::string_view a_sceneBytes, const cue::AssertContext &a_assertContext) noexcept
+{
+    auto projectId = cue::ProjectId::parse(a_project.projectId, a_assertContext);
+    auto descriptor = projectId ? cue::create_blank_project_descriptor(
+                                      *projectId.try_value(), "Runtime Package", a_project.compatibility,
+                                      a_project.startupSceneAssetId, a_assertContext)
+                                : cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
+    auto publication = descriptor
+                           ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), a_scene,
+                                                                         a_assertContext)
+                           : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(
+                                 std::move(*descriptor.try_error()));
+    if (!publication)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Data could not be reproduced by the canonical Publisher"));
+    }
+    if (publication.try_value()->project_data().bytes() != a_projectBytes)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Project Data is not the canonical Publisher representation"));
+    }
+    if (publication.try_value()->startup_scene_data().bytes() != a_sceneBytes)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+            "Runtime Scene Data is not the canonical Publisher representation"));
+    }
+    return cue::Result<void>::success();
+}
+
+/// @brief Game Module MetadataのEngine互換Rangeを所有する
+struct ModuleMetadataCompatibility final
+{
+    std::string minimum;
+    std::string maximumExclusive;
+    bool hasMaximum = false;
+};
+
+/// @brief Game Module MetadataのMSVC Toolset Identityを所有する
+struct ModuleMetadataToolset final
+{
+    std::uint64_t compilerVersion = 0U;
+    std::uint64_t fullVersion = 0U;
+    std::uint64_t build = 0U;
+};
+
+/// @brief Game Module Metadata v1の全必須Memberを所有する
+struct ModuleMetadataInfo final
+{
+    std::uint32_t schemaVersion = 0U;
+    std::string artifactId;
+    std::string projectId;
+    ModuleMetadataCompatibility compatibility;
+    std::uint32_t abiVersion = 0U;
+    std::string configuration;
+    std::string architecture;
+    std::string compilerFamily;
+    ModuleMetadataToolset toolset;
+    std::string runtimeLibrary;
+    std::uint32_t iteratorDebugLevel = 0U;
+    std::string moduleFile;
+    std::string entrySymbol;
+};
+
+/// @brief Metadata Engine Compatibility Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_metadata_compatibility(
+    JsonCursor &a_cursor, ModuleMetadataCompatibility &a_compatibility)
+{
+    constexpr std::uint32_t k_minimum = 1U << 0U;
+    constexpr std::uint32_t k_maximumExclusive = 1U << 1U;
+    constexpr std::uint32_t k_required = k_minimum | k_maximumExclusive;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if ((!first && !a_cursor.consume(',')))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        if (name == "minimum")
+        {
+            if ((seen & k_minimum) != 0U || !a_cursor.string(a_compatibility.minimum))
+            {
+                return false;
+            }
+            seen |= k_minimum;
+        }
+        else if (name == "maximumExclusive")
+        {
+            if ((seen & k_maximumExclusive) != 0U)
+            {
+                return false;
+            }
+            if (a_cursor.next_is('"'))
+            {
+                if (!a_cursor.string(a_compatibility.maximumExclusive))
+                {
+                    return false;
+                }
+                a_compatibility.hasMaximum = true;
+            }
+            else if (!a_cursor.null_value())
+            {
+                return false;
+            }
+            seen |= k_maximumExclusive;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return a_cursor.consume('}') && seen == k_required;
+}
+
+/// @brief Metadata MSVC Toolset Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_metadata_toolset(JsonCursor &a_cursor, ModuleMetadataToolset &a_toolset)
+{
+    constexpr std::uint32_t k_compilerVersion = 1U << 0U;
+    constexpr std::uint32_t k_fullVersion = 1U << 1U;
+    constexpr std::uint32_t k_build = 1U << 2U;
+    constexpr std::uint32_t k_required = k_compilerVersion | k_fullVersion | k_build;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if (!first && !a_cursor.consume(','))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        if (name == "compilerVersion")
+        {
+            if ((seen & k_compilerVersion) != 0U || !a_cursor.unsigned_number(a_toolset.compilerVersion))
+            {
+                return false;
+            }
+            seen |= k_compilerVersion;
+        }
+        else if (name == "fullVersion")
+        {
+            if ((seen & k_fullVersion) != 0U || !a_cursor.unsigned_number(a_toolset.fullVersion))
+            {
+                return false;
+            }
+            seen |= k_fullVersion;
+        }
+        else if (name == "build")
+        {
+            if ((seen & k_build) != 0U || !a_cursor.unsigned_number(a_toolset.build))
+            {
+                return false;
+            }
+            seen |= k_build;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return a_cursor.consume('}') && seen == k_required;
+}
+
+/// @brief Metadata v1 Top-level Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_module_metadata(JsonCursor &a_cursor, ModuleMetadataInfo &a_info)
+{
+    constexpr std::uint32_t k_schemaVersion = 1U << 0U;
+    constexpr std::uint32_t k_artifactId = 1U << 1U;
+    constexpr std::uint32_t k_projectId = 1U << 2U;
+    constexpr std::uint32_t k_engineCompatibility = 1U << 3U;
+    constexpr std::uint32_t k_abiVersion = 1U << 4U;
+    constexpr std::uint32_t k_configuration = 1U << 5U;
+    constexpr std::uint32_t k_architecture = 1U << 6U;
+    constexpr std::uint32_t k_compilerFamily = 1U << 7U;
+    constexpr std::uint32_t k_msvcToolset = 1U << 8U;
+    constexpr std::uint32_t k_runtimeLibrary = 1U << 9U;
+    constexpr std::uint32_t k_iteratorDebugLevel = 1U << 10U;
+    constexpr std::uint32_t k_moduleFile = 1U << 11U;
+    constexpr std::uint32_t k_entrySymbol = 1U << 12U;
+    constexpr std::uint32_t k_required = (1U << 13U) - 1U;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if (!first && !a_cursor.consume(','))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        std::uint32_t member = 0U;
+        bool read = false;
+        if (name == "schemaVersion")
+        {
+            member = k_schemaVersion;
+            read = a_cursor.unsigned_number(a_info.schemaVersion);
+        }
+        else if (name == "artifactId")
+        {
+            member = k_artifactId;
+            read = a_cursor.string(a_info.artifactId);
+        }
+        else if (name == "projectId")
+        {
+            member = k_projectId;
+            read = a_cursor.string(a_info.projectId);
+        }
+        else if (name == "engineCompatibility")
+        {
+            member = k_engineCompatibility;
+            read = read_metadata_compatibility(a_cursor, a_info.compatibility);
+        }
+        else if (name == "abiVersion")
+        {
+            member = k_abiVersion;
+            read = a_cursor.unsigned_number(a_info.abiVersion);
+        }
+        else if (name == "configuration")
+        {
+            member = k_configuration;
+            read = a_cursor.string(a_info.configuration);
+        }
+        else if (name == "architecture")
+        {
+            member = k_architecture;
+            read = a_cursor.string(a_info.architecture);
+        }
+        else if (name == "compilerFamily")
+        {
+            member = k_compilerFamily;
+            read = a_cursor.string(a_info.compilerFamily);
+        }
+        else if (name == "msvcToolset")
+        {
+            member = k_msvcToolset;
+            read = read_metadata_toolset(a_cursor, a_info.toolset);
+        }
+        else if (name == "runtimeLibrary")
+        {
+            member = k_runtimeLibrary;
+            read = a_cursor.string(a_info.runtimeLibrary);
+        }
+        else if (name == "iteratorDebugLevel")
+        {
+            member = k_iteratorDebugLevel;
+            read = a_cursor.unsigned_number(a_info.iteratorDebugLevel);
+        }
+        else if (name == "moduleFile")
+        {
+            member = k_moduleFile;
+            read = a_cursor.string(a_info.moduleFile);
+        }
+        else if (name == "entrySymbol")
+        {
+            member = k_entrySymbol;
+            read = a_cursor.string(a_info.entrySymbol);
+        }
+        if (member == 0U || (seen & member) != 0U || !read)
+        {
+            return false;
+        }
+        seen |= member;
+    }
+    return a_cursor.consume('}') && a_cursor.finished() && seen == k_required;
+}
+
+/// @brief Metadata v1のPackage起動互換性を検証する
+[[nodiscard]] cue::Result<void> validate_module_metadata(
+    std::string_view a_bytes, const cue::package::PackageManifest &a_manifest,
+    const RuntimeProjectInfo &a_project, const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        JsonCursor cursor(a_bytes);
+        ModuleMetadataInfo info;
+        if (!read_module_metadata(cursor, info) || info.toolset.compilerVersion > k_maximumJsonInteger ||
+            info.toolset.fullVersion > k_maximumJsonInteger || info.toolset.build > k_maximumJsonInteger)
+        {
+            return cue::Result<void>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::InvalidRuntimeData,
+                                                            "Game Module Metadata body is invalid"));
+        }
+        if (info.schemaVersion != 1U || !is_canonical_uuid_v4(info.artifactId) ||
+            !is_canonical_uuid_v4(info.projectId))
+        {
+            return cue::Result<void>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::InvalidRuntimeData,
+                                                            "Game Module Metadata header is invalid"));
+        }
+        cue::EngineVersion minimum{};
+        cue::EngineVersion maximum{};
+        const bool compatibilityMatches = parse_engine_version(info.compatibility.minimum, minimum) &&
+                                          minimum == a_project.compatibility.minimum &&
+                                          (info.compatibility.hasMaximum ==
+                                           a_project.compatibility.maximumExclusive.has_value()) &&
+                                          (!info.compatibility.hasMaximum ||
+                                           (parse_engine_version(info.compatibility.maximumExclusive, maximum) &&
+                                            maximum == *a_project.compatibility.maximumExclusive));
+        const std::string_view expectedConfiguration =
+            a_manifest.configuration() == cue::BuildConfiguration::Debug
+                ? "Debug"
+                : (a_manifest.configuration() == cue::BuildConfiguration::Development ? "Development" : "Release");
+        const bool debug = a_manifest.configuration() == cue::BuildConfiguration::Debug;
+        // _MSC_FULL_VERと_MSC_BUILDはProvenanceとして保持し、同一_MSC_VER内のServicing更新は許容する。
+        if (info.projectId != a_manifest.project_id() || info.projectId != a_project.projectId ||
+            !compatibilityMatches || info.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 ||
+            info.configuration != expectedConfiguration || info.architecture != "x64" ||
+            info.compilerFamily != "msvc" || info.toolset.compilerVersion != _MSC_VER ||
+            info.runtimeLibrary != (debug ? "DebugDll" : "Dll") ||
+            info.iteratorDebugLevel != (debug ? 2U : 0U) || info.moduleFile != "CueGameModule.dll" ||
+            info.entrySymbol != "cue_game_module_query")
+        {
+            return cue::Result<void>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::InvalidRuntimeData,
+                                                            "Game Module Metadata is incompatible with the Package"));
+        }
+        return cue::Result<void>::success();
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief Executable Moduleの完全Pathを切捨てなしで取得する
+[[nodiscard]] cue::Result<std::filesystem::path> executable_path(
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        std::vector<wchar_t> buffer(512U, L'\0');
+        for (;;)
+        {
+            SetLastError(ERROR_SUCCESS);
+            const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length == 0U)
+            {
+                return cue::Result<std::filesystem::path>::failure(windows_package_error(
+                    a_assertContext, cue::package::PackageError::InvalidPackagePath, GetLastError(),
+                    "RuntimeHost executable path could not be resolved"));
+            }
+            if (length < buffer.size() - 1U)
+            {
+                return cue::Result<std::filesystem::path>::success(
+                    std::filesystem::path(std::wstring_view(buffer.data(), length)));
+            }
+            if (buffer.size() >= 32768U)
+            {
+                return cue::Result<std::filesystem::path>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                    "RuntimeHost executable path exceeds the Windows limit"));
+            }
+            buffer.resize(std::min<std::size_t>(buffer.size() * 2U, 32768U));
+        }
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief FilesystemRootからManifestに列挙された一Fileだけを読んでByte Identityを再検証する
+[[nodiscard]] cue::Result<std::vector<std::byte>> read_manifest_file(
+    cue::FilesystemRoot &a_filesystem, const cue::package::PackageFileEntry &a_entry,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    auto path = cue::RelativePath::parse(a_entry.relative_path(), a_assertContext);
+    if (!path)
+    {
+        return cue::Result<std::vector<std::byte>>::failure(std::move(*path.try_error()));
+    }
+    auto bytes = a_filesystem.read_file(*path.try_value(), static_cast<std::size_t>(a_entry.byte_size()));
+    if (!bytes)
+    {
+        return cue::Result<std::vector<std::byte>>::failure(std::move(*bytes.try_error()));
+    }
+    auto verified = cue::package::verify_package_file_bytes(a_entry, *bytes.try_value(), a_assertContext);
+    if (!verified)
+    {
+        return cue::Result<std::vector<std::byte>>::failure(std::move(*verified.try_error()));
+    }
+    return bytes;
+}
+
+/// @brief Manifest内の必須Role一件を返す
+[[nodiscard]] const cue::package::PackageFileEntry *find_role(
+    const cue::package::PackageManifest &a_manifest, cue::package::PackageFileRole a_role) noexcept
+{
+    const auto found = std::find_if(a_manifest.files().begin(), a_manifest.files().end(),
+                                    [a_role](const cue::package::PackageFileEntry &a_entry) noexcept
+                                    { return a_entry.role() == a_role; });
+    return found == a_manifest.files().end() ? nullptr : &*found;
+}
+
+/// @brief byte列をUTF-8検証済みParser入力Viewへ変換する
+[[nodiscard]] std::string_view text_view(const std::vector<std::byte> &a_bytes) noexcept
+{
+    return {reinterpret_cast<const char *>(a_bytes.data()), a_bytes.size()};
+}
+
+/// @brief Package相対Pathから最後のFile Nameだけを借用する
+[[nodiscard]] std::string_view package_file_name(std::string_view a_relativePath) noexcept
+{
+    const std::size_t separator = a_relativePath.find_last_of('/');
+    return separator == std::string_view::npos ? a_relativePath : a_relativePath.substr(separator + 1U);
+}
+
+/// @brief ABI UUIDをlowercase canonical Textへ変換する
+[[nodiscard]] std::string uuid_text(const CueGameUuidV1 &a_uuid)
+{
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(36U);
+    for (std::size_t index = 0U; index < 16U; ++index)
+    {
+        if (index == 4U || index == 6U || index == 8U || index == 10U)
+        {
+            output.push_back('-');
+        }
+        output.push_back(digits[(a_uuid.bytes[index] >> 4U) & 0x0fU]);
+        output.push_back(digits[a_uuid.bytes[index] & 0x0fU]);
+    }
+    return output;
+}
+
+/// @brief Module Diagnosticへ呼出中有効な固定Messageを設定する
+void set_module_diagnostic(CueGameModuleDiagnosticV1 *a_diagnostic, CueGameModuleResult a_code,
+                           const char *a_message) noexcept
+{
+    if (a_diagnostic == nullptr || a_diagnostic->structSize < sizeof(CueGameModuleDiagnosticV1) ||
+        a_diagnostic->version != CUE_GAME_MODULE_STRUCTURE_VERSION_1)
+    {
+        return;
+    }
+    a_diagnostic->code = a_code;
+    a_diagnostic->reserved = 0U;
+    a_diagnostic->message = {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, a_message,
+                             a_message == nullptr ? 0U : static_cast<std::uint64_t>(std::char_traits<char>::length(a_message))};
+}
+
+/// @brief Module登録中に収集する一System Definition
+struct PendingSystem final
+{
+    cue::game_core::RuntimeSystemDescriptor descriptor;
+    CueGameSystemCreateV1 createState;
+    CueGameSystemDestroyV1 destroyState;
+    CueGameSystemStartV1 start;
+    CueGameSystemUpdateCallbackV1 update;
+    CueGameSystemStopV1 stop;
+};
+
+enum class RegistrationStage : std::uint8_t
+{
+    Schemas,
+    Components,
+    Systems
+};
+
+/// @brief Game Module ABI SinkへOwner Thread限定の登録状態を渡す
+struct RegistrationContext final
+{
+    RegistrationStage stage = RegistrationStage::Schemas;
+    CueGameModuleResult sinkFailure = CUE_GAME_MODULE_RESULT_SUCCESS;
+    std::vector<PendingSystem> systems;
+};
+
+/// @brief 登録Stage内で最初に発生したSink失敗を外側Callback結果とは独立して保持する
+void latch_registration_failure(RegistrationContext *a_context, CueGameModuleResult a_result) noexcept
+{
+    if (a_context != nullptr && a_result != CUE_GAME_MODULE_RESULT_SUCCESS &&
+        a_context->sinkFailure == CUE_GAME_MODULE_RESULT_SUCCESS)
+    {
+        a_context->sinkFailure = a_result;
+    }
+}
+
+/// @brief Sink失敗をStageへ記録しModule Diagnosticと同じ結果を返す
+[[nodiscard]] CueGameModuleResult fail_registration(
+    RegistrationContext *a_context, CueGameModuleDiagnosticV1 *a_diagnostic,
+    CueGameModuleResult a_result, const char *a_message) noexcept
+{
+    latch_registration_failure(a_context, a_result);
+    set_module_diagnostic(a_diagnostic, a_result, a_message);
+    return a_result;
+}
+
+/// @brief M16未対応のGame Schema登録をFail-closedに拒否する
+CueGameModuleResult CUE_GAME_MODULE_CALL reject_schema_registration(
+    void *a_context, const CueGameSchemaDescriptorV1 *, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
+{
+    auto *context = static_cast<RegistrationContext *>(a_context);
+    if (context == nullptr || context->stage != RegistrationStage::Schemas)
+    {
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Schema registration occurred outside its stage");
+    }
+    return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                             "RuntimeHost v1 does not yet accept custom Schema registration");
+}
+
+/// @brief M16未対応のGame Component登録をFail-closedに拒否する
+CueGameModuleResult CUE_GAME_MODULE_CALL reject_component_registration(
+    void *a_context, const CueGameComponentDescriptorV1 *, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
+{
+    auto *context = static_cast<RegistrationContext *>(a_context);
+    if (context == nullptr || context->stage != RegistrationStage::Components)
+    {
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Component registration occurred outside its stage");
+    }
+    return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                             "RuntimeHost v1 does not yet accept custom Component registration");
+}
+
+/// @brief ABI UTF-8 Viewを所有文字列へ検証Copyする
+[[nodiscard]] bool copy_utf8_view(const CueGameUtf8ViewV1 &a_view, std::string &a_output)
+{
+    if (a_view.structSize < sizeof(CueGameUtf8ViewV1) || a_view.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
+        a_view.size == 0U || a_view.size > cue::package::k_maximumPackageManifestStringBytes ||
+        a_view.data == nullptr)
+    {
+        return false;
+    }
+    const std::string_view text(a_view.data, static_cast<std::size_t>(a_view.size));
+    if (!is_valid_utf8(text))
+    {
+        return false;
+    }
+    a_output.assign(text);
+    return true;
+}
+
+/// @brief Game Module System DescriptorとCallbackをHost所有定義へCopy登録する
+CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
+    void *a_context, const CueGameSystemDescriptorV1 *a_descriptor,
+    CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
+{
+    auto *context = static_cast<RegistrationContext *>(a_context);
+    if (context == nullptr || context->stage != RegistrationStage::Systems || a_descriptor == nullptr ||
+        a_descriptor->structSize < sizeof(CueGameSystemDescriptorV1) ||
+        a_descriptor->version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
+        a_descriptor->dependencyCount > k_maximumRuntimeSystems ||
+        (a_descriptor->dependencyCount != 0U && a_descriptor->dependencies == nullptr) ||
+        a_descriptor->createState == nullptr || a_descriptor->destroyState == nullptr || a_descriptor->start == nullptr ||
+        a_descriptor->update == nullptr || a_descriptor->stop == nullptr || context->systems.size() >= k_maximumRuntimeSystems)
+    {
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Runtime System descriptor is invalid");
+    }
+    try
+    {
+        PendingSystem pending{{}, a_descriptor->createState, a_descriptor->destroyState, a_descriptor->start,
+                              a_descriptor->update, a_descriptor->stop};
+        if (!copy_utf8_view(a_descriptor->stableId, pending.descriptor.id))
+        {
+            return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                     "Runtime System stable ID is invalid");
+        }
+        switch (a_descriptor->phase)
+        {
+        case CUE_GAME_MODULE_SYSTEM_PHASE_PRE_UPDATE:
+            pending.descriptor.phase = cue::game_core::RuntimeUpdatePhase::PreUpdate;
+            break;
+        case CUE_GAME_MODULE_SYSTEM_PHASE_UPDATE:
+            pending.descriptor.phase = cue::game_core::RuntimeUpdatePhase::Update;
+            break;
+        case CUE_GAME_MODULE_SYSTEM_PHASE_POST_UPDATE:
+            pending.descriptor.phase = cue::game_core::RuntimeUpdatePhase::PostUpdate;
+            break;
+        default:
+            return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                     "Runtime System phase is invalid");
+        }
+        pending.descriptor.order = a_descriptor->order;
+        for (std::size_t index = 0U; index < a_descriptor->dependencyCount; ++index)
+        {
+            std::string dependency;
+            if (!copy_utf8_view(a_descriptor->dependencies[index], dependency))
+            {
+                return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                         "Runtime System dependency is invalid");
+            }
+            pending.descriptor.dependencies.push_back(std::move(dependency));
+        }
+        context->systems.push_back(std::move(pending));
+        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_SUCCESS, nullptr);
+        return CUE_GAME_MODULE_RESULT_SUCCESS;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY,
+                                 "Runtime System registration allocation failed");
+    }
+    catch (...)
+    {
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                                 "Runtime System registration failed unexpectedly");
+    }
+}
+
+/// @brief Game Module登録Callbackの失敗をRuntime Errorへ変換する
+[[nodiscard]] cue::Result<void> call_registration(
+    CueGameModuleRegisterV1 a_callback, CueGameModuleHandle a_module, RegistrationContext &a_context,
+    RegistrationStage a_stage, const cue::AssertContext &a_assertContext) noexcept
+{
+    a_context.stage = a_stage;
+    a_context.sinkFailure = CUE_GAME_MODULE_RESULT_SUCCESS;
+    CueGameRegistrationSinkV1 sink{sizeof(CueGameRegistrationSinkV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                   &a_context, &reject_schema_registration, &reject_component_registration,
+                                   &register_system, {0U, 0U, 0U, 0U}};
+    CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                         0U, 0U,
+                                         {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, 0U}};
+    const CueGameModuleResult result = a_callback(a_module, &sink, &diagnostic);
+    if (result != CUE_GAME_MODULE_RESULT_SUCCESS ||
+        a_context.sinkFailure != CUE_GAME_MODULE_RESULT_SUCCESS)
+    {
+        return cue::Result<void>::failure(cue::runtime::make_runtime_error(
+            a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,
+            "Game Module registration failed"));
+    }
+    return cue::Result<void>::success();
+}
+
+/// @brief Runtime System失敗を外部診断Ownerへ依存しない所有Errorへ変換する
+[[nodiscard]] cue::Error make_dll_system_error(cue::runtime::RuntimeError a_code,
+                                               std::string_view a_summary) noexcept
+{
+    static cue::AbortFatalHandler emergencyHandler;
+    cue::ErrorCode code =
+        cue::ErrorCode::create(emergencyHandler, "Cue.Runtime", static_cast<std::int64_t>(a_code));
+    return cue::Error::create(emergencyHandler, std::move(code), a_summary);
+}
+
+/// @brief DLL所有System StateをRuntimeSystemへ適合する
+class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
+{
+  public:
+    /// @brief Callback、Module、Stateを一回のSession Systemへ束ねる
+    DllRuntimeSystem(std::shared_ptr<cue::runtime_host::RuntimePackageModule> a_moduleLifetime,
+                     CueGameModuleHandle a_module, CueGameSystemState a_state, PendingSystem a_definition) noexcept
+        : m_moduleLifetime(std::move(a_moduleLifetime)), m_module(a_module), m_state(a_state),
+          m_definition(std::move(a_definition))
+    {
+    }
+    /// @brief DLL Stateを生成元Callbackで一度だけ破棄する
+    ~DllRuntimeSystem() noexcept override
+    {
+        if (m_state != nullptr)
+        {
+            m_definition.destroyState(m_state);
+        }
+    }
+
+    /// @brief DLL SystemのStart Callbackを呼ぶ
+    [[nodiscard]] cue::Result<void> start(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                             0U, 0U,
+                                             {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr,
+                                              0U}};
+        if (m_definition.start(m_state, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
+        {
+            return cue::Result<void>::failure(make_dll_system_error(
+                cue::runtime::RuntimeError::ApplicationSessionStartFailed, "Game Module System start failed"));
+        }
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Portable Frame TimingをDLL ABIへCopyしてUpdate Callbackを呼ぶ
+    [[nodiscard]] cue::Result<void> update(
+        const cue::game_core::RuntimeSystemUpdateContext &a_context) noexcept override
+    {
+        const cue::game_core::FrameTiming &timing = a_context.timing.timing();
+        CueGameSystemUpdateV1 update{sizeof(CueGameSystemUpdateV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                     timing.frameIndex, timing.simulationDeltaNanoseconds,
+                                     timing.simulationTimeNanoseconds};
+        CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                             0U, 0U,
+                                             {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr,
+                                              0U}};
+        if (m_definition.update(m_state, &update, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
+        {
+            return cue::Result<void>::failure(make_dll_system_error(
+                cue::runtime::RuntimeError::ApplicationSessionUpdateFailed, "Game Module System update failed"));
+        }
+        return cue::Result<void>::success();
+    }
+
+    /// @brief DLL SystemのStop Callbackを呼ぶ
+    [[nodiscard]] cue::Result<void> stop(cue::game_core::RuntimeSystemContext &) noexcept override
+    {
+        CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                             0U, 0U,
+                                             {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr,
+                                              0U}};
+        if (m_definition.stop(m_state, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
+        {
+            return cue::Result<void>::failure(make_dll_system_error(
+                cue::runtime::RuntimeError::ApplicationSessionCleanupFailed, "Game Module System stop failed"));
+        }
+        return cue::Result<void>::success();
+    }
+
+  private:
+    std::shared_ptr<cue::runtime_host::RuntimePackageModule> m_moduleLifetime;
+    CueGameModuleHandle m_module;
+    CueGameSystemState m_state;
+    PendingSystem m_definition;
+};
+
+/// @brief Pending DLL System群からSession所有登録を構築する
+[[nodiscard]] cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>> create_systems(
+    std::shared_ptr<cue::runtime_host::RuntimePackageModule> a_moduleLifetime,
+    CueGameModuleHandle a_module, std::vector<PendingSystem> a_pending,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        std::vector<cue::runtime::RuntimeSystemRegistration> systems;
+        systems.reserve(a_pending.size());
+        for (PendingSystem &pending : a_pending)
+        {
+            CueGameSystemState state = nullptr;
+            CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1),
+                                                 CUE_GAME_MODULE_STRUCTURE_VERSION_1, 0U, 0U,
+                                                 {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                                  nullptr, 0U}};
+            if (pending.createState(a_module, &state, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS || state == nullptr)
+            {
+                return cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>>::failure(
+                    cue::runtime::make_runtime_error(a_assertContext,
+                                                     cue::runtime::RuntimeError::InvalidApplicationConfiguration,
+                                                     "Game Module System state creation failed"));
+            }
+            cue::game_core::RuntimeSystemDescriptor descriptor = pending.descriptor;
+            auto system =
+                std::make_unique<DllRuntimeSystem>(a_moduleLifetime, a_module, state, std::move(pending));
+            systems.push_back({std::move(descriptor), std::move(system)});
+        }
+        return cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>>::success(std::move(systems));
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief Win32 DLLと関連Guardを正しい順序で所有するRuntime Package Module
+class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePackageModule
+{
+  public:
+    /// @brief DLLとProject Scope Handle、事前Load済み依存DLL、固定Handleを所有する
+    WindowsRuntimePackageModule(HMODULE a_library, CueGameModuleHandle a_module, const CueGameModuleApiV1 &a_api,
+                                 std::vector<HMODULE> a_runtimeLibraries, UniqueHandle a_rootGuard,
+                                 UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
+                                 std::vector<UniqueHandle> a_runtimeDependencyGuards) noexcept
+        : m_library(a_library), m_module(a_module), m_api(&a_api),
+          m_runtimeLibraries(std::move(a_runtimeLibraries)), m_rootGuard(std::move(a_rootGuard)),
+          m_gameGuard(std::move(a_gameGuard)),
+          m_runtimeGuard(std::move(a_runtimeGuard)), m_moduleGuard(std::move(a_moduleGuard)),
+          m_runtimeDependencyGuards(std::move(a_runtimeDependencyGuards))
+    {
+    }
+    /// @brief System State破棄後にModule、DLL、検索Directoryを逆順Cleanupする
+    ~WindowsRuntimePackageModule() noexcept override
+    {
+        if (m_module != nullptr)
+        {
+            m_api->destroyModule(m_module);
+        }
+        if (m_library != nullptr)
+        {
+            FreeLibrary(m_library);
+        }
+        unload_libraries(m_runtimeLibraries);
+    }
+
+  private:
+    HMODULE m_library;
+    CueGameModuleHandle m_module;
+    const CueGameModuleApiV1 *m_api;
+    std::vector<HMODULE> m_runtimeLibraries;
+    UniqueHandle m_rootGuard;
+    UniqueHandle m_gameGuard;
+    UniqueHandle m_runtimeGuard;
+    UniqueHandle m_moduleGuard;
+    std::vector<UniqueHandle> m_runtimeDependencyGuards;
+};
+
+/// @brief DirectoryをReparse追跡なし、Delete共有なしで固定する
+[[nodiscard]] cue::Result<UniqueHandle> guard_directory(
+    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::filesystem::path extendedPath = extended_windows_path(a_path);
+    UniqueHandle handle(CreateFileW(extendedPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle.is_valid())
+    {
+        return cue::Result<UniqueHandle>::failure(windows_package_error(
+            a_assertContext, cue::package::PackageError::InvalidPackagePath, GetLastError(),
+            "Runtime Package directory could not be fixed"));
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+    {
+        return cue::Result<UniqueHandle>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidPackagePath,
+            "Runtime Package directory is not a regular non-reparse directory"));
+    }
+    return cue::Result<UniqueHandle>::success(std::move(handle));
+}
+
+/// @brief ASCII英字だけをlowercaseへ変換してWindows File名比較Keyを返す
+[[nodiscard]] std::wstring ascii_case_key(std::wstring_view a_value)
+{
+    std::wstring key(a_value);
+    for (wchar_t &character : key)
+    {
+        if (character >= L'A' && character <= L'Z')
+        {
+            character = static_cast<wchar_t>(character + (L'a' - L'A'));
+        }
+    }
+    return key;
+}
+
+/// @brief Runtime Directoryの通常File集合がManifestの依存Entryと完全一致するか検証する
+[[nodiscard]] cue::Result<bool> validate_runtime_dependency_inventory(
+    const std::filesystem::path &a_root, const cue::package::PackageManifest &a_manifest,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        std::vector<std::wstring> expected;
+        for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+        {
+            if (entry.role() != cue::package::PackageFileRole::RuntimeDependency)
+            {
+                continue;
+            }
+            constexpr std::string_view prefix = "Runtime/";
+            const std::string_view path = entry.relative_path();
+            if (!path.starts_with(prefix) || path.size() == prefix.size())
+            {
+                return cue::Result<bool>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::InvalidPackageManifest,
+                    "Runtime dependency path is outside the direct Runtime directory"));
+            }
+            const std::filesystem::path name =
+                cue::runtime_host::detail::filesystem_path_from_utf8(path.substr(prefix.size()));
+            expected.push_back(ascii_case_key(name.native()));
+        }
+        std::sort(expected.begin(), expected.end());
+
+        const std::filesystem::path runtimePath = a_root / "Runtime";
+        const std::filesystem::path extendedRuntimePath = extended_windows_path(runtimePath);
+        const DWORD runtimeAttributes = GetFileAttributesW(extendedRuntimePath.c_str());
+        if (runtimeAttributes == INVALID_FILE_ATTRIBUTES)
+        {
+            const DWORD code = GetLastError();
+            if ((code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) && expected.empty())
+            {
+                return cue::Result<bool>::success(false);
+            }
+            return cue::Result<bool>::failure(windows_package_error(
+                a_assertContext, cue::package::PackageError::PackageFileMissing, code,
+                "Runtime dependency directory could not be inspected"));
+        }
+        if ((runtimeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (runtimeAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                "Runtime dependency path is not a regular non-reparse directory"));
+        }
+
+        std::vector<std::wstring> actual;
+        std::error_code iteratorError;
+        std::filesystem::directory_iterator iterator(extendedRuntimePath, iteratorError);
+        const std::filesystem::directory_iterator end;
+        while (!iteratorError && iterator != end)
+        {
+            const std::filesystem::path extendedEntryPath = extended_windows_path(iterator->path());
+            const DWORD attributes = GetFileAttributesW(extendedEntryPath.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+                (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+            {
+                return cue::Result<bool>::failure(package_error(
+                    a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                    "Runtime directory contains a non-regular or reparse entry"));
+            }
+            actual.push_back(ascii_case_key(iterator->path().filename().wstring()));
+            iterator.increment(iteratorError);
+        }
+        if (iteratorError)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                "Runtime dependency directory could not be enumerated"));
+        }
+        std::sort(actual.begin(), actual.end());
+        if (actual != expected)
+        {
+            return cue::Result<bool>::failure(package_error(
+                a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                "Runtime directory inventory differs from the Manifest"));
+        }
+        return cue::Result<bool>::success(!expected.empty());
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+
+/// @brief Load対象Package FileをWrite／Delete共有なしで固定する
+[[nodiscard]] cue::Result<UniqueHandle> guard_package_file(
+    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+{
+    const std::filesystem::path extendedPath = extended_windows_path(a_path);
+    UniqueHandle handle(CreateFileW(extendedPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle.is_valid())
+    {
+        return cue::Result<UniqueHandle>::failure(windows_package_error(
+            a_assertContext, cue::package::PackageError::PackageFileMissing, GetLastError(),
+            "Runtime Package load target could not be fixed"));
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U || GetFileType(handle.get()) != FILE_TYPE_DISK)
+    {
+        return cue::Result<UniqueHandle>::failure(package_error(
+            a_assertContext, cue::package::PackageError::InvalidPackagePath,
+            "Runtime Package load target is not a regular non-reparse file"));
+    }
+    return cue::Result<UniqueHandle>::success(std::move(handle));
+}
+
+/// @brief Load済みModuleが事前に固定したPackage Fileと同一実体か検証する
+[[nodiscard]] cue::Result<void> validate_loaded_module_identity(
+    HMODULE a_library, HANDLE a_guardedFile, const cue::AssertContext &a_assertContext) noexcept
+{
+    const cue::runtime_host::detail::RuntimeModuleIdentityResult identity =
+        cue::runtime_host::detail::inspect_loaded_module_identity(a_library, a_guardedFile);
+    if (identity.status == cue::runtime_host::detail::RuntimeModuleIdentityStatus::Match)
+    {
+        return cue::Result<void>::success();
+    }
+    if (identity.status == cue::runtime_host::detail::RuntimeModuleIdentityStatus::Mismatch)
+    {
+        return cue::Result<void>::failure(package_error(
+            a_assertContext, cue::package::PackageError::PackageFileMismatch,
+            "Loaded Runtime image identity differs from the guarded Package file"));
+    }
+    return cue::Result<void>::failure(windows_package_error(
+        a_assertContext, cue::package::PackageError::InvalidRuntimeData, identity.nativeError,
+        "Loaded Runtime image file identity could not be queried"));
+}
+} // namespace
+
+namespace cue::runtime_host
+{
+LoadedRuntimePackage::LoadedRuntimePackage(std::string a_packageRoot, std::string a_projectId,
+                                           std::shared_ptr<RuntimePackageModule> a_module,
+                                           std::unique_ptr<schema::SchemaRegistry> a_schemaRegistry,
+                                           scene::SceneSnapshot a_startupScene,
+                                           std::vector<runtime::RuntimeSystemRegistration> a_systems) noexcept
+    : m_packageRoot(std::move(a_packageRoot)), m_projectId(std::move(a_projectId)), m_module(std::move(a_module)),
+      m_schemaRegistry(std::move(a_schemaRegistry)), m_startupScene(std::move(a_startupScene)),
+      m_systems(std::move(a_systems))
+{
+}
+
+LoadedRuntimePackage &LoadedRuntimePackage::operator=(LoadedRuntimePackage &&a_other) noexcept
+{
+    if (this == &a_other)
+    {
+        return *this;
+    }
+
+    LoadedRuntimePackage incoming(std::move(a_other));
+    using std::swap;
+    swap(m_packageRoot, incoming.m_packageRoot);
+    swap(m_projectId, incoming.m_projectId);
+    swap(m_module, incoming.m_module);
+    swap(m_schemaRegistry, incoming.m_schemaRegistry);
+    swap(m_startupScene, incoming.m_startupScene);
+    swap(m_systems, incoming.m_systems);
+    return *this;
+}
+
+LoadedRuntimePackage::~LoadedRuntimePackage() noexcept = default;
+
+std::string_view LoadedRuntimePackage::package_root() const noexcept
+{
+    return m_packageRoot;
+}
+
+std::string_view LoadedRuntimePackage::project_id() const noexcept
+{
+    return m_projectId;
+}
+
+const schema::SchemaRegistry &LoadedRuntimePackage::schema_registry() const noexcept
+{
+    return *m_schemaRegistry;
+}
+
+const scene::SceneSnapshot &LoadedRuntimePackage::startup_scene() const noexcept
+{
+    return m_startupScene;
+}
+
+std::vector<runtime::RuntimeSystemRegistration> LoadedRuntimePackage::take_systems() noexcept
+{
+    return std::move(m_systems);
+}
+
+std::shared_ptr<RuntimePackageModule> LoadedRuntimePackage::take_module() noexcept
+{
+    return std::move(m_module);
+}
+
+std::unique_ptr<schema::SchemaRegistry> LoadedRuntimePackage::take_schema_registry() noexcept
+{
+    return std::move(m_schemaRegistry);
+}
+
+scene::SceneSnapshot LoadedRuntimePackage::take_startup_scene() noexcept
+{
+    return std::move(m_startupScene);
+}
+
+Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentitySource &a_identitySource,
+                                                  const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        if (SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) == FALSE)
+        {
+            return Result<LoadedRuntimePackage>::failure(windows_package_error(
+                a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
+                "RuntimeHost could not restrict the process DLL search policy"));
+        }
+        auto executable = executable_path(a_assertContext);
+        if (!executable)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*executable.try_error()));
+        }
+        const std::filesystem::path root = executable.try_value()->parent_path();
+        const std::string rootUtf8 = path_to_utf8(root);
+        auto filesystem = create_windows_filesystem_root(rootUtf8, a_assertContext);
+        if (!filesystem)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*filesystem.try_error()));
+        }
+        auto manifestPath = RelativePath::parse("CuePackage.json", a_assertContext);
+        if (!manifestPath)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*manifestPath.try_error()));
+        }
+        auto manifestBytes = filesystem.try_value()->get()->read_file(*manifestPath.try_value(),
+                                                                       package::k_maximumPackageManifestBytes);
+        if (!manifestBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*manifestBytes.try_error()));
+        }
+        auto manifest = package::parse_package_manifest(text_view(*manifestBytes.try_value()), a_assertContext);
+        if (!manifest)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*manifest.try_error()));
+        }
+        if (manifest.try_value()->engine_version() != k_engineVersion ||
+            manifest.try_value()->configuration() != host_configuration())
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Package Engine version or Build Configuration differs from RuntimeHost"));
+        }
+        const package::PackageFileEntry *runtimeHostEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::RuntimeHost);
+        const package::PackageFileEntry *projectEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::ProjectRuntimeData);
+        const package::PackageFileEntry *sceneEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::StartupSceneRuntimeData);
+        const package::PackageFileEntry *metadataEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::GameModuleMetadata);
+        const package::PackageFileEntry *moduleEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::GameModule);
+        if (runtimeHostEntry == nullptr || projectEntry == nullptr || sceneEntry == nullptr ||
+            metadataEntry == nullptr || moduleEntry == nullptr)
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Package is missing a required Runtime role"));
+        }
+        if (projectEntry->byte_size() > package::k_maximumRuntimeProjectDataBytes ||
+            sceneEntry->byte_size() > package::k_maximumRuntimeSceneDataBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Runtime Data role exceeds its Package startup size limit"));
+        }
+        if (metadataEntry->byte_size() > k_maximumGameModuleMetadataBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Game Module Metadata role exceeds its Package startup size limit"));
+        }
+        auto runtimePeMemoryContract =
+            validate_runtime_pe_memory_contract(*manifest.try_value(), a_assertContext);
+        if (!runtimePeMemoryContract)
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                std::move(*runtimePeMemoryContract.try_error()));
+        }
+        if (executable.try_value()->filename() !=
+            detail::filesystem_path_from_utf8(runtimeHostEntry->relative_path()))
+        {
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackagePath,
+                "Running RuntimeHost executable does not match the Manifest role"));
+        }
+        auto inventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
+        if (!inventory)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*inventory.try_error()));
+        }
+        auto projectBytes = read_manifest_file(**filesystem.try_value(), *projectEntry, a_assertContext);
+        auto sceneBytes = read_manifest_file(**filesystem.try_value(), *sceneEntry, a_assertContext);
+        auto metadataBytes = read_manifest_file(**filesystem.try_value(), *metadataEntry, a_assertContext);
+        if (!projectBytes || !sceneBytes || !metadataBytes)
+        {
+            Error error = !projectBytes ? std::move(*projectBytes.try_error())
+                                       : (!sceneBytes ? std::move(*sceneBytes.try_error())
+                                                      : std::move(*metadataBytes.try_error()));
+            return Result<LoadedRuntimePackage>::failure(std::move(error));
+        }
+        auto project = parse_runtime_project(text_view(*projectBytes.try_value()), a_assertContext);
+        if (!project || project.try_value()->projectId != manifest.try_value()->project_id() ||
+            project.try_value()->startupSceneAssetId != manifest.try_value()->startup_scene_asset_id())
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                project ? package_error(a_assertContext, package::PackageError::InvalidRuntimeData,
+                                        "Runtime Project identity differs from the Manifest")
+                        : std::move(*project.try_error()));
+        }
+        auto metadata = validate_module_metadata(text_view(*metadataBytes.try_value()), *manifest.try_value(),
+                                                 *project.try_value(), a_assertContext);
+        if (!metadata)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*metadata.try_error()));
+        }
+        auto startupScene = parse_runtime_scene(text_view(*sceneBytes.try_value()),
+                                                manifest.try_value()->startup_scene_asset_id(), a_assertContext);
+        if (!startupScene)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*startupScene.try_error()));
+        }
+        auto canonicalRuntimeData = validate_canonical_runtime_data(
+            *project.try_value(), *startupScene.try_value(), text_view(*projectBytes.try_value()),
+            text_view(*sceneBytes.try_value()), a_assertContext);
+        if (!canonicalRuntimeData)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*canonicalRuntimeData.try_error()));
+        }
+
+        auto rootGuard = guard_directory(root, a_assertContext);
+        auto gameGuard = guard_directory(root / "Game", a_assertContext);
+        if (!rootGuard || !gameGuard)
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                !rootGuard ? std::move(*rootGuard.try_error()) : std::move(*gameGuard.try_error()));
+        }
+        UniqueHandle runtimeGuard;
+        std::vector<UniqueHandle> runtimeDependencyGuards;
+        std::vector<const package::PackageFileEntry *> runtimeDependencyEntries;
+        auto runtimeInventory =
+            validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
+        if (!runtimeInventory)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*runtimeInventory.try_error()));
+        }
+        const bool hasRuntimeDependencies = *runtimeInventory.try_value();
+        if (hasRuntimeDependencies)
+        {
+            auto guarded = guard_directory(root / "Runtime", a_assertContext);
+            if (!guarded)
+            {
+                return Result<LoadedRuntimePackage>::failure(std::move(*guarded.try_error()));
+            }
+            runtimeGuard = std::move(*guarded.try_value());
+            for (const package::PackageFileEntry &entry : manifest.try_value()->files())
+            {
+                if (entry.role() != package::PackageFileRole::RuntimeDependency)
+                {
+                    continue;
+                }
+                auto dependencyGuard = guard_package_file(
+                    root / detail::filesystem_path_from_utf8(entry.relative_path()), a_assertContext);
+                if (!dependencyGuard)
+                {
+                    return Result<LoadedRuntimePackage>::failure(
+                        std::move(*dependencyGuard.try_error()));
+                }
+                runtimeDependencyGuards.push_back(std::move(*dependencyGuard.try_value()));
+                runtimeDependencyEntries.push_back(&entry);
+            }
+        }
+        const std::filesystem::path modulePath =
+            root / detail::filesystem_path_from_utf8(moduleEntry->relative_path());
+        auto moduleGuard = guard_package_file(modulePath, a_assertContext);
+        if (!moduleGuard)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleGuard.try_error()));
+        }
+        auto moduleBytes = read_manifest_file(**filesystem.try_value(), *moduleEntry, a_assertContext);
+        if (!moduleBytes)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleBytes.try_error()));
+        }
+        std::vector<std::vector<std::byte>> runtimeDependencyBytes;
+        runtimeDependencyBytes.reserve(runtimeDependencyEntries.size());
+        for (const package::PackageFileEntry *entry : runtimeDependencyEntries)
+        {
+            auto bytes = read_manifest_file(**filesystem.try_value(), *entry, a_assertContext);
+            if (!bytes)
+            {
+                return Result<LoadedRuntimePackage>::failure(std::move(*bytes.try_error()));
+            }
+            runtimeDependencyBytes.push_back(std::move(*bytes.try_value()));
+        }
+        std::vector<package::RuntimePeImageView> runtimeDependencyViews;
+        runtimeDependencyViews.reserve(runtimeDependencyEntries.size());
+        for (std::size_t index = 0U; index < runtimeDependencyEntries.size(); ++index)
+        {
+            runtimeDependencyViews.push_back(
+                {package_file_name(runtimeDependencyEntries[index]->relative_path()), runtimeDependencyBytes[index]});
+        }
+        auto runtimeLoadOrder = package::create_runtime_dependency_load_order(
+            manifest.try_value()->configuration(),
+            {package_file_name(moduleEntry->relative_path()), *moduleBytes.try_value()}, runtimeDependencyViews,
+            a_assertContext);
+        if (!runtimeLoadOrder)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*runtimeLoadOrder.try_error()));
+        }
+        auto guardedInventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
+        auto guardedRuntimeInventory = guardedInventory
+                                           ? validate_runtime_dependency_inventory(
+                                                 root, *manifest.try_value(), a_assertContext)
+                                           : Result<bool>::failure(std::move(*guardedInventory.try_error()));
+        if (!guardedRuntimeInventory || *guardedRuntimeInventory.try_value() != hasRuntimeDependencies)
+        {
+            return Result<LoadedRuntimePackage>::failure(
+                guardedRuntimeInventory
+                    ? package_error(a_assertContext, package::PackageError::PackageFileMismatch,
+                                    "Runtime dependency inventory changed after load targets were fixed")
+                    : std::move(*guardedRuntimeInventory.try_error()));
+        }
+        std::vector<HMODULE> runtimeLibraries;
+        runtimeLibraries.reserve(runtimeLoadOrder.try_value()->size());
+        for (const std::size_t index : *runtimeLoadOrder.try_value())
+        {
+            const std::filesystem::path dependencyPath = extended_windows_path(
+                root / detail::filesystem_path_from_utf8(runtimeDependencyEntries[index]->relative_path()));
+            HMODULE dependency = LoadLibraryExW(dependencyPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (dependency == nullptr)
+            {
+                const DWORD code = GetLastError();
+                unload_libraries(runtimeLibraries);
+                return Result<LoadedRuntimePackage>::failure(windows_package_error(
+                    a_assertContext, package::PackageError::InvalidRuntimeData, code,
+                    "Manifest Runtime dependency could not be loaded from its fixed path"));
+            }
+            auto dependencyIdentity = validate_loaded_module_identity(
+                dependency, runtimeDependencyGuards[index].get(), a_assertContext);
+            if (!dependencyIdentity)
+            {
+                FreeLibrary(dependency);
+                unload_libraries(runtimeLibraries);
+                return Result<LoadedRuntimePackage>::failure(std::move(*dependencyIdentity.try_error()));
+            }
+            runtimeLibraries.push_back(dependency);
+        }
+        const std::filesystem::path moduleLoadPath = extended_windows_path(modulePath);
+        HMODULE library = LoadLibraryExW(moduleLoadPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (library == nullptr)
+        {
+            const DWORD code = GetLastError();
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(windows_package_error(
+                a_assertContext, package::PackageError::InvalidRuntimeData, code,
+                "Game Module could not be loaded from the Manifest path"));
+        }
+        auto moduleIdentity = validate_loaded_module_identity(library, moduleGuard.try_value()->get(), a_assertContext);
+        if (!moduleIdentity)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(std::move(*moduleIdentity.try_error()));
+        }
+        using Query = CueGameModuleResult(CUE_GAME_MODULE_CALL *)(std::uint32_t, CueGameModuleQueryOutputV1 *,
+                                                                  CueGameModuleDiagnosticV1 *) noexcept;
+        const FARPROC queryAddress = GetProcAddress(library, "cue_game_module_query");
+        if (queryAddress == nullptr)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(windows_package_error(
+                a_assertContext, package::PackageError::InvalidRuntimeData, ERROR_PROC_NOT_FOUND,
+                "Game Module entry symbol is missing"));
+        }
+        const Query query = std::bit_cast<Query>(queryAddress);
+        CueGameModuleQueryOutputV1 queryOutput{sizeof(CueGameModuleQueryOutputV1),
+                                               CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, {0U, 0U}};
+        CueGameModuleDiagnosticV1 diagnostic{sizeof(CueGameModuleDiagnosticV1),
+                                             CUE_GAME_MODULE_STRUCTURE_VERSION_1, 0U, 0U,
+                                             {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                              nullptr, 0U}};
+        if (query(CUE_GAME_MODULE_ABI_VERSION_1, &queryOutput, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS ||
+            queryOutput.structSize != sizeof(CueGameModuleQueryOutputV1) ||
+            queryOutput.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || queryOutput.api == nullptr ||
+            queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidRuntimeData,
+                "Game Module rejected the RuntimeHost ABI"));
+        }
+        const CueGameModuleApiV1 &api = *queryOutput.api;
+        if (api.structSize < sizeof(CueGameModuleApiV1) || api.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
+            api.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || api.configuration != host_module_configuration() ||
+            api.architecture != CUE_GAME_MODULE_ARCHITECTURE_X64 || api.reserved != 0U ||
+            api.reservedTail[0] != 0U || api.reservedTail[1] != 0U || api.reservedTail[2] != 0U ||
+            api.reservedTail[3] != 0U ||
+            api.projectId.structSize < sizeof(CueGameUuidV1) ||
+            api.projectId.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
+            uuid_text(api.projectId) != manifest.try_value()->project_id() || api.createModule == nullptr ||
+            api.registerSchemas == nullptr || api.registerComponents == nullptr || api.registerSystems == nullptr ||
+            api.destroyModule == nullptr)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidRuntimeData,
+                "Game Module API identity or lifecycle is incompatible"));
+        }
+        CueGameModuleHandle moduleHandle = nullptr;
+        if (api.createModule(&moduleHandle, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
+        {
+            FreeLibrary(library);
+            unload_libraries(runtimeLibraries);
+            return Result<LoadedRuntimePackage>::failure(cue::runtime::make_runtime_error(
+                a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,
+                "Game Module Project Scope creation failed"));
+        }
+        auto module = std::make_shared<WindowsRuntimePackageModule>(
+            library, moduleHandle, api, std::move(runtimeLibraries), std::move(*rootGuard.try_value()),
+            std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()),
+            std::move(runtimeDependencyGuards));
+        RegistrationContext registration;
+        auto schemas = call_registration(api.registerSchemas, moduleHandle, registration, RegistrationStage::Schemas,
+                                         a_assertContext);
+        auto components = schemas ? call_registration(api.registerComponents, moduleHandle, registration,
+                                                       RegistrationStage::Components, a_assertContext)
+                                  : Result<void>::failure(std::move(*schemas.try_error()));
+        auto registeredSystems = components ? call_registration(api.registerSystems, moduleHandle, registration,
+                                                                 RegistrationStage::Systems, a_assertContext)
+                                            : Result<void>::failure(std::move(*components.try_error()));
+        if (!registeredSystems)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*registeredSystems.try_error()));
+        }
+        schema::SchemaRegistryBuilder builder(a_identitySource, a_assertContext);
+        auto coreSchemas = runtime::add_runtime_schema_types(builder, a_assertContext);
+        if (!coreSchemas)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*coreSchemas.try_error()));
+        }
+        auto registry = builder.seal();
+        if (!registry)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*registry.try_error()));
+        }
+        auto systems = create_systems(module, moduleHandle, std::move(registration.systems), a_assertContext);
+        if (!systems)
+        {
+            return Result<LoadedRuntimePackage>::failure(std::move(*systems.try_error()));
+        }
+        return Result<LoadedRuntimePackage>::success(LoadedRuntimePackage(
+            rootUtf8, std::string(manifest.try_value()->project_id()), std::move(module),
+            std::move(*registry.try_value()), std::move(*startupScene.try_value()),
+            std::move(*systems.try_value())));
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+} // namespace cue::runtime_host

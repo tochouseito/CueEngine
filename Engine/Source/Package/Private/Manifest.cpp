@@ -1425,6 +1425,30 @@ Result<PackageManifest> parse_package_manifest(std::string_view a_json, const As
     }
 }
 
+Result<void> verify_package_file_bytes(const PackageFileEntry &a_entry, std::span<const std::byte> a_bytes,
+                                       const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        if (a_bytes.size() != a_entry.byte_size())
+        {
+            return Result<void>::failure(make_package_error(a_assertContext, PackageError::PackageFileMismatch,
+                                                            "Package file byte size differs from the Manifest"));
+        }
+        const std::string hash = digest_text(package_private::compute_sha256(a_bytes));
+        if (hash != a_entry.sha256())
+        {
+            return Result<void>::failure(make_package_error(a_assertContext, PackageError::PackageFileMismatch,
+                                                            "Package file SHA-256 differs from the Manifest"));
+        }
+        return Result<void>::success();
+    }
+    catch (...)
+    {
+        terminate_manifest_exception(a_assertContext);
+    }
+}
+
 Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const PackageManifest &a_manifest,
                                            const AssertContext &a_assertContext) noexcept
 {

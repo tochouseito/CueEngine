@@ -1,5 +1,7 @@
 #include "RuntimeHostApplication.h"
 
+#include "RuntimePackage.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/GameCore/Clock.h>
@@ -16,6 +18,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -68,6 +71,7 @@ class RuntimeHostApplication::State final
     schema::SchemaRegistryIdentitySource schemaIdentitySource;
     game_core::WorldIdentitySource worldIdentitySource;
     game_core::SteadyMonotonicClock clock;
+    std::shared_ptr<RuntimePackageModule> gameModule;
     std::unique_ptr<schema::SchemaRegistry> schemaRegistry;
     std::unique_ptr<runtime::RuntimeApplicationSession> session;
     std::unique_ptr<WindowsInputMessageSink> inputSink;
@@ -75,18 +79,42 @@ class RuntimeHostApplication::State final
 };
 
 Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
-    Window &a_window, const AssertContext &a_assertContext) noexcept
+    Window &a_window, RuntimeHostStartupSource a_source, const AssertContext &a_assertContext) noexcept
 {
     try
     {
         std::unique_ptr<State> state = std::make_unique<State>(a_window, a_assertContext);
-        Result<std::unique_ptr<schema::SchemaRegistry>> registry =
-            make_schema_registry(state->schemaIdentitySource, a_assertContext);
-        if (!registry)
+        std::optional<scene::SceneSnapshot> startupSnapshot;
+        std::vector<runtime::RuntimeSystemRegistration> systems;
+        if (a_source == RuntimeHostStartupSource::ExecutableRelativePackage)
         {
-            return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registry.try_error()));
+            Result<LoadedRuntimePackage> package =
+                load_runtime_package(state->schemaIdentitySource, a_assertContext);
+            if (!package)
+            {
+                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*package.try_error()));
+            }
+            systems = package.try_value()->take_systems();
+            state->gameModule = package.try_value()->take_module();
+            state->schemaRegistry = package.try_value()->take_schema_registry();
+            startupSnapshot.emplace(package.try_value()->take_startup_scene());
         }
-        state->schemaRegistry = std::move(*registry.try_value());
+        else
+        {
+            Result<std::unique_ptr<schema::SchemaRegistry>> registry =
+                make_schema_registry(state->schemaIdentitySource, a_assertContext);
+            if (!registry)
+            {
+                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registry.try_error()));
+            }
+            state->schemaRegistry = std::move(*registry.try_value());
+            Result<scene::SceneSnapshot> snapshot = make_startup_scene(a_assertContext);
+            if (!snapshot)
+            {
+                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*snapshot.try_error()));
+            }
+            startupSnapshot.emplace(std::move(*snapshot.try_value()));
+        }
 
         Result<std::unique_ptr<runtime::RuntimeApplicationSession>> session =
             runtime::RuntimeApplicationSession::create(k_sessionGeneration, state->clock, k_maxDeltaNanoseconds,
@@ -96,6 +124,15 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
             return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*session.try_error()));
         }
         state->session = std::move(*session.try_value());
+        for (runtime::RuntimeSystemRegistration &system : systems)
+        {
+            Result<void> registered =
+                state->session->register_system(std::move(system.descriptor), std::move(system.system));
+            if (!registered)
+            {
+                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registered.try_error()));
+            }
+        }
         state->inputSink = std::make_unique<WindowsInputMessageSink>(state->session->input_events());
         std::unique_ptr<RuntimeHostApplication> application =
             std::make_unique<RuntimeHostApplication>(ConstructionKey{}, std::move(state));
@@ -115,13 +152,6 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
         }
         application->m_state->isInputSinkAttached = true;
 
-        Result<scene::SceneSnapshot> snapshot = make_startup_scene(a_assertContext);
-        if (!snapshot)
-        {
-            report_fatal(a_assertContext.logger(), a_assertContext.fatal_handler(),
-                         "Runtime Host could not create its fixed startup Scene after attaching Input",
-                         std::move(*snapshot.try_error()));
-        }
         Result<runtime::RuntimeSchemaTypeIds> schemaTypeIds = runtime::make_runtime_schema_type_ids(a_assertContext);
         if (!schemaTypeIds)
         {
@@ -131,7 +161,7 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
         }
 
         Result<void> started = application->m_state->session->start(
-            *snapshot.try_value(), application->m_state->worldIdentitySource, *application->m_state->schemaRegistry,
+            *startupSnapshot, application->m_state->worldIdentitySource, *application->m_state->schemaRegistry,
             std::move(schemaTypeIds.try_value()->transform), std::move(schemaTypeIds.try_value()->sceneObjectState));
         if (!started)
         {
