@@ -208,6 +208,29 @@ foreach(queryOutputMode IN ITEMS query-output-size query-output-version)
     endif()
 endforeach()
 
+foreach(ignoredSinkFailureMode IN ITEMS
+    ignored-schema-sink-failure
+    ignored-component-sink-failure
+    ignored-system-sink-failure
+)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=${ignoredSinkFailureMode}"
+            "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE ignoredSinkFailureResult
+        OUTPUT_VARIABLE ignoredSinkFailureOutput
+        ERROR_VARIABLE ignoredSinkFailureError
+        TIMEOUT 15
+    )
+    set(ignoredSinkFailureCombined "${ignoredSinkFailureOutput}\n${ignoredSinkFailureError}")
+    string(FIND "${ignoredSinkFailureCombined}" "Game Module registration failed"
+        ignoredSinkFailureMessagePosition)
+    if(ignoredSinkFailureResult EQUAL 0 OR ignoredSinkFailureMessagePosition EQUAL -1)
+        message(FATAL_ERROR
+            "Ignored Sink failure ${ignoredSinkFailureMode} was accepted\n${ignoredSinkFailureCombined}")
+    endif()
+endforeach()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=invalid-system-id"
         "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
@@ -368,6 +391,36 @@ string(FIND "${nonCanonicalSceneCombined}" "Runtime Scene object order is not ca
     nonCanonicalSceneMessagePosition)
 if(nonCanonicalSceneResult EQUAL 0 OR nonCanonicalSceneMessagePosition EQUAL -1)
     message(FATAL_ERROR "Non-canonical Runtime Scene object order was accepted\n${nonCanonicalSceneCombined}")
+endif()
+file(WRITE "${packageScenePath}" "${validScene}")
+write_package_manifest("${packageRoot}" "" "")
+
+set(runtimeSceneObjects "")
+foreach(objectIndex RANGE 0 4096)
+    set(objectIdSuffix "000000000000${objectIndex}")
+    string(LENGTH "${objectIdSuffix}" objectIdSuffixLength)
+    math(EXPR objectIdSuffixOffset "${objectIdSuffixLength} - 12")
+    string(SUBSTRING "${objectIdSuffix}" ${objectIdSuffixOffset} 12 objectIdSuffix)
+    if(NOT runtimeSceneObjects STREQUAL "")
+        string(APPEND runtimeSceneObjects ",")
+    endif()
+    string(APPEND runtimeSceneObjects
+        "{\"objectId\":\"00000000-0000-4000-8000-${objectIdSuffix}\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}")
+endforeach()
+file(WRITE "${packageScenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[${runtimeSceneObjects}]}\n")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE authoringLimitRuntimeSceneResult
+    OUTPUT_VARIABLE authoringLimitRuntimeSceneOutput
+    ERROR_VARIABLE authoringLimitRuntimeSceneError
+    TIMEOUT 30
+)
+if(NOT authoringLimitRuntimeSceneResult EQUAL 0)
+    message(FATAL_ERROR
+        "Runtime Scene above the Authoring object limit was rejected\n${authoringLimitRuntimeSceneOutput}\n${authoringLimitRuntimeSceneError}")
 endif()
 file(WRITE "${packageScenePath}" "${validScene}")
 write_package_manifest("${packageRoot}" "" "")
