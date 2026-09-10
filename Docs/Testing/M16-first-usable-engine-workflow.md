@@ -89,7 +89,8 @@ Runtime Scene Dataだけで起動する。
 8. Sceneを再びDirtyにして終了を要求し、`破棄`を選んでEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
 9. Build中にEditor終了を要求し、`Editorへ戻る`で処理とEditorが継続することを確認する。再度終了を要求し、`停止して終了`で子Processと作業が終了することを確認する。
 10. Project Hubから同じProjectを再Openし、Package中について手順9を繰り返す。
-11. Project Hubから同じProjectを再Openし、Run中について手順9を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
+11. Project Hubから同じProjectを再Openし、同じSessionで`Build & Package`を成功させてから`Run`を開始し、
+    Run中について手順9を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
 
 Build Errorの詳細は`Build Package Run` Windowの`Build Diagnostics`と`Build Output`で確認する。Package失敗時は不完全な
 最終Destinationを成功扱いせず、Rollbackの即時再試行にも失敗したStagingがある場合だけ同Windowの`Recovery Staging`へ
