@@ -1,4 +1,5 @@
 #include "RuntimePackage.h"
+#include "RuntimePath.h"
 
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
@@ -1617,13 +1618,9 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
                     a_assertContext, cue::package::PackageError::InvalidPackageManifest,
                     "Runtime dependency path is outside the direct Runtime directory"));
             }
-            std::wstring name;
-            name.reserve(path.size() - prefix.size());
-            for (const char character : path.substr(prefix.size()))
-            {
-                name.push_back(static_cast<unsigned char>(character));
-            }
-            expected.push_back(ascii_case_key(name));
+            const std::filesystem::path name =
+                cue::runtime_host::detail::filesystem_path_from_utf8(path.substr(prefix.size()));
+            expected.push_back(ascii_case_key(name.native()));
         }
         std::sort(expected.begin(), expected.end());
 
@@ -1845,7 +1842,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 a_assertContext, package::PackageError::InvalidPackageManifest,
                 "Game Module Metadata role exceeds its Package startup size limit"));
         }
-        if (executable.try_value()->filename() != std::filesystem::path(runtimeHostEntry->relative_path()))
+        if (executable.try_value()->filename() !=
+            detail::filesystem_path_from_utf8(runtimeHostEntry->relative_path()))
         {
             return Result<LoadedRuntimePackage>::failure(package_error(
                 a_assertContext, package::PackageError::InvalidPackagePath,
@@ -1920,7 +1918,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                     continue;
                 }
                 auto dependencyGuard = guard_package_file(
-                    root / std::filesystem::path(entry.relative_path()), a_assertContext);
+                    root / detail::filesystem_path_from_utf8(entry.relative_path()), a_assertContext);
                 if (!dependencyGuard)
                 {
                     return Result<LoadedRuntimePackage>::failure(
@@ -1930,7 +1928,8 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 runtimeDependencyEntries.push_back(&entry);
             }
         }
-        const std::filesystem::path modulePath = root / std::filesystem::path(moduleEntry->relative_path());
+        const std::filesystem::path modulePath =
+            root / detail::filesystem_path_from_utf8(moduleEntry->relative_path());
         auto moduleGuard = guard_package_file(modulePath, a_assertContext);
         if (!moduleGuard)
         {
@@ -1985,7 +1984,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         for (const std::size_t index : *runtimeLoadOrder.try_value())
         {
             const std::filesystem::path dependencyPath = extended_windows_path(
-                root / std::filesystem::path(runtimeDependencyEntries[index]->relative_path()));
+                root / detail::filesystem_path_from_utf8(runtimeDependencyEntries[index]->relative_path()));
             HMODULE dependency = LoadLibraryExW(dependencyPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
             if (dependency == nullptr)
             {
