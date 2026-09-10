@@ -32,13 +32,15 @@ Blank 3Dは、Version付き`CueProject.json`、Default Scene、3構成のCMake P
 
 ## Edit and Save the Default Scene
 
-1. `Hierarchy`の`Objectを追加`を二回押し、Parent候補と編集対象の二Objectを作成する。
-2. 編集対象Objectを選択し、`Inspector`で名前、Translation／Rotation／Scaleを編集し、Parentをもう一方のObjectへ変更する。
-3. `Transformを適用`を押す。
-4. Editor終了を要求し、未保存Sceneに対する`保存`／`破棄`／`キャンセル`確認が表示されることを確認して`キャンセル`を選ぶ。
-5. `編集`Menuまたは`Ctrl+Z`／`Ctrl+Y`でUndo／Redoし、Hierarchy、Inspector、Selectionが対応する状態へ戻ることを確認する。
-6. `ファイル`Menuの`保存`または`Ctrl+S`でDefault Sceneを保存する。
-7. Editorを閉じてProject Hubから同じProjectを再Openし、Object Identityと編集内容が維持されることを確認する。
+1. `Hierarchy`の`Objectを追加`を押し、最初のObjectを作成する。
+2. `Ctrl`を押しながら最初のObjectを再度選択し、Selectionを解除してScene Rootへ戻す。
+3. `Objectを追加`をもう一度押し、最初のObjectとSiblingになる二個目のObjectを作成する。
+4. 二個目のObjectを編集対象にし、`Inspector`で名前、Translation／Rotation／Scaleを編集し、Parentを最初のObjectへ変更する。
+5. `Transformを適用`を押す。
+6. Editor終了を要求し、未保存Sceneに対する`保存`／`破棄`／`キャンセル`確認が表示されることを確認して`キャンセル`を選ぶ。
+7. `編集`Menuまたは`Ctrl+Z`／`Ctrl+Y`でUndo／Redoし、Hierarchy、Inspector、Selectionが対応する状態へ戻ることを確認する。
+8. `ファイル`Menuの`保存`または`Ctrl+S`でDefault Sceneを保存する。
+9. Editorを閉じてProject Hubから同じProjectを再Openし、Object Identityと編集内容が維持されることを確認する。
 
 ## Operate Project Files
 
@@ -80,12 +82,13 @@ Packageは`Generated/Packages/<Configuration>/<operation-id>`へ新規公開さ�
 2. `Build & Package`を実行し、Build StageでFailedになり、新しいPackageが公開されないことを確認する。
 3. 直前の成功Package表示とDirectoryが維持されることを確認する。
 4. Sourceを元に戻して`Retry`を押し、新しいPackageが`Package Ready`になることを確認する。
-5. DirtyなSceneでEditor終了を要求し、`キャンセル`を選んでEditorが継続することを確認する。
-6. 再度終了を要求して`保存`を選び、保存完了後にEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
-7. Sceneを再びDirtyにして終了を要求し、`破棄`を選んでEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
-8. Build中にEditor終了を要求し、`Editorへ戻る`で処理とEditorが継続することを確認する。再度終了を要求し、`停止して終了`で子Processと作業が終了することを確認する。
-9. Project Hubから同じProjectを再Openし、Package中について手順8を繰り返す。
-10. Project Hubから同じProjectを再Openし、Run中について手順8を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
+5. Scene内Objectの名前またはTransformを変更して適用し、SceneをDirtyにする。
+6. Editor終了を要求し、`キャンセル`を選んでEditorが継続することを確認する。
+7. 再度終了を要求して`保存`を選び、保存完了後にEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
+8. Sceneを再びDirtyにして終了を要求し、`破棄`を選んでEditorが終了することを確認する。Project Hubから同じProjectを再Openする。
+9. Build中にEditor終了を要求し、`Editorへ戻る`で処理とEditorが継続することを確認する。再度終了を要求し、`停止して終了`で子Processと作業が終了することを確認する。
+10. Project Hubから同じProjectを再Openし、Package中について手順9を繰り返す。
+11. Project Hubから同じProjectを再Openし、Run中について手順9を繰り返す。各Stageの開始前にEditorを起動し直し、前の終了判断に依存しないSessionで確認する。
 
 Build Errorの詳細は`Build Package Run` Windowの`Build Diagnostics`と`Build Output`で確認する。Package失敗時は不完全な
 最終Destinationを成功扱いせず、Rollbackの即時再試行にも失敗したStagingがある場合だけ同Windowの`Recovery Staging`へ
