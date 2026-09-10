@@ -324,6 +324,65 @@ endif()
 file(WRITE "${packageMetadataPath}" "${validMetadata}")
 write_package_manifest("${packageRoot}" "" "")
 
+function(assert_invalid_metadata metadata caseName)
+    file(WRITE "${packageMetadataPath}" "${metadata}")
+    write_package_manifest("${packageRoot}" "" "")
+    execute_process(
+        COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+        WORKING_DIRECTORY "${workingRoot}"
+        RESULT_VARIABLE invalidShapeResult
+        OUTPUT_VARIABLE invalidShapeOutput
+        ERROR_VARIABLE invalidShapeError
+        TIMEOUT 15
+    )
+    set(invalidShapeCombined "${invalidShapeOutput}\n${invalidShapeError}")
+    string(FIND "${invalidShapeCombined}" "Game Module Metadata body is invalid"
+        invalidShapeMessagePosition)
+    if(invalidShapeResult EQUAL 0 OR invalidShapeMessagePosition EQUAL -1)
+        message(FATAL_ERROR
+            "Invalid Metadata shape was accepted (${caseName})\n${invalidShapeCombined}")
+    endif()
+endfunction()
+
+string(REPLACE
+    "    \"entrySymbol\": \"cue_game_module_query\""
+    "    \"unknownMember\": 0,\n    \"entrySymbol\": \"cue_game_module_query\""
+    unknownMemberMetadata "${validMetadata}")
+assert_invalid_metadata("${unknownMemberMetadata}" "unknown top-level member")
+
+string(REPLACE
+    "        \"compilerVersion\": ${COMPILER_VERSION},"
+    "        \"compilerVersion\": ${COMPILER_VERSION},\n        \"compilerVersion\": ${COMPILER_VERSION},"
+    duplicateMemberMetadata "${validMetadata}")
+assert_invalid_metadata("${duplicateMemberMetadata}" "duplicate nested member")
+
+string(REPLACE
+    "    \"configuration\": \"${CONFIGURATION}\",\n"
+    ""
+    missingMemberMetadata "${validMetadata}")
+assert_invalid_metadata("${missingMemberMetadata}" "missing top-level member")
+
+file(WRITE "${packageMetadataPath}" "${validMetadata}")
+write_package_manifest("${packageRoot}" "" "")
+
+file(WRITE "${packageMetadataPath}"
+    "{\"entrySymbol\":\"cue_game_module_query\",\"moduleFile\":\"CueGameModule.dll\",\"iteratorDebugLevel\":${iteratorDebugLevel},\"runtimeLibrary\":\"${runtimeLibrary}\",\"msvcToolset\":{\"build\":${compatibleBuild},\"fullVersion\":${compatibleFullVersion},\"compilerVersion\":${COMPILER_VERSION}},\"compilerFamily\":\"msvc\",\"architecture\":\"x64\",\"configuration\":\"${CONFIGURATION}\",\"abiVersion\":1,\"engineCompatibility\":{\"maximumExclusive\":\"2.0.0\",\"minimum\":\"1.0.0\"},\"projectId\":\"${projectId}\",\"artifactId\":\"${artifactId}\",\"schemaVersion\":1}\n")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE reorderedMetadataResult
+    OUTPUT_VARIABLE reorderedMetadataOutput
+    ERROR_VARIABLE reorderedMetadataError
+    TIMEOUT 15
+)
+if(NOT reorderedMetadataResult EQUAL 0)
+    message(FATAL_ERROR
+        "Order-independent Game Module Metadata was rejected\n${reorderedMetadataOutput}\n${reorderedMetadataError}")
+endif()
+file(WRITE "${packageMetadataPath}" "${validMetadata}")
+write_package_manifest("${packageRoot}" "" "")
+
 foreach(toolsetField IN ITEMS compilerVersion fullVersion build)
     if(toolsetField STREQUAL "compilerVersion")
         set(validToolsetValue "${COMPILER_VERSION}")

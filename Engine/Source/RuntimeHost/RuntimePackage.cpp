@@ -764,6 +764,269 @@ template <std::size_t Size>
     }
 }
 
+/// @brief Game Module MetadataのEngine互換Rangeを所有する
+struct ModuleMetadataCompatibility final
+{
+    std::string minimum;
+    std::string maximumExclusive;
+    bool hasMaximum = false;
+};
+
+/// @brief Game Module MetadataのMSVC Toolset Identityを所有する
+struct ModuleMetadataToolset final
+{
+    std::uint64_t compilerVersion = 0U;
+    std::uint64_t fullVersion = 0U;
+    std::uint64_t build = 0U;
+};
+
+/// @brief Game Module Metadata v1の全必須Memberを所有する
+struct ModuleMetadataInfo final
+{
+    std::uint32_t schemaVersion = 0U;
+    std::string artifactId;
+    std::string projectId;
+    ModuleMetadataCompatibility compatibility;
+    std::uint32_t abiVersion = 0U;
+    std::string configuration;
+    std::string architecture;
+    std::string compilerFamily;
+    ModuleMetadataToolset toolset;
+    std::string runtimeLibrary;
+    std::uint32_t iteratorDebugLevel = 0U;
+    std::string moduleFile;
+    std::string entrySymbol;
+};
+
+/// @brief Metadata Engine Compatibility Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_metadata_compatibility(
+    JsonCursor &a_cursor, ModuleMetadataCompatibility &a_compatibility)
+{
+    constexpr std::uint32_t k_minimum = 1U << 0U;
+    constexpr std::uint32_t k_maximumExclusive = 1U << 1U;
+    constexpr std::uint32_t k_required = k_minimum | k_maximumExclusive;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if ((!first && !a_cursor.consume(',')))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        if (name == "minimum")
+        {
+            if ((seen & k_minimum) != 0U || !a_cursor.string(a_compatibility.minimum))
+            {
+                return false;
+            }
+            seen |= k_minimum;
+        }
+        else if (name == "maximumExclusive")
+        {
+            if ((seen & k_maximumExclusive) != 0U)
+            {
+                return false;
+            }
+            if (a_cursor.next_is('"'))
+            {
+                if (!a_cursor.string(a_compatibility.maximumExclusive))
+                {
+                    return false;
+                }
+                a_compatibility.hasMaximum = true;
+            }
+            else if (!a_cursor.null_value())
+            {
+                return false;
+            }
+            seen |= k_maximumExclusive;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return a_cursor.consume('}') && seen == k_required;
+}
+
+/// @brief Metadata MSVC Toolset Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_metadata_toolset(JsonCursor &a_cursor, ModuleMetadataToolset &a_toolset)
+{
+    constexpr std::uint32_t k_compilerVersion = 1U << 0U;
+    constexpr std::uint32_t k_fullVersion = 1U << 1U;
+    constexpr std::uint32_t k_build = 1U << 2U;
+    constexpr std::uint32_t k_required = k_compilerVersion | k_fullVersion | k_build;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if (!first && !a_cursor.consume(','))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        if (name == "compilerVersion")
+        {
+            if ((seen & k_compilerVersion) != 0U || !a_cursor.unsigned_number(a_toolset.compilerVersion))
+            {
+                return false;
+            }
+            seen |= k_compilerVersion;
+        }
+        else if (name == "fullVersion")
+        {
+            if ((seen & k_fullVersion) != 0U || !a_cursor.unsigned_number(a_toolset.fullVersion))
+            {
+                return false;
+            }
+            seen |= k_fullVersion;
+        }
+        else if (name == "build")
+        {
+            if ((seen & k_build) != 0U || !a_cursor.unsigned_number(a_toolset.build))
+            {
+                return false;
+            }
+            seen |= k_build;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return a_cursor.consume('}') && seen == k_required;
+}
+
+/// @brief Metadata v1 Top-level Objectを順序非依存かつ未知・重複拒否で読む
+[[nodiscard]] bool read_module_metadata(JsonCursor &a_cursor, ModuleMetadataInfo &a_info)
+{
+    constexpr std::uint32_t k_schemaVersion = 1U << 0U;
+    constexpr std::uint32_t k_artifactId = 1U << 1U;
+    constexpr std::uint32_t k_projectId = 1U << 2U;
+    constexpr std::uint32_t k_engineCompatibility = 1U << 3U;
+    constexpr std::uint32_t k_abiVersion = 1U << 4U;
+    constexpr std::uint32_t k_configuration = 1U << 5U;
+    constexpr std::uint32_t k_architecture = 1U << 6U;
+    constexpr std::uint32_t k_compilerFamily = 1U << 7U;
+    constexpr std::uint32_t k_msvcToolset = 1U << 8U;
+    constexpr std::uint32_t k_runtimeLibrary = 1U << 9U;
+    constexpr std::uint32_t k_iteratorDebugLevel = 1U << 10U;
+    constexpr std::uint32_t k_moduleFile = 1U << 11U;
+    constexpr std::uint32_t k_entrySymbol = 1U << 12U;
+    constexpr std::uint32_t k_required = (1U << 13U) - 1U;
+    if (!a_cursor.consume('{'))
+    {
+        return false;
+    }
+    std::uint32_t seen = 0U;
+    bool first = true;
+    while (!a_cursor.next_is('}'))
+    {
+        if (!first && !a_cursor.consume(','))
+        {
+            return false;
+        }
+        first = false;
+        std::string name;
+        if (!a_cursor.string(name) || !a_cursor.consume(':'))
+        {
+            return false;
+        }
+        std::uint32_t member = 0U;
+        bool read = false;
+        if (name == "schemaVersion")
+        {
+            member = k_schemaVersion;
+            read = a_cursor.unsigned_number(a_info.schemaVersion);
+        }
+        else if (name == "artifactId")
+        {
+            member = k_artifactId;
+            read = a_cursor.string(a_info.artifactId);
+        }
+        else if (name == "projectId")
+        {
+            member = k_projectId;
+            read = a_cursor.string(a_info.projectId);
+        }
+        else if (name == "engineCompatibility")
+        {
+            member = k_engineCompatibility;
+            read = read_metadata_compatibility(a_cursor, a_info.compatibility);
+        }
+        else if (name == "abiVersion")
+        {
+            member = k_abiVersion;
+            read = a_cursor.unsigned_number(a_info.abiVersion);
+        }
+        else if (name == "configuration")
+        {
+            member = k_configuration;
+            read = a_cursor.string(a_info.configuration);
+        }
+        else if (name == "architecture")
+        {
+            member = k_architecture;
+            read = a_cursor.string(a_info.architecture);
+        }
+        else if (name == "compilerFamily")
+        {
+            member = k_compilerFamily;
+            read = a_cursor.string(a_info.compilerFamily);
+        }
+        else if (name == "msvcToolset")
+        {
+            member = k_msvcToolset;
+            read = read_metadata_toolset(a_cursor, a_info.toolset);
+        }
+        else if (name == "runtimeLibrary")
+        {
+            member = k_runtimeLibrary;
+            read = a_cursor.string(a_info.runtimeLibrary);
+        }
+        else if (name == "iteratorDebugLevel")
+        {
+            member = k_iteratorDebugLevel;
+            read = a_cursor.unsigned_number(a_info.iteratorDebugLevel);
+        }
+        else if (name == "moduleFile")
+        {
+            member = k_moduleFile;
+            read = a_cursor.string(a_info.moduleFile);
+        }
+        else if (name == "entrySymbol")
+        {
+            member = k_entrySymbol;
+            read = a_cursor.string(a_info.entrySymbol);
+        }
+        if (member == 0U || (seen & member) != 0U || !read)
+        {
+            return false;
+        }
+        seen |= member;
+    }
+    return a_cursor.consume('}') && a_cursor.finished() && seen == k_required;
+}
+
 /// @brief Metadata v1のPackage起動互換性を検証する
 [[nodiscard]] cue::Result<void> validate_module_metadata(
     std::string_view a_bytes, const cue::package::PackageManifest &a_manifest,
@@ -772,82 +1035,43 @@ template <std::size_t Size>
     try
     {
         JsonCursor cursor(a_bytes);
-        std::uint32_t schemaVersion = 0U;
-        std::uint32_t abiVersion = 0U;
-        std::uint64_t compilerVersion = 0U;
-        std::uint64_t fullVersion = 0U;
-        std::uint64_t build = 0U;
-        std::uint32_t iteratorDebugLevel = 0U;
-        std::string artifactId;
-        std::string projectId;
-        std::string minimumText;
-        std::string maximumText;
-        std::string configuration;
-        std::string architecture;
-        std::string compilerFamily;
-        std::string runtimeLibrary;
-        std::string moduleFile;
-        std::string entrySymbol;
-        bool hasMaximum = false;
-        if (!cursor.consume('{') || !cursor.member("schemaVersion") || !cursor.unsigned_number(schemaVersion) ||
-            schemaVersion != 1U || !cursor.consume(',') || !cursor.member("artifactId") ||
-            !cursor.string(artifactId) || !is_canonical_uuid_v4(artifactId) || !cursor.consume(',') ||
-            !cursor.member("projectId") || !cursor.string(projectId) || !cursor.consume(',') ||
-            !cursor.member("engineCompatibility") || !cursor.consume('{') || !cursor.member("minimum") ||
-            !cursor.string(minimumText) || !cursor.consume(',') || !cursor.member("maximumExclusive"))
-        {
-            return cue::Result<void>::failure(package_error(a_assertContext,
-                                                            cue::package::PackageError::InvalidRuntimeData,
-                                                            "Game Module Metadata header is invalid"));
-        }
-        if (cursor.next_is('"'))
-        {
-            hasMaximum = cursor.string(maximumText);
-        }
-        else if (!cursor.null_value())
-        {
-            return cue::Result<void>::failure(package_error(a_assertContext,
-                                                            cue::package::PackageError::InvalidRuntimeData,
-                                                            "Game Module Metadata compatibility is invalid"));
-        }
-        if (!cursor.consume('}') || !cursor.consume(',') || !cursor.member("abiVersion") ||
-            !cursor.unsigned_number(abiVersion) || !cursor.consume(',') || !cursor.member("configuration") ||
-            !cursor.string(configuration) || !cursor.consume(',') || !cursor.member("architecture") ||
-            !cursor.string(architecture) || !cursor.consume(',') || !cursor.member("compilerFamily") ||
-            !cursor.string(compilerFamily) || !cursor.consume(',') || !cursor.member("msvcToolset") ||
-            !cursor.consume('{') || !cursor.member("compilerVersion") ||
-            !cursor.unsigned_number(compilerVersion) || !cursor.consume(',') || !cursor.member("fullVersion") ||
-            !cursor.unsigned_number(fullVersion) || !cursor.consume(',') || !cursor.member("build") ||
-            !cursor.unsigned_number(build) || !cursor.consume('}') || !cursor.consume(',') ||
-            !cursor.member("runtimeLibrary") || !cursor.string(runtimeLibrary) || !cursor.consume(',') ||
-            !cursor.member("iteratorDebugLevel") || !cursor.unsigned_number(iteratorDebugLevel) ||
-            !cursor.consume(',') || !cursor.member("moduleFile") || !cursor.string(moduleFile) ||
-            !cursor.consume(',') || !cursor.member("entrySymbol") || !cursor.string(entrySymbol) ||
-            !cursor.consume('}') || !cursor.finished() || compilerVersion > k_maximumJsonInteger ||
-            fullVersion > k_maximumJsonInteger || build > k_maximumJsonInteger)
+        ModuleMetadataInfo info;
+        if (!read_module_metadata(cursor, info) || info.toolset.compilerVersion > k_maximumJsonInteger ||
+            info.toolset.fullVersion > k_maximumJsonInteger || info.toolset.build > k_maximumJsonInteger)
         {
             return cue::Result<void>::failure(package_error(a_assertContext,
                                                             cue::package::PackageError::InvalidRuntimeData,
                                                             "Game Module Metadata body is invalid"));
         }
+        if (info.schemaVersion != 1U || !is_canonical_uuid_v4(info.artifactId) ||
+            !is_canonical_uuid_v4(info.projectId))
+        {
+            return cue::Result<void>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::InvalidRuntimeData,
+                                                            "Game Module Metadata header is invalid"));
+        }
         cue::EngineVersion minimum{};
         cue::EngineVersion maximum{};
-        const bool compatibilityMatches = parse_engine_version(minimumText, minimum) &&
+        const bool compatibilityMatches = parse_engine_version(info.compatibility.minimum, minimum) &&
                                           minimum == a_project.compatibility.minimum &&
-                                          (hasMaximum == a_project.compatibility.maximumExclusive.has_value()) &&
-                                          (!hasMaximum || (parse_engine_version(maximumText, maximum) &&
-                                                           maximum == *a_project.compatibility.maximumExclusive));
+                                          (info.compatibility.hasMaximum ==
+                                           a_project.compatibility.maximumExclusive.has_value()) &&
+                                          (!info.compatibility.hasMaximum ||
+                                           (parse_engine_version(info.compatibility.maximumExclusive, maximum) &&
+                                            maximum == *a_project.compatibility.maximumExclusive));
         const std::string_view expectedConfiguration =
             a_manifest.configuration() == cue::BuildConfiguration::Debug
                 ? "Debug"
                 : (a_manifest.configuration() == cue::BuildConfiguration::Development ? "Development" : "Release");
         const bool debug = a_manifest.configuration() == cue::BuildConfiguration::Debug;
         // _MSC_FULL_VERと_MSC_BUILDはProvenanceとして保持し、同一_MSC_VER内のServicing更新は許容する。
-        if (projectId != a_manifest.project_id() || projectId != a_project.projectId || !compatibilityMatches ||
-            abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 || configuration != expectedConfiguration ||
-            architecture != "x64" || compilerFamily != "msvc" || compilerVersion != _MSC_VER ||
-            runtimeLibrary != (debug ? "DebugDll" : "Dll") || iteratorDebugLevel != (debug ? 2U : 0U) ||
-            moduleFile != "CueGameModule.dll" || entrySymbol != "cue_game_module_query")
+        if (info.projectId != a_manifest.project_id() || info.projectId != a_project.projectId ||
+            !compatibilityMatches || info.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 ||
+            info.configuration != expectedConfiguration || info.architecture != "x64" ||
+            info.compilerFamily != "msvc" || info.toolset.compilerVersion != _MSC_VER ||
+            info.runtimeLibrary != (debug ? "DebugDll" : "Dll") ||
+            info.iteratorDebugLevel != (debug ? 2U : 0U) || info.moduleFile != "CueGameModule.dll" ||
+            info.entrySymbol != "cue_game_module_query")
         {
             return cue::Result<void>::failure(package_error(a_assertContext,
                                                             cue::package::PackageError::InvalidRuntimeData,
