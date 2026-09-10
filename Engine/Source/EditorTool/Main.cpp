@@ -1404,31 +1404,45 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         const std::vector<cue::ChildProcessEnvironmentEntry> runEnvironment = environmentAllowlist;
         cue::Result<std::unique_ptr<cue::ChildProcessRunner>> processRunner =
             cue::create_windows_child_process_runner(*m_assertContext);
-        if (!processRunner)
+        cue::Result<std::unique_ptr<cue::ChildProcessRunner>> packageBuildProcessRunner =
+            cue::create_windows_child_process_runner(*m_assertContext);
+        if (!processRunner || !packageBuildProcessRunner)
         {
-            cue::report_fatal(a_logger, m_assertContext->fatal_handler(), "Build Process Runner initialization failed",
-                              std::move(*processRunner.try_error()));
+            cue::report_fatal(
+                a_logger, m_assertContext->fatal_handler(), "Build Process Runner initialization failed",
+                processRunner ? std::move(*packageBuildProcessRunner.try_error())
+                              : std::move(*processRunner.try_error()));
         }
         cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>> artifactPublisher =
             cue::create_windows_build_artifact_publisher(std::string(m_session->project_locator()),
                                                          m_session->controller().session().project_descriptor(),
                                                          *m_assertContext);
-        if (!artifactPublisher)
+        cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>> packageArtifactPublisher =
+            cue::create_windows_build_artifact_publisher(std::string(m_session->project_locator()),
+                                                         m_session->controller().session().project_descriptor(),
+                                                         *m_assertContext);
+        if (!artifactPublisher || !packageArtifactPublisher)
         {
-            cue::report_fatal(a_logger, m_assertContext->fatal_handler(),
-                              "Build Artifact Publisher initialization failed",
-                              std::move(*artifactPublisher.try_error()));
+            cue::report_fatal(
+                a_logger, m_assertContext->fatal_handler(), "Build Artifact Publisher initialization failed",
+                artifactPublisher ? std::move(*packageArtifactPublisher.try_error())
+                                  : std::move(*artifactPublisher.try_error()));
         }
         cue::CMakeRunnerSettings runnerSettings{cmake->nativePath, environment.engineSourceRoot,
                                                 std::move(environmentAllowlist), std::chrono::minutes(5),
                                                 std::chrono::minutes(30)};
         cue::Result<std::unique_ptr<cue::GameBuildService>> service =
-            cue::GameBuildService::create(std::move(runnerSettings), std::move(*processRunner.try_value()),
+            cue::GameBuildService::create(runnerSettings, std::move(*processRunner.try_value()),
                                           std::move(*artifactPublisher.try_value()), *m_assertContext);
-        if (!service)
+        cue::Result<std::unique_ptr<cue::GameBuildService>> packageBuildService =
+            cue::GameBuildService::create(std::move(runnerSettings),
+                                          std::move(*packageBuildProcessRunner.try_value()),
+                                          std::move(*packageArtifactPublisher.try_value()), *m_assertContext);
+        if (!service || !packageBuildService)
         {
-            cue::report_fatal(a_logger, m_assertContext->fatal_handler(), "Game Build Service initialization failed",
-                              std::move(*service.try_error()));
+            cue::report_fatal(
+                a_logger, m_assertContext->fatal_handler(), "Game Build Service initialization failed",
+                service ? std::move(*packageBuildService.try_error()) : std::move(*service.try_error()));
         }
         m_buildService = std::move(*service.try_value());
         cue::BuildWorkspaceCompatibility compatibility{cue::BuildGenerator::VisualStudio2026,
@@ -1455,7 +1469,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
         cue::Result<std::unique_ptr<cue::package::GamePackageWorkflowService>> packageService =
             cue::package::GamePackageWorkflowService::create(
-                *m_buildService, std::move(*projectFilesystem.try_value()),
+                std::move(*packageBuildService.try_value()), std::move(*projectFilesystem.try_value()),
                 std::move(*engineBinaryFilesystem.try_value()), std::move(*runProcessRunner.try_value()),
                 std::string(m_session->project_locator()), runEnvironment, *m_assertContext);
         if (!packageService)
