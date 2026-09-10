@@ -6,6 +6,8 @@ target_sources(
         Main.cpp
         RuntimeHostApplication.cpp
         RuntimeHostApplication.h
+        RuntimeModuleIdentity.cpp
+        RuntimeModuleIdentity.h
         RuntimePackage.cpp
         RuntimePackage.h
         RuntimePath.h
