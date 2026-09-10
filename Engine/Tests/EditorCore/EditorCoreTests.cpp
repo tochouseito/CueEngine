@@ -1709,6 +1709,69 @@ void test_scene_persistence_workflow() noexcept
     require(verification->session().find_document(verificationId) == nullptr);
 }
 
+/// @brief Package入力がActive DocumentではなくDescriptorの保存済みStartup Sceneから作られることを検証する
+void test_saved_startup_scene_snapshot() noexcept
+{
+    TestFatalHandler fatalHandler;
+    std::vector<std::unique_ptr<cue::LogSink>> sinks;
+    cue::Logger logger(fatalHandler, std::move(sinks));
+    cue::AssertContext assertContext(logger, fatalHandler);
+    cue::schema::SchemaRegistryIdentitySource registryIdentitySource;
+    auto registry = make_component_registry(registryIdentitySource, assertContext);
+    auto valueRegistry = make_component_value_registry(*registry, assertContext);
+    cue::scene::SceneMigrationRegistry sceneMigrations;
+    cue::scene::ComponentMigrationRegistry componentMigrations;
+    MemoryFilesystemRoot sourceAssets(assertContext);
+    MemoryFilesystemRoot savedRoot(assertContext);
+
+    const auto objectId = make_object_id("00000000-0000-4000-8000-000000000799", assertContext);
+    auto startupScene = make_scene_document("00000000-0000-4000-8000-000000000099", assertContext);
+    require(startupScene.add_object(objectId, "Descriptor Startup", true, std::nullopt, cue::math::Transform{})
+                .has_value());
+    sourceAssets.set("Scenes/Default.cuescene",
+                     take_value(cue::scene::serialize_scene_document(startupScene, assertContext)));
+
+    cue::editor_core::ScenePersistenceServices services(sourceAssets, savedRoot, *registry, valueRegistry,
+                                                         sceneMigrations, componentMigrations);
+    auto controller =
+        cue::editor_core::EditorController::create(make_project_descriptor(assertContext), services, assertContext);
+    const auto documentId = take_value(controller->open_document_from_storage(
+        take_value(cue::RelativePath::parse("Scenes/Default.cuescene", assertContext))));
+    require(controller
+                ->execute_command(cue::editor_core::SceneCommandRequest{
+                    documentId, startupScene.scene_asset_id(),
+                    cue::editor_core::RenameObjectCommand{objectId, "Save As Document"}})
+                .has_value());
+    auto dirtySnapshot = controller->load_saved_startup_scene_snapshot();
+    require(!dirtySnapshot.has_value());
+    require(dirtySnapshot.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidSavedState));
+    const auto saveAs = controller->save_document_as(
+        documentId, take_value(cue::RelativePath::parse("Scenes/Alternate.cuescene", assertContext)));
+    require(saveAs.has_value() && saveAs.try_value()->status() == cue::scene::SceneSaveStatus::Committed);
+
+    auto descriptorSnapshot = controller->load_saved_startup_scene_snapshot();
+    require(descriptorSnapshot.has_value() && descriptorSnapshot.try_value()->objects().size() == 1U);
+    require(descriptorSnapshot.try_value()->objects()[0].name() == "Descriptor Startup");
+
+    auto externalScene = make_scene_document("00000000-0000-4000-8000-000000000099", assertContext);
+    require(externalScene.add_object(objectId, "Externally Saved", true, std::nullopt, cue::math::Transform{})
+                .has_value());
+    sourceAssets.set("Scenes/Default.cuescene",
+                     take_value(cue::scene::serialize_scene_document(externalScene, assertContext)));
+    auto externalSnapshot = controller->load_saved_startup_scene_snapshot();
+    require(externalSnapshot.has_value() && externalSnapshot.try_value()->objects().size() == 1U);
+    require(externalSnapshot.try_value()->objects()[0].name() == "Externally Saved");
+
+    auto mismatchedScene = make_scene_document("00000000-0000-4000-8000-000000000098", assertContext);
+    sourceAssets.set("Scenes/Default.cuescene",
+                     take_value(cue::scene::serialize_scene_document(mismatchedScene, assertContext)));
+    auto mismatchedSnapshot = controller->load_saved_startup_scene_snapshot();
+    require(!mismatchedSnapshot.has_value());
+    require(mismatchedSnapshot.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::SceneMismatch));
+}
+
 /// @brief 外部変更と Close 判断の状態遷移を検証する
 void test_external_change_and_close() noexcept
 {
@@ -1806,6 +1869,7 @@ int main()
     test_scene_commands();
     test_transaction_history();
     test_scene_persistence_workflow();
+    test_saved_startup_scene_snapshot();
     test_external_change_and_close();
     return 0;
 }

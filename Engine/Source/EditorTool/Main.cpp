@@ -4,6 +4,7 @@
 #include <Cue/Editor/ImGui/BuildPresenter.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
+#include <Cue/Editor/ImGui/PackagePresenter.h>
 #include <Cue/Editor/ImGui/PlaySessionPresenter.h>
 #include <Cue/Editor/ImGui/SessionLog.h>
 #include <Cue/Editor/Windows/EditorSession.h>
@@ -21,6 +22,8 @@
 #include <Cue/GameCore/RuntimeSystem.h>
 #include <Cue/GameCore/World.h>
 #include <Cue/IO/RelativePath.h>
+#include <Cue/IO/Windows/WindowsFilesystem.h>
+#include <Cue/Package/Workflow.h>
 #include <Cue/Platform/Windows/WindowsProcess.h>
 #include <Cue/Project/Compatibility.h>
 #include <Cue/Runtime/RuntimeSchema.h>
@@ -426,6 +429,25 @@ struct PlayWorkflowDocumentState final
     return std::nullopt;
 }
 
+/// @brief Process Test Actionから要求するPackage Workflow Configurationを復元する
+[[nodiscard]] std::optional<cue::BuildConfiguration> process_test_package_configuration(
+    std::string_view a_action) noexcept
+{
+    if (a_action == "package-workflow-debug")
+    {
+        return cue::BuildConfiguration::Debug;
+    }
+    if (a_action == "package-workflow-development")
+    {
+        return cue::BuildConfiguration::Development;
+    }
+    if (a_action == "package-workflow-release")
+    {
+        return cue::BuildConfiguration::Release;
+    }
+    return std::nullopt;
+}
+
 /// @brief Editor起動Contractの必須値、重複、未知Optionを検証する
 [[nodiscard]] cue::Result<EditorToolOptions> parse_options(int a_argumentCount, wchar_t **a_arguments,
                                                            const cue::AssertContext &a_context) noexcept
@@ -576,7 +598,8 @@ struct PlayWorkflowDocumentState final
              (*options.processTestAction != "autosave-recovery" && *options.processTestAction != "autosave-new-scene" &&
               *options.processTestAction != "edit-close-save" && *options.processTestAction != "files-workflow" &&
               *options.processTestAction != "play-repeated-workflow" &&
-              !process_test_build_configuration(*options.processTestAction).has_value())))
+              !process_test_build_configuration(*options.processTestAction).has_value() &&
+              !process_test_package_configuration(*options.processTestAction).has_value())))
         {
             return cue::Result<EditorToolOptions>::failure(make_tool_error(
                 a_context, k_invalidArguments,
@@ -680,6 +703,28 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     /// @brief Runtimeを停止してからPresenter、購読Token、ControllerをSessionより先に破棄する
     ~EditorToolClient() override
     {
+        if (m_packagePresenter != nullptr &&
+            (m_packagePresenter->current_snapshot().state == cue::package::PackageWorkflowState::Building ||
+             m_packagePresenter->current_snapshot().state == cue::package::PackageWorkflowState::Packaging ||
+             m_packagePresenter->current_snapshot().state == cue::package::PackageWorkflowState::Running))
+        {
+            static_cast<void>(m_packagePresenter->begin_editor_shutdown());
+            const bool immediatelyReady = m_packagePresenter->respond_to_editor_shutdown(
+                cue::editor::EditorPackageShutdownDecision::StopAndClose);
+            if (!immediatelyReady)
+            {
+                const cue::package::PackageWorkflowState state = m_packagePresenter->current_snapshot().state;
+                cue::Result<void> completed = state == cue::package::PackageWorkflowState::Running
+                                                  ? m_packageService->wait_for_run_completion()
+                                                  : m_packageService->wait_for_package();
+                m_packagePresenter->refresh();
+                if (!completed || !m_packagePresenter->take_shutdown_ready())
+                {
+                    m_assertContext->fatal_handler().terminate(
+                        "Editor Tool destruction requires completed Package Workflow cleanup");
+                }
+            }
+        }
         if (m_buildPresenter != nullptr &&
             m_buildPresenter->current_snapshot().state == cue::GameBuildOperationState::Running)
         {
@@ -928,6 +973,71 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             if (read_file(currentPath).find(retrySnapshot.operationId) == std::string::npos)
             {
                 return fail("Editor Build retry Current manifest does not identify the new artifact");
+            }
+            return cue::Result<void>::success();
+        }
+        catch (...)
+        {
+            terminate_tool_exception(*m_assertContext);
+        }
+    }
+
+    /// @brief 実Editor CompositionからBuild、Package、Standalone起動をHeadless検証する
+    [[nodiscard]] cue::Result<void> run_package_workflow_process_test(
+        cue::BuildConfiguration a_configuration) noexcept
+    {
+        try
+        {
+            /// @brief Package Workflow不変条件違反をProcess Test用Errorへ変換する
+            const auto fail = [this](std::string_view a_summary) noexcept
+            { return cue::Result<void>::failure(make_tool_error(*m_assertContext, k_processTestFailed, a_summary)); };
+
+            if (m_packagePresenter == nullptr || m_packageService == nullptr)
+            {
+                return fail("Package workflow is unavailable in the Editor composition");
+            }
+            m_packagePresenter->set_active_document(m_session->active_document_id());
+            if (!m_packagePresenter->set_configuration(a_configuration) ||
+                !m_packagePresenter->set_force_configure(true))
+            {
+                return fail("Editor Package configuration could not be applied");
+            }
+            if (!m_packagePresenter->submit(cue::editor::EditorPackageCommand::Start))
+            {
+                return fail(m_packagePresenter->message().empty() ? "Editor Package command could not be submitted"
+                                                                  : m_packagePresenter->message());
+            }
+            cue::Result<void> completed = m_packageService->wait_for_package();
+            m_packagePresenter->refresh();
+            const cue::package::PackageWorkflowSnapshot &published = m_packagePresenter->current_snapshot();
+            if (!completed)
+            {
+                return cue::Result<void>::failure(std::move(*completed.try_error()));
+            }
+            if (published.state != cue::package::PackageWorkflowState::PackageReady || !published.package ||
+                published.package->manifest.configuration != a_configuration ||
+                published.package->manifest.fileCount < 5U || published.package->artifactId.empty() ||
+                published.package->destination.empty() || published.package->executable.empty())
+            {
+                return fail(published.message.empty() ? "Editor Package did not complete successfully"
+                                                      : published.message);
+            }
+            cue::Result<void> started = m_packageService->run(cue::package::PackageRunMode::SmokeTest);
+            if (!started)
+            {
+                return cue::Result<void>::failure(std::move(*started.try_error()));
+            }
+            completed = m_packageService->wait_for_run_completion();
+            m_packagePresenter->refresh();
+            const cue::package::PackageWorkflowSnapshot &ran = m_packagePresenter->current_snapshot();
+            if (!completed)
+            {
+                return cue::Result<void>::failure(std::move(*completed.try_error()));
+            }
+            if (ran.state != cue::package::PackageWorkflowState::RunSucceeded || ran.activeStage !=
+                                                                                       cue::package::PackageWorkflowStage::None)
+            {
+                return fail(ran.message.empty() ? "Packaged Runtime did not exit successfully" : ran.message);
             }
             return cue::Result<void>::success();
         }
@@ -1197,6 +1307,15 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 }
                 ImGui::End();
             }
+            if (m_packagePresenter != nullptr)
+            {
+                m_packagePresenter->set_active_document(m_session->active_document_id());
+                m_packagePresenter->draw();
+                if (m_packagePresenter->take_shutdown_ready())
+                {
+                    request_project_close();
+                }
+            }
             draw_locator_dialog();
             draw_close_dialog();
             draw_overwrite_dialog();
@@ -1282,33 +1401,54 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             }
             environmentAllowlist.push_back({variable.name, *value});
         }
+        const std::vector<cue::ChildProcessEnvironmentEntry> runEnvironment = environmentAllowlist;
         cue::Result<std::unique_ptr<cue::ChildProcessRunner>> processRunner =
             cue::create_windows_child_process_runner(*m_assertContext);
-        if (!processRunner)
+        cue::Result<std::unique_ptr<cue::ChildProcessRunner>> packageBuildProcessRunner =
+            cue::create_windows_child_process_runner(*m_assertContext);
+        if (!processRunner || !packageBuildProcessRunner)
         {
-            cue::report_fatal(a_logger, m_assertContext->fatal_handler(), "Build Process Runner initialization failed",
-                              std::move(*processRunner.try_error()));
+            cue::report_fatal(
+                a_logger, m_assertContext->fatal_handler(), "Build Process Runner initialization failed",
+                processRunner ? std::move(*packageBuildProcessRunner.try_error())
+                              : std::move(*processRunner.try_error()));
         }
         cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>> artifactPublisher =
             cue::create_windows_build_artifact_publisher(std::string(m_session->project_locator()),
                                                          m_session->controller().session().project_descriptor(),
                                                          *m_assertContext);
-        if (!artifactPublisher)
+        cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>> packageArtifactPublisher =
+            cue::create_windows_build_artifact_publisher(std::string(m_session->project_locator()),
+                                                         m_session->controller().session().project_descriptor(),
+                                                         *m_assertContext);
+        cue::Result<std::unique_ptr<cue::BuildArtifactReader>> packageArtifactReader =
+            cue::create_windows_build_artifact_reader(std::string(m_session->project_locator()),
+                                                      m_session->controller().session().project_descriptor(),
+                                                      *m_assertContext);
+        if (!artifactPublisher || !packageArtifactPublisher || !packageArtifactReader)
         {
+            cue::Error error = !artifactPublisher
+                                   ? std::move(*artifactPublisher.try_error())
+                                   : (!packageArtifactPublisher ? std::move(*packageArtifactPublisher.try_error())
+                                                                : std::move(*packageArtifactReader.try_error()));
             cue::report_fatal(a_logger, m_assertContext->fatal_handler(),
-                              "Build Artifact Publisher initialization failed",
-                              std::move(*artifactPublisher.try_error()));
+                              "Build Artifact access initialization failed", std::move(error));
         }
         cue::CMakeRunnerSettings runnerSettings{cmake->nativePath, environment.engineSourceRoot,
                                                 std::move(environmentAllowlist), std::chrono::minutes(5),
                                                 std::chrono::minutes(30)};
         cue::Result<std::unique_ptr<cue::GameBuildService>> service =
-            cue::GameBuildService::create(std::move(runnerSettings), std::move(*processRunner.try_value()),
+            cue::GameBuildService::create(runnerSettings, std::move(*processRunner.try_value()),
                                           std::move(*artifactPublisher.try_value()), *m_assertContext);
-        if (!service)
+        cue::Result<std::unique_ptr<cue::GameBuildService>> packageBuildService =
+            cue::GameBuildService::create(std::move(runnerSettings),
+                                          std::move(*packageBuildProcessRunner.try_value()),
+                                          std::move(*packageArtifactPublisher.try_value()), *m_assertContext);
+        if (!service || !packageBuildService)
         {
-            cue::report_fatal(a_logger, m_assertContext->fatal_handler(), "Game Build Service initialization failed",
-                              std::move(*service.try_error()));
+            cue::report_fatal(
+                a_logger, m_assertContext->fatal_handler(), "Game Build Service initialization failed",
+                service ? std::move(*packageBuildService.try_error()) : std::move(*service.try_error()));
         }
         m_buildService = std::move(*service.try_value());
         cue::BuildWorkspaceCompatibility compatibility{cue::BuildGenerator::VisualStudio2026,
@@ -1318,6 +1458,38 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         m_buildPresenter = cue::editor::BuildPresenter::create(
             *m_buildService, std::string(m_session->project_locator()), compatibility,
             std::make_unique<WindowsBuildOperationIdSource>(*m_assertContext), *m_assertContext);
+        cue::Result<std::unique_ptr<cue::FilesystemRoot>> projectFilesystem =
+            cue::create_windows_filesystem_root(m_session->project_locator(), *m_assertContext);
+        cue::Result<std::unique_ptr<cue::FilesystemRoot>> engineBinaryFilesystem =
+            cue::create_windows_filesystem_root(environment.engineBinaryRoot, *m_assertContext);
+        cue::Result<std::unique_ptr<cue::ChildProcessRunner>> runProcessRunner =
+            cue::create_windows_child_process_runner(*m_assertContext);
+        if (!projectFilesystem || !engineBinaryFilesystem || !runProcessRunner)
+        {
+            cue::Error error = !projectFilesystem
+                                   ? std::move(*projectFilesystem.try_error())
+                                   : (!engineBinaryFilesystem ? std::move(*engineBinaryFilesystem.try_error())
+                                                              : std::move(*runProcessRunner.try_error()));
+            cue::report_fatal(a_logger, m_assertContext->fatal_handler(),
+                              "Package Workflow dependency initialization failed", std::move(error));
+        }
+        cue::Result<std::unique_ptr<cue::package::GamePackageWorkflowService>> packageService =
+            cue::package::GamePackageWorkflowService::create(
+                std::move(*packageBuildService.try_value()), std::move(*packageArtifactReader.try_value()),
+                std::move(*projectFilesystem.try_value()), std::move(*engineBinaryFilesystem.try_value()),
+                std::move(*runProcessRunner.try_value()), std::string(m_session->project_locator()), runEnvironment,
+                *m_assertContext);
+        if (!packageService)
+        {
+            cue::report_fatal(a_logger, m_assertContext->fatal_handler(),
+                              "Package Workflow Service initialization failed",
+                              std::move(*packageService.try_error()));
+        }
+        m_packageService = std::move(*packageService.try_value());
+        m_packagePresenter = cue::editor::PackagePresenter::create(
+            *m_packageService, m_session->controller(), std::string(m_session->project_locator()),
+            compatibility, std::make_unique<WindowsBuildOperationIdSource>(*m_assertContext), *m_assertContext);
+        m_packagePresenter->set_active_document(m_session->active_document_id());
     }
 
     /// @brief Active Document Identityに対応するPresenterを再生成する
@@ -1501,7 +1673,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
     }
 
-    /// @brief PlayとBuildの実行中確認を順に適用し、停止済みの場合だけProject Closeへ進む
+    /// @brief Play、Package Workflow、Buildの実行中確認を順に適用し停止済みの場合だけProject Closeへ進む
     void request_project_close() noexcept
     {
         if (m_pendingTransition != PendingTransition::None || m_shouldClose)
@@ -1509,6 +1681,10 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             return;
         }
         if (!m_playPresenter->begin_editor_shutdown())
+        {
+            return;
+        }
+        if (m_packagePresenter != nullptr && !m_packagePresenter->begin_editor_shutdown())
         {
             return;
         }
@@ -2144,6 +2320,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     std::unique_ptr<cue::GameBuildService> m_buildService;
     std::unique_ptr<cue::editor::BuildPresenter> m_buildPresenter;
     std::optional<cue::BuildWorkspaceCompatibility> m_buildWorkspaceCompatibility;
+    std::unique_ptr<cue::package::GamePackageWorkflowService> m_packageService;
+    std::unique_ptr<cue::editor::PackagePresenter> m_packagePresenter;
     std::unique_ptr<cue::editor::EditorPresenter> m_presenter;
     std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;
@@ -2185,7 +2363,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         return cue::Result<void>::failure(
             make_tool_error(a_assertContext, k_processTestFailed, "Process test action requires an active scene"));
     }
-    if (*a_action == "play-repeated-workflow" || process_test_build_configuration(*a_action).has_value())
+    if (*a_action == "play-repeated-workflow" || process_test_build_configuration(*a_action).has_value() ||
+        process_test_package_configuration(*a_action).has_value())
     {
         return cue::Result<void>::success();
     }
@@ -2324,6 +2503,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         a_options.processTestAction.has_value() && *a_options.processTestAction == "play-repeated-workflow";
     const std::optional<cue::BuildConfiguration> buildWorkflowConfiguration =
         a_options.processTestAction ? process_test_build_configuration(*a_options.processTestAction) : std::nullopt;
+    const std::optional<cue::BuildConfiguration> packageWorkflowConfiguration =
+        a_options.processTestAction ? process_test_package_configuration(*a_options.processTestAction) : std::nullopt;
     PlayWorkflowProbe playWorkflowProbe;
     PlayWorkflowSystemFactory playWorkflowFactory(playWorkflowProbe);
     const std::array<const cue::runtime::RuntimeSystemFactory *, 1U> playWorkflowFactories{&playWorkflowFactory};
@@ -2341,6 +2522,15 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             {
                 return report_error(a_logger, "Editor Build process workflow failed", std::move(*workflow.try_error()),
                                     k_processTestFailed);
+            }
+        }
+        if (packageWorkflowConfiguration)
+        {
+            cue::Result<void> workflow = client.run_package_workflow_process_test(*packageWorkflowConfiguration);
+            if (!workflow)
+            {
+                return report_error(a_logger, "Editor Package process workflow failed",
+                                    std::move(*workflow.try_error()), k_processTestFailed);
             }
         }
         if (isPlayWorkflowTest)

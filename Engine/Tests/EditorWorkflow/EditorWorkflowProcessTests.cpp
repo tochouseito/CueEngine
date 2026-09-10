@@ -26,10 +26,13 @@ namespace
 {
 #if CUE_TEST_BUILD_CONFIGURATION == 1
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-debug";
+constexpr std::string_view k_packageWorkflowAction = "package-workflow-debug";
 #elif CUE_TEST_BUILD_CONFIGURATION == 2
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-development";
+constexpr std::string_view k_packageWorkflowAction = "package-workflow-development";
 #elif CUE_TEST_BUILD_CONFIGURATION == 3
 constexpr std::string_view k_buildWorkflowAction = "build-workflow-release";
+constexpr std::string_view k_packageWorkflowAction = "package-workflow-release";
 #else
 #error CUE_TEST_BUILD_CONFIGURATION must identify a supported configuration
 #endif
@@ -55,10 +58,10 @@ class TestFatalHandler final : public cue::FatalHandler
 class TestDirectory final
 {
   public:
-    /// @brief Temporary Root下へProcess固有Directoryを作成する
-    TestDirectory()
+    /// @brief Test Workspace下へProcess固有Directoryを作成する
+    explicit TestDirectory(const std::filesystem::path &a_workspaceRoot)
     {
-        m_path = std::filesystem::temp_directory_path() /
+        m_path = a_workspaceRoot /
                  (L"CEW-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(m_path);
     }
@@ -128,6 +131,22 @@ class TestDirectory final
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
+/// @brief Test FixtureのProject Descriptor内Identityを一度だけ置換する
+[[nodiscard]] bool replace_file_text(const std::filesystem::path &a_path, std::string_view a_from,
+                                     std::string_view a_to)
+{
+    std::string text = read_file(a_path);
+    const std::size_t position = text.find(a_from);
+    if (position == std::string::npos || text.find(a_from, position + a_from.size()) != std::string::npos)
+    {
+        return false;
+    }
+    text.replace(position, a_from.size(), a_to);
+    std::ofstream stream(a_path, std::ios::binary | std::ios::trunc);
+    stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return stream.good();
+}
+
 /// @brief 実CueEditorToolをVersion付き引数で有限Frame起動して正常終了を待つ
 [[nodiscard]] bool run_editor_process(const std::filesystem::path &a_editorExecutable,
                                       const std::filesystem::path &a_projectPath,
@@ -170,6 +189,18 @@ class TestDirectory final
         {
             commandLine.append(L" --process-test-action build-workflow-release");
         }
+        else if (*a_processTestAction == "package-workflow-debug")
+        {
+            commandLine.append(L" --process-test-action package-workflow-debug");
+        }
+        else if (*a_processTestAction == "package-workflow-development")
+        {
+            commandLine.append(L" --process-test-action package-workflow-development");
+        }
+        else if (*a_processTestAction == "package-workflow-release")
+        {
+            commandLine.append(L" --process-test-action package-workflow-release");
+        }
         else
         {
             commandLine.append(L" --process-test-action edit-close-save");
@@ -184,8 +215,11 @@ class TestDirectory final
         return false;
     }
     CloseHandle(process.hThread);
-    const DWORD timeout =
-        a_processTestAction.has_value() && a_processTestAction->starts_with("build-workflow-") ? 600000U : 30000U;
+    const DWORD timeout = a_processTestAction.has_value() &&
+                                  (a_processTestAction->starts_with("build-workflow-") ||
+                                   a_processTestAction->starts_with("package-workflow-"))
+                              ? 600000U
+                              : 30000U;
     const DWORD wait = WaitForSingleObject(process.hProcess, timeout);
     DWORD exitCode = 1U;
     const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
@@ -199,9 +233,10 @@ class TestDirectory final
 }
 
 /// @brief Project生成からScene保存、実Editor再起動、Stable ID再Openまでを検証する
-void test_process_round_trip(const std::filesystem::path &a_editorExecutable, const cue::AssertContext &a_context)
+void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
+                             const std::filesystem::path &a_workspaceRoot, const cue::AssertContext &a_context)
 {
-    TestDirectory directory;
+    TestDirectory directory(a_workspaceRoot);
     auto parent = cue::create_windows_filesystem_root(to_utf8(directory.path(), a_context.fatal_handler()), a_context);
     auto projectId = cue::ProjectId::parse("00000000-0000-4000-8000-000000000901", a_context);
     const cue::EngineCompatibility engineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}};
@@ -260,6 +295,12 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     const std::filesystem::path sourceAssetsPath = projectPath / L"Assets" / L"Source";
     const std::filesystem::path savedScenePath = sourceAssetsPath / L"Scenes" / L"Main.cuescene";
     const std::string savedSceneBytes = read_file(savedScenePath);
+    if (!replace_file_text(projectPath / L"CueProject.json", "00000000-0000-4000-8000-000000000099",
+                           std::string_view(sceneText.data(), sceneText.size())) ||
+        !replace_file_text(projectPath / L"CueProject.json", "Scenes/Default.cuescene", "Scenes/Main.cuescene"))
+    {
+        std::_Exit(54);
+    }
     auto existingLocator = cue::RelativePath::parse("Scenes/Main.cuescene", a_context);
     auto existingCreate = (*session.try_value())->prepare_new_scene(std::move(*existingLocator.try_value()));
     if (existingCreate || read_file(savedScenePath) != savedSceneBytes ||
@@ -573,13 +614,17 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable, co
     {
         std::_Exit(51);
     }
+    if (!run_editor_process(a_editorExecutable, projectPath, k_packageWorkflowAction))
+    {
+        std::_Exit(53);
+    }
 }
 } // namespace
 
 /// @brief Headless制作Workflowと実CueEditorTool再起動境界を検証する
 int wmain(int a_argumentCount, wchar_t **a_arguments)
 {
-    if (a_argumentCount != 2)
+    if (a_argumentCount != 3)
     {
         return 1;
     }
@@ -587,6 +632,6 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(handler, std::move(sinks));
     cue::AssertContext context(logger, handler);
-    test_process_round_trip(a_arguments[1], context);
+    test_process_round_trip(a_arguments[1], a_arguments[2], context);
     return 0;
 }

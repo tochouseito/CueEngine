@@ -145,6 +145,7 @@ EditorController::EditorController(ConstructionKey, ProjectDescriptor &&a_descri
                                    const AssertContext &a_assertContext)
     : m_stateOrigin(std::make_shared<DocumentStateOrigin>()), m_session(std::move(a_descriptor)),
       m_assertContext(&a_assertContext), m_ownerThread(std::this_thread::get_id()),
+      m_projectRoot(a_persistenceServices.m_projectRoot),
       m_sourceAssetsRoot(a_persistenceServices.m_sourceAssetsRoot), m_savedRoot(a_persistenceServices.m_savedRoot),
       m_schemaRegistry(a_persistenceServices.m_schemaRegistry),
       m_valueSchemaRegistry(a_persistenceServices.m_valueSchemaRegistry),

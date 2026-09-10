@@ -6,6 +6,7 @@
 #include <Cue/IO/Filesystem.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/Scene/Identity.h>
+#include <Cue/Scene/Instantiation.h>
 #include <Cue/Scene/Serialization.h>
 
 #include <algorithm>
@@ -389,13 +390,24 @@ template <typename Value> [[nodiscard]] bool parse_unsigned(std::string_view a_t
 } // namespace
 
 ScenePersistenceServices::ScenePersistenceServices(
+    FilesystemRoot &a_projectRoot, FilesystemRoot &a_sourceAssetsRoot, FilesystemRoot &a_savedRoot,
+    const schema::SchemaRegistry &a_schemaRegistry, const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
+    const scene::SceneMigrationRegistry &a_sceneMigrations,
+    const scene::ComponentMigrationRegistry &a_componentMigrations) noexcept
+    : m_projectRoot(&a_projectRoot), m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot),
+      m_schemaRegistry(&a_schemaRegistry), m_valueSchemaRegistry(&a_valueSchemaRegistry),
+      m_sceneMigrations(&a_sceneMigrations), m_componentMigrations(&a_componentMigrations)
+{
+}
+
+ScenePersistenceServices::ScenePersistenceServices(
     FilesystemRoot &a_sourceAssetsRoot, FilesystemRoot &a_savedRoot, const schema::SchemaRegistry &a_schemaRegistry,
     const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
     const scene::SceneMigrationRegistry &a_sceneMigrations,
     const scene::ComponentMigrationRegistry &a_componentMigrations) noexcept
-    : m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot), m_schemaRegistry(&a_schemaRegistry),
-      m_valueSchemaRegistry(&a_valueSchemaRegistry), m_sceneMigrations(&a_sceneMigrations),
-      m_componentMigrations(&a_componentMigrations)
+    : m_projectRoot(nullptr), m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot),
+      m_schemaRegistry(&a_schemaRegistry), m_valueSchemaRegistry(&a_valueSchemaRegistry),
+      m_sceneMigrations(&a_sceneMigrations), m_componentMigrations(&a_componentMigrations)
 {
 }
 
@@ -537,6 +549,108 @@ Result<EditorDocumentId> EditorController::open_document_from_storage(RelativePa
     document->m_baseFingerprint = *afterFingerprint.try_value();
     document->m_hasRecoveryCandidate = *recoveryEntry.try_value() == EntryType::RegularFile;
     return opened;
+}
+
+Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot() noexcept
+{
+    assert_owner_thread();
+    auto services = require_persistence_services();
+    if (!services)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*services.try_error()));
+    }
+
+    if (m_projectRoot != nullptr)
+    {
+        auto currentDescriptor = load_project_descriptor(*m_projectRoot, *m_assertContext);
+        if (!currentDescriptor)
+        {
+            return Result<scene::SceneSnapshot>::failure(std::move(*currentDescriptor.try_error()));
+        }
+        const ProjectRoots &currentRoots = currentDescriptor.try_value()->roots();
+        const ProjectRoots &sessionRoots = m_session.project_descriptor().roots();
+        const bool rootsMatch = currentRoots.source_assets().comparison_key(*m_assertContext) ==
+                                    sessionRoots.source_assets().comparison_key(*m_assertContext) &&
+                                currentRoots.runtime_assets().comparison_key(*m_assertContext) ==
+                                    sessionRoots.runtime_assets().comparison_key(*m_assertContext) &&
+                                currentRoots.generated().comparison_key(*m_assertContext) ==
+                                    sessionRoots.generated().comparison_key(*m_assertContext) &&
+                                currentRoots.saved().comparison_key(*m_assertContext) ==
+                                    sessionRoots.saved().comparison_key(*m_assertContext);
+        if (!rootsMatch)
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::ExternalConflict,
+                "Project roots changed while the Editor session was open; reopen the project before packaging"));
+        }
+        const ProjectDescriptor &sessionDescriptor = m_session.project_descriptor();
+        if (currentDescriptor.try_value()->project_id() != sessionDescriptor.project_id() ||
+            currentDescriptor.try_value()->engine_compatibility() != sessionDescriptor.engine_compatibility())
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::ExternalConflict,
+                "Project identity or engine compatibility changed while the Editor session was open; reopen the "
+                "project before packaging"));
+        }
+        m_session.m_descriptor = std::move(*currentDescriptor.try_value());
+    }
+
+    const std::optional<StartupSceneReference> &startupScene = m_session.project_descriptor().default_scene();
+    if (!startupScene.has_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::SceneMismatch, "Project Descriptor has no Startup Scene"));
+    }
+
+    const RelativePath &locator = startupScene->source_locator();
+    auto expectedSceneId = scene::SceneAssetId::parse(startupScene->scene_asset_id(), *m_assertContext);
+    if (!expectedSceneId)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*expectedSceneId.try_error()));
+    }
+    const std::string locatorKey = locator.comparison_key(*m_assertContext);
+    for (const EditorDocument &document : m_session.documents())
+    {
+        if (document.scene_document().scene_asset_id() == *expectedSceneId.try_value() &&
+            document.scene_locator().comparison_key(*m_assertContext) == locatorKey &&
+            (document.is_dirty() || !document.has_saved_destination()))
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::InvalidSavedState,
+                "Startup Scene has unsaved changes"));
+        }
+    }
+
+    auto beforeFingerprint = fingerprint_scene_file(*m_sourceAssetsRoot, locator, *m_assertContext);
+    if (!beforeFingerprint)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*beforeFingerprint.try_error()));
+    }
+    auto loaded = scene::load_scene_document(*m_sourceAssetsRoot, locator, *m_schemaRegistry, *m_valueSchemaRegistry,
+                                             *m_sceneMigrations, *m_componentMigrations, *m_assertContext);
+    if (!loaded)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*loaded.try_error()));
+    }
+    auto afterFingerprint = fingerprint_scene_file(*m_sourceAssetsRoot, locator, *m_assertContext);
+    if (!afterFingerprint)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*afterFingerprint.try_error()));
+    }
+    if (*beforeFingerprint.try_value() != *afterFingerprint.try_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::ExternalConflict,
+            "Startup Scene changed while the Package input was being loaded"));
+    }
+
+    if (loaded.try_value()->document().scene_asset_id() != *expectedSceneId.try_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::SceneMismatch,
+            "Startup Scene identity differs from the Project Descriptor"));
+    }
+    return scene::create_scene_snapshot(loaded.try_value()->document(), *m_assertContext);
 }
 
 Result<ExternalChangeState> EditorController::poll_external_change(EditorDocumentId a_documentId) noexcept

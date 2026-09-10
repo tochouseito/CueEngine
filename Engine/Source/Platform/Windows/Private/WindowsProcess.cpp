@@ -28,6 +28,7 @@ constexpr std::size_t k_maxCommandLineLength = 32767U;
 constexpr std::size_t k_maxEnvironmentLength = 32767U;
 constexpr DWORD k_pollMilliseconds = 10U;
 constexpr DWORD k_terminationWaitMilliseconds = 5000U;
+constexpr auto k_gracefulStopTimeout = std::chrono::seconds(5);
 constexpr DWORD k_cancelExitCode = 0xC000013AU;
 constexpr DWORD k_timeoutExitCode = 0xC0000102U;
 
@@ -282,16 +283,14 @@ void capture_pipe(HANDLE a_pipe, cue::ChildProcessStream a_stream, CaptureState 
                 return;
             }
             std::scoped_lock lock(a_state.mutex);
-            const std::size_t available =
-                a_state.maximumBytes
-                    ? (*a_state.maximumBytes > a_state.capturedBytes ? *a_state.maximumBytes - a_state.capturedBytes
-                                                                     : 0U)
-                    : static_cast<std::size_t>(read);
+            const std::size_t available = a_state.maximumBytes ? (*a_state.maximumBytes > a_state.capturedBytes
+                                                                      ? *a_state.maximumBytes - a_state.capturedBytes
+                                                                      : 0U)
+                                                               : static_cast<std::size_t>(read);
             const std::size_t captured = std::min<std::size_t>(read, available);
             if (captured > 0U)
             {
-                a_state.chunks.push_back(
-                    {a_state.nextSequence++, a_stream, std::string(buffer.data(), captured)});
+                a_state.chunks.push_back({a_state.nextSequence++, a_stream, std::string(buffer.data(), captured)});
                 a_state.capturedBytes += captured;
             }
         }
@@ -319,6 +318,34 @@ void capture_pipe(HANDLE a_pipe, cue::ChildProcessStream a_stream, CaptureState 
     }
     const DWORD wait = WaitForSingleObject(a_process, k_terminationWaitMilliseconds);
     return wait == WAIT_OBJECT_0 ? ERROR_SUCCESS : (wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT);
+}
+
+/// @brief 一つのProcessが所有するTop-level WindowへWM_CLOSEを通知する列挙Context
+struct GracefulStopContext final
+{
+    DWORD processId = 0U;
+    bool hasPosted = false;
+};
+
+/// @brief 対象Processが所有するTop-level WindowだけへWM_CLOSEを通知する
+[[nodiscard]] BOOL CALLBACK post_close_to_process_window(HWND a_window, LPARAM a_parameter) noexcept
+{
+    auto &context = *reinterpret_cast<GracefulStopContext *>(a_parameter);
+    DWORD ownerProcessId = 0U;
+    static_cast<void>(GetWindowThreadProcessId(a_window, &ownerProcessId));
+    if (ownerProcessId == context.processId && PostMessageW(a_window, WM_CLOSE, 0U, 0U) != FALSE)
+    {
+        context.hasPosted = true;
+    }
+    return TRUE;
+}
+
+/// @brief 対象Processの作成済みWindowへ正常終了要求を送り、未作成時は次回Pollへ委ねる
+[[nodiscard]] bool request_graceful_process_stop(DWORD a_processId) noexcept
+{
+    GracefulStopContext context{a_processId, false};
+    static_cast<void>(EnumWindows(post_close_to_process_window, reinterpret_cast<LPARAM>(&context)));
+    return context.hasPosted;
 }
 
 /// @brief Windows Job ObjectとPipe Captureで一回ずつ同期実行するRunner
@@ -534,11 +561,22 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
 
         cue::ChildProcessOutcome outcome = cue::ChildProcessOutcome::Exited;
         DWORD waitError = ERROR_SUCCESS;
+        std::optional<std::chrono::steady_clock::time_point> gracefulStopDeadline;
+        bool didCompleteGracefulStop = false;
         while (true)
         {
             const DWORD wait = WaitForSingleObject(process.get(), k_pollMilliseconds);
             if (wait == WAIT_OBJECT_0)
             {
+                if (a_cancellation.cancellation_mode() == cue::ChildProcessCancellationMode::Graceful)
+                {
+                    outcome = cue::ChildProcessOutcome::Cancelled;
+                    didCompleteGracefulStop = true;
+                }
+                else if (a_cancellation.is_cancel_requested())
+                {
+                    outcome = cue::ChildProcessOutcome::Cancelled;
+                }
                 break;
             }
             if (wait == WAIT_FAILED)
@@ -547,11 +585,28 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
                 static_cast<void>(terminate_process_tree(job.get(), process.get(), k_cancelExitCode));
                 break;
             }
-            if (a_cancellation.is_cancel_requested())
+            const cue::ChildProcessCancellationMode cancellationMode = a_cancellation.cancellation_mode();
+            if (cancellationMode == cue::ChildProcessCancellationMode::Immediate)
             {
                 outcome = cue::ChildProcessOutcome::Cancelled;
                 waitError = terminate_process_tree(job.get(), process.get(), k_cancelExitCode);
                 break;
+            }
+            if (cancellationMode == cue::ChildProcessCancellationMode::Graceful)
+            {
+                outcome = cue::ChildProcessOutcome::Cancelled;
+                const auto now = std::chrono::steady_clock::now();
+                if (!gracefulStopDeadline)
+                {
+                    gracefulStopDeadline = now + k_gracefulStopTimeout;
+                }
+                static_cast<void>(request_graceful_process_stop(processInfo.dwProcessId));
+                if (now >= *gracefulStopDeadline)
+                {
+                    waitError = terminate_process_tree(job.get(), process.get(), k_cancelExitCode);
+                    break;
+                }
+                continue;
             }
             if (a_request.timeout() && std::chrono::steady_clock::now() - started >= *a_request.timeout())
             {
@@ -563,7 +618,7 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
 
         std::optional<std::uint32_t> exitCode;
         DWORD exitCodeError = ERROR_SUCCESS;
-        if (outcome == cue::ChildProcessOutcome::Exited && waitError == ERROR_SUCCESS)
+        if ((outcome == cue::ChildProcessOutcome::Exited || didCompleteGracefulStop) && waitError == ERROR_SUCCESS)
         {
             DWORD nativeExitCode = 0U;
             if (GetExitCodeProcess(process.get(), &nativeExitCode) == FALSE)
@@ -604,6 +659,11 @@ class WindowsChildProcessRunner final : public cue::ChildProcessRunner
         }
         if (outcome == cue::ChildProcessOutcome::Cancelled)
         {
+            if (didCompleteGracefulStop && *exitCode != 0U)
+            {
+                return cue::Result<cue::ChildProcessResult>::success(
+                    cue::ChildProcessResult::exited(*exitCode, std::move(capture.chunks)));
+            }
             return cue::Result<cue::ChildProcessResult>::success(
                 cue::ChildProcessResult::cancelled(std::move(capture.chunks)));
         }

@@ -25,7 +25,12 @@ if(WIN32)
     add_executable(CuePackagePublisherTests PublisherTests.cpp)
     target_link_libraries(CuePackagePublisherTests PRIVATE Cue.Package Cue.IO.Windows)
     target_compile_features(CuePackagePublisherTests PRIVATE cxx_std_20)
-    list(APPEND cuePackageTestTargets CuePackagePublisherTests)
+
+    add_executable(CuePackageWorkflowTests WorkflowTests.cpp)
+    target_link_libraries(CuePackageWorkflowTests PRIVATE Cue.Package Cue.IO.Windows Cue.Schema)
+    target_compile_features(CuePackageWorkflowTests PRIVATE cxx_std_20)
+
+    list(APPEND cuePackageTestTargets CuePackagePublisherTests CuePackageWorkflowTests)
 endif()
 
 foreach(testTarget IN LISTS cuePackageTestTargets)
@@ -69,5 +74,6 @@ set_tests_properties(
 
 if(WIN32)
     add_test(NAME Cue.Package.Publisher COMMAND CuePackagePublisherTests "${CMAKE_CURRENT_BINARY_DIR}")
-    set_tests_properties(Cue.Package.Publisher PROPERTIES LABELS Package TIMEOUT 10)
+    add_test(NAME Cue.Package.Workflow COMMAND CuePackageWorkflowTests)
+    set_tests_properties(Cue.Package.Publisher Cue.Package.Workflow PROPERTIES LABELS Package TIMEOUT 10)
 endif()

@@ -6,6 +6,7 @@
 #include <Cue/EditorCore/SceneCommand.h>
 #include <Cue/Foundation/Result.h>
 #include <Cue/Project/Descriptor.h>
+#include <Cue/Scene/Instantiation.h>
 #include <Cue/Scene/Serialization.h>
 
 #include <cstddef>
@@ -112,6 +113,9 @@ class EditorController final
                                                          bool a_hasSavedDestination) noexcept;
     /// @brief Source Assets RootからSceneを完全Loadし、Base FingerprintとRecovery有無を記録して開く
     [[nodiscard]] Result<EditorDocumentId> open_document_from_storage(RelativePath a_locator) noexcept;
+    /// @brief 現在のProject Descriptorと保存済みStartup Sceneを操作開始時に再読込して不変Snapshotを返す
+    /// @details Project Rootが注入されている場合はDescriptorを一度再読込し、Root変更はProject再Open要求として拒否する
+    [[nodiscard]] Result<scene::SceneSnapshot> load_saved_startup_scene_snapshot() noexcept;
     /// @brief Semantic Intentを検証し、Scene CommandまたはEditor Workflowへ一元変換する
     /// @param a_identitySource 新規Object／ComponentへStable Identity候補を供給する注入境界
     /// @param a_componentTemplates Add Componentで使用可能な検証済み初期値Template
@@ -214,6 +218,7 @@ class EditorController final
     const AssertContext *m_assertContext;
     std::thread::id m_ownerThread;
     std::uint64_t m_nextDocumentId = 1U;
+    FilesystemRoot *m_projectRoot = nullptr;
     FilesystemRoot *m_sourceAssetsRoot = nullptr;
     FilesystemRoot *m_savedRoot = nullptr;
     const schema::SchemaRegistry *m_schemaRegistry = nullptr;
