@@ -69,12 +69,16 @@ void CUE_GAME_MODULE_CALL destroy_module(CueGameModuleHandle a_module) noexcept
 /// @brief 空のSchema登録Stageが正しいSinkで呼ばれたことを検証する
 CueGameModuleResult CUE_GAME_MODULE_CALL register_schemas(
     CueGameModuleHandle a_module, const CueGameRegistrationSinkV1 *a_sink,
-    CueGameModuleDiagnosticV1 *) noexcept
+    CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
     if (a_module == nullptr || a_sink == nullptr || a_sink->structSize < sizeof(CueGameRegistrationSinkV1) ||
         a_sink->version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || a_sink->registerSchema == nullptr)
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+    }
+    if (is_probe_mode("ignored-schema-sink-failure"))
+    {
+        static_cast<void>(a_sink->registerSchema(a_sink->context, nullptr, a_diagnostic));
     }
     return CUE_GAME_MODULE_RESULT_SUCCESS;
 }
@@ -82,12 +86,16 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_schemas(
 /// @brief 空のComponent登録Stageが正しいSinkで呼ばれたことを検証する
 CueGameModuleResult CUE_GAME_MODULE_CALL register_components(
     CueGameModuleHandle a_module, const CueGameRegistrationSinkV1 *a_sink,
-    CueGameModuleDiagnosticV1 *) noexcept
+    CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
     if (a_module == nullptr || a_sink == nullptr || a_sink->structSize < sizeof(CueGameRegistrationSinkV1) ||
         a_sink->version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || a_sink->registerComponent == nullptr)
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+    }
+    if (is_probe_mode("ignored-component-sink-failure"))
+    {
+        static_cast<void>(a_sink->registerComponent(a_sink->context, nullptr, a_diagnostic));
     }
     return CUE_GAME_MODULE_RESULT_SUCCESS;
 }
@@ -184,6 +192,13 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_systems(
         invalidSystem.stableId = {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
                                   k_invalidSystemIdText, sizeof(k_invalidSystemIdText) - 1U};
         return a_sink->registerSystem(a_sink->context, &invalidSystem, a_diagnostic);
+    }
+    if (is_probe_mode("ignored-system-sink-failure"))
+    {
+        CueGameSystemDescriptorV1 invalidSystem = k_system;
+        invalidSystem.stableId = {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                  k_invalidSystemIdText, sizeof(k_invalidSystemIdText) - 1U};
+        static_cast<void>(a_sink->registerSystem(a_sink->context, &invalidSystem, a_diagnostic));
     }
     return a_sink->registerSystem(a_sink->context, &k_system, a_diagnostic);
 }
