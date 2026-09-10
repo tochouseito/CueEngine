@@ -372,6 +372,36 @@ endif()
 file(WRITE "${packageScenePath}" "${validScene}")
 write_package_manifest("${packageRoot}" "" "")
 
+set(runtimeSceneObjects "")
+foreach(objectIndex RANGE 0 4096)
+    set(objectIdSuffix "000000000000${objectIndex}")
+    string(LENGTH "${objectIdSuffix}" objectIdSuffixLength)
+    math(EXPR objectIdSuffixOffset "${objectIdSuffixLength} - 12")
+    string(SUBSTRING "${objectIdSuffix}" ${objectIdSuffixOffset} 12 objectIdSuffix)
+    if(NOT runtimeSceneObjects STREQUAL "")
+        string(APPEND runtimeSceneObjects ",")
+    endif()
+    string(APPEND runtimeSceneObjects
+        "{\"objectId\":\"00000000-0000-4000-8000-${objectIdSuffix}\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}")
+endforeach()
+file(WRITE "${packageScenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[${runtimeSceneObjects}]}\n")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE authoringLimitRuntimeSceneResult
+    OUTPUT_VARIABLE authoringLimitRuntimeSceneOutput
+    ERROR_VARIABLE authoringLimitRuntimeSceneError
+    TIMEOUT 30
+)
+if(NOT authoringLimitRuntimeSceneResult EQUAL 0)
+    message(FATAL_ERROR
+        "Runtime Scene above the Authoring object limit was rejected\n${authoringLimitRuntimeSceneOutput}\n${authoringLimitRuntimeSceneError}")
+endif()
+file(WRITE "${packageScenePath}" "${validScene}")
+write_package_manifest("${packageRoot}" "" "")
+
 file(MAKE_DIRECTORY "${packageRoot}/Runtime")
 file(WRITE "${packageRoot}/Runtime/Unlisted.dll" "unlisted")
 execute_process(

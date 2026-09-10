@@ -603,15 +603,6 @@ struct RuntimeProjectInfo final
     }
 }
 
-/// @brief Runtime Scene Readerが一ObjectをDocument構築まで所有する
-struct ParsedRuntimeObject final
-{
-    cue::scene::ObjectId id;
-    std::optional<cue::scene::ObjectId> parentId;
-    bool isActive;
-    cue::math::Transform transform;
-};
-
 /// @brief 固定要素数のfloat Arrayを読む
 template <std::size_t Size>
 [[nodiscard]] bool read_float_array(JsonCursor &a_cursor, std::array<float, Size> &a_values) noexcept
@@ -649,7 +640,7 @@ template <std::size_t Size>
                 a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                 "Runtime Scene identity or schema is invalid"));
         }
-        std::vector<ParsedRuntimeObject> objects;
+        std::vector<cue::scene::RuntimeSceneObjectData> objects;
         while (!cursor.next_is(']'))
         {
             if (!objects.empty() && !cursor.consume(','))
@@ -658,7 +649,7 @@ template <std::size_t Size>
                     a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                     "Runtime Scene object separator is invalid"));
             }
-            if (objects.size() >= cue::scene::k_maximumSceneObjectCount)
+            if (objects.size() >= cue::scene::k_maximumRuntimeSceneObjectCount)
             {
                 return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
                     a_assertContext, cue::package::PackageError::RuntimeDataResourceLimitExceeded,
@@ -757,29 +748,15 @@ template <std::size_t Size>
                 a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                 "Runtime Scene identity is invalid"));
         }
-        cue::scene::SceneDocument document =
-            cue::scene::SceneDocument::create(std::move(*sceneId.try_value()), a_assertContext);
-        for (const ParsedRuntimeObject &object : objects)
+        auto snapshot = cue::scene::create_runtime_scene_snapshot(
+            std::move(*sceneId.try_value()), std::move(objects), a_assertContext);
+        if (!snapshot)
         {
-            const cue::scene::IdentityText name = object.id.canonical_text();
-            if (!document.add_object(object.id, std::string_view(name.data(), name.size()), object.isActive,
-                                     std::nullopt, object.transform))
-            {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object set is invalid"));
-            }
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene object set or hierarchy is invalid"));
         }
-        for (const ParsedRuntimeObject &object : objects)
-        {
-            if (object.parentId.has_value() && !document.set_parent(object.id, object.parentId))
-            {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene hierarchy is invalid"));
-            }
-        }
-        return cue::scene::create_scene_snapshot(document, a_assertContext);
+        return snapshot;
     }
     catch (...)
     {
