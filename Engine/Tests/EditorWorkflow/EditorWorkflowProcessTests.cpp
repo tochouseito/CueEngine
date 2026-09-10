@@ -254,6 +254,27 @@ class TestDirectory final
     return packages;
 }
 
+/// @brief JSON TextにDriveまたはslash／backslash形式のWindows Absolute Pathが含まれるか返す
+[[nodiscard]] bool json_text_contains_windows_absolute_path(std::string_view a_bytes) noexcept
+{
+    if (a_bytes.find("\\\\") != std::string_view::npos ||
+        a_bytes.find("\"//") != std::string_view::npos)
+    {
+        return true;
+    }
+    for (std::size_t index = 0U; index + 2U < a_bytes.size(); ++index)
+    {
+        const char drive = a_bytes[index];
+        const bool startsJsonString = index > 0U && a_bytes[index - 1U] == '"';
+        if (startsJsonString && ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) &&
+            a_bytes[index + 1U] == ':' && (a_bytes[index + 2U] == '/' || a_bytes[index + 2U] == '\\'))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// @brief PackageのJSON DataにWindows Absolute Path表現が含まれるか返す
 [[nodiscard]] bool package_json_contains_absolute_path(const std::filesystem::path &a_packageRoot)
 {
@@ -265,18 +286,9 @@ class TestDirectory final
             continue;
         }
         const std::string bytes = read_file(entry.path());
-        if (bytes.find("\\\\") != std::string::npos)
+        if (json_text_contains_windows_absolute_path(bytes))
         {
             return true;
-        }
-        for (std::size_t index = 0U; index + 2U < bytes.size(); ++index)
-        {
-            const char drive = bytes[index];
-            if (((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) &&
-                bytes[index + 1U] == ':' && (bytes[index + 2U] == '/' || bytes[index + 2U] == '\\'))
-            {
-                return true;
-            }
         }
     }
     return false;
@@ -707,6 +719,12 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     }
     const std::string firstManifest = read_file(packages[0] / L"CuePackage.json");
     const std::string secondManifest = read_file(packages[1] / L"CuePackage.json");
+    if (!json_text_contains_windows_absolute_path("{\"path\":\"//server/share/runtime.json\"}") ||
+        !json_text_contains_windows_absolute_path("{\"path\":\"C:/workspace/runtime.json\"}") ||
+        json_text_contains_windows_absolute_path("{\"url\":\"https://example.invalid/runtime\"}"))
+    {
+        std::_Exit(60);
+    }
     std::filesystem::path runtimeSceneName(std::string(sceneText.data(), sceneText.size()));
     runtimeSceneName += L".cueruntime.json";
     const std::filesystem::path runtimeProject = L"Data/CueProject.runtime.json";
