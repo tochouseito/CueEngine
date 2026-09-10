@@ -1,5 +1,6 @@
 #include <Cue/Editor/ImGui/PackagePresenter.h>
 
+#include <Cue/EditorCore/Error.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Scene/Instantiation.h>
 
@@ -203,6 +204,15 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
             else
             {
                 Result<scene::SceneSnapshot> sceneSnapshot = m_controller->load_saved_startup_scene_snapshot();
+                if (!sceneSnapshot && sceneSnapshot.try_error()->code().domain() == "Cue.EditorCore" &&
+                    sceneSnapshot.try_error()->code().value() ==
+                        static_cast<std::int64_t>(editor_core::EditorCoreError::InvalidSavedState))
+                {
+                    set_status(
+                        "Startup Sceneに未保存の変更があります。先にSceneを保存するか、Package操作をキャンセルしてください。");
+                    m_hasError = true;
+                    return false;
+                }
                 Result<package::MinimalRuntimeDataPublication> runtimeData =
                     sceneSnapshot ? package::publish_minimal_runtime_data(m_controller->session().project_descriptor(),
                                                                            *sceneSnapshot.try_value(), *m_assertContext)

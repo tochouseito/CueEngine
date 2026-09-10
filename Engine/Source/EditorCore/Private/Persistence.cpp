@@ -557,6 +557,24 @@ Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot
     }
 
     const RelativePath &locator = startupScene->source_locator();
+    auto expectedSceneId = scene::SceneAssetId::parse(startupScene->scene_asset_id(), *m_assertContext);
+    if (!expectedSceneId)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*expectedSceneId.try_error()));
+    }
+    const std::string locatorKey = locator.comparison_key(*m_assertContext);
+    for (const EditorDocument &document : m_session.documents())
+    {
+        if (document.scene_document().scene_asset_id() == *expectedSceneId.try_value() &&
+            document.scene_locator().comparison_key(*m_assertContext) == locatorKey &&
+            (document.is_dirty() || !document.has_saved_destination()))
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::InvalidSavedState,
+                "Startup Scene has unsaved changes"));
+        }
+    }
+
     auto beforeFingerprint = fingerprint_scene_file(*m_sourceAssetsRoot, locator, *m_assertContext);
     if (!beforeFingerprint)
     {
@@ -580,11 +598,6 @@ Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot
             "Startup Scene changed while the Package input was being loaded"));
     }
 
-    auto expectedSceneId = scene::SceneAssetId::parse(startupScene->scene_asset_id(), *m_assertContext);
-    if (!expectedSceneId)
-    {
-        return Result<scene::SceneSnapshot>::failure(std::move(*expectedSceneId.try_error()));
-    }
     if (loaded.try_value()->document().scene_asset_id() != *expectedSceneId.try_value())
     {
         return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
