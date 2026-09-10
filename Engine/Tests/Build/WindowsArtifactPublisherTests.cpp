@@ -122,12 +122,24 @@ class TestFatalHandler final : public cue::FatalHandler
     }
 };
 
+/// @brief Artifact Readerの取消なし経路を提供するTest Cancellation
+class TestArtifactReadCancellation final : public cue::BuildArtifactReadCancellation
+{
+  public:
+    /// @brief 取消されていない状態を返す
+    [[nodiscard]] bool is_cancel_requested() const noexcept override
+    {
+        return false;
+    }
+};
+
 /// @brief 条件違反時にTest Processを失敗終了する
 void require(bool a_condition, const std::source_location a_location = std::source_location::current()) noexcept
 {
     if (!a_condition)
     {
         std::fprintf(stderr, "Requirement failed at %s:%u\n", a_location.file_name(), a_location.line());
+        std::fflush(stderr);
         std::abort();
     }
 }
@@ -174,6 +186,41 @@ template <typename T>
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+/// @brief 小さい検証Manifestを一回のStream Writeで置換する
+void write_text(const std::filesystem::path &a_path, std::string_view a_text)
+{
+    std::ofstream output(a_path, std::ios::binary | std::ios::trunc);
+    output.write(a_text.data(), static_cast<std::streamsize>(a_text.size()));
+    require(static_cast<bool>(output));
+}
+
+/// @brief 同じCurrent Inventoryを異なるMember順と空白で表すJSONを構築する
+[[nodiscard]] std::string make_reordered_current(const cue::BuildArtifactInventory &a_inventory)
+{
+    std::string json = "{ \n  \"files\" : [";
+    for (std::size_t index = 0U; index < a_inventory.files().size(); ++index)
+    {
+        const cue::BuildArtifactFile &file = a_inventory.files()[index];
+        if (index != 0U)
+        {
+            json.push_back(',');
+        }
+        json.append("{\"contentHash\":\"");
+        json.append(file.contentHash);
+        json.append("\",\"hashAlgorithm\":\"sha256\",\"sizeBytes\":");
+        json.append(std::to_string(file.byteSize));
+        json.append(",\"path\":\"");
+        json.append(file.relativePath);
+        json.append("\"}");
+    }
+    json.append("],\n\"configuration\":\"");
+    json.append(k_configurationName);
+    json.append("\",\"artifactId\":\"");
+    json.append(a_inventory.artifact_id());
+    json.append("\",\"schemaVersion\":1 }\n");
+    return json;
+}
+
 /// @brief Test Project契約を満たすDescriptorを構築する
 [[nodiscard]] cue::ProjectDescriptor make_descriptor(const cue::AssertContext &a_assertContext)
 {
@@ -200,14 +247,18 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
                               const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path parent =
-        a_probe.parent_path() / ("CueBuildArtifactReparse-" + std::string(k_configurationName));
+        std::filesystem::temp_directory_path() /
+        ("CueBuildArtifactReparse-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::string(k_configurationName));
     const std::filesystem::path project = parent / "Project";
     const std::filesystem::path outside = parent / "Outside";
     std::error_code error;
     std::filesystem::remove_all(parent, error);
     require(!error);
-    require(std::filesystem::create_directories(project));
-    require(std::filesystem::create_directories(outside));
+    require(std::filesystem::create_directories(project, error));
+    require(!error);
+    require(std::filesystem::create_directories(outside, error));
+    require(!error);
 
     cue::ProjectDescriptor descriptor = make_descriptor(a_assertContext);
     std::unique_ptr<cue::BuildArtifactPublisher> publisher = take_value(
@@ -225,7 +276,8 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
         make_plan(project, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     const std::filesystem::path output =
         std::filesystem::path(candidatePlan.binary_directory()) / "bin" / k_configurationName;
-    require(std::filesystem::create_directories(output));
+    require(std::filesystem::create_directories(output, error));
+    require(!error);
     require(std::filesystem::copy_file(a_probe, output / "CueGameModule.dll"));
     {
         std::ofstream pdb(output / "CueGameModule.pdb", std::ios::binary | std::ios::trunc);
@@ -235,7 +287,8 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     auto candidateLease = take_value(publisher->acquire_build_lease(candidatePlan, cancellation, std::nullopt));
     require(candidateLease.has_value());
     const std::filesystem::path outsideCandidates = outside / "Candidates";
-    require(std::filesystem::create_directories(outsideCandidates));
+    require(std::filesystem::create_directories(outsideCandidates, error));
+    require(!error);
     require(create_directory_link(project / "Generated" / "Build" / "Candidates", outsideCandidates));
     require(!publisher->publish(candidatePlan, cancellation, std::move(*candidateLease), std::nullopt).has_value());
     require(std::filesystem::is_empty(outsideCandidates));
@@ -247,8 +300,10 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     auto storeLease = take_value(publisher->acquire_build_lease(storePlan, cancellation, std::nullopt));
     require(storeLease.has_value());
     const std::filesystem::path outsideStore = outside / "Store";
-    require(std::filesystem::create_directories(outsideStore));
-    require(std::filesystem::create_directories(project / "Generated" / "Artifacts"));
+    require(std::filesystem::create_directories(outsideStore, error));
+    require(!error);
+    require(std::filesystem::create_directories(project / "Generated" / "Artifacts", error));
+    require(!error);
     require(create_directory_link(project / "Generated" / "Artifacts" / k_configurationName, outsideStore));
     require(!publisher->publish(storePlan, cancellation, std::move(*storeLease), std::nullopt).has_value());
     require(std::filesystem::is_empty(outsideStore));
@@ -268,7 +323,9 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
                                      const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path projectRoot =
-        a_probe.parent_path() / ("CueBuildArtifactPublisherTests-" + std::string(k_configurationName));
+        std::filesystem::temp_directory_path() /
+        ("CueBuildArtifactPublisherTests-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::string(k_configurationName));
     std::error_code error;
     std::filesystem::remove_all(projectRoot, error);
     require(!error);
@@ -337,6 +394,34 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(current.find(std::string(plan.operation_id())) != std::string::npos);
     require(current.find("sha256") != std::string::npos);
     require(current.find("CueGameModule.pdb") != std::string::npos);
+
+    std::unique_ptr<cue::BuildArtifactReader> reader = take_value(
+        cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
+    TestArtifactReadCancellation readCancellation;
+    write_text(currentPath, make_reordered_current(*published));
+    auto firstReadLease = take_value(
+        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    auto secondReadLease = take_value(
+        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    require(firstReadLease.has_value() && secondReadLease.has_value());
+    HANDLE exclusive = CreateFileW((store / "Access.lock").c_str(), GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(exclusive != INVALID_HANDLE_VALUE);
+    OVERLAPPED overlap{};
+    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) ==
+            FALSE);
+    require(GetLastError() == ERROR_LOCK_VIOLATION);
+    firstReadLease.reset();
+    secondReadLease.reset();
+    overlap = {};
+    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) !=
+            FALSE);
+    require(UnlockFileEx(exclusive, 0U, 1U, 0U, &overlap) != FALSE);
+    require(CloseHandle(exclusive) != FALSE);
+    write_text(currentPath, R"json({"schemaVersion":2})json");
+    require(!reader->acquire_current_read_lease(*published, readCancellation, std::nullopt).has_value());
+    write_text(currentPath, current);
 
     if (k_configuration != cue::BuildConfiguration::Release)
     {

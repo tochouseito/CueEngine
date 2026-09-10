@@ -34,4 +34,11 @@ enum class WindowsBuildArtifactError : std::int64_t
 /// 回復可能なPath、Lock、Metadata初期化失敗はErrorを返し、Allocation等の回復不能例外はFatalHandlerへ渡す。
 [[nodiscard]] Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_publisher(
     std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept;
+
+/// @brief Project契約へBindingしたWindows Build Artifact Store Readerを構築する
+///
+/// Project RootとDescriptorは呼出中だけ借用し、Project Identityは返却ReaderへCopyする。AssertContextはReaderより
+/// 長く生存しなければならない。ReaderはCurrent再読込とInventory検証を同じShared Read Lease内で行う。
+[[nodiscard]] Result<std::unique_ptr<BuildArtifactReader>> create_windows_build_artifact_reader(
+    std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept;
 } // namespace cue

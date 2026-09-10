@@ -141,7 +141,11 @@ struct PublisherState final
 {
     std::atomic<bool> corruptInventory = false;
     std::atomic<bool> invalidPortableExecutable = false;
+    std::atomic<bool> readerLeaseActive = false;
+    std::atomic<bool> artifactReadWithoutLease = false;
+    std::atomic<bool> packageWriteWithLease = false;
     std::atomic<std::uint32_t> calls = 0U;
+    std::atomic<std::uint32_t> readerCalls = 0U;
 };
 
 struct RecoveryFilesystemState final
@@ -157,8 +161,9 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
   public:
     /// @brief 委譲先Rootと共有Failure状態を所有する
     RecoveryFilesystemRoot(std::unique_ptr<cue::FilesystemRoot> a_inner, RecoveryFilesystemState &a_state,
-                           const cue::AssertContext &a_assertContext) noexcept
-        : m_inner(std::move(a_inner)), m_state(&a_state), m_assertContext(&a_assertContext)
+                           PublisherState &a_publisherState, const cue::AssertContext &a_assertContext) noexcept
+        : m_inner(std::move(a_inner)), m_state(&a_state), m_publisherState(&a_publisherState),
+          m_assertContext(&a_assertContext)
     {
     }
 
@@ -181,6 +186,11 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file(const cue::RelativePath &a_path,
                                                                 std::size_t a_maxBytes) noexcept override
     {
+        if (a_path.text().starts_with("Generated/Artifacts/") &&
+            !m_publisherState->readerLeaseActive.load(std::memory_order_acquire))
+        {
+            m_publisherState->artifactReadWithoutLease.store(true, std::memory_order_release);
+        }
         return m_inner->read_file(a_path, a_maxBytes);
     }
 
@@ -194,6 +204,11 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<void> write_file_atomic(const cue::RelativePath &a_path,
                                                       std::span<const std::byte> a_bytes) noexcept override
     {
+        if (a_path.text().starts_with("Generated/Packages/") &&
+            m_publisherState->readerLeaseActive.load(std::memory_order_acquire))
+        {
+            m_publisherState->packageWriteWithLease.store(true, std::memory_order_release);
+        }
         if (consume(m_state->writeFailuresRemaining))
         {
             return cue::Result<void>::failure(make_failure("Package content write failed"));
@@ -280,6 +295,7 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
 
     std::unique_ptr<cue::FilesystemRoot> m_inner;
     RecoveryFilesystemState *m_state;
+    PublisherState *m_publisherState;
     const cue::AssertContext *m_assertContext;
 };
 
@@ -452,6 +468,55 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     const cue::AssertContext *m_assertContext;
 };
 
+/// @brief WorkflowがArtifact読込中だけ保持するTest用Shared Read Leaseを発行するReader
+class MaterializingArtifactReader final : public cue::BuildArtifactReader
+{
+  public:
+    /// @brief Leaseの取得中状態を共有Test Stateへ反映するToken
+    class Lease final : public cue::BuildArtifactReadLease
+    {
+      public:
+        /// @brief Shared Read Lease取得を記録する
+        explicit Lease(PublisherState &a_state) noexcept : m_state(&a_state)
+        {
+            m_state->readerLeaseActive.store(true, std::memory_order_release);
+        }
+
+        /// @brief Shared Read Lease解放を記録する
+        ~Lease() override
+        {
+            m_state->readerLeaseActive.store(false, std::memory_order_release);
+        }
+
+      private:
+        PublisherState *m_state;
+    };
+
+    /// @brief 共有Test Stateを借用する
+    explicit MaterializingArtifactReader(PublisherState &a_state) noexcept : m_state(&a_state)
+    {
+    }
+
+    /// @brief 取消前なら読込範囲を可視化する空Leaseを返す
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>
+    acquire_current_read_lease(const cue::BuildArtifactInventory &,
+                               const cue::BuildArtifactReadCancellation &a_cancellation,
+                               cue::BuildArtifactLockDeadline) noexcept override
+    {
+        m_state->readerCalls.fetch_add(1U, std::memory_order_relaxed);
+        if (a_cancellation.is_cancel_requested())
+        {
+            return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(std::nullopt);
+        }
+        std::unique_ptr<cue::BuildArtifactReadLease> lease = std::make_unique<Lease>(*m_state);
+        return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
+            std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>(std::move(lease)));
+    }
+
+  private:
+    PublisherState *m_state;
+};
+
 /// @brief Processを起動しないBuild Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
@@ -538,9 +603,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
     std::unique_ptr<cue::GameBuildService> buildService = std::move(*build.try_value());
     auto guardedProjectFilesystem = std::make_unique<RecoveryFilesystemRoot>(
-        std::move(*projectFilesystem.try_value()), recoveryFilesystem, a_assertContext);
+        std::move(*projectFilesystem.try_value()), recoveryFilesystem, publisher, a_assertContext);
     auto workflow = cue::package::GamePackageWorkflowService::create(
-        std::move(buildService), std::move(guardedProjectFilesystem), std::move(*engineFilesystem.try_value()),
+        std::move(buildService), std::make_unique<MaterializingArtifactReader>(publisher),
+        std::move(guardedProjectFilesystem), std::move(*engineFilesystem.try_value()),
         std::make_unique<ControlledRunner>(runRunner), projectRoot.generic_string(), {}, a_assertContext);
     auto runtimeData = make_runtime_data(a_assertContext);
     if (!require(workflow && runtimeData))
@@ -564,6 +630,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
     if (!require(first.state == cue::package::PackageWorkflowState::PackageReady && first.package &&
                  first.latestSuccessfulPackage && first.package->operationId == firstOperation &&
+                 publisher.readerCalls.load(std::memory_order_acquire) == 1U &&
+                 !publisher.readerLeaseActive.load(std::memory_order_acquire) &&
+                 !publisher.artifactReadWithoutLease.load(std::memory_order_acquire) &&
+                 !publisher.packageWriteWithLease.load(std::memory_order_acquire) &&
                  std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
                                          L"CuePackage.json") &&
                  !std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
@@ -649,6 +719,20 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
                  recoveryFilesystem.rollbackCalls.load(std::memory_order_acquire) == 3U &&
                  runSucceeded.runOutput.size() == 1U &&
                  runRunner.maximumCapturedOutputBytes.load(std::memory_order_acquire) == 4U * 1024U * 1024U))
+    {
+        return false;
+    }
+
+    runRunner.mode.store(RunnerMode::Fail, std::memory_order_release);
+    if (!require(service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot runFailed = service->snapshot();
+    runRunner.mode.store(RunnerMode::Succeed, std::memory_order_release);
+    if (!require(runFailed.state == cue::package::PackageWorkflowState::Failed && runFailed.package &&
+                 service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion() &&
+                 service->snapshot().state == cue::package::PackageWorkflowState::RunSucceeded))
     {
         return false;
     }
