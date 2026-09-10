@@ -482,7 +482,8 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     std::unique_ptr<cue::editor_core::EditorController> controller =
         cue::editor_core::EditorController::create(std::move(*generated.try_value()), persistence, a_assertContext);
     auto operationIds = std::make_unique<TestOperationIdSource>(
-        std::vector<std::string>{"71234567-89ab-4cde-8f01-23456789abcd", "81234567-89ab-4cde-8f01-23456789abcd"});
+        std::vector<std::string>{"71234567-89ab-4cde-8f01-23456789abcd", "81234567-89ab-4cde-8f01-23456789abcd",
+                                 "91234567-89ab-4cde-8f01-23456789abcd"});
     std::unique_ptr<cue::editor::PackagePresenter> presenter =
         cue::editor::PackagePresenter::create(*service, *controller, projectRoot.generic_string(),
                                               k_workspaceCompatibility, std::move(operationIds), a_assertContext);
@@ -498,14 +499,28 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
                 .has_value());
 
     require(presenter->can_retry());
-    require(presenter->submit(cue::editor::EditorPackageCommand::Retry));
-    require(controller->session().project_descriptor().project_id().text() == k_reloadedPackageProjectId);
+    require(!presenter->submit(cue::editor::EditorPackageCommand::Retry));
+    require(presenter->has_error_message());
+    require(presenter->message().find("Cue.EditorCore/15") != std::string_view::npos);
+    require(controller->session().project_descriptor().project_id().text() == k_packageProjectId);
     require(controller->session().project_descriptor().engine_compatibility() ==
-            cue::EngineCompatibility{cue::EngineVersion{1U, 1U, 0U}, cue::EngineVersion{2U, 1U, 0U}});
+            cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}});
+
+    auto restoredProjectId = cue::ProjectId::parse(k_packageProjectId, a_assertContext);
+    require(restoredProjectId.has_value());
+    auto restoredDescriptor = cue::create_blank_project_descriptor(
+        std::move(*restoredProjectId.try_value()), "Reloaded Package Presenter Test",
+        cue::EngineCompatibility{cue::EngineVersion{1U, 0U, 0U}, cue::EngineVersion{2U, 0U, 0U}}, k_packageSceneId,
+        a_assertContext);
+    require(restoredDescriptor.has_value());
+    require(cue::save_project_descriptor(**descriptorRoot.try_value(), *restoredDescriptor.try_value(), a_assertContext)
+                .has_value());
+
+    require(presenter->submit(cue::editor::EditorPackageCommand::Retry));
     require(service->wait_for_package().has_value());
     presenter->refresh();
     require(presenter->current_snapshot().state == cue::package::PackageWorkflowState::Failed);
-    require(presenter->current_snapshot().build.operationId == "71234567-89ab-4cde-8f01-23456789abcd");
+    require(presenter->current_snapshot().build.operationId == "81234567-89ab-4cde-8f01-23456789abcd");
 
     auto locator = cue::RelativePath::parse("Scenes/Default.cuescene", a_assertContext);
     require(locator.has_value());
