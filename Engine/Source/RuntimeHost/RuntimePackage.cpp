@@ -1815,6 +1815,24 @@ LoadedRuntimePackage::LoadedRuntimePackage(std::string a_packageRoot, std::strin
 {
 }
 
+LoadedRuntimePackage &LoadedRuntimePackage::operator=(LoadedRuntimePackage &&a_other) noexcept
+{
+    if (this == &a_other)
+    {
+        return *this;
+    }
+
+    LoadedRuntimePackage incoming(std::move(a_other));
+    using std::swap;
+    swap(m_packageRoot, incoming.m_packageRoot);
+    swap(m_projectId, incoming.m_projectId);
+    swap(m_module, incoming.m_module);
+    swap(m_schemaRegistry, incoming.m_schemaRegistry);
+    swap(m_startupScene, incoming.m_startupScene);
+    swap(m_systems, incoming.m_systems);
+    return *this;
+}
+
 LoadedRuntimePackage::~LoadedRuntimePackage() noexcept = default;
 
 std::string_view LoadedRuntimePackage::package_root() const noexcept

@@ -28,6 +28,8 @@ namespace
 {
 constexpr std::size_t k_hashBlockBytes = 64U * 1024U;
 constexpr std::size_t k_sha256Bytes = 32U;
+/// @brief WindowsのExtended-length Path上限で128 Entryを直列化しても超えないCurrent読込上限
+constexpr std::uint64_t k_maximumCurrentManifestBytes = 32U * 1024U * 1024U;
 constexpr DWORD k_lockRetryMilliseconds = 10U;
 constexpr std::string_view k_probeCompletionMarker = "CueGameModuleProbe:v1\n";
 
@@ -176,24 +178,24 @@ class DirectoryChainGuard final
 };
 
 /// @brief Byte Range Lockと検証済みDirectory Chainを同じ寿命で所有する
-class GuardedExclusiveLock final
+class GuardedByteRangeLock final
 {
   public:
     /// @brief Lock済みHandleとDirectory Chain Guardを所有する
-    GuardedExclusiveLock(UniqueHandle a_handle, DirectoryChainGuard a_parentGuard) noexcept
+    GuardedByteRangeLock(UniqueHandle a_handle, DirectoryChainGuard a_parentGuard) noexcept
         : m_handle(std::move(a_handle)), m_parentGuard(std::move(a_parentGuard))
     {
     }
     /// @brief Guard付きLockの複製を禁止する
-    GuardedExclusiveLock(const GuardedExclusiveLock &) = delete;
+    GuardedByteRangeLock(const GuardedByteRangeLock &) = delete;
     /// @brief Guard付きLockの複製代入を禁止する
-    GuardedExclusiveLock &operator=(const GuardedExclusiveLock &) = delete;
+    GuardedByteRangeLock &operator=(const GuardedByteRangeLock &) = delete;
     /// @brief Guard付きLockの所有権を移動する
-    GuardedExclusiveLock(GuardedExclusiveLock &&) noexcept = default;
+    GuardedByteRangeLock(GuardedByteRangeLock &&) noexcept = default;
     /// @brief Guard付きLockの所有権を移動代入する
-    GuardedExclusiveLock &operator=(GuardedExclusiveLock &&) noexcept = default;
+    GuardedByteRangeLock &operator=(GuardedByteRangeLock &&) noexcept = default;
     /// @brief Lock HandleとDirectory Chain Guardを解放する
-    ~GuardedExclusiveLock() = default;
+    ~GuardedByteRangeLock() = default;
     /// @brief Byte Range操作用Native Handleを返す
     [[nodiscard]] HANDLE handle() const noexcept
     {
@@ -210,7 +212,7 @@ class ByteRangeLease
 {
   public:
     /// @brief Guard付きLockの一意所有権を取得する
-    explicit ByteRangeLease(GuardedExclusiveLock a_lock) noexcept : m_lock(std::move(a_lock))
+    explicit ByteRangeLease(GuardedByteRangeLock a_lock) noexcept : m_lock(std::move(a_lock))
     {
     }
     /// @brief Byte Range Lock所有権のCopy構築を禁止する
@@ -225,7 +227,7 @@ class ByteRangeLease
     }
 
   private:
-    GuardedExclusiveLock m_lock;
+    GuardedByteRangeLock m_lock;
 };
 
 /// @brief GameBuildServiceへ渡すWindows Build Workspace Lease
@@ -233,7 +235,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 {
   public:
     /// @brief Lock済みBuild FileとPlan Keyを所有する
-    WindowsBuildWorkspaceLease(GuardedExclusiveLock a_lock, DirectoryChainGuard a_workspaceGuard,
+    WindowsBuildWorkspaceLease(GuardedByteRangeLock a_lock, DirectoryChainGuard a_workspaceGuard,
                                std::string a_workspaceKey) noexcept
         : ByteRangeLease(std::move(a_lock)), m_workspaceGuard(std::move(a_workspaceGuard)),
           m_workspaceKey(std::move(a_workspaceKey))
@@ -680,23 +682,24 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     return cue::Result<void>::success();
 }
 
-/// @brief Lock Fileを作成して取消可能なExclusive Byte Range Lockを取得する
-[[nodiscard]] cue::Result<std::optional<GuardedExclusiveLock>> acquire_exclusive_lock(
+/// @brief Lock Fileを作成して取消可能なSharedまたはExclusive Byte Range Lockを取得する
+template <typename Cancellation>
+[[nodiscard]] cue::Result<std::optional<GuardedByteRangeLock>> acquire_byte_range_lock(
     const std::filesystem::path &a_root, const std::filesystem::path &a_path,
-    const cue::ChildProcessCancellation &a_cancellation,
-    cue::BuildArtifactLockDeadline a_deadline, cue::WindowsBuildArtifactError a_code,
+    const Cancellation &a_cancellation, cue::BuildArtifactLockDeadline a_deadline,
+    cue::WindowsBuildArtifactError a_code, bool a_isExclusive,
     const cue::AssertContext &a_assertContext) noexcept
 {
     cue::Result<void> parent = ensure_directory(a_root, a_path.parent_path(), a_code, a_assertContext);
     if (!parent)
     {
-        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(std::move(*parent.try_error()));
+        return cue::Result<std::optional<GuardedByteRangeLock>>::failure(std::move(*parent.try_error()));
     }
     cue::Result<DirectoryChainGuard> parentGuard =
         acquire_directory_chain_guard(a_root, a_path.parent_path(), a_code, a_assertContext);
     if (!parentGuard)
     {
-        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(std::move(*parentGuard.try_error()));
+        return cue::Result<std::optional<GuardedByteRangeLock>>::failure(std::move(*parentGuard.try_error()));
     }
     const std::filesystem::path lockPath = native_path(a_path);
     UniqueHandle handle(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -704,39 +707,39 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
-        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
+        return cue::Result<std::optional<GuardedByteRangeLock>>::failure(
             make_windows_error(a_assertContext, a_code, GetLastError(), "Artifact lock file could not be opened"));
     }
     BY_HANDLE_FILE_INFORMATION information{};
     if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
     {
-        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(make_windows_error(
+        return cue::Result<std::optional<GuardedByteRangeLock>>::failure(make_windows_error(
             a_assertContext, a_code, GetLastError(), "Artifact lock file attributes could not be read"));
     }
     if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
     {
-        return cue::Result<std::optional<GuardedExclusiveLock>>::failure(make_windows_error(
+        return cue::Result<std::optional<GuardedByteRangeLock>>::failure(make_windows_error(
             a_assertContext, a_code, ERROR_FILE_INVALID, "Artifact lock path is not a regular file"));
     }
     while (!a_cancellation.is_cancel_requested())
     {
         if (a_deadline && std::chrono::steady_clock::now() >= *a_deadline)
         {
-            return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
+            return cue::Result<std::optional<GuardedByteRangeLock>>::failure(
                 make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
         }
         OVERLAPPED overlap{};
-        if (LockFileEx(handle.get(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) !=
-            FALSE)
+        const DWORD flags = LOCKFILE_FAIL_IMMEDIATELY | (a_isExclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0U);
+        if (LockFileEx(handle.get(), flags, 0U, 1U, 0U, &overlap) != FALSE)
         {
-            GuardedExclusiveLock guardedLock(std::move(handle), std::move(*parentGuard.try_value()));
-            return cue::Result<std::optional<GuardedExclusiveLock>>::success(
-                std::optional<GuardedExclusiveLock>(std::move(guardedLock)));
+            GuardedByteRangeLock guardedLock(std::move(handle), std::move(*parentGuard.try_value()));
+            return cue::Result<std::optional<GuardedByteRangeLock>>::success(
+                std::optional<GuardedByteRangeLock>(std::move(guardedLock)));
         }
         const DWORD code = GetLastError();
         if (code != ERROR_LOCK_VIOLATION && code != ERROR_IO_PENDING)
         {
-            return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
+            return cue::Result<std::optional<GuardedByteRangeLock>>::failure(
                 make_windows_error(a_assertContext, a_code, code, "Artifact byte-range lock could not be acquired"));
         }
         DWORD retryMilliseconds = k_lockRetryMilliseconds;
@@ -745,7 +748,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
             const auto now = std::chrono::steady_clock::now();
             if (now >= *a_deadline)
             {
-                return cue::Result<std::optional<GuardedExclusiveLock>>::failure(
+                return cue::Result<std::optional<GuardedByteRangeLock>>::failure(
                     make_lock_timeout_error(a_assertContext, "Artifact byte-range lock wait timed out"));
             }
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*a_deadline - now);
@@ -754,7 +757,25 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         }
         Sleep(retryMilliseconds);
     }
-    return cue::Result<std::optional<GuardedExclusiveLock>>::success(std::nullopt);
+    return cue::Result<std::optional<GuardedByteRangeLock>>::success(std::nullopt);
+}
+
+/// @brief Lock Fileを作成して取消可能なExclusive Byte Range Lockを取得する
+[[nodiscard]] cue::Result<std::optional<GuardedByteRangeLock>> acquire_exclusive_lock(
+    const std::filesystem::path &a_root, const std::filesystem::path &a_path,
+    const cue::ChildProcessCancellation &a_cancellation, cue::BuildArtifactLockDeadline a_deadline,
+    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext) noexcept
+{
+    return acquire_byte_range_lock(a_root, a_path, a_cancellation, a_deadline, a_code, true, a_assertContext);
+}
+
+/// @brief Lock Fileを作成して取消可能なShared Byte Range Lockを取得する
+[[nodiscard]] cue::Result<std::optional<GuardedByteRangeLock>> acquire_shared_lock(
+    const std::filesystem::path &a_root, const std::filesystem::path &a_path,
+    const cue::BuildArtifactReadCancellation &a_cancellation, cue::BuildArtifactLockDeadline a_deadline,
+    cue::WindowsBuildArtifactError a_code, const cue::AssertContext &a_assertContext) noexcept
+{
+    return acquire_byte_range_lock(a_root, a_path, a_cancellation, a_deadline, a_code, false, a_assertContext);
 }
 
 /// @brief Regular FileをSHA-256でStreaming HashしSizeとDigestを返す
@@ -1250,6 +1271,63 @@ enum class ModuleProbeStatus : std::uint8_t
     return output;
 }
 
+/// @brief Current ManifestをRegular File Handleから上限付きで未変換読込する
+[[nodiscard]] cue::Result<std::string> read_current_manifest(
+    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+{
+    UniqueHandle file(CreateFileW(native_path(a_path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+                                  nullptr));
+    if (!file.is_valid())
+    {
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            "Current artifact manifest could not be opened"));
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (GetFileInformationByHandle(file.get(), &information) == FALSE)
+    {
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            "Current artifact manifest attributes could not be read"));
+    }
+    if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
+    {
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_INVALID,
+            "Current artifact manifest is not a regular file"));
+    }
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file.get(), &size) == FALSE)
+    {
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            "Current artifact manifest size could not be read"));
+    }
+    if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > k_maximumCurrentManifestBytes)
+    {
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_TOO_LARGE,
+            "Current artifact manifest size is invalid"));
+    }
+    std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
+    std::size_t offset = 0U;
+    while (offset < bytes.size())
+    {
+        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - offset, MAXDWORD));
+        DWORD read = 0U;
+        if (ReadFile(file.get(), bytes.data() + offset, request, &read, nullptr) == FALSE || read == 0U)
+        {
+            const DWORD code = read == 0U ? ERROR_HANDLE_EOF : GetLastError();
+            return cue::Result<std::string>::failure(make_windows_error(
+                a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, code,
+                "Current artifact manifest could not be read"));
+        }
+        offset += read;
+    }
+    return cue::Result<std::string>::success(std::move(bytes));
+}
+
 /// @brief Current.jsonをSibling Temporary FileからAtomic Replaceする
 [[nodiscard]] cue::Result<void> publish_current(const std::filesystem::path &a_store, std::string_view a_operationId,
                                                 std::string_view a_content,
@@ -1295,6 +1373,105 @@ enum class ModuleProbeStatus : std::uint8_t
     }
     return cue::Result<void>::success();
 }
+
+/// @brief Shared Byte Range LockをBuild Artifact Reader契約へ公開するRAII Token
+class WindowsBuildArtifactReadLease final : public cue::BuildArtifactReadLease
+{
+  public:
+    /// @brief Shared Lockの一意所有権を取得する
+    explicit WindowsBuildArtifactReadLease(GuardedByteRangeLock a_lock) noexcept : m_lease(std::move(a_lock))
+    {
+    }
+    /// @brief Shared Byte Range Lockを解放する
+    ~WindowsBuildArtifactReadLease() override = default;
+
+  private:
+    ByteRangeLease m_lease;
+};
+
+/// @brief Current Artifactを同じShared Read Lease内で再検証するWindows Reader
+class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
+{
+  public:
+    /// @brief Project RootとIdentityをReaderへ固定する
+    WindowsBuildArtifactReader(std::filesystem::path a_projectRoot, std::string a_projectId,
+                               const cue::AssertContext &a_assertContext) noexcept
+        : m_projectRoot(std::move(a_projectRoot)), m_projectId(std::move(a_projectId)),
+          m_assertContext(&a_assertContext)
+    {
+    }
+    /// @brief Readerと未返却Resourceを解放する
+    ~WindowsBuildArtifactReader() override = default;
+
+    /// @brief Current再読込からInventory再検証までShared Lockを保持してLeaseを返す
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>
+    acquire_current_read_lease(const cue::BuildArtifactInventory &a_expected,
+                               const cue::BuildArtifactReadCancellation &a_cancellation,
+                               cue::BuildArtifactLockDeadline a_deadline) noexcept override
+    {
+        try
+        {
+            const std::string_view configuration = configuration_name(a_expected.configuration());
+            const std::optional<std::filesystem::path> versionPath = to_path(a_expected.version_directory());
+            const std::filesystem::path store =
+                (m_projectRoot / "Generated" / "Artifacts" / configuration).lexically_normal();
+            const std::filesystem::path expectedVersion =
+                (store / "Versions" / a_expected.artifact_id()).lexically_normal();
+            if (m_projectId.empty() || configuration.empty() || !versionPath ||
+                versionPath->lexically_normal() != expectedVersion)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Artifact Read Lease input is not bound to this Project store"));
+            }
+            cue::Result<std::optional<GuardedByteRangeLock>> lock = acquire_shared_lock(
+                m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
+                cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
+            if (!lock)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*lock.try_error()));
+            }
+            if (!lock.try_value()->has_value())
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
+                    std::nullopt);
+            }
+            cue::Result<std::string> current = read_current_manifest(store / "Current.json", *m_assertContext);
+            if (!current)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*current.try_error()));
+            }
+            cue::Result<void> currentValidated =
+                cue::validate_build_artifact_current_manifest(*current.try_value(), a_expected, *m_assertContext);
+            if (!currentValidated)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*currentValidated.try_error()));
+            }
+            cue::Result<void> verified = verify_inventory_files(expectedVersion, a_expected, *m_assertContext);
+            if (!verified)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*verified.try_error()));
+            }
+            std::unique_ptr<cue::BuildArtifactReadLease> lease =
+                std::make_unique<WindowsBuildArtifactReadLease>(std::move(**lock.try_value()));
+            return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
+                std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>(std::move(lease)));
+        }
+        catch (...)
+        {
+            terminate_artifact_exception(*m_assertContext);
+        }
+    }
+
+  private:
+    std::filesystem::path m_projectRoot;
+    std::string m_projectId;
+    const cue::AssertContext *m_assertContext;
+};
 
 /// @brief Windows上でBuild CandidateとArtifact Storeを公開する
 class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
@@ -1815,6 +1992,33 @@ Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_pu
         return Result<std::unique_ptr<BuildArtifactPublisher>>::success(std::make_unique<WindowsBuildArtifactPublisher>(
             *root, std::string(a_descriptor.project_id().text()), compatibility, probeExecutable,
             std::move(*processRunner.try_value()), a_assertContext));
+    }
+    catch (...)
+    {
+        terminate_artifact_exception(a_assertContext);
+    }
+}
+
+Result<std::unique_ptr<BuildArtifactReader>> create_windows_build_artifact_reader(
+    std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        const std::optional<std::filesystem::path> root = to_path(a_projectRoot);
+        std::error_code error;
+        if (!root || !root->is_absolute() || !std::filesystem::is_directory(*root, error) || error)
+        {
+            return Result<std::unique_ptr<BuildArtifactReader>>::failure(make_error(
+                a_assertContext, WindowsBuildArtifactError::InvalidSettings, "Artifact Project Root is invalid"));
+        }
+        Result<void> rootValidated =
+            validate_directory_chain(*root, *root, WindowsBuildArtifactError::InvalidSettings, a_assertContext);
+        if (!rootValidated)
+        {
+            return Result<std::unique_ptr<BuildArtifactReader>>::failure(std::move(*rootValidated.try_error()));
+        }
+        return Result<std::unique_ptr<BuildArtifactReader>>::success(std::make_unique<WindowsBuildArtifactReader>(
+            *root, std::string(a_descriptor.project_id().text()), a_assertContext));
     }
     catch (...)
     {

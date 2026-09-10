@@ -37,6 +37,36 @@ enum class BuildArtifactPublisherError : std::int64_t
 /// @brief Publisherの取消可能処理を単調Clock上で打ち切る絶対時刻
 using BuildArtifactLockDeadline = std::optional<std::chrono::steady_clock::time_point>;
 
+/// @brief Artifact Read Lease待機中の取消状態をPlatform非依存に参照する境界
+class BuildArtifactReadCancellation
+{
+  public:
+    BuildArtifactReadCancellation(const BuildArtifactReadCancellation &) = delete;
+    BuildArtifactReadCancellation &operator=(const BuildArtifactReadCancellation &) = delete;
+    /// @brief 派生取消状態を正しく破棄する
+    virtual ~BuildArtifactReadCancellation() = default;
+    /// @brief 呼出Operationの取消が要求済みか返す
+    [[nodiscard]] virtual bool is_cancel_requested() const noexcept = 0;
+
+  protected:
+    /// @brief 派生取消実装だけに構築を許可する
+    BuildArtifactReadCancellation() noexcept = default;
+};
+
+/// @brief Current Artifact VersionをCleanupから保護するProcess間Shared Read Lease
+class BuildArtifactReadLease
+{
+  public:
+    BuildArtifactReadLease(const BuildArtifactReadLease &) = delete;
+    BuildArtifactReadLease &operator=(const BuildArtifactReadLease &) = delete;
+    /// @brief 派生Leaseを通してNative Lockを解放する
+    virtual ~BuildArtifactReadLease() = default;
+
+  protected:
+    /// @brief 派生Leaseだけに構築を許可する
+    BuildArtifactReadLease() noexcept = default;
+};
+
 /// @brief Artifact Version Directory内の一FileをHash付きで識別する
 struct BuildArtifactFile final
 {
@@ -95,6 +125,37 @@ class BuildArtifactInventory final
     BuildConfiguration m_configuration;
     std::string m_versionDirectory;
     std::vector<BuildArtifactFile> m_files;
+};
+
+/// @brief Current Manifest v1が期待Artifact Inventoryを意味的に選択しているか検証する
+///
+/// JSONとInventoryとAssertContextは呼出中だけ借用する。Member順と意味を持たない空白には依存せず、未知／重複／欠落Member、
+/// 型不一致、未知Schema、末尾Data、Inventory不一致をInvalidArtifactとして拒否する。共有状態を変更しないため同時に呼べる。
+[[nodiscard]] Result<void> validate_build_artifact_current_manifest(
+    std::string_view a_json, const BuildArtifactInventory &a_expected,
+    const AssertContext &a_assertContext) noexcept;
+
+/// @brief Current Manifestと参照Versionを検証してShared Read Leaseを発行するArtifact Store Reader
+class BuildArtifactReader
+{
+  public:
+    BuildArtifactReader(const BuildArtifactReader &) = delete;
+    BuildArtifactReader &operator=(const BuildArtifactReader &) = delete;
+    /// @brief 派生Readerを正しく破棄する
+    virtual ~BuildArtifactReader() = default;
+
+    /// @brief Expected InventoryがCurrentの間だけ参照Versionを保護するShared Read Leaseを取得する
+    ///
+    /// Inventory、Cancellation、Deadlineは呼出中だけ借用する。実装はProjectとConfigurationにBindingされた
+    /// Artifact StoreのShared Read LeaseをCurrent再読込前に取得し、Currentと全FileのSize／Hashを検証してから返す。
+    /// 取消要求を観測した場合は成功のnulloptを返し、同期なしのFilesystem読込へFallbackしない。
+    [[nodiscard]] virtual Result<std::optional<std::unique_ptr<BuildArtifactReadLease>>> acquire_current_read_lease(
+        const BuildArtifactInventory &a_expected, const BuildArtifactReadCancellation &a_cancellation,
+        BuildArtifactLockDeadline a_deadline) noexcept = 0;
+
+  protected:
+    /// @brief 派生Readerだけに構築を許可する
+    BuildArtifactReader() noexcept = default;
 };
 
 /// @brief Build成功Candidateを検証して不変Artifactとして公開する注入境界

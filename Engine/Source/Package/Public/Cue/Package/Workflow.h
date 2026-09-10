@@ -89,10 +89,10 @@ class GamePackageWorkflowService final
     /// @brief 進行中Operationを取消し、所有Workerと子Processの終了を待つ
     ~GamePackageWorkflowService();
 
-    /// @brief Build Service、Root限定Filesystem、Run用Process Runnerの所有権を一つのWorkflowへ束ねる
+    /// @brief Build Service、Artifact Reader、Root限定Filesystem、Run用Process Runnerを一つのWorkflowへ束ねる
     [[nodiscard]] static Result<std::unique_ptr<GamePackageWorkflowService>> create(
-        std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<FilesystemRoot> a_projectFilesystem,
-        std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
+        std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<BuildArtifactReader> a_artifactReader,
+        std::unique_ptr<FilesystemRoot> a_projectFilesystem, std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
         std::unique_ptr<ChildProcessRunner> a_runProcessRunner, std::string a_projectRoot,
         std::vector<ChildProcessEnvironmentEntry> a_runEnvironment, const AssertContext &a_assertContext) noexcept;
 
