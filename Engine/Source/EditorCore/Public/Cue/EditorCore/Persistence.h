@@ -23,11 +23,18 @@ class SceneMigrationRegistry;
 
 namespace cue::editor_core
 {
-/// @brief Scene正本Root、Recovery Root、Schema群をEditor Sessionへ明示注入する非所有Service集合
+/// @brief Project Root、Scene正本Root、Recovery Root、Schema群をEditor Sessionへ明示注入する非所有Service集合
 class ScenePersistenceServices final
 {
   public:
+    /// @brief Controllerより長く生存するProject DescriptorとScene Persistence依存を束ねる
+    ScenePersistenceServices(FilesystemRoot &a_projectRoot, FilesystemRoot &a_sourceAssetsRoot,
+                             FilesystemRoot &a_savedRoot, const schema::SchemaRegistry &a_schemaRegistry,
+                             const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
+                             const scene::SceneMigrationRegistry &a_sceneMigrations,
+                             const scene::ComponentMigrationRegistry &a_componentMigrations) noexcept;
     /// @brief Controllerより長く生存するPersistence依存を束ねる
+    /// @details Project Rootを所有しない単体利用では、Session生成時のDescriptorをStartup Scene読込に使用する
     ScenePersistenceServices(FilesystemRoot &a_sourceAssetsRoot, FilesystemRoot &a_savedRoot,
                              const schema::SchemaRegistry &a_schemaRegistry,
                              const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
@@ -37,6 +44,7 @@ class ScenePersistenceServices final
   private:
     friend class EditorController;
 
+    FilesystemRoot *m_projectRoot;
     FilesystemRoot *m_sourceAssetsRoot;
     FilesystemRoot *m_savedRoot;
     const schema::SchemaRegistry *m_schemaRegistry;
