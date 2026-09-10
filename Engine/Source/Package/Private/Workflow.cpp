@@ -211,7 +211,8 @@ struct GamePackageWorkflowService::Impl final
     /// @brief Build ArtifactとRuntime Dataから不変Packageを一度だけ公開する
     [[nodiscard]] Result<PublishedRuntimePackageSnapshot> publish_package(
         const BuildArtifactInventory &a_artifact, const PackageInputs &a_inputs, std::string_view a_operationId,
-        const PackageCancellation &a_cancellation) noexcept
+        const PackageCancellation &a_cancellation,
+        std::optional<PackagePublishDiagnosticSnapshot> &a_diagnostic) noexcept
     {
         try
         {
@@ -398,6 +399,8 @@ struct GamePackageWorkflowService::Impl final
                                                                   *assertContext);
             if (!report.succeeded())
             {
+                a_diagnostic = PackagePublishDiagnosticSnapshot{
+                    report.stage, report.outcome, std::move(report.destination), std::move(report.manifest)};
                 Error primary = report.error
                                     ? std::move(*report.error)
                                     : make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
@@ -439,6 +442,7 @@ struct GamePackageWorkflowService::Impl final
     std::thread worker;
     std::shared_ptr<PackageCancellation> packageCancellation;
     std::shared_ptr<ChildProcessCancellation> processCancellation;
+    bool isCancellationRequested = false;
     std::optional<StagingArea> recoveryStaging;
     std::optional<PackageInputs> pendingInputs;
     std::optional<PackageInputs> retryInputs;
@@ -543,10 +547,12 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
             std::scoped_lock lock(m_impl->mutex);
             m_impl->pendingInputs = inputs;
             m_impl->retryInputs = std::move(inputs);
+            m_impl->isCancellationRequested = false;
             m_impl->current.state = PackageWorkflowState::Building;
             m_impl->current.activeStage = PackageWorkflowStage::Build;
             m_impl->current.build = m_impl->buildService->snapshot();
             m_impl->current.package.reset();
+            m_impl->current.publicationDiagnostic.reset();
             m_impl->current.recoveryStagingLocator.reset();
             m_impl->current.runOutput.clear();
             m_impl->current.message = "Game Module Buildを開始しました。";
@@ -602,10 +608,12 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
         {
             std::scoped_lock lock(m_impl->mutex);
             m_impl->pendingInputs = std::move(inputs);
+            m_impl->isCancellationRequested = false;
             m_impl->current.state = PackageWorkflowState::Building;
             m_impl->current.activeStage = PackageWorkflowStage::Build;
             m_impl->current.build = m_impl->buildService->snapshot();
             m_impl->current.package.reset();
+            m_impl->current.publicationDiagnostic.reset();
             m_impl->current.recoveryStagingLocator.reset();
             m_impl->current.runOutput.clear();
             m_impl->current.message = "BuildからPackageまでを再実行しました。";
@@ -650,6 +658,10 @@ void GamePackageWorkflowService::advance() noexcept
                         std::scoped_lock lock(m_impl->mutex);
                         inputs = std::move(m_impl->pendingInputs);
                         m_impl->packageCancellation = cancellation;
+                        if (m_impl->isCancellationRequested)
+                        {
+                            cancellation->request_cancel();
+                        }
                         m_impl->current.build = build;
                         m_impl->current.state = PackageWorkflowState::Packaging;
                         m_impl->current.activeStage = PackageWorkflowStage::Package;
@@ -659,6 +671,7 @@ void GamePackageWorkflowService::advance() noexcept
                     {
                         std::scoped_lock lock(m_impl->mutex);
                         m_impl->packageCancellation.reset();
+                        m_impl->isCancellationRequested = false;
                         m_impl->current.state = PackageWorkflowState::Failed;
                         m_impl->current.activeStage = PackageWorkflowStage::None;
                         m_impl->current.message = "Package入力が失われました。";
@@ -670,11 +683,14 @@ void GamePackageWorkflowService::advance() noexcept
                         m_impl->worker = std::thread(
                             [impl = m_impl.get(), artifact, inputs = std::move(*inputs), operationId, cancellation]()
                             {
+                                std::optional<PackagePublishDiagnosticSnapshot> diagnostic;
                                 Result<PublishedRuntimePackageSnapshot> published =
-                                    impl->publish_package(artifact, inputs, operationId, *cancellation);
+                                    impl->publish_package(artifact, inputs, operationId, *cancellation, diagnostic);
                                 std::scoped_lock lock(impl->mutex);
                                 impl->packageCancellation.reset();
+                                impl->isCancellationRequested = false;
                                 impl->current.activeStage = PackageWorkflowStage::None;
+                                impl->current.publicationDiagnostic = std::move(diagnostic);
                                 if (!published)
                                 {
                                     impl->current.recoveryStagingLocator =
@@ -700,6 +716,7 @@ void GamePackageWorkflowService::advance() noexcept
                     std::scoped_lock lock(m_impl->mutex);
                     m_impl->pendingInputs.reset();
                     m_impl->current.build = build;
+                    m_impl->isCancellationRequested = false;
                     m_impl->current.state = build_terminal_state(build.state);
                     m_impl->current.activeStage = PackageWorkflowStage::None;
                     m_impl->current.message = build.state == GameBuildOperationState::Cancelled
@@ -738,10 +755,16 @@ Result<void> GamePackageWorkflowService::request_cancel() noexcept
             state = m_impl->current.state;
             packageCancellation = m_impl->packageCancellation;
             processCancellation = m_impl->processCancellation;
+            if (state == PackageWorkflowState::Building || state == PackageWorkflowState::Packaging ||
+                state == PackageWorkflowState::Running)
+            {
+                m_impl->isCancellationRequested = true;
+            }
         }
         if (state == PackageWorkflowState::Building)
         {
-            return m_impl->buildService->request_cancel();
+            static_cast<void>(m_impl->buildService->request_cancel());
+            return Result<void>::success();
         }
         if (state == PackageWorkflowState::Packaging && packageCancellation)
         {
@@ -809,6 +832,7 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
             Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
             std::scoped_lock lock(impl->mutex);
             impl->processCancellation.reset();
+            impl->isCancellationRequested = false;
             impl->current.activeStage = PackageWorkflowStage::None;
             if (!runResult)
             {
