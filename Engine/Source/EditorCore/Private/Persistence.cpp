@@ -6,6 +6,7 @@
 #include <Cue/IO/Filesystem.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/Scene/Identity.h>
+#include <Cue/Scene/Instantiation.h>
 #include <Cue/Scene/Serialization.h>
 
 #include <algorithm>
@@ -537,6 +538,60 @@ Result<EditorDocumentId> EditorController::open_document_from_storage(RelativePa
     document->m_baseFingerprint = *afterFingerprint.try_value();
     document->m_hasRecoveryCandidate = *recoveryEntry.try_value() == EntryType::RegularFile;
     return opened;
+}
+
+Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot() noexcept
+{
+    assert_owner_thread();
+    auto services = require_persistence_services();
+    if (!services)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*services.try_error()));
+    }
+
+    const std::optional<StartupSceneReference> &startupScene = m_session.project_descriptor().default_scene();
+    if (!startupScene.has_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::SceneMismatch, "Project Descriptor has no Startup Scene"));
+    }
+
+    const RelativePath &locator = startupScene->source_locator();
+    auto beforeFingerprint = fingerprint_scene_file(*m_sourceAssetsRoot, locator, *m_assertContext);
+    if (!beforeFingerprint)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*beforeFingerprint.try_error()));
+    }
+    auto loaded = scene::load_scene_document(*m_sourceAssetsRoot, locator, *m_schemaRegistry, *m_valueSchemaRegistry,
+                                             *m_sceneMigrations, *m_componentMigrations, *m_assertContext);
+    if (!loaded)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*loaded.try_error()));
+    }
+    auto afterFingerprint = fingerprint_scene_file(*m_sourceAssetsRoot, locator, *m_assertContext);
+    if (!afterFingerprint)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*afterFingerprint.try_error()));
+    }
+    if (*beforeFingerprint.try_value() != *afterFingerprint.try_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::ExternalConflict,
+            "Startup Scene changed while the Package input was being loaded"));
+    }
+
+    auto expectedSceneId = scene::SceneAssetId::parse(startupScene->scene_asset_id(), *m_assertContext);
+    if (!expectedSceneId)
+    {
+        return Result<scene::SceneSnapshot>::failure(std::move(*expectedSceneId.try_error()));
+    }
+    if (loaded.try_value()->document().scene_asset_id() != *expectedSceneId.try_value())
+    {
+        return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+            *m_assertContext, EditorCoreError::SceneMismatch,
+            "Startup Scene identity differs from the Project Descriptor"));
+    }
+    return scene::create_scene_snapshot(loaded.try_value()->document(), *m_assertContext);
 }
 
 Result<ExternalChangeState> EditorController::poll_external_change(EditorDocumentId a_documentId) noexcept

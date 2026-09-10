@@ -1479,7 +1479,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
                      const cue::AssertContext &a_assertContext) noexcept
         : m_moduleLifetime(std::move(a_moduleLifetime)), m_module(a_module), m_state(a_state),
           m_definition(std::move(a_definition)),
-          m_assertContext(&a_assertContext)
+          m_assertContext(a_assertContext)
     {
     }
     /// @brief DLL Stateを生成元Callbackで一度だけ破棄する
@@ -1501,7 +1501,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
         if (m_definition.start(m_state, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
         {
             return cue::Result<void>::failure(cue::runtime::make_runtime_error(
-                *m_assertContext, cue::runtime::RuntimeError::ApplicationSessionStartFailed,
+                m_assertContext, cue::runtime::RuntimeError::ApplicationSessionStartFailed,
                 "Game Module System start failed"));
         }
         return cue::Result<void>::success();
@@ -1522,7 +1522,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
         if (m_definition.update(m_state, &update, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
         {
             return cue::Result<void>::failure(cue::runtime::make_runtime_error(
-                *m_assertContext, cue::runtime::RuntimeError::ApplicationSessionUpdateFailed,
+                m_assertContext, cue::runtime::RuntimeError::ApplicationSessionUpdateFailed,
                 "Game Module System update failed"));
         }
         return cue::Result<void>::success();
@@ -1538,7 +1538,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
         if (m_definition.stop(m_state, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS)
         {
             return cue::Result<void>::failure(cue::runtime::make_runtime_error(
-                *m_assertContext, cue::runtime::RuntimeError::ApplicationSessionCleanupFailed,
+                m_assertContext, cue::runtime::RuntimeError::ApplicationSessionCleanupFailed,
                 "Game Module System stop failed"));
         }
         return cue::Result<void>::success();
@@ -1549,7 +1549,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
     CueGameModuleHandle m_module;
     CueGameSystemState m_state;
     PendingSystem m_definition;
-    const cue::AssertContext *m_assertContext;
+    cue::AssertContext m_assertContext;
 };
 
 /// @brief Pending DLL System群からSession所有登録を構築する
