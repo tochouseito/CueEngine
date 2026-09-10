@@ -390,13 +390,24 @@ template <typename Value> [[nodiscard]] bool parse_unsigned(std::string_view a_t
 } // namespace
 
 ScenePersistenceServices::ScenePersistenceServices(
+    FilesystemRoot &a_projectRoot, FilesystemRoot &a_sourceAssetsRoot, FilesystemRoot &a_savedRoot,
+    const schema::SchemaRegistry &a_schemaRegistry, const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
+    const scene::SceneMigrationRegistry &a_sceneMigrations,
+    const scene::ComponentMigrationRegistry &a_componentMigrations) noexcept
+    : m_projectRoot(&a_projectRoot), m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot),
+      m_schemaRegistry(&a_schemaRegistry), m_valueSchemaRegistry(&a_valueSchemaRegistry),
+      m_sceneMigrations(&a_sceneMigrations), m_componentMigrations(&a_componentMigrations)
+{
+}
+
+ScenePersistenceServices::ScenePersistenceServices(
     FilesystemRoot &a_sourceAssetsRoot, FilesystemRoot &a_savedRoot, const schema::SchemaRegistry &a_schemaRegistry,
     const scene::ComponentValueSchemaRegistry &a_valueSchemaRegistry,
     const scene::SceneMigrationRegistry &a_sceneMigrations,
     const scene::ComponentMigrationRegistry &a_componentMigrations) noexcept
-    : m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot), m_schemaRegistry(&a_schemaRegistry),
-      m_valueSchemaRegistry(&a_valueSchemaRegistry), m_sceneMigrations(&a_sceneMigrations),
-      m_componentMigrations(&a_componentMigrations)
+    : m_projectRoot(nullptr), m_sourceAssetsRoot(&a_sourceAssetsRoot), m_savedRoot(&a_savedRoot),
+      m_schemaRegistry(&a_schemaRegistry), m_valueSchemaRegistry(&a_valueSchemaRegistry),
+      m_sceneMigrations(&a_sceneMigrations), m_componentMigrations(&a_componentMigrations)
 {
 }
 
@@ -547,6 +558,32 @@ Result<scene::SceneSnapshot> EditorController::load_saved_startup_scene_snapshot
     if (!services)
     {
         return Result<scene::SceneSnapshot>::failure(std::move(*services.try_error()));
+    }
+
+    if (m_projectRoot != nullptr)
+    {
+        auto currentDescriptor = load_project_descriptor(*m_projectRoot, *m_assertContext);
+        if (!currentDescriptor)
+        {
+            return Result<scene::SceneSnapshot>::failure(std::move(*currentDescriptor.try_error()));
+        }
+        const ProjectRoots &currentRoots = currentDescriptor.try_value()->roots();
+        const ProjectRoots &sessionRoots = m_session.project_descriptor().roots();
+        const bool rootsMatch = currentRoots.source_assets().comparison_key(*m_assertContext) ==
+                                    sessionRoots.source_assets().comparison_key(*m_assertContext) &&
+                                currentRoots.runtime_assets().comparison_key(*m_assertContext) ==
+                                    sessionRoots.runtime_assets().comparison_key(*m_assertContext) &&
+                                currentRoots.generated().comparison_key(*m_assertContext) ==
+                                    sessionRoots.generated().comparison_key(*m_assertContext) &&
+                                currentRoots.saved().comparison_key(*m_assertContext) ==
+                                    sessionRoots.saved().comparison_key(*m_assertContext);
+        if (!rootsMatch)
+        {
+            return Result<scene::SceneSnapshot>::failure(make_editor_core_error(
+                *m_assertContext, EditorCoreError::ExternalConflict,
+                "Project roots changed while the Editor session was open; reopen the project before packaging"));
+        }
+        m_session.m_descriptor = std::move(*currentDescriptor.try_value());
     }
 
     const std::optional<StartupSceneReference> &startupScene = m_session.project_descriptor().default_scene();
