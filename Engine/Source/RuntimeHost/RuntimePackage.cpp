@@ -603,15 +603,6 @@ struct RuntimeProjectInfo final
     }
 }
 
-/// @brief Runtime Scene Readerが一ObjectをDocument構築まで所有する
-struct ParsedRuntimeObject final
-{
-    cue::scene::ObjectId id;
-    std::optional<cue::scene::ObjectId> parentId;
-    bool isActive;
-    cue::math::Transform transform;
-};
-
 /// @brief 固定要素数のfloat Arrayを読む
 template <std::size_t Size>
 [[nodiscard]] bool read_float_array(JsonCursor &a_cursor, std::array<float, Size> &a_values) noexcept
@@ -649,7 +640,7 @@ template <std::size_t Size>
                 a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                 "Runtime Scene identity or schema is invalid"));
         }
-        std::vector<ParsedRuntimeObject> objects;
+        std::vector<cue::scene::RuntimeSceneObjectData> objects;
         while (!cursor.next_is(']'))
         {
             if (!objects.empty() && !cursor.consume(','))
@@ -658,7 +649,7 @@ template <std::size_t Size>
                     a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                     "Runtime Scene object separator is invalid"));
             }
-            if (objects.size() >= cue::scene::k_maximumSceneObjectCount)
+            if (objects.size() >= cue::scene::k_maximumRuntimeSceneObjectCount)
             {
                 return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
                     a_assertContext, cue::package::PackageError::RuntimeDataResourceLimitExceeded,
@@ -757,29 +748,15 @@ template <std::size_t Size>
                 a_assertContext, cue::package::PackageError::InvalidRuntimeData,
                 "Runtime Scene identity is invalid"));
         }
-        cue::scene::SceneDocument document =
-            cue::scene::SceneDocument::create(std::move(*sceneId.try_value()), a_assertContext);
-        for (const ParsedRuntimeObject &object : objects)
+        auto snapshot = cue::scene::create_runtime_scene_snapshot(
+            std::move(*sceneId.try_value()), std::move(objects), a_assertContext);
+        if (!snapshot)
         {
-            const cue::scene::IdentityText name = object.id.canonical_text();
-            if (!document.add_object(object.id, std::string_view(name.data(), name.size()), object.isActive,
-                                     std::nullopt, object.transform))
-            {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object set is invalid"));
-            }
+            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                "Runtime Scene object set or hierarchy is invalid"));
         }
-        for (const ParsedRuntimeObject &object : objects)
-        {
-            if (object.parentId.has_value() && !document.set_parent(object.id, object.parentId))
-            {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene hierarchy is invalid"));
-            }
-        }
-        return cue::scene::create_scene_snapshot(document, a_assertContext);
+        return snapshot;
     }
     catch (...)
     {
@@ -1015,37 +992,56 @@ enum class RegistrationStage : std::uint8_t
 struct RegistrationContext final
 {
     RegistrationStage stage = RegistrationStage::Schemas;
+    CueGameModuleResult sinkFailure = CUE_GAME_MODULE_RESULT_SUCCESS;
     std::vector<PendingSystem> systems;
 };
+
+/// @brief 登録Stage内で最初に発生したSink失敗を外側Callback結果とは独立して保持する
+void latch_registration_failure(RegistrationContext *a_context, CueGameModuleResult a_result) noexcept
+{
+    if (a_context != nullptr && a_result != CUE_GAME_MODULE_RESULT_SUCCESS &&
+        a_context->sinkFailure == CUE_GAME_MODULE_RESULT_SUCCESS)
+    {
+        a_context->sinkFailure = a_result;
+    }
+}
+
+/// @brief Sink失敗をStageへ記録しModule Diagnosticと同じ結果を返す
+[[nodiscard]] CueGameModuleResult fail_registration(
+    RegistrationContext *a_context, CueGameModuleDiagnosticV1 *a_diagnostic,
+    CueGameModuleResult a_result, const char *a_message) noexcept
+{
+    latch_registration_failure(a_context, a_result);
+    set_module_diagnostic(a_diagnostic, a_result, a_message);
+    return a_result;
+}
 
 /// @brief M16未対応のGame Schema登録をFail-closedに拒否する
 CueGameModuleResult CUE_GAME_MODULE_CALL reject_schema_registration(
     void *a_context, const CueGameSchemaDescriptorV1 *, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
-    if (a_context == nullptr || static_cast<RegistrationContext *>(a_context)->stage != RegistrationStage::Schemas)
+    auto *context = static_cast<RegistrationContext *>(a_context);
+    if (context == nullptr || context->stage != RegistrationStage::Schemas)
     {
-        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                              "Schema registration occurred outside its stage");
-        return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Schema registration occurred outside its stage");
     }
-    set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
-                          "RuntimeHost v1 does not yet accept custom Schema registration");
-    return CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED;
+    return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                             "RuntimeHost v1 does not yet accept custom Schema registration");
 }
 
 /// @brief M16未対応のGame Component登録をFail-closedに拒否する
 CueGameModuleResult CUE_GAME_MODULE_CALL reject_component_registration(
     void *a_context, const CueGameComponentDescriptorV1 *, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
-    if (a_context == nullptr || static_cast<RegistrationContext *>(a_context)->stage != RegistrationStage::Components)
+    auto *context = static_cast<RegistrationContext *>(a_context);
+    if (context == nullptr || context->stage != RegistrationStage::Components)
     {
-        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                              "Component registration occurred outside its stage");
-        return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Component registration occurred outside its stage");
     }
-    set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
-                          "RuntimeHost v1 does not yet accept custom Component registration");
-    return CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED;
+    return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                             "RuntimeHost v1 does not yet accept custom Component registration");
 }
 
 /// @brief ABI UTF-8 Viewを所有文字列へ検証Copyする
@@ -1080,9 +1076,8 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
         a_descriptor->createState == nullptr || a_descriptor->destroyState == nullptr || a_descriptor->start == nullptr ||
         a_descriptor->update == nullptr || a_descriptor->stop == nullptr || context->systems.size() >= k_maximumRuntimeSystems)
     {
-        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                              "Runtime System descriptor is invalid");
-        return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                 "Runtime System descriptor is invalid");
     }
     try
     {
@@ -1090,9 +1085,8 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
                               a_descriptor->update, a_descriptor->stop};
         if (!copy_utf8_view(a_descriptor->stableId, pending.descriptor.id))
         {
-            set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                                  "Runtime System stable ID is invalid");
-            return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+            return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                     "Runtime System stable ID is invalid");
         }
         switch (a_descriptor->phase)
         {
@@ -1106,9 +1100,8 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
             pending.descriptor.phase = cue::game_core::RuntimeUpdatePhase::PostUpdate;
             break;
         default:
-            set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                                  "Runtime System phase is invalid");
-            return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+            return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                     "Runtime System phase is invalid");
         }
         pending.descriptor.order = a_descriptor->order;
         for (std::size_t index = 0U; index < a_descriptor->dependencyCount; ++index)
@@ -1116,9 +1109,8 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
             std::string dependency;
             if (!copy_utf8_view(a_descriptor->dependencies[index], dependency))
             {
-                set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
-                                      "Runtime System dependency is invalid");
-                return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
+                return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT,
+                                         "Runtime System dependency is invalid");
             }
             pending.descriptor.dependencies.push_back(std::move(dependency));
         }
@@ -1128,15 +1120,13 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
     }
     catch (const std::bad_alloc &)
     {
-        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY,
-                              "Runtime System registration allocation failed");
-        return CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY;
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY,
+                                 "Runtime System registration allocation failed");
     }
     catch (...)
     {
-        set_module_diagnostic(a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
-                              "Runtime System registration failed unexpectedly");
-        return CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED;
+        return fail_registration(context, a_diagnostic, CUE_GAME_MODULE_RESULT_REGISTRATION_FAILED,
+                                 "Runtime System registration failed unexpectedly");
     }
 }
 
@@ -1146,6 +1136,7 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
     RegistrationStage a_stage, const cue::AssertContext &a_assertContext) noexcept
 {
     a_context.stage = a_stage;
+    a_context.sinkFailure = CUE_GAME_MODULE_RESULT_SUCCESS;
     CueGameRegistrationSinkV1 sink{sizeof(CueGameRegistrationSinkV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
                                    &a_context, &reject_schema_registration, &reject_component_registration,
                                    &register_system, {0U, 0U, 0U, 0U}};
@@ -1153,7 +1144,8 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
                                          0U, 0U,
                                          {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, 0U}};
     const CueGameModuleResult result = a_callback(a_module, &sink, &diagnostic);
-    if (result != CUE_GAME_MODULE_RESULT_SUCCESS)
+    if (result != CUE_GAME_MODULE_RESULT_SUCCESS ||
+        a_context.sinkFailure != CUE_GAME_MODULE_RESULT_SUCCESS)
     {
         return cue::Result<void>::failure(cue::runtime::make_runtime_error(
             a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,

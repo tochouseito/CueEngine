@@ -465,6 +465,79 @@ void test_failure_and_world_identity() noexcept
     require(runtime->tick().has_value());
     require(otherRuntime->shutdown().has_value());
 }
+
+/// @brief Runtime SnapshotがAuthoring上限とHierarchy検証を分離するか確認する
+void test_runtime_scene_snapshot_boundary() noexcept
+{
+    TestFatalHandler fatalHandler;
+    std::vector<std::unique_ptr<cue::LogSink>> sinks;
+    cue::Logger logger(fatalHandler, std::move(sinks));
+    cue::AssertContext assertContext(logger, fatalHandler);
+    SequentialIdentitySource identitySource;
+
+    std::vector<cue::scene::RuntimeSceneObjectData> objects;
+    objects.reserve(cue::scene::k_maximumSceneObjectCount + 1U);
+    for (std::size_t index = 0U; index <= cue::scene::k_maximumSceneObjectCount; ++index)
+    {
+        objects.push_back({take_value(cue::scene::ObjectId::generate(identitySource, assertContext)),
+                           std::nullopt, true, cue::math::Transform{}});
+    }
+    auto snapshot = cue::scene::create_runtime_scene_snapshot(
+        take_value(cue::scene::SceneAssetId::generate(identitySource, assertContext)), std::move(objects),
+        assertContext);
+    require(snapshot.has_value());
+    require(snapshot.try_value()->objects().size() == cue::scene::k_maximumSceneObjectCount + 1U);
+
+    const auto duplicateId = take_value(cue::scene::ObjectId::generate(identitySource, assertContext));
+    std::vector<cue::scene::RuntimeSceneObjectData> duplicateObjects{
+        {duplicateId, std::nullopt, true, cue::math::Transform{}},
+        {duplicateId, std::nullopt, true, cue::math::Transform{}}};
+    auto duplicate = cue::scene::create_runtime_scene_snapshot(
+        take_value(cue::scene::SceneAssetId::generate(identitySource, assertContext)),
+        std::move(duplicateObjects), assertContext);
+    require(!duplicate.has_value());
+    require(duplicate.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::scene::SceneError::DuplicateObjectId));
+
+    const auto danglingId = take_value(cue::scene::ObjectId::generate(identitySource, assertContext));
+    std::vector<cue::scene::RuntimeSceneObjectData> danglingObjects{
+        {take_value(cue::scene::ObjectId::generate(identitySource, assertContext)), danglingId, true,
+         cue::math::Transform{}}};
+    auto dangling = cue::scene::create_runtime_scene_snapshot(
+        take_value(cue::scene::SceneAssetId::generate(identitySource, assertContext)),
+        std::move(danglingObjects), assertContext);
+    require(!dangling.has_value());
+    require(dangling.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::scene::SceneError::DanglingParent));
+
+    const auto firstCycleId = take_value(cue::scene::ObjectId::generate(identitySource, assertContext));
+    const auto secondCycleId = take_value(cue::scene::ObjectId::generate(identitySource, assertContext));
+    std::vector<cue::scene::RuntimeSceneObjectData> cycleObjects{
+        {firstCycleId, secondCycleId, true, cue::math::Transform{}},
+        {secondCycleId, firstCycleId, true, cue::math::Transform{}}};
+    auto cycle = cue::scene::create_runtime_scene_snapshot(
+        take_value(cue::scene::SceneAssetId::generate(identitySource, assertContext)), std::move(cycleObjects),
+        assertContext);
+    require(!cycle.has_value());
+    require(cycle.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::scene::SceneError::HierarchyCycle));
+
+    std::vector<cue::scene::RuntimeSceneObjectData> deepObjects;
+    deepObjects.reserve(cue::scene::SceneDocument::maximum_hierarchy_depth() + 1U);
+    std::optional<cue::scene::ObjectId> parentId;
+    for (std::size_t depth = 0U; depth <= cue::scene::SceneDocument::maximum_hierarchy_depth(); ++depth)
+    {
+        const auto objectId = take_value(cue::scene::ObjectId::generate(identitySource, assertContext));
+        deepObjects.push_back({objectId, parentId, true, cue::math::Transform{}});
+        parentId = objectId;
+    }
+    auto tooDeep = cue::scene::create_runtime_scene_snapshot(
+        take_value(cue::scene::SceneAssetId::generate(identitySource, assertContext)), std::move(deepObjects),
+        assertContext);
+    require(!tooDeep.has_value());
+    require(tooDeep.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::scene::SceneError::HierarchyDepthExceeded));
+}
 } // namespace
 
 /// @brief Cue.Scene Runtime実体化契約のUnit Testを実行する
@@ -472,5 +545,6 @@ int main()
 {
     test_successful_instantiation();
     test_failure_and_world_identity();
+    test_runtime_scene_snapshot_boundary();
     return 0;
 }

@@ -20,6 +20,17 @@ class EmergencyHandler;
 
 namespace cue::scene
 {
+inline constexpr std::size_t k_maximumRuntimeSceneObjectCount = 1'000'000U;
+
+/// @brief Authoring固有Dataを含まないRuntime Scene ObjectのSnapshot構築入力
+struct RuntimeSceneObjectData final
+{
+    ObjectId id;
+    std::optional<ObjectId> parentId;
+    bool isActive;
+    math::Transform transform;
+};
+
 /// @brief Mutable SceneDocumentから切り離したRuntime実体化用の不変所有Snapshot
 ///
 /// Snapshotは生成時点のScene Dataを複製所有し、元Documentの変更、Move、破棄から独立して生存する。
@@ -47,10 +58,14 @@ class SceneSnapshot final
   private:
     friend Result<SceneSnapshot> create_scene_snapshot(
         const SceneDocument &, const AssertContext &) noexcept;
+    friend Result<SceneSnapshot> create_runtime_scene_snapshot(
+        SceneAssetId, std::vector<RuntimeSceneObjectData>, const AssertContext &) noexcept;
 
     /// @brief 検証済みScene IdentityとObject集合を所有するSnapshotを構築する
     SceneSnapshot(SceneAssetId a_sceneAssetId,
                   std::vector<SceneObject> a_objects) noexcept;
+    /// @brief 検証済みRuntime入力をComponentなしScene Objectへ変換する
+    [[nodiscard]] static SceneObject make_runtime_object(RuntimeSceneObjectData a_object) noexcept;
 
     SceneAssetId m_sceneAssetId;
     std::vector<SceneObject> m_objects;
@@ -59,6 +74,11 @@ class SceneSnapshot final
 /// @brief SceneDocumentを再検証しRuntimeから独立した不変Snapshotへ複製する
 [[nodiscard]] Result<SceneSnapshot> create_scene_snapshot(
     const SceneDocument &a_document,
+    const AssertContext &a_assertContext) noexcept;
+
+/// @brief Runtime Scene DataをAuthoring上限から独立した不変Snapshotへ変換する
+[[nodiscard]] Result<SceneSnapshot> create_runtime_scene_snapshot(
+    SceneAssetId a_sceneAssetId, std::vector<RuntimeSceneObjectData> a_objects,
     const AssertContext &a_assertContext) noexcept;
 
 /// @brief Runtime Entityへ保持するAuthoring Object由来のCore状態
