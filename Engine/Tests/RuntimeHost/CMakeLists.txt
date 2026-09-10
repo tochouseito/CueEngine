@@ -40,6 +40,24 @@ set_target_properties(
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
 
+add_executable(
+    CueRuntimeHostModuleIdentityTests
+    RuntimeModuleIdentityTests.cpp
+    "${PROJECT_SOURCE_DIR}/Engine/Source/RuntimeHost/RuntimeModuleIdentity.cpp"
+)
+target_include_directories(
+    CueRuntimeHostModuleIdentityTests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/Source/RuntimeHost"
+)
+target_compile_features(CueRuntimeHostModuleIdentityTests PRIVATE cxx_std_20)
+set_target_properties(
+    CueRuntimeHostModuleIdentityTests
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+)
+
 string(REPLACE "." ";" cueRuntimeHostCompilerParts "${CMAKE_CXX_COMPILER_VERSION}")
 list(GET cueRuntimeHostCompilerParts 0 cueRuntimeHostCompilerMajor)
 list(GET cueRuntimeHostCompilerParts 1 cueRuntimeHostCompilerMinor)
@@ -99,7 +117,19 @@ if(MSVC)
             $<$<CONFIG:Development>:/O2>
             $<$<CONFIG:Development>:/Zi>
     )
+    target_compile_options(
+        CueRuntimeHostModuleIdentityTests
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
     target_link_options(CueRuntimeHostPathTests PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+    target_link_options(CueRuntimeHostModuleIdentityTests PRIVATE $<$<CONFIG:Development>:/DEBUG>)
 endif()
 
 set(
@@ -120,11 +150,20 @@ add_custom_target(
         CueRuntimeHost
         CueRuntimePackageDependencyProbe
         CueRuntimePackageProbe
+        CueRuntimeHostModuleIdentityTests
         CueRuntimeHostPathTests
         CueRuntimeHostRhiOwnershipCompile
 )
 
 add_test(NAME Cue.RuntimeHost.PathUtf8 COMMAND CueRuntimeHostPathTests)
+
+add_test(
+    NAME Cue.RuntimeHost.ModuleIdentity
+    COMMAND
+        CueRuntimeHostModuleIdentityTests
+        $<TARGET_FILE:CueRuntimePackageDependencyProbe>
+        ${CMAKE_CURRENT_BINARY_DIR}/RuntimeModuleIdentity/$<CONFIG>/ProbeDependency.dll
+)
 
 add_test(
     NAME Cue.RuntimeHost.Smoke
@@ -252,6 +291,7 @@ set_tests_properties(
 set_tests_properties(
     Cue.RuntimeHost.Dependencies
     Cue.RuntimeHost.InitializationFailure
+    Cue.RuntimeHost.ModuleIdentity
     Cue.RuntimeHost.PathUtf8
     PROPERTIES
         LABELS RuntimeHost

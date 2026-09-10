@@ -528,8 +528,14 @@ void PackagePresenter::draw_shutdown_confirmation() noexcept
     }
     if (m_closeShutdownConfirmation)
     {
-        ImGui::CloseCurrentPopup();
+        if (ImGui::BeginPopupModal("Build・Package・Runを停止して終了しますか？", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
         m_closeShutdownConfirmation = false;
+        return;
     }
     if (ImGui::BeginPopupModal("Build・Package・Runを停止して終了しますか？", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize))

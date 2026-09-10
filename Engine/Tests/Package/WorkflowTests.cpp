@@ -95,6 +95,7 @@ struct RunnerState final
 {
     std::atomic<RunnerMode> mode = RunnerMode::Succeed;
     std::atomic<std::uint32_t> calls = 0U;
+    std::atomic<std::size_t> maximumCapturedOutputBytes = 0U;
     std::atomic<bool> active = false;
 };
 
@@ -109,8 +110,11 @@ class ControlledRunner final : public cue::ChildProcessRunner
 
     /// @brief 指定Modeに応じた所有Process結果を返す
     [[nodiscard]] cue::Result<cue::ChildProcessResult> run(
-        const cue::ChildProcessRequest &, const cue::ChildProcessCancellation &a_cancellation) noexcept override
+        const cue::ChildProcessRequest &a_request,
+        const cue::ChildProcessCancellation &a_cancellation) noexcept override
     {
+        m_state->maximumCapturedOutputBytes.store(a_request.maximum_captured_output_bytes().value_or(0U),
+                                                  std::memory_order_release);
         m_state->active.store(true, std::memory_order_release);
         const std::uint32_t call = m_state->calls.fetch_add(1U, std::memory_order_relaxed);
         while (m_state->mode.load(std::memory_order_acquire) == RunnerMode::BlockUntilCancelled &&
@@ -393,7 +397,7 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
     std::unique_ptr<cue::GameBuildService> buildService = std::move(*build.try_value());
     auto workflow = cue::package::GamePackageWorkflowService::create(
-        *buildService, std::move(*projectFilesystem.try_value()), std::move(*engineFilesystem.try_value()),
+        std::move(buildService), std::move(*projectFilesystem.try_value()), std::move(*engineFilesystem.try_value()),
         std::make_unique<ControlledRunner>(runRunner), projectRoot.generic_string(), {}, a_assertContext);
     auto runtimeData = make_runtime_data(a_assertContext);
     if (!require(workflow && runtimeData))
@@ -480,7 +484,8 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
     const cue::package::PackageWorkflowSnapshot runSucceeded = service->snapshot();
     if (!require(runSucceeded.state == cue::package::PackageWorkflowState::RunSucceeded &&
-                 runSucceeded.runOutput.size() == 1U))
+                 runSucceeded.runOutput.size() == 1U &&
+                 runRunner.maximumCapturedOutputBytes.load(std::memory_order_acquire) == 4U * 1024U * 1024U))
     {
         return false;
     }

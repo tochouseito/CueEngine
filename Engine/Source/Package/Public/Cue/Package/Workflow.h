@@ -73,9 +73,10 @@ struct PackageWorkflowSnapshot final
 /// @brief Game Build成功ArtifactからStandalone Package公開と起動を直列化するApplication Service
 ///
 /// `start`、`retry`、`advance`、`run`、`wait_for_package`、`wait_for_run_completion`はcreate呼出Threadだけで
-/// 使用する。`snapshot`、`request_cancel`、`stop`は任意Threadから呼べる。Build Serviceは借用し、本Serviceより
-/// 長く生存させる。FilesystemとRun用Process RunnerはServiceが所有する。Destructorは進行中Build、Package、
-/// Runtime Processを取消してJoinし、子Processを残さない。
+/// 使用する。`snapshot`、`request_cancel`、`stop`は任意Threadから呼べる。Build Service、Filesystem、Run用Process
+/// RunnerはServiceが所有する。Destructorは進行中Build、Package、
+/// Runtime Processを取消してJoinし、子Processを残さない。Build Serviceを専有し、別のBuild PresenterまたはWorkflowと
+/// Operation Stateを共有しない。
 class GamePackageWorkflowService final
 {
   public:
@@ -86,9 +87,9 @@ class GamePackageWorkflowService final
     /// @brief 進行中Operationを取消し、所有Workerと子Processの終了を待つ
     ~GamePackageWorkflowService();
 
-    /// @brief Build Service、Root限定Filesystem、Run用Process Runnerを一つのWorkflow Ownerへ束ねる
+    /// @brief Build Service、Root限定Filesystem、Run用Process Runnerの所有権を一つのWorkflowへ束ねる
     [[nodiscard]] static Result<std::unique_ptr<GamePackageWorkflowService>> create(
-        GameBuildService &a_buildService, std::unique_ptr<FilesystemRoot> a_projectFilesystem,
+        std::unique_ptr<GameBuildService> a_buildService, std::unique_ptr<FilesystemRoot> a_projectFilesystem,
         std::unique_ptr<FilesystemRoot> a_engineBinaryFilesystem,
         std::unique_ptr<ChildProcessRunner> a_runProcessRunner, std::string a_projectRoot,
         std::vector<ChildProcessEnvironmentEntry> a_runEnvironment, const AssertContext &a_assertContext) noexcept;
