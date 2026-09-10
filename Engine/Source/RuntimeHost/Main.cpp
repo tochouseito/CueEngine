@@ -274,6 +274,7 @@ template <typename Value>
         {
             a_options.isPackageRuntime = true;
             a_options.isSmokeTest = true;
+            a_options.graphicsAdapterPolicy = cue::D3d12AdapterPolicy::Warp;
             continue;
         }
 
@@ -614,6 +615,7 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
                                   cue::Window &a_window, cue::Logger &a_logger, cue::AssertContext &a_assertContext)
 {
     constexpr std::uint64_t renderSmokeFrameCount = 300;
+    constexpr std::uint64_t packageSmokeFrameCount = 1;
     constexpr std::array<float, 4> clearColor = {0.06F, 0.18F, 0.32F, 1.0F};
 
     // Window を Presentation の Native Surface として使える状態で、Backend から依存順に描画資源を構築する
@@ -656,9 +658,11 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
                                ", BufferCount=" + std::to_string(presentation->buffer_count()) +
                                ", VSync=" + (presentation->is_vsync_enabled() ? "true" : "false");
     cue::LogResult readyLogResult = a_logger.log(cue::LogLevel::Info, readyMessage);
+    const cue::runtime_host::RuntimeHostStartupSource startupSource =
+        a_options.isPackageRuntime ? cue::runtime_host::RuntimeHostStartupSource::ExecutableRelativePackage
+                                   : cue::runtime_host::RuntimeHostStartupSource::FixedSmoke;
     cue::Result<std::unique_ptr<cue::runtime_host::RuntimeHostApplication>> applicationResult =
-        cue::runtime_host::RuntimeHostApplication::start(
-            a_window, cue::runtime_host::RuntimeHostStartupSource::FixedSmoke, a_assertContext);
+        cue::runtime_host::RuntimeHostApplication::start(a_window, startupSource, a_assertContext);
     if (!applicationResult)
     {
         cue::Error applicationError = std::move(*applicationResult.try_error());
@@ -716,6 +720,7 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     std::uint32_t resizeSmokeActionIndex = 0;
     bool isResizeSmokeBatchProbeIssued = false;
     bool isResizeSmokeStarted = false;
+    bool isPackageSmokeCloseProbeIssued = false;
 #endif
     bool isMinimized = false;
     bool isShutdownRequested = false;
@@ -903,6 +908,28 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
         }
 
         ++frameCount;
+
+        if (a_options.isPackageRuntime && a_options.isSmokeTest && frameCount >= packageSmokeFrameCount)
+        {
+#if defined(CUE_RUNTIME_RESIZE_SMOKE_SUPPORT) && CUE_RUNTIME_RESIZE_SMOKE_SUPPORT
+            if (!isPackageSmokeCloseProbeIssued)
+            {
+                cue::Result<void> closeResult = cue::issue_windows_window_lifecycle_probe_action(
+                    a_window, cue::WindowsWindowLifecycleProbeAction::ResizeThenClose, a_options.clientSize,
+                    a_options.clientSize, a_assertContext);
+                if (!closeResult)
+                {
+                    frameError.emplace(std::move(*closeResult.try_error()));
+                    loopErrorMessage = "Runtime Package Window Close probe failed";
+                    loopErrorExitCode = k_messagePumpFailed;
+                    break;
+                }
+                isPackageSmokeCloseProbeIssued = true;
+            }
+#else
+            isShutdownRequested = true;
+#endif
+        }
 
         if (*frameResult.try_value() == cue::PresentationFrameStatus::Occluded)
         {
@@ -1177,9 +1204,9 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
                             k_windowShowFailed);
     }
 
-    if (!a_options.isSmokeTest && !a_options.isPackageRuntime)
+    if (!a_options.isSmokeTest || a_options.isPackageRuntime)
     {
-        // 通常実行と Rendering 系 Smoke は同じ Clear/Present 経路を通し、Smoke 固有分岐による差を抑える
+        // 通常実行、Rendering系Smoke、Package実行は同じClear／Present経路と停止順を通す
         const int renderResult = run_render_loop(a_options, *windowSystem, *window, a_logger, a_assertContext);
         cue::Result<void> destroyResult = window->destroy();
 
@@ -1196,10 +1223,7 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
 
     cue::Result<std::unique_ptr<cue::runtime_host::RuntimeHostApplication>> applicationResult =
         cue::runtime_host::RuntimeHostApplication::start(
-            *window,
-            a_options.isPackageRuntime ? cue::runtime_host::RuntimeHostStartupSource::ExecutableRelativePackage
-                                       : cue::runtime_host::RuntimeHostStartupSource::FixedSmoke,
-            a_assertContext);
+            *window, cue::runtime_host::RuntimeHostStartupSource::FixedSmoke, a_assertContext);
     if (!applicationResult)
     {
         cue::Error applicationError = std::move(*applicationResult.try_error());
@@ -1233,17 +1257,6 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     // Test Buildでは実WindowへWM_CLOSEを発行し、Window EventからRuntime停止へ到達する経路を検証する
     if (a_options.isSmokeTest)
     {
-        if (a_options.isPackageRuntime)
-        {
-            cue::Result<void> firstFrame = application->advance_frame();
-            if (!firstFrame)
-            {
-                hostError.emplace(std::move(*firstFrame.try_error()));
-                hostErrorMessage = "Runtime Package first frame failed";
-                hostErrorExitCode = k_runtimeApplicationFrameFailed;
-                isShutdownRequested = true;
-            }
-        }
         cue::Result<void> closeResult =
             hostError ? cue::Result<void>::success()
                       : cue::issue_windows_window_lifecycle_probe_action(
@@ -1260,14 +1273,6 @@ void add_secondary_runtime_error(cue::Error &a_primaryError, const cue::Error &a
     // Production BuildのSmokeはTest専用Native操作へ依存せず、明示要求として同じ停止順だけを通す
     if (a_options.isSmokeTest)
     {
-        cue::Result<void> firstFrame =
-            a_options.isPackageRuntime ? application->advance_frame() : cue::Result<void>::success();
-        if (!firstFrame)
-        {
-            hostError.emplace(std::move(*firstFrame.try_error()));
-            hostErrorMessage = "Runtime Package first frame failed";
-            hostErrorExitCode = k_runtimeApplicationFrameFailed;
-        }
         isShutdownRequested = true;
     }
 #endif
