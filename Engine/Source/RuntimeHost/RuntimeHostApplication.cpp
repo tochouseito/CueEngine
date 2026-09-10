@@ -71,7 +71,7 @@ class RuntimeHostApplication::State final
     schema::SchemaRegistryIdentitySource schemaIdentitySource;
     game_core::WorldIdentitySource worldIdentitySource;
     game_core::SteadyMonotonicClock clock;
-    std::unique_ptr<RuntimePackageModule> gameModule;
+    std::shared_ptr<RuntimePackageModule> gameModule;
     std::unique_ptr<schema::SchemaRegistry> schemaRegistry;
     std::unique_ptr<runtime::RuntimeApplicationSession> session;
     std::unique_ptr<WindowsInputMessageSink> inputSink;
