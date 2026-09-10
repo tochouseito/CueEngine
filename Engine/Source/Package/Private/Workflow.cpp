@@ -134,7 +134,7 @@ enum class WorkflowError : std::int64_t
 [[nodiscard]] cue::package::PackageWorkflowState build_terminal_state(cue::GameBuildOperationState a_state) noexcept
 {
     return a_state == cue::GameBuildOperationState::Cancelled ? cue::package::PackageWorkflowState::Cancelled
-                                                               : cue::package::PackageWorkflowState::Failed;
+                                                              : cue::package::PackageWorkflowState::Failed;
 }
 } // namespace
 
@@ -155,10 +155,10 @@ struct GamePackageWorkflowService::Impl final
          std::unique_ptr<ChildProcessRunner> a_runProcessRunner, std::string a_projectRoot,
          std::vector<ChildProcessEnvironmentEntry> a_runEnvironment, const AssertContext &a_assertContext) noexcept
         : buildService(std::move(a_buildService)), artifactReader(std::move(a_artifactReader)),
-          projectFilesystem(std::move(a_projectFilesystem)), engineBinaryFilesystem(std::move(a_engineBinaryFilesystem)),
-          runProcessRunner(std::move(a_runProcessRunner)), projectRoot(std::move(a_projectRoot)),
-          runEnvironment(std::move(a_runEnvironment)), assertContext(&a_assertContext),
-          ownerThread(std::this_thread::get_id())
+          projectFilesystem(std::move(a_projectFilesystem)),
+          engineBinaryFilesystem(std::move(a_engineBinaryFilesystem)), runProcessRunner(std::move(a_runProcessRunner)),
+          projectRoot(std::move(a_projectRoot)), runEnvironment(std::move(a_runEnvironment)),
+          assertContext(&a_assertContext), ownerThread(std::this_thread::get_id())
     {
     }
 
@@ -184,10 +184,8 @@ struct GamePackageWorkflowService::Impl final
     }
 
     /// @brief 入力Rootから上限付きByte列を読みPackage Payloadへ変換する
-    [[nodiscard]] Result<PackageFilePayload> read_payload(FilesystemRoot &a_filesystem,
-                                                          std::string a_sourcePath,
-                                                          PackageFileRole a_role,
-                                                          std::string a_packagePath,
+    [[nodiscard]] Result<PackageFilePayload> read_payload(FilesystemRoot &a_filesystem, std::string a_sourcePath,
+                                                          PackageFileRole a_role, std::string a_packagePath,
                                                           std::uint64_t a_maximumBytes) noexcept
     {
         Result<RelativePath> source = RelativePath::parse(a_sourcePath, *assertContext);
@@ -225,9 +223,9 @@ struct GamePackageWorkflowService::Impl final
 
             std::vector<PackageFilePayload> payloads;
             payloads.reserve(a_artifact.files().size() + 3U);
-            Result<PackageFilePayload> runtimeHost =
-                read_payload(*engineBinaryFilesystem, join_relative("bin", join_relative(configuration, "CueRuntimeHost.exe")),
-                             PackageFileRole::RuntimeHost, "CueRuntimeHost.exe", k_maximumPackagedFileBytes);
+            Result<PackageFilePayload> runtimeHost = read_payload(
+                *engineBinaryFilesystem, join_relative("bin", join_relative(configuration, "CueRuntimeHost.exe")),
+                PackageFileRole::RuntimeHost, "CueRuntimeHost.exe", k_maximumPackagedFileBytes);
             if (!runtimeHost)
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*runtimeHost.try_error()));
@@ -238,9 +236,9 @@ struct GamePackageWorkflowService::Impl final
                 make_project_relative(projectRoot, a_artifact.version_directory());
             if (!artifactDirectory)
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                    *assertContext, WorkflowError::ArtifactMismatch,
-                    "Build artifact directory is outside the package project root"));
+                return Result<PublishedRuntimePackageSnapshot>::failure(
+                    make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                        "Build artifact directory is outside the package project root"));
             }
 
             Result<std::optional<std::unique_ptr<BuildArtifactReadLease>>> acquired =
@@ -251,20 +249,18 @@ struct GamePackageWorkflowService::Impl final
             }
             if (!acquired.try_value()->has_value())
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                    *assertContext, WorkflowError::PackagePublicationFailed,
-                    "Package publication was cancelled while waiting for the artifact read lease"));
+                return Result<PublishedRuntimePackageSnapshot>::failure(
+                    make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
+                                        "Package publication was cancelled while waiting for the artifact read lease"));
             }
-            std::unique_ptr<BuildArtifactReadLease> artifactReadLease =
-                std::move(**acquired.try_value());
+            std::unique_ptr<BuildArtifactReadLease> artifactReadLease = std::move(**acquired.try_value());
 
             for (const BuildArtifactFile &file : a_artifact.files())
             {
                 if (a_cancellation.is_cancel_requested())
                 {
                     return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                        *assertContext, WorkflowError::PackagePublicationFailed,
-                        "Package publication was cancelled"));
+                        *assertContext, WorkflowError::PackagePublicationFailed, "Package publication was cancelled"));
                 }
                 if (file.relativePath == "CueGameModule.pdb")
                 {
@@ -282,9 +278,9 @@ struct GamePackageWorkflowService::Impl final
                     role = PackageFileRole::GameModuleMetadata;
                     packagePath = "Game/CueGameModule.metadata.json";
                 }
-                Result<PackageFilePayload> payload = read_payload(
-                    *projectFilesystem, join_relative(*artifactDirectory, file.relativePath), role,
-                    std::move(packagePath), file.byteSize);
+                Result<PackageFilePayload> payload =
+                    read_payload(*projectFilesystem, join_relative(*artifactDirectory, file.relativePath), role,
+                                 std::move(packagePath), file.byteSize);
                 if (!payload)
                 {
                     return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*payload.try_error()));
@@ -292,9 +288,9 @@ struct GamePackageWorkflowService::Impl final
                 if (payload.try_value()->entry().byte_size() != file.byteSize ||
                     payload.try_value()->entry().sha256() != file.contentHash)
                 {
-                    return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                        *assertContext, WorkflowError::ArtifactMismatch,
-                        "Build artifact bytes differ from the published inventory"));
+                    return Result<PublishedRuntimePackageSnapshot>::failure(
+                        make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                            "Build artifact bytes differ from the published inventory"));
                 }
                 payloads.push_back(std::move(*payload.try_value()));
             }
@@ -316,9 +312,9 @@ struct GamePackageWorkflowService::Impl final
             if (projectPayload.try_value()->entry().sha256() != projectData.sha256() ||
                 scenePayload.try_value()->entry().sha256() != sceneData.sha256())
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                    *assertContext, WorkflowError::ArtifactMismatch,
-                    "Runtime data bytes differ from the publication snapshot"));
+                return Result<PublishedRuntimePackageSnapshot>::failure(
+                    make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                        "Runtime data bytes differ from the publication snapshot"));
             }
             payloads.push_back(std::move(*projectPayload.try_value()));
             payloads.push_back(std::move(*scenePayload.try_value()));
@@ -338,8 +334,7 @@ struct GamePackageWorkflowService::Impl final
                     gameModulePayload = &payload;
                     break;
                 case PackageFileRole::RuntimeDependency:
-                    dependencyImages.push_back(
-                        {package_file_name(payload.entry().relative_path()), payload.bytes()});
+                    dependencyImages.push_back({package_file_name(payload.entry().relative_path()), payload.bytes()});
                     break;
                 case PackageFileRole::GameModuleMetadata:
                 case PackageFileRole::ProjectRuntimeData:
@@ -350,8 +345,7 @@ struct GamePackageWorkflowService::Impl final
             if (runtimeHostPayload == nullptr || gameModulePayload == nullptr)
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
-                    *assertContext, WorkflowError::ArtifactMismatch,
-                    "Package PE dependency inputs are incomplete"));
+                    *assertContext, WorkflowError::ArtifactMismatch, "Package PE dependency inputs are incomplete"));
             }
             Result<void> dependencyClosure = validate_runtime_dependency_closure(
                 a_artifact.configuration(),
@@ -360,8 +354,7 @@ struct GamePackageWorkflowService::Impl final
                 dependencyImages, *assertContext);
             if (!dependencyClosure)
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(
-                    std::move(*dependencyClosure.try_error()));
+                return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*dependencyClosure.try_error()));
             }
 
             std::vector<PackageFileEntry> entries;
@@ -370,11 +363,11 @@ struct GamePackageWorkflowService::Impl final
             {
                 entries.push_back(payload.entry());
             }
-            Result<PackageManifest> manifest = PackageManifest::create(
-                a_inputs.projectId, a_inputs.engineVersion, a_artifact.configuration(),
-                std::string(a_inputs.runtimeData.startup_scene_asset_id()),
-                std::string(a_inputs.runtimeData.startup_scene_data().relative_path()), std::move(entries),
-                *assertContext);
+            Result<PackageManifest> manifest =
+                PackageManifest::create(a_inputs.projectId, a_inputs.engineVersion, a_artifact.configuration(),
+                                        std::string(a_inputs.runtimeData.startup_scene_asset_id()),
+                                        std::string(a_inputs.runtimeData.startup_scene_data().relative_path()),
+                                        std::move(entries), *assertContext);
             if (!manifest)
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*manifest.try_error()));
@@ -386,17 +379,17 @@ struct GamePackageWorkflowService::Impl final
                 RelativePath::parse(join_relative(packageParent, a_operationId), *assertContext);
             if (!parent || !destination)
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(
-                    parent ? std::move(*destination.try_error()) : std::move(*parent.try_error()));
+                return Result<PublishedRuntimePackageSnapshot>::failure(parent ? std::move(*destination.try_error())
+                                                                               : std::move(*parent.try_error()));
             }
             Result<void> directory = projectFilesystem->create_directories(*parent.try_value());
             if (!directory)
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*directory.try_error()));
             }
-            PackagePublishReport report = publish_runtime_package(*projectFilesystem, *destination.try_value(),
-                                                                  *manifest.try_value(), payloads, a_cancellation,
-                                                                  *assertContext);
+            PackagePublishReport report =
+                publish_runtime_package(*projectFilesystem, *destination.try_value(), *manifest.try_value(), payloads,
+                                        a_cancellation, *assertContext);
             if (!report.succeeded())
             {
                 a_diagnostic = PackagePublishDiagnosticSnapshot{
@@ -495,10 +488,10 @@ Result<std::unique_ptr<GamePackageWorkflowService>> GamePackageWorkflowService::
             return Result<std::unique_ptr<GamePackageWorkflowService>>::failure(make_workflow_error(
                 a_assertContext, WorkflowError::MissingDependency, "Package workflow dependency is missing"));
         }
-        auto impl = std::make_unique<Impl>(
-            std::move(a_buildService), std::move(a_artifactReader), std::move(a_projectFilesystem),
-            std::move(a_engineBinaryFilesystem), std::move(a_runProcessRunner), std::move(a_projectRoot),
-            std::move(a_runEnvironment), a_assertContext);
+        auto impl = std::make_unique<Impl>(std::move(a_buildService), std::move(a_artifactReader),
+                                           std::move(a_projectFilesystem), std::move(a_engineBinaryFilesystem),
+                                           std::move(a_runProcessRunner), std::move(a_projectRoot),
+                                           std::move(a_runEnvironment), a_assertContext);
         return Result<std::unique_ptr<GamePackageWorkflowService>>::success(
             std::unique_ptr<GamePackageWorkflowService>(new GamePackageWorkflowService(std::move(impl))));
     }
@@ -517,8 +510,8 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
         if (!m_impl->is_owner_thread())
         {
             return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                              WorkflowError::OwnerThreadViolation,
-                                                              "Package workflow start requires owner thread"));
+                                                             WorkflowError::OwnerThreadViolation,
+                                                             "Package workflow start requires owner thread"));
         }
         advance();
         {
@@ -528,8 +521,8 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
                 m_impl->current.state == PackageWorkflowState::Running)
             {
                 return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                                  WorkflowError::OperationAlreadyRunning,
-                                                                  "Package workflow operation is already running"));
+                                                                 WorkflowError::OperationAlreadyRunning,
+                                                                 "Package workflow operation is already running"));
             }
         }
         Result<void> recovered = m_impl->retry_staging_recovery();
@@ -572,8 +565,8 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
         if (!m_impl->is_owner_thread())
         {
             return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                              WorkflowError::OwnerThreadViolation,
-                                                              "Package workflow retry requires owner thread"));
+                                                             WorkflowError::OwnerThreadViolation,
+                                                             "Package workflow retry requires owner thread"));
         }
         advance();
         std::optional<Impl::PackageInputs> inputs;
@@ -582,16 +575,16 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
             if (!m_impl->retryInputs)
             {
                 return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                                  WorkflowError::NoRetryableOperation,
-                                                                  "No package workflow is available for retry"));
+                                                                 WorkflowError::NoRetryableOperation,
+                                                                 "No package workflow is available for retry"));
             }
             if (m_impl->current.state == PackageWorkflowState::Building ||
                 m_impl->current.state == PackageWorkflowState::Packaging ||
                 m_impl->current.state == PackageWorkflowState::Running)
             {
                 return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                                  WorkflowError::OperationAlreadyRunning,
-                                                                  "Package workflow operation is already running"));
+                                                                 WorkflowError::OperationAlreadyRunning,
+                                                                 "Package workflow operation is already running"));
             }
             inputs = *m_impl->retryInputs;
         }
@@ -777,7 +770,7 @@ Result<void> GamePackageWorkflowService::request_cancel() noexcept
             return Result<void>::success();
         }
         return Result<void>::failure(make_workflow_error(*m_impl->assertContext, WorkflowError::NoActiveOperation,
-                                                          "No active package workflow can be cancelled"));
+                                                         "No active package workflow can be cancelled"));
     }
     catch (...)
     {
@@ -791,9 +784,8 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
     {
         if (!m_impl->is_owner_thread())
         {
-            return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                              WorkflowError::OwnerThreadViolation,
-                                                              "Package run requires owner thread"));
+            return Result<void>::failure(make_workflow_error(
+                *m_impl->assertContext, WorkflowError::OwnerThreadViolation, "Package run requires owner thread"));
         }
         advance();
         std::optional<PublishedRuntimePackageSnapshot> package;
@@ -805,16 +797,15 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
             if (m_impl->current.state != PackageWorkflowState::PackageReady &&
                 m_impl->current.state != PackageWorkflowState::RunSucceeded && !failedRunCanRetry)
             {
-                return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                                  WorkflowError::NoPublishedPackage,
-                                                                  "No published Package is ready to run"));
+                return Result<void>::failure(make_workflow_error(
+                    *m_impl->assertContext, WorkflowError::NoPublishedPackage, "No published Package is ready to run"));
             }
             package = m_impl->current.package;
             if (!package)
             {
                 return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
-                                                                  WorkflowError::NoPublishedPackage,
-                                                                  "Published Package snapshot is missing"));
+                                                                 WorkflowError::NoPublishedPackage,
+                                                                 "Published Package snapshot is missing"));
             }
             m_impl->processCancellation = cancellation;
             m_impl->current.state = PackageWorkflowState::Running;
@@ -823,40 +814,41 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
             m_impl->current.message = "Standalone Runtimeを起動しました。";
         }
         const std::string workingDirectory = join_absolute(m_impl->projectRoot, package->destination);
-        const std::vector<std::string> arguments{
-            a_mode == PackageRunMode::SmokeTest ? "--package-smoke-test" : "--package"};
+        const std::vector<std::string> arguments{a_mode == PackageRunMode::SmokeTest ? "--package-smoke-test"
+                                                                                     : "--package"};
         ChildProcessRequest request(package->executable, arguments, workingDirectory, m_impl->runEnvironment,
                                     std::nullopt, k_maximumRuntimeOutputBytes);
-        m_impl->worker = std::thread([impl = m_impl.get(), request = std::move(request), cancellation]()
-        {
-            Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
-            std::scoped_lock lock(impl->mutex);
-            impl->processCancellation.reset();
-            impl->isCancellationRequested = false;
-            impl->current.activeStage = PackageWorkflowStage::None;
-            if (!runResult)
+        m_impl->worker = std::thread(
+            [impl = m_impl.get(), request = std::move(request), cancellation]()
             {
+                Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
+                std::scoped_lock lock(impl->mutex);
+                impl->processCancellation.reset();
+                impl->isCancellationRequested = false;
+                impl->current.activeStage = PackageWorkflowStage::None;
+                if (!runResult)
+                {
+                    impl->current.state = PackageWorkflowState::Failed;
+                    impl->current.message = error_message(*runResult.try_error());
+                    return;
+                }
+                impl->current.runOutput = runResult.try_value()->output();
+                if (runResult.try_value()->outcome() == ChildProcessOutcome::Cancelled)
+                {
+                    impl->current.state = PackageWorkflowState::PackageReady;
+                    impl->current.message = "Standalone Runtimeを停止しました。";
+                    return;
+                }
+                if (runResult.try_value()->outcome() == ChildProcessOutcome::Exited &&
+                    runResult.try_value()->exit_code() == std::optional<std::uint32_t>(0U))
+                {
+                    impl->current.state = PackageWorkflowState::RunSucceeded;
+                    impl->current.message = "Standalone Runtimeが正常終了しました。";
+                    return;
+                }
                 impl->current.state = PackageWorkflowState::Failed;
-                impl->current.message = error_message(*runResult.try_error());
-                return;
-            }
-            impl->current.runOutput = runResult.try_value()->output();
-            if (runResult.try_value()->outcome() == ChildProcessOutcome::Cancelled)
-            {
-                impl->current.state = PackageWorkflowState::PackageReady;
-                impl->current.message = "Standalone Runtimeを停止しました。";
-                return;
-            }
-            if (runResult.try_value()->outcome() == ChildProcessOutcome::Exited &&
-                runResult.try_value()->exit_code() == std::optional<std::uint32_t>(0U))
-            {
-                impl->current.state = PackageWorkflowState::RunSucceeded;
-                impl->current.message = "Standalone Runtimeが正常終了しました。";
-                return;
-            }
-            impl->current.state = PackageWorkflowState::Failed;
-            impl->current.message = "Standalone Runtimeが異常終了しました。";
-        });
+                impl->current.message = "Standalone Runtimeが異常終了しました。";
+            });
         return Result<void>::success();
     }
     catch (...)
@@ -867,7 +859,27 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
 
 Result<void> GamePackageWorkflowService::stop() noexcept
 {
-    return request_cancel();
+    try
+    {
+        std::shared_ptr<ChildProcessCancellation> processCancellation;
+        {
+            std::scoped_lock lock(m_impl->mutex);
+            if (m_impl->current.state != PackageWorkflowState::Running || !m_impl->processCancellation)
+            {
+                return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
+                                                                 WorkflowError::NoActiveOperation,
+                                                                 "No running package runtime can be stopped"));
+            }
+            m_impl->isCancellationRequested = true;
+            processCancellation = m_impl->processCancellation;
+        }
+        processCancellation->request_graceful_stop();
+        return Result<void>::success();
+    }
+    catch (...)
+    {
+        terminate_workflow_exception(*m_impl->assertContext);
+    }
 }
 
 Result<void> GamePackageWorkflowService::wait_for_package() noexcept
@@ -875,7 +887,7 @@ Result<void> GamePackageWorkflowService::wait_for_package() noexcept
     if (!m_impl->is_owner_thread())
     {
         return Result<void>::failure(make_workflow_error(*m_impl->assertContext, WorkflowError::OwnerThreadViolation,
-                                                          "Package wait requires owner thread"));
+                                                         "Package wait requires owner thread"));
     }
     for (;;)
     {
@@ -894,7 +906,7 @@ Result<void> GamePackageWorkflowService::wait_for_run_completion() noexcept
     if (!m_impl->is_owner_thread())
     {
         return Result<void>::failure(make_workflow_error(*m_impl->assertContext, WorkflowError::OwnerThreadViolation,
-                                                          "Package run wait requires owner thread"));
+                                                         "Package run wait requires owner thread"));
     }
     for (;;)
     {

@@ -76,8 +76,21 @@ int main()
     cue::ChildProcessCancellation cancelledCancellation;
     cancelledCancellation.request_cancel();
     auto cancelled = runner.run(request, cancelledCancellation);
-    return cancelled && cancelled.try_value()->outcome() == cue::ChildProcessOutcome::Cancelled &&
-                   !cancelled.try_value()->exit_code().has_value() && cancelledCancellation.is_cancel_requested()
-               ? 0
-               : 3;
+    if (!cancelled || cancelled.try_value()->outcome() != cue::ChildProcessOutcome::Cancelled ||
+        cancelled.try_value()->exit_code().has_value() || !cancelledCancellation.is_cancel_requested() ||
+        cancelledCancellation.cancellation_mode() != cue::ChildProcessCancellationMode::Immediate)
+    {
+        return 3;
+    }
+
+    cue::ChildProcessCancellation gracefulCancellation;
+    gracefulCancellation.request_graceful_stop();
+    if (!gracefulCancellation.is_cancel_requested() ||
+        gracefulCancellation.cancellation_mode() != cue::ChildProcessCancellationMode::Graceful)
+    {
+        return 4;
+    }
+    gracefulCancellation.request_cancel();
+    gracefulCancellation.request_graceful_stop();
+    return gracefulCancellation.cancellation_mode() == cue::ChildProcessCancellationMode::Immediate ? 0 : 5;
 }

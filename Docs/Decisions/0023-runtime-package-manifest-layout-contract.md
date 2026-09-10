@@ -409,6 +409,11 @@ RuntimeHostはPackage Rootを確定した後、次の順序でFail-closedに起�
 失敗時は完了済みStepだけを逆順で終了し、部分World、System State、Module Handle、DLL Handleを残さない。
 Game ModuleのStopと全State破棄が完了する前にDLLをUnloadしない。Owner Thread契約はADR-0021とADR-0022を維持する。
 
+Editorの`Stop`はWindowsのRuntimeHost Top-level Windowへ`WM_CLOSE`を通知し、通常のWindow終了経路で
+`RuntimeApplicationSession::stop`、System逆順停止、State破棄、Game Module Unloadを完了させる。停止要求から5秒以内に
+Processが終了しない場合、Process TreeをJob Objectで強制終了する。Build／Packageの`Cancel`とEditor自身の終了時Cleanupは
+即時Cancelを使用し、正常停止要求中にも即時Cancelへ昇格できる。いずれの停止結果もProcess Capture Logを保持する。
+
 Package RuntimeはSchema、Manifest、Runtime Dataを暗黙Migrationしない。互換性のないPackageは対応Engineで再生成する。
 Required Capabilityの取得失敗はUnsupportedへ捏造せず、既存Compatibility分類に従って起動拒否理由を返す。
 
@@ -556,6 +561,8 @@ M16では次を検証する。
 - `PublishedButDurabilityUnknown`を自動Run可能な成功にしない
 - Executable相対でPackage Rootを解決し、Current Directoryを変更しても起動できる
 - Package移動後にManifestからGame ModuleをLoad、Start、Update、Stop、Unloadできる
+- Editorの`Stop`がRuntimeHostへ`WM_CLOSE`を送り、正常停止Markerを取得してからProcessを終了できる
+- 正常停止へ応答しないRuntime Processを5秒後にJob Objectで強制終了できる
 - Project SourceとWorkspaceを参照不能にしたProcess Testでも起動できる
 - 同じ入力から再生成したManifestとRuntime DataのHashが一致する
 - PackageにAsset Import／Cook、ECS改良、Game Rendering、Sound、Effect、Physicsを追加していない

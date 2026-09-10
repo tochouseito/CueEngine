@@ -184,6 +184,27 @@ int main(int a_count, char **a_arguments)
         return 86;
     }
 
+    cue::ChildProcessCancellation gracefulCancellation;
+    std::thread gracefulStopper(
+        /// @brief ProbeのWindow生成後に正常停止を通知する
+        [&gracefulCancellation]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            gracefulCancellation.request_graceful_stop();
+        });
+    cue::ChildProcessRequest gracefulRequest(probe, {"graceful-window"}, workingDirectory, {},
+                                             std::chrono::seconds(10));
+    auto graceful = runner->run(gracefulRequest, gracefulCancellation);
+    gracefulStopper.join();
+    const std::string gracefulOutput =
+        graceful ? collect_stream(*graceful.try_value(), cue::ChildProcessStream::StandardOutput) : std::string{};
+    if (!graceful || graceful.try_value()->outcome() != cue::ChildProcessOutcome::Cancelled ||
+        graceful.try_value()->exit_code().has_value() || gracefulOutput.find("WINDOW_READY") == std::string::npos ||
+        gracefulOutput.find("WINDOW_STOPPED") == std::string::npos)
+    {
+        return 94;
+    }
+
     const std::filesystem::path invalidExecutable =
         std::filesystem::temp_directory_path() / "cue-process-invalid-executable.txt";
     {
