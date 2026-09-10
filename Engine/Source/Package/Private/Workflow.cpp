@@ -167,6 +167,21 @@ struct GamePackageWorkflowService::Impl final
         return std::this_thread::get_id() == ownerThread;
     }
 
+    /// @brief 保持中のPackage Stagingを同じFilesystem InstanceでRollbackする
+    [[nodiscard]] Result<void> retry_staging_recovery() noexcept
+    {
+        if (!recoveryStaging)
+        {
+            return Result<void>::success();
+        }
+        Result<void> rollback = projectFilesystem->rollback_staging_area(std::move(*recoveryStaging));
+        if (rollback)
+        {
+            recoveryStaging.reset();
+        }
+        return rollback;
+    }
+
     /// @brief 入力Rootから上限付きByte列を読みPackage Payloadへ変換する
     [[nodiscard]] Result<PackageFilePayload> read_payload(FilesystemRoot &a_filesystem,
                                                           std::string a_sourcePath,
@@ -366,10 +381,21 @@ struct GamePackageWorkflowService::Impl final
                                                                   *assertContext);
             if (!report.succeeded())
             {
-                return Result<PublishedRuntimePackageSnapshot>::failure(
-                    report.error ? std::move(*report.error)
-                                 : make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
-                                                       "Package publication failed without a diagnostic"));
+                Error primary = report.error
+                                    ? std::move(*report.error)
+                                    : make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
+                                                          "Package publication failed without a diagnostic");
+                if (report.recoveryStaging)
+                {
+                    recoveryStaging = std::move(report.recoveryStaging);
+                    Result<void> rollback = retry_staging_recovery();
+                    if (!rollback)
+                    {
+                        primary.append_secondary_diagnostics(*assertContext, *rollback.try_error(),
+                                                             "Package staging recovery retry failed", "Rollback");
+                    }
+                }
+                return Result<PublishedRuntimePackageSnapshot>::failure(std::move(primary));
             }
             const std::string packageRoot = join_absolute(projectRoot, destination.try_value()->text());
             return Result<PublishedRuntimePackageSnapshot>::success(
@@ -395,6 +421,7 @@ struct GamePackageWorkflowService::Impl final
     std::thread worker;
     std::shared_ptr<PackageCancellation> packageCancellation;
     std::shared_ptr<ChildProcessCancellation> processCancellation;
+    std::optional<StagingArea> recoveryStaging;
     std::optional<PackageInputs> pendingInputs;
     std::optional<PackageInputs> retryInputs;
     PackageWorkflowSnapshot current;
@@ -429,6 +456,7 @@ GamePackageWorkflowService::~GamePackageWorkflowService()
     {
         m_impl->worker.join();
     }
+    static_cast<void>(m_impl->retry_staging_recovery());
 }
 
 Result<std::unique_ptr<GamePackageWorkflowService>> GamePackageWorkflowService::create(
@@ -481,6 +509,11 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
                                                                   "Package workflow operation is already running"));
             }
         }
+        Result<void> recovered = m_impl->retry_staging_recovery();
+        if (!recovered)
+        {
+            return recovered;
+        }
         Impl::PackageInputs inputs{a_engineVersion, std::move(a_projectId), std::move(a_runtimeData)};
         Result<void> started = m_impl->buildService->start(std::move(a_buildRequest), a_configureMode);
         if (!started)
@@ -495,6 +528,7 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
             m_impl->current.activeStage = PackageWorkflowStage::Build;
             m_impl->current.build = m_impl->buildService->snapshot();
             m_impl->current.package.reset();
+            m_impl->current.recoveryStagingLocator.reset();
             m_impl->current.runOutput.clear();
             m_impl->current.message = "Game Module Buildを開始しました。";
         }
@@ -536,6 +570,11 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
             }
             inputs = *m_impl->retryInputs;
         }
+        Result<void> recovered = m_impl->retry_staging_recovery();
+        if (!recovered)
+        {
+            return recovered;
+        }
         Result<void> restarted = m_impl->buildService->retry(std::move(a_operationId));
         if (!restarted)
         {
@@ -548,6 +587,7 @@ Result<void> GamePackageWorkflowService::retry(std::string a_operationId) noexce
             m_impl->current.activeStage = PackageWorkflowStage::Build;
             m_impl->current.build = m_impl->buildService->snapshot();
             m_impl->current.package.reset();
+            m_impl->current.recoveryStagingLocator.reset();
             m_impl->current.runOutput.clear();
             m_impl->current.message = "BuildからPackageまでを再実行しました。";
         }
@@ -618,6 +658,10 @@ void GamePackageWorkflowService::advance() noexcept
                                 impl->current.activeStage = PackageWorkflowStage::None;
                                 if (!published)
                                 {
+                                    impl->current.recoveryStagingLocator =
+                                        impl->recoveryStaging
+                                            ? std::optional<std::string>(impl->recoveryStaging->path().text())
+                                            : std::nullopt;
                                     impl->current.state = cancellation->is_cancel_requested()
                                                               ? PackageWorkflowState::Cancelled
                                                               : PackageWorkflowState::Failed;
@@ -625,6 +669,7 @@ void GamePackageWorkflowService::advance() noexcept
                                     return;
                                 }
                                 impl->current.state = PackageWorkflowState::PackageReady;
+                                impl->current.recoveryStagingLocator.reset();
                                 impl->current.package = *published.try_value();
                                 impl->current.latestSuccessfulPackage = std::move(*published.try_value());
                                 impl->current.message = "Standalone Packageを公開しました。";
