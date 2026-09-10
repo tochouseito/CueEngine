@@ -1742,6 +1742,10 @@ void test_saved_startup_scene_snapshot() noexcept
                     documentId, startupScene.scene_asset_id(),
                     cue::editor_core::RenameObjectCommand{objectId, "Save As Document"}})
                 .has_value());
+    auto dirtySnapshot = controller->load_saved_startup_scene_snapshot();
+    require(!dirtySnapshot.has_value());
+    require(dirtySnapshot.try_error()->code().value() ==
+            static_cast<std::int64_t>(cue::editor_core::EditorCoreError::InvalidSavedState));
     const auto saveAs = controller->save_document_as(
         documentId, take_value(cue::RelativePath::parse("Scenes/Alternate.cuescene", assertContext)));
     require(saveAs.has_value() && saveAs.try_value()->status() == cue::scene::SceneSaveStatus::Committed);
