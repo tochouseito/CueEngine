@@ -225,6 +225,25 @@ foreach(queryOutputMode IN ITEMS query-output-size query-output-version)
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "CUE_RUNTIME_PACKAGE_PROBE_MODE=create-module-failure"
+        "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE createModuleFailureResult
+    OUTPUT_VARIABLE createModuleFailureOutput
+    ERROR_VARIABLE createModuleFailureError
+    TIMEOUT 15
+)
+set(createModuleFailureCombined "${createModuleFailureOutput}\n${createModuleFailureError}")
+string(FIND "${createModuleFailureCombined}" "Probe Project Scope initialization was rejected"
+    createModuleFailureMessagePosition)
+string(FIND "${createModuleFailureCombined}" "diagnostic code 5" createModuleFailureCodePosition)
+if(createModuleFailureResult EQUAL 0 OR createModuleFailureMessagePosition EQUAL -1 OR
+   createModuleFailureCodePosition EQUAL -1)
+    message(FATAL_ERROR
+        "Game Module Project Scope diagnostic was not preserved\n${createModuleFailureCombined}")
+endif()
+
 foreach(ignoredSinkFailureMode IN ITEMS
     ignored-schema-sink-failure
     ignored-component-sink-failure
