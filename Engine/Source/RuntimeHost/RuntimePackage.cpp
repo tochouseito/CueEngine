@@ -1474,9 +1474,11 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
 {
   public:
     /// @brief Callback、Module、Stateを一回のSession Systemへ束ねる
-    DllRuntimeSystem(CueGameModuleHandle a_module, CueGameSystemState a_state, PendingSystem a_definition,
+    DllRuntimeSystem(std::shared_ptr<cue::runtime_host::RuntimePackageModule> a_moduleLifetime,
+                     CueGameModuleHandle a_module, CueGameSystemState a_state, PendingSystem a_definition,
                      const cue::AssertContext &a_assertContext) noexcept
-        : m_module(a_module), m_state(a_state), m_definition(std::move(a_definition)),
+        : m_moduleLifetime(std::move(a_moduleLifetime)), m_module(a_module), m_state(a_state),
+          m_definition(std::move(a_definition)),
           m_assertContext(&a_assertContext)
     {
     }
@@ -1543,6 +1545,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
     }
 
   private:
+    std::shared_ptr<cue::runtime_host::RuntimePackageModule> m_moduleLifetime;
     CueGameModuleHandle m_module;
     CueGameSystemState m_state;
     PendingSystem m_definition;
@@ -1551,6 +1554,7 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
 
 /// @brief Pending DLL System群からSession所有登録を構築する
 [[nodiscard]] cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>> create_systems(
+    std::shared_ptr<cue::runtime_host::RuntimePackageModule> a_moduleLifetime,
     CueGameModuleHandle a_module, std::vector<PendingSystem> a_pending,
     const cue::AssertContext &a_assertContext) noexcept
 {
@@ -1573,7 +1577,8 @@ class DllRuntimeSystem final : public cue::game_core::RuntimeSystem
                                                      "Game Module System state creation failed"));
             }
             cue::game_core::RuntimeSystemDescriptor descriptor = pending.descriptor;
-            auto system = std::make_unique<DllRuntimeSystem>(a_module, state, std::move(pending), a_assertContext);
+            auto system = std::make_unique<DllRuntimeSystem>(
+                a_moduleLifetime, a_module, state, std::move(pending), a_assertContext);
             systems.push_back({std::move(descriptor), std::move(system)});
         }
         return cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>>::success(std::move(systems));
@@ -1805,7 +1810,7 @@ class WindowsRuntimePackageModule final : public cue::runtime_host::RuntimePacka
 namespace cue::runtime_host
 {
 LoadedRuntimePackage::LoadedRuntimePackage(std::string a_packageRoot, std::string a_projectId,
-                                           std::unique_ptr<RuntimePackageModule> a_module,
+                                           std::shared_ptr<RuntimePackageModule> a_module,
                                            std::unique_ptr<schema::SchemaRegistry> a_schemaRegistry,
                                            scene::SceneSnapshot a_startupScene,
                                            std::vector<runtime::RuntimeSystemRegistration> a_systems) noexcept
@@ -1860,7 +1865,7 @@ std::vector<runtime::RuntimeSystemRegistration> LoadedRuntimePackage::take_syste
     return std::move(m_systems);
 }
 
-std::unique_ptr<RuntimePackageModule> LoadedRuntimePackage::take_module() noexcept
+std::shared_ptr<RuntimePackageModule> LoadedRuntimePackage::take_module() noexcept
 {
     return std::move(m_module);
 }
@@ -2200,7 +2205,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,
                 "Game Module Project Scope creation failed"));
         }
-        auto module = std::make_unique<WindowsRuntimePackageModule>(
+        auto module = std::make_shared<WindowsRuntimePackageModule>(
             library, moduleHandle, api, std::move(runtimeLibraries), std::move(*rootGuard.try_value()),
             std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()),
             std::move(runtimeDependencyGuards));
@@ -2228,7 +2233,7 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*registry.try_error()));
         }
-        auto systems = create_systems(moduleHandle, std::move(registration.systems), a_assertContext);
+        auto systems = create_systems(module, moduleHandle, std::move(registration.systems), a_assertContext);
         if (!systems)
         {
             return Result<LoadedRuntimePackage>::failure(std::move(*systems.try_error()));
