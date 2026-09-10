@@ -14,6 +14,7 @@ extern "C" __declspec(dllimport) int cue_runtime_package_dependency_probe() noex
 namespace
 {
 constexpr char k_probeModeEnvironment[] = "CUE_RUNTIME_PACKAGE_PROBE_MODE";
+constexpr char k_createModuleFailureMessage[] = "Probe Project Scope initialization was rejected";
 
 /// @brief Process単位のTest Modeが要求値と一致するか返す
 [[nodiscard]] bool is_probe_mode(std::string_view a_expected) noexcept
@@ -53,7 +54,7 @@ struct SystemState final
 
 /// @brief Test Module所有のProject Scopeを生成する
 CueGameModuleResult CUE_GAME_MODULE_CALL create_module(
-    CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *) noexcept
+    CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
     if (a_module == nullptr || *a_module != nullptr)
     {
@@ -61,6 +62,19 @@ CueGameModuleResult CUE_GAME_MODULE_CALL create_module(
     }
     if (cue_runtime_package_dependency_probe() != 42)
     {
+        return CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
+    }
+    if (is_probe_mode("create-module-failure"))
+    {
+        if (a_diagnostic != nullptr && a_diagnostic->structSize >= sizeof(CueGameModuleDiagnosticV1) &&
+            a_diagnostic->version == CUE_GAME_MODULE_STRUCTURE_VERSION_1)
+        {
+            a_diagnostic->code = CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
+            a_diagnostic->reserved = 0U;
+            a_diagnostic->message = {
+                sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                k_createModuleFailureMessage, sizeof(k_createModuleFailureMessage) - 1U};
+        }
         return CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
     }
     *a_module = new (std::nothrow) ModuleState{};

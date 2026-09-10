@@ -1467,6 +1467,35 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_system(
     return cue::Result<void>::success();
 }
 
+/// @brief DLL借用DiagnosticをUnload前に所有ErrorへCopyする
+[[nodiscard]] cue::Error make_module_callback_error(
+    const cue::AssertContext &a_assertContext, CueGameModuleResult a_result,
+    const CueGameModuleDiagnosticV1 &a_diagnostic, std::string_view a_summary)
+{
+    std::string summary(a_summary);
+    summary.append(" (module result ");
+    summary.append(std::to_string(a_result));
+    summary.push_back(')');
+
+    if (a_diagnostic.structSize >= sizeof(CueGameModuleDiagnosticV1) &&
+        a_diagnostic.version == CUE_GAME_MODULE_STRUCTURE_VERSION_1)
+    {
+        summary.append(" (diagnostic code ");
+        summary.append(std::to_string(a_diagnostic.code));
+        summary.push_back(')');
+
+        std::string message;
+        if (copy_utf8_view(a_diagnostic.message, message))
+        {
+            summary.append(": ");
+            summary.append(message);
+        }
+    }
+
+    return cue::runtime::make_runtime_error(
+        a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration, summary);
+}
+
 /// @brief Runtime System失敗を外部診断Ownerへ依存しない所有Errorへ変換する
 [[nodiscard]] cue::Error make_dll_system_error(cue::runtime::RuntimeError a_code,
                                                std::string_view a_summary) noexcept
@@ -2199,13 +2228,14 @@ Result<LoadedRuntimePackage> load_runtime_package(schema::SchemaRegistryIdentity
                 "Game Module API identity or lifecycle is incompatible"));
         }
         CueGameModuleHandle moduleHandle = nullptr;
-        if (api.createModule(&moduleHandle, &diagnostic) != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
+        const CueGameModuleResult createModuleResult = api.createModule(&moduleHandle, &diagnostic);
+        if (createModuleResult != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
         {
+            cue::Error error = make_module_callback_error(
+                a_assertContext, createModuleResult, diagnostic, "Game Module Project Scope creation failed");
             FreeLibrary(library);
             unload_libraries(runtimeLibraries);
-            return Result<LoadedRuntimePackage>::failure(cue::runtime::make_runtime_error(
-                a_assertContext, cue::runtime::RuntimeError::InvalidApplicationConfiguration,
-                "Game Module Project Scope creation failed"));
+            return Result<LoadedRuntimePackage>::failure(std::move(error));
         }
         auto module = std::make_shared<WindowsRuntimePackageModule>(
             library, moduleHandle, api, std::move(runtimeLibraries), std::move(*rootGuard.try_value()),
