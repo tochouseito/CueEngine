@@ -20,6 +20,10 @@ endif()
 set(projectId "41234567-89ab-4cde-8f01-23456789abcd")
 set(sceneId "51234567-89ab-4cde-8f01-23456789abcd")
 set(artifactId "61234567-89ab-4cde-8f01-23456789abcd")
+string(ASCII 10 runtimeLf)
+function(write_runtime_data path content)
+    file(CONFIGURE OUTPUT "${path}" CONTENT "${content}" @ONLY NEWLINE_STYLE UNIX)
+endfunction()
 set(stagingRoot "${TEST_ROOT}/BuiltPackage")
 set(packageRoot "${TEST_ROOT}/RelocatedPackage")
 set(workingRoot "${TEST_ROOT}/UnrelatedWorkingDirectory")
@@ -35,10 +39,10 @@ file(COPY_FILE "${TEST_EXECUTABLE}" "${stagingRoot}/CueRuntimeHost.exe" ONLY_IF_
 file(COPY_FILE "${MODULE_LIBRARY}" "${stagingRoot}/Game/CueGameModule.dll" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${DEPENDENCY_LIBRARY}" "${stagingRoot}/Runtime/ProbeDependency.dll" ONLY_IF_DIFFERENT)
 
-file(WRITE "${projectPath}"
-    "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineCompatibility\":{\"minimum\":\"1.0.0\",\"maximumExclusive\":\"2.0.0\"},\"requiredCapabilities\":[],\"startupSceneAssetId\":\"${sceneId}\"}\n")
-file(WRITE "${scenePath}"
-    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[]}\n")
+write_runtime_data("${projectPath}"
+    "{\"schemaVersion\":1,\"projectId\":\"${projectId}\",\"engineCompatibility\":{\"minimum\":\"1.0.0\",\"maximumExclusive\":\"2.0.0\"},\"requiredCapabilities\":[],\"startupSceneAssetId\":\"${sceneId}\"}${runtimeLf}")
+write_runtime_data("${scenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[]}${runtimeLf}")
 
 if(CONFIGURATION STREQUAL "Debug")
     set(runtimeLibrary "DebugDll")
@@ -444,9 +448,68 @@ file(WRITE "${packageMetadataPath}" "${validMetadata}")
 write_package_manifest("${packageRoot}" "" "")
 
 set(packageScenePath "${packageRoot}/${sceneRelativePath}")
+set(packageProjectPath "${packageRoot}/Data/CueProject.runtime.json")
+file(READ "${packageProjectPath}" validProject)
 file(READ "${packageScenePath}" validScene)
+string(REGEX REPLACE "[\r\n]+$" "" projectWithoutFinalLf "${validProject}")
+file(WRITE "${packageProjectPath}" "${projectWithoutFinalLf}")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE nonCanonicalProjectResult
+    OUTPUT_VARIABLE nonCanonicalProjectOutput
+    ERROR_VARIABLE nonCanonicalProjectError
+    TIMEOUT 15
+)
+set(nonCanonicalProjectCombined "${nonCanonicalProjectOutput}\n${nonCanonicalProjectError}")
+string(FIND "${nonCanonicalProjectCombined}" "Runtime Project Data is not the canonical Publisher representation"
+    nonCanonicalProjectMessagePosition)
+if(nonCanonicalProjectResult EQUAL 0 OR nonCanonicalProjectMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Runtime Project Data without final LF was accepted\n${nonCanonicalProjectCombined}")
+endif()
+write_runtime_data("${packageProjectPath}" "${validProject}")
+
+string(REPLACE "{\"schemaVersion\"" "{ \"schemaVersion\"" sceneWithWhitespace "${validScene}")
+write_runtime_data("${packageScenePath}" "${sceneWithWhitespace}")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE nonCanonicalWhitespaceResult
+    OUTPUT_VARIABLE nonCanonicalWhitespaceOutput
+    ERROR_VARIABLE nonCanonicalWhitespaceError
+    TIMEOUT 15
+)
+set(nonCanonicalWhitespaceCombined "${nonCanonicalWhitespaceOutput}\n${nonCanonicalWhitespaceError}")
+string(FIND "${nonCanonicalWhitespaceCombined}" "Runtime Scene Data is not the canonical Publisher representation"
+    nonCanonicalWhitespaceMessagePosition)
+if(nonCanonicalWhitespaceResult EQUAL 0 OR nonCanonicalWhitespaceMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Runtime Scene Data with non-canonical whitespace was accepted\n${nonCanonicalWhitespaceCombined}")
+endif()
+write_runtime_data("${packageScenePath}" "${validScene}")
+
+write_runtime_data("${packageScenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,2],\"scale\":[1,1,1]},\"components\":[]}]}${runtimeLf}")
+write_package_manifest("${packageRoot}" "" "")
+execute_process(
+    COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
+    WORKING_DIRECTORY "${workingRoot}"
+    RESULT_VARIABLE nonUnitRotationResult
+    OUTPUT_VARIABLE nonUnitRotationOutput
+    ERROR_VARIABLE nonUnitRotationError
+    TIMEOUT 15
+)
+set(nonUnitRotationCombined "${nonUnitRotationOutput}\n${nonUnitRotationError}")
+string(FIND "${nonUnitRotationCombined}" "Runtime Scene rotation is not a supported unit Quaternion"
+    nonUnitRotationMessagePosition)
+if(nonUnitRotationResult EQUAL 0 OR nonUnitRotationMessagePosition EQUAL -1)
+    message(FATAL_ERROR "Non-unit Runtime Scene Quaternion was not classified as unsupported\n${nonUnitRotationCombined}")
+endif()
+write_runtime_data("${packageScenePath}" "${validScene}")
+
 foreach(invalidNumber IN ITEMS "01" ".5" "1." "1e")
-    file(WRITE "${packageScenePath}"
+    write_runtime_data("${packageScenePath}"
         "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[${invalidNumber},0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}]}\n")
     write_package_manifest("${packageRoot}" "" "")
     execute_process(
@@ -463,7 +526,7 @@ foreach(invalidNumber IN ITEMS "01" ".5" "1." "1e")
         message(FATAL_ERROR "Invalid JSON number ${invalidNumber} was accepted\n${invalidNumberCombined}")
     endif()
 endforeach()
-file(WRITE "${packageScenePath}"
+write_runtime_data("${packageScenePath}"
     "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[{\"objectId\":\"71234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]},{\"objectId\":\"61234567-89ab-4cde-8f01-23456789abcd\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}]}\n")
 write_package_manifest("${packageRoot}" "" "")
 execute_process(
@@ -480,7 +543,7 @@ string(FIND "${nonCanonicalSceneCombined}" "Runtime Scene object order is not ca
 if(nonCanonicalSceneResult EQUAL 0 OR nonCanonicalSceneMessagePosition EQUAL -1)
     message(FATAL_ERROR "Non-canonical Runtime Scene object order was accepted\n${nonCanonicalSceneCombined}")
 endif()
-file(WRITE "${packageScenePath}" "${validScene}")
+write_runtime_data("${packageScenePath}" "${validScene}")
 write_package_manifest("${packageRoot}" "" "")
 
 set(runtimeSceneObjects "")
@@ -495,8 +558,8 @@ foreach(objectIndex RANGE 0 4096)
     string(APPEND runtimeSceneObjects
         "{\"objectId\":\"00000000-0000-4000-8000-${objectIdSuffix}\",\"parentObjectId\":null,\"active\":true,\"transform\":{\"translation\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]},\"components\":[]}")
 endforeach()
-file(WRITE "${packageScenePath}"
-    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[${runtimeSceneObjects}]}\n")
+write_runtime_data("${packageScenePath}"
+    "{\"schemaVersion\":1,\"sceneAssetId\":\"${sceneId}\",\"objects\":[${runtimeSceneObjects}]}${runtimeLf}")
 write_package_manifest("${packageRoot}" "" "")
 execute_process(
     COMMAND "${packageRoot}/CueRuntimeHost.exe" --package-smoke-test
@@ -510,7 +573,7 @@ if(NOT authoringLimitRuntimeSceneResult EQUAL 0)
     message(FATAL_ERROR
         "Runtime Scene above the Authoring object limit was rejected\n${authoringLimitRuntimeSceneOutput}\n${authoringLimitRuntimeSceneError}")
 endif()
-file(WRITE "${packageScenePath}" "${validScene}")
+write_runtime_data("${packageScenePath}" "${validScene}")
 write_package_manifest("${packageRoot}" "" "")
 
 file(MAKE_DIRECTORY "${packageRoot}/Runtime")
