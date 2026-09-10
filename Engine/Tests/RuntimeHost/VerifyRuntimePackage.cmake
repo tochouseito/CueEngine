@@ -122,8 +122,11 @@ if(NOT packageResult EQUAL 0)
     message(FATAL_ERROR "Relocated Runtime Package exited with ${packageResult}\n${combinedOutput}")
 endif()
 foreach(requiredMessage IN ITEMS
+    "D3D12 Render Loop ready:"
     "Runtime Application Session started: Generation=1, WorldId="
     "Runtime Application Session stopped: Reason=WindowClosed, FrameCount=1"
+    "D3D12 Render Loop completed: FrameCount=1"
+    "D3D12 Render Loop shutdown completed"
 )
     string(FIND "${combinedOutput}" "${requiredMessage}" messagePosition)
     if(messagePosition EQUAL -1)
