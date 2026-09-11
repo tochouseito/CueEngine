@@ -747,8 +747,12 @@ template <typename Value>
         {
             continue;
         }
-        if (debug->SizeOfData < sizeof(std::uint32_t) || debug->PointerToRawData > a_bytes.size() ||
-            debug->SizeOfData > a_bytes.size() - debug->PointerToRawData)
+        const std::optional<std::size_t> mappedDataOffset =
+            debug->SizeOfData >= sizeof(std::uint32_t)
+                ? rva_to_offset(debug->AddressOfRawData, debug->SizeOfData, a_optional, a_sections, a_bytes.size())
+                : std::nullopt;
+        if (!mappedDataOffset || *mappedDataOffset != debug->PointerToRawData ||
+            debug->PointerToRawData > a_bytes.size() || debug->SizeOfData > a_bytes.size() - debug->PointerToRawData)
         {
             return cue::Result<void>::failure(make_error(a_assertContext,
                                                          cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -886,8 +890,8 @@ template <typename Value>
         guardDispatchTarget ? mapped_image_va_range(*guardDispatchTarget, 1U, *optional, sections, bytes.size())
                             : std::nullopt;
     const bool hasMappedSecurityCookie =
-        securityCookieRange &&
-        has_section_characteristics(*securityCookieRange, k_writableDataSection, IMAGE_SCN_MEM_EXECUTE);
+        securityCookieRange && has_section_characteristics(*securityCookieRange, k_writableDataSection,
+                                                           IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED);
     const bool hasMappedGuardCheck =
         guardCheckTargetRange &&
         has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
@@ -968,6 +972,7 @@ class WinTrustState final
     case TRUST_E_MALFORMED_SIGNATURE:
     case TRUST_E_COUNTER_SIGNER:
     case TRUST_E_TIME_STAMP:
+    case TRUST_E_NO_SIGNER_CERT:
         return cue::WindowsProductSignatureStatus::InvalidSignature;
     case CERT_E_EXPIRED:
         return cue::WindowsProductSignatureStatus::CertificateExpired;
@@ -992,7 +997,6 @@ class WinTrustState final
     case TRUST_E_BASIC_CONSTRAINTS:
     case TRUST_E_CERT_SIGNATURE:
     case TRUST_E_FINANCIAL_CRITERIA:
-    case TRUST_E_NO_SIGNER_CERT:
         return cue::WindowsProductSignatureStatus::ChainInvalid;
     case CRYPT_E_REVOCATION_OFFLINE:
     case CRYPT_E_NO_REVOCATION_CHECK:

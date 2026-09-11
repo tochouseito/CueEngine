@@ -314,6 +314,38 @@ void mark_security_cookie_unused(std::vector<std::byte> &a_bytes)
                 sizeof(guardFlags));
 }
 
+/// @brief Security Cookie所属SectionへProcess間共有Flagを設定する
+void mark_security_cookie_section_shared(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    IMAGE_FILE_HEADER fileHeader{};
+    std::memcpy(&fileHeader, a_bytes.data() + file_header_offset(a_bytes), sizeof(fileHeader));
+    const ULONGLONG securityCookie =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie));
+    require(securityCookie >= optional.ImageBase &&
+            securityCookie - optional.ImageBase <= std::numeric_limits<std::uint32_t>::max());
+    const std::uint32_t cookieRva = static_cast<std::uint32_t>(securityCookie - optional.ImageBase);
+    const std::size_t sectionsOffset = optionalOffset + fileHeader.SizeOfOptionalHeader;
+    for (std::size_t index = 0U; index < fileHeader.NumberOfSections; ++index)
+    {
+        const std::size_t sectionOffset = sectionsOffset + index * sizeof(IMAGE_SECTION_HEADER);
+        IMAGE_SECTION_HEADER section{};
+        std::memcpy(&section, a_bytes.data() + sectionOffset, sizeof(section));
+        const std::uint64_t sectionStart = section.VirtualAddress;
+        const std::uint64_t sectionSize = std::max(section.Misc.VirtualSize, section.SizeOfRawData);
+        if (cookieRva < sectionStart || cookieRva - sectionStart >= sectionSize)
+        {
+            continue;
+        }
+        section.Characteristics |= IMAGE_SCN_MEM_SHARED;
+        std::memcpy(a_bytes.data() + sectionOffset, &section, sizeof(section));
+        return;
+    }
+    require(false);
+}
+
 /// @brief Import Library名を所属Section終端から外へ跨ぐRVAへ改変する
 void cross_section_boundary_for_import_name(std::vector<std::byte> &a_bytes)
 {
@@ -379,6 +411,34 @@ void cross_file_boundary_for_cet_data(std::vector<std::byte> &a_bytes)
     require(false);
 }
 
+/// @brief CET Debug DataのRVAを同じRaw位置へ対応しない有効RVAへ改変する
+void mismatch_cet_data_rva(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    require(directory.Size >= sizeof(IMAGE_DEBUG_DIRECTORY) && directory.Size % sizeof(IMAGE_DEBUG_DIRECTORY) == 0U);
+    const std::size_t directoryOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    const std::size_t count = directory.Size / sizeof(IMAGE_DEBUG_DIRECTORY);
+    for (std::size_t index = 0U; index < count; ++index)
+    {
+        const std::size_t debugOffset = directoryOffset + index * sizeof(IMAGE_DEBUG_DIRECTORY);
+        IMAGE_DEBUG_DIRECTORY debug{};
+        std::memcpy(&debug, a_bytes.data() + debugOffset, sizeof(debug));
+        if (debug.Type != IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS)
+        {
+            continue;
+        }
+        require(directory.Size >= debug.SizeOfData && directory.VirtualAddress != debug.AddressOfRawData);
+        debug.AddressOfRawData = directory.VirtualAddress;
+        std::memcpy(a_bytes.data() + debugOffset, &debug, sizeof(debug));
+        return;
+    }
+    require(false);
+}
+
 /// @brief 許可済みSystem DLL名を同じ長さの未知App-local DLL名へ置換する
 void replace_import_library(std::vector<std::byte> &a_bytes)
 {
@@ -438,6 +498,8 @@ void test_trust_status_classification()
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE) ==
             cue::WindowsProductSignatureStatus::Unsigned);
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_MALFORMED_SIGNATURE) ==
+            cue::WindowsProductSignatureStatus::InvalidSignature);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NO_SIGNER_CERT) ==
             cue::WindowsProductSignatureStatus::InvalidSignature);
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_PROVIDER_UNKNOWN) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
@@ -614,6 +676,13 @@ void test_product_security(const std::filesystem::path &a_validProduct,
                                                              a_assertContext));
 
     bytes = read_bytes(a_validProduct);
+    mark_security_cookie_section_shared(bytes);
+    const std::filesystem::path sharedSecurityCookie = directory / "SharedSecurityCookie.exe";
+    write_bytes(sharedSecurityCookie, bytes);
+    require(!cue::validate_windows_shipping_product_security(sharedSecurityCookie.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
     set_image_va_value(bytes, securityCookie, guardCheckTarget);
     set_load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
                                    securityCookie);
@@ -679,6 +748,13 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(cetBoundary, bytes);
     require(
         !cue::validate_windows_shipping_product_security(cetBoundary.generic_string(), localProfile, a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    mismatch_cet_data_rva(bytes);
+    const std::filesystem::path mismatchedCetData = directory / "MismatchedCetData.exe";
+    write_bytes(mismatchedCetData, bytes);
+    require(!cue::validate_windows_shipping_product_security(mismatchedCetData.generic_string(), localProfile,
+                                                             a_assertContext));
 
     const std::filesystem::path oversizedProduct = directory / "OversizedProduct.exe";
     write_bytes(oversizedProduct, std::span<const std::byte>{});
