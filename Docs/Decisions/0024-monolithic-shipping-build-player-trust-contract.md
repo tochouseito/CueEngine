@@ -394,6 +394,24 @@ Build Optionを指定した事実だけで完了せず、最終EXEのPE Header�
 Toolchain VersionがFlagをSupportしない場合はPolicy Versionを変えず無視せず、Shipping Publishを失敗させるか、
 ADR更新を伴う明示的Compatibility判断を行う。
 
+M17の実装では、最終PEをWrite／Delete共有なしで開き、x64 Machine、Security Flag、Base Relocation、Load Configuration、
+`/DEPENDENTLOADFLAG:0x800`、Direct Import Allowlist、Delay Import不在、Game Module Loader API不在をFirst-party Validatorで確認する。
+Candidateは同じRead HandleからPE、Trust、Size、SHA-256を確定し、起動確認とPath Hash照合が終わるまでHandleを保持する。
+VersionへRenameした後は最終Pathから再検証し、Candidate Hashとの一致を確認したRead Handleを`Current`公開完了まで保持する。
+成功EvidenceはShipping Artifact Metadataの`securityValidation`へImport一覧、署名状態、Artifact単体の配布到達点とともに記録する。
+
+Authenticode検証は同じFile HandleをWindows Trust Providerへ渡し、SignerのDER SubjectPublicKeyInfo SHA-256を
+`publisherKeyId`と照合する。同期Build処理を無期限のNetwork待ちにしないため、このVerifierはLocal Cache内の失効情報だけを使う。
+したがって`PublisherVerifiedArtifact`はArtifact単体の検証結果であり、`PublicDistributionReady`を意味しない。
+Public Readyに必要なOnline Revocation、Timestamp、Detached Manifest Signature、外部Trust Anchorは未実装である。
+
+M17では外部署名器と封印済みSource Snapshotを持たないため、Artifact PublisherとPackage Publisherは
+`PublisherSigned`公開をFail-closedで拒否する。`UnsignedLocal`だけを`LocalExecutionOnly`かつ
+`publicDistributionReady = false`として公開できる。CIは実際の未署名PEと模擬Trust EvidenceでVerifierとPolicyを検証するが、
+Test用Evidenceを公開Trust達成の根拠にしない。Monolithic化、PE Hardening、HashはDRMまたは完全な改ざん防止を提供しない。
+実CertificateをCIへ配布しないため、`WinVerifyTrust`成功後のSigner Certificate抽出とSubjectPublicKeyInfo Hash経路は
+M17の自動Testでは実署名PEを使って検証しない。この経路をPublic Readyの根拠にせず、`PublisherSigned`公開を無効のまま維持する。
+
 ### Executable and Content Signing Boundary
 
 Monolithic化とSHA-256 Inventoryは攻撃面と偶発破損を減らすが、Publisher Identityまたは敵対的改ざん防止を提供しない。

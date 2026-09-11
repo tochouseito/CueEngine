@@ -1,4 +1,7 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
+#include <Cue/Build/Windows/WindowsProductSecurity.h>
+
+#include "WindowsProductSecurityInternal.h"
 
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Platform/Windows/WindowsProcess.h>
@@ -417,6 +420,42 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         return "UnsignedLocal";
     case cue::ShippingTrustMode::PublisherSigned:
         return "PublisherSigned";
+    }
+    return {};
+}
+
+/// @brief Product署名状態をMetadataの安定名へ変換する
+[[nodiscard]] std::string_view product_signature_status_name(cue::WindowsProductSignatureStatus a_status) noexcept
+{
+    switch (a_status)
+    {
+    case cue::WindowsProductSignatureStatus::Trusted:
+        return "Trusted";
+    case cue::WindowsProductSignatureStatus::Unsigned:
+        return "Unsigned";
+    case cue::WindowsProductSignatureStatus::InvalidSignature:
+        return "InvalidSignature";
+    case cue::WindowsProductSignatureStatus::CertificateExpired:
+        return "CertificateExpired";
+    case cue::WindowsProductSignatureStatus::CertificateRevoked:
+        return "CertificateRevoked";
+    case cue::WindowsProductSignatureStatus::ChainInvalid:
+        return "ChainInvalid";
+    case cue::WindowsProductSignatureStatus::VerificationUnavailable:
+        return "VerificationUnavailable";
+    }
+    return {};
+}
+
+/// @brief Product Artifact単体の配布到達点をMetadataの安定名へ変換する
+[[nodiscard]] std::string_view product_distribution_status_name(cue::WindowsProductDistributionStatus a_status) noexcept
+{
+    switch (a_status)
+    {
+    case cue::WindowsProductDistributionStatus::LocalExecutionOnly:
+        return "LocalExecutionOnly";
+    case cue::WindowsProductDistributionStatus::PublisherVerifiedArtifact:
+        return "PublisherVerifiedArtifact";
     }
     return {};
 }
@@ -1828,41 +1867,6 @@ template <typename Cancellation>
     return cue::Result<void>::success();
 }
 
-/// @brief Candidate Productがx64 PE ExecutableかHeader範囲を検証して確認する
-[[nodiscard]] cue::Result<void> validate_x64_product_image(const std::filesystem::path &a_path,
-                                                           const cue::AssertContext &a_assertContext) noexcept
-{
-    std::error_code sizeError;
-    const std::uintmax_t size = std::filesystem::file_size(a_path, sizeError);
-    if (sizeError || size < sizeof(IMAGE_DOS_HEADER) + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER))
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product PE image is incomplete"));
-    }
-    std::ifstream input(a_path, std::ios::binary);
-    IMAGE_DOS_HEADER dos{};
-    input.read(reinterpret_cast<char *>(&dos), sizeof(dos));
-    const std::uint64_t headerOffset = dos.e_lfanew < 0 ? size : static_cast<std::uint64_t>(dos.e_lfanew);
-    if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE || headerOffset > size - sizeof(DWORD) - sizeof(IMAGE_FILE_HEADER))
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product DOS or PE header is invalid"));
-    }
-    input.seekg(static_cast<std::streamoff>(headerOffset));
-    DWORD signature = 0U;
-    IMAGE_FILE_HEADER fileHeader{};
-    input.read(reinterpret_cast<char *>(&signature), sizeof(signature));
-    input.read(reinterpret_cast<char *>(&fileHeader), sizeof(fileHeader));
-    if (!input || signature != IMAGE_NT_SIGNATURE || fileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        (fileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) == 0U ||
-        (fileHeader.Characteristics & IMAGE_FILE_DLL) != 0U)
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product must be an x64 PE executable"));
-    }
-    return cue::Result<void>::success();
-}
-
 /// @brief 別ProcessでのArtifact検証完了種別
 enum class ArtifactProbeStatus : std::uint8_t
 {
@@ -2294,13 +2298,11 @@ enum class ArtifactProbeStatus : std::uint8_t
 }
 
 /// @brief Shipping Product Metadata v1をBuild由来情報とPayload Hashから決定的に直列化する
-[[nodiscard]] std::string serialize_product_metadata(std::string_view a_artifactId, std::string_view a_projectId,
-                                                     const cue::EngineCompatibility &a_compatibility,
-                                                     const cue::BuildPlan &a_plan,
-                                                     const ShippingBuildProvenance &a_provenance,
-                                                     const ShippingToolchainIdentity &a_toolchain,
-                                                     const cue::BuildArtifactFile &a_product,
-                                                     const std::optional<cue::BuildArtifactFile> &a_symbol)
+[[nodiscard]] std::string serialize_product_metadata(
+    std::string_view a_artifactId, std::string_view a_projectId, const cue::EngineCompatibility &a_compatibility,
+    const cue::BuildPlan &a_plan, const ShippingBuildProvenance &a_provenance,
+    const ShippingToolchainIdentity &a_toolchain, const cue::WindowsProductSecurityValidation &a_security,
+    const cue::BuildArtifactFile &a_product, const std::optional<cue::BuildArtifactFile> &a_symbol)
 {
     const cue::BuildToolVersion &toolsetVersion = a_plan.workspace_compatibility().toolsetVersion;
     const std::uint64_t compilerVersion =
@@ -2380,7 +2382,30 @@ enum class ArtifactProbeStatus : std::uint8_t
         output.append(a_plan.profile().publisher_key_id());
         output.push_back('"');
     }
-    output.append(",\n    \"product\": {\n        \"path\": \"");
+    output.append(",\n    \"securityValidation\": {\n        \"policyVersion\": 1,\n"
+                  "        \"machine\": \"x64\",\n        \"aslr\": true,\n"
+                  "        \"highEntropyVa\": true,\n        \"dep\": true,\n"
+                  "        \"controlFlowGuard\": true,\n        \"cetCompatible\": true,\n"
+                  "        \"stackSecurityCheck\": true,\n"
+                  "        \"dependentLoadFlags\": \"0x0800\",\n"
+                  "        \"importPolicy\": \"M17AllowlistV1\",\n"
+                  "        \"gameModuleLoaderLinked\": false,\n"
+                  "        \"importedLibraries\": [");
+    for (std::size_t index = 0U; index < a_security.importedLibraries.size(); ++index)
+    {
+        if (index != 0U)
+        {
+            output.append(", ");
+        }
+        output.push_back('"');
+        output.append(a_security.importedLibraries[index]);
+        output.push_back('"');
+    }
+    output.append("],\n        \"signatureStatus\": \"");
+    output.append(product_signature_status_name(a_security.trustEvidence.signatureStatus));
+    output.append("\",\n        \"distributionStatus\": \"");
+    output.append(product_distribution_status_name(a_security.distributionStatus));
+    output.append("\",\n        \"publicDistributionReady\": false\n    },\n    \"product\": {\n        \"path\": \"");
     output.append(a_product.relativePath);
     output.append("\",\n        \"sizeBytes\": ");
     output.append(std::to_string(a_product.byteSize));
@@ -2790,10 +2815,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     WindowsBuildArtifactPublisher(std::filesystem::path a_projectRoot, std::string a_projectId,
                                   cue::EngineCompatibility a_compatibility, std::string a_probeExecutable,
                                   std::unique_ptr<cue::ChildProcessRunner> a_processRunner,
+                                  cue::detail::WindowsProductSecuritySnapshotObserver *a_securityObserver,
                                   const cue::AssertContext &a_assertContext) noexcept
         : m_projectRoot(std::move(a_projectRoot)), m_projectId(std::move(a_projectId)),
           m_compatibility(std::move(a_compatibility)), m_probeExecutable(std::move(a_probeExecutable)),
-          m_processRunner(std::move(a_processRunner)), m_assertContext(&a_assertContext)
+          m_processRunner(std::move(a_processRunner)), m_securityObserver(a_securityObserver),
+          m_assertContext(&a_assertContext)
     {
     }
     /// @brief 所有Project契約を解放する
@@ -2904,8 +2931,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 a_plan.profile().minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
-                               "PublisherSigned artifact publication requires the #304 trust verifier"));
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::PublisherUnavailable,
+                               "PublisherSigned artifact publication requires an external signer and sealed source "
+                               "snapshot; M17 only publishes UnsignedLocal artifacts"));
             }
             auto *windowsLease = dynamic_cast<WindowsBuildWorkspaceLease *>(a_buildLease.get());
             if (windowsLease == nullptr || !windowsLease->matches(a_plan.workspace_key()) ||
@@ -3079,10 +3107,14 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(acquisitionError));
             }
             std::optional<DirectoryChainGuard> candidateGuard(std::move(*candidateGuardResult.try_value()));
+            std::optional<cue::detail::WindowsProductSecuritySnapshot> candidateSecuritySnapshot;
+            std::optional<cue::detail::WindowsProductSecuritySnapshot> versionSecuritySnapshot;
             using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
             /// @brief Primary Errorを保持したまま未公開CandidateをRollbackする
             const auto failCandidate = [&](cue::Error a_error) -> PublishResult
             {
+                candidateSecuritySnapshot.reset();
+                versionSecuritySnapshot.reset();
                 cue::Result<void> cleanup = delete_guarded_candidate(*candidateGuard, candidate, *m_assertContext);
                 candidateGuard.reset();
                 if (!cleanup)
@@ -3095,6 +3127,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             /// @brief 取消前に未公開CandidateをRollbackしCleanup失敗だけをErrorとして返す
             const auto cancelCandidate = [&]() -> PublishResult
             {
+                candidateSecuritySnapshot.reset();
+                versionSecuritySnapshot.reset();
                 cue::Result<void> cleanup = delete_guarded_candidate(*candidateGuard, candidate, *m_assertContext);
                 candidateGuard.reset();
                 if (!cleanup)
@@ -3118,13 +3152,23 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     return failCandidate(std::move(*pdbCopied.try_error()));
                 }
             }
+            std::optional<cue::WindowsProductSecurityValidation> productSecurity;
             if (isShippingProduct)
             {
-                cue::Result<void> imageValidated = validate_x64_product_image(candidatePayload, *m_assertContext);
+                cue::Result<cue::detail::WindowsProductSecuritySnapshot> imageValidated =
+                    cue::detail::validate_windows_shipping_product_security_snapshot(
+                        path_to_utf8(candidatePayload), a_plan.profile(), *m_assertContext);
                 if (!imageValidated)
                 {
                     return failCandidate(std::move(*imageValidated.try_error()));
                 }
+                productSecurity.emplace(imageValidated.try_value()->validation());
+                candidateSecuritySnapshot.emplace(std::move(*imageValidated.try_value()));
+            }
+            if (m_securityObserver != nullptr && isShippingProduct)
+            {
+                m_securityObserver->on_snapshot_held(
+                    cue::detail::WindowsProductSecuritySnapshotStage::CandidateBeforeProbe, candidatePayload);
             }
             cue::Result<ArtifactProbeStatus> validated =
                 isShippingProduct ? validate_product(candidatePayload, m_projectId, candidate, *m_processRunner,
@@ -3145,6 +3189,13 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return failCandidate(std::move(*candidatePayloadHash.try_error()));
             }
+            if (isShippingProduct && (candidatePayloadHash.try_value()->byteSize != productSecurity->byteSize ||
+                                      candidatePayloadHash.try_value()->contentHash != productSecurity->contentHash))
+            {
+                return failCandidate(make_error(*m_assertContext,
+                                                cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                                                "Candidate payload differs from its verified security snapshot"));
+            }
             std::optional<cue::BuildArtifactFile> candidatePdbHash;
             if (hasPdb)
             {
@@ -3160,7 +3211,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 isShippingProduct
                     ? serialize_product_metadata(a_plan.operation_id(), m_projectId, m_compatibility, a_plan,
                                                  *windowsLease->shipping_provenance(), *shippingToolchain,
-                                                 *candidatePayloadHash.try_value(), candidatePdbHash)
+                                                 *productSecurity, *candidatePayloadHash.try_value(), candidatePdbHash)
                     : serialize_metadata(a_plan.operation_id(), m_projectId, m_compatibility,
                                          a_plan.profile().configuration(),
                                          a_plan.workspace_compatibility().toolsetVersion);
@@ -3184,6 +3235,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return failCandidate(std::move(*candidateMetadataHash.try_error()));
             }
+            if (m_securityObserver != nullptr && isShippingProduct)
+            {
+                m_securityObserver->on_snapshot_held(
+                    cue::detail::WindowsProductSecuritySnapshotStage::CandidateBeforeRelease, candidatePayload);
+            }
+            candidateSecuritySnapshot.reset();
             a_buildLease.reset();
             if (a_cancellation.is_cancel_requested())
             {
@@ -3239,6 +3296,36 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
                 return failCandidate(std::move(publicationError));
             }
+            if (isShippingProduct)
+            {
+                cue::Result<cue::detail::WindowsProductSecuritySnapshot> imageValidated =
+                    cue::detail::validate_windows_shipping_product_security_snapshot(
+                        path_to_utf8(version / std::string(layout.payload)), a_plan.profile(), *m_assertContext);
+                if (!imageValidated)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(*imageValidated.try_error()));
+                }
+                const cue::WindowsProductSecurityValidation &versionSecurity = imageValidated.try_value()->validation();
+                if (versionSecurity.byteSize != productSecurity->byteSize ||
+                    versionSecurity.contentHash != productSecurity->contentHash ||
+                    versionSecurity.importedLibraries != productSecurity->importedLibraries ||
+                    versionSecurity.trustEvidence.signatureStatus != productSecurity->trustEvidence.signatureStatus ||
+                    versionSecurity.trustEvidence.publisherKeyId != productSecurity->trustEvidence.publisherKeyId ||
+                    versionSecurity.distributionStatus != productSecurity->distributionStatus)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        make_error(*m_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                                   "Published Product differs from its verified Candidate snapshot"));
+                }
+                versionSecuritySnapshot.emplace(std::move(*imageValidated.try_value()));
+                if (m_securityObserver != nullptr)
+                {
+                    m_securityObserver->on_snapshot_held(
+                        cue::detail::WindowsProductSecuritySnapshotStage::VersionAfterValidation,
+                        version / std::string(layout.payload));
+                }
+            }
             cue::Result<void> versionContents =
                 validate_artifact_directory_contents(version, layout, hasPdb, *m_assertContext);
             if (!versionContents)
@@ -3272,7 +3359,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*versionMetadataHash.try_error()));
             }
-            if (versionPayloadHash.try_value()->contentHash != candidatePayloadHash.try_value()->contentHash ||
+            if ((isShippingProduct &&
+                 (versionPayloadHash.try_value()->byteSize != versionSecuritySnapshot->validation().byteSize ||
+                  versionPayloadHash.try_value()->contentHash != versionSecuritySnapshot->validation().contentHash)) ||
+                versionPayloadHash.try_value()->contentHash != candidatePayloadHash.try_value()->contentHash ||
                 (candidatePdbHash.has_value() &&
                  (!versionPdbHash.has_value() || versionPdbHash->contentHash != candidatePdbHash->contentHash)) ||
                 versionMetadataHash.try_value()->contentHash != candidateMetadataHash.try_value()->contentHash)
@@ -3298,6 +3388,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             if (a_cancellation.is_cancel_requested())
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+            }
+            if (m_securityObserver != nullptr && isShippingProduct)
+            {
+                m_securityObserver->on_snapshot_held(
+                    cue::detail::WindowsProductSecuritySnapshotStage::VersionBeforeCurrentPublication,
+                    version / std::string(layout.payload));
             }
             const std::string currentContent = serialize_current(*inventory.try_value());
             cue::Result<bool> current =
@@ -3370,15 +3466,16 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
     cue::EngineCompatibility m_compatibility;
     std::string m_probeExecutable;
     std::unique_ptr<cue::ChildProcessRunner> m_processRunner;
+    cue::detail::WindowsProductSecuritySnapshotObserver *m_securityObserver;
     const cue::AssertContext *m_assertContext;
     bool m_isAvailable = true;
 };
-} // namespace
 
-namespace cue
-{
-Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_publisher(
-    std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept
+/// @brief 任意のSecurity Snapshot Observerを借用してWindows Artifact Publisherを構築する
+[[nodiscard]] cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>> create_windows_build_artifact_publisher_impl(
+    std::string a_projectRoot, const cue::ProjectDescriptor &a_descriptor,
+    cue::detail::WindowsProductSecuritySnapshotObserver *a_securityObserver,
+    const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -3386,38 +3483,62 @@ Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_pu
         std::error_code error;
         if (!root || !root->is_absolute() || !std::filesystem::is_directory(*root, error) || error)
         {
-            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(make_error(
-                a_assertContext, WindowsBuildArtifactError::InvalidSettings, "Artifact Project Root is invalid"));
+            return cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>>::failure(make_error(
+                a_assertContext, cue::WindowsBuildArtifactError::InvalidSettings, "Artifact Project Root is invalid"));
         }
-        Result<void> rootValidated =
-            validate_directory_chain(*root, *root, WindowsBuildArtifactError::InvalidSettings, a_assertContext);
+        cue::Result<void> rootValidated =
+            validate_directory_chain(*root, *root, cue::WindowsBuildArtifactError::InvalidSettings, a_assertContext);
         if (!rootValidated)
         {
-            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(std::move(*rootValidated.try_error()));
+            return cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>>::failure(
+                std::move(*rootValidated.try_error()));
         }
-        const EngineCompatibility &compatibility = a_descriptor.engine_compatibility();
+        const cue::EngineCompatibility &compatibility = a_descriptor.engine_compatibility();
         const std::optional<std::filesystem::path> processDirectory = current_process_directory();
         if (!processDirectory)
         {
-            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(
-                make_windows_error(a_assertContext, WindowsBuildArtifactError::InvalidSettings, GetLastError(),
+            return cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>>::failure(
+                make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::InvalidSettings, GetLastError(),
                                    "Engine process path could not be resolved"));
         }
-        auto processRunner = create_windows_child_process_runner(a_assertContext);
+        auto processRunner = cue::create_windows_child_process_runner(a_assertContext);
         if (!processRunner)
         {
-            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(std::move(*processRunner.try_error()));
+            return cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>>::failure(
+                std::move(*processRunner.try_error()));
         }
         const std::string probeExecutable = path_to_utf8(*processDirectory / L"CueGameModuleProbe.exe");
-        return Result<std::unique_ptr<BuildArtifactPublisher>>::success(std::make_unique<WindowsBuildArtifactPublisher>(
-            *root, std::string(a_descriptor.project_id().text()), compatibility, probeExecutable,
-            std::move(*processRunner.try_value()), a_assertContext));
+        return cue::Result<std::unique_ptr<cue::BuildArtifactPublisher>>::success(
+            std::make_unique<WindowsBuildArtifactPublisher>(
+                *root, std::string(a_descriptor.project_id().text()), compatibility, probeExecutable,
+                std::move(*processRunner.try_value()), a_securityObserver, a_assertContext));
     }
     catch (...)
     {
         terminate_artifact_exception(a_assertContext);
     }
 }
+} // namespace
+
+namespace cue
+{
+Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_publisher(
+    std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept
+{
+    return create_windows_build_artifact_publisher_impl(std::move(a_projectRoot), a_descriptor, nullptr,
+                                                        a_assertContext);
+}
+
+namespace detail
+{
+Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_publisher_for_test(
+    std::string a_projectRoot, const ProjectDescriptor &a_descriptor,
+    WindowsProductSecuritySnapshotObserver &a_observer, const AssertContext &a_assertContext) noexcept
+{
+    return create_windows_build_artifact_publisher_impl(std::move(a_projectRoot), a_descriptor, &a_observer,
+                                                        a_assertContext);
+}
+} // namespace detail
 
 Result<std::unique_ptr<BuildArtifactReader>> create_windows_build_artifact_reader(
     std::string a_projectRoot, const ProjectDescriptor &a_descriptor, const AssertContext &a_assertContext) noexcept

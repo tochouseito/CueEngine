@@ -1,4 +1,5 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
+#include <Cue/Build/Windows/WindowsProductSecurity.h>
 #include <Cue/Build/Windows/WindowsToolchain.h>
 
 #include <type_traits>

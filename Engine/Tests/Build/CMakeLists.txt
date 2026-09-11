@@ -93,6 +93,30 @@ if(WIN32)
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
 
+    function(cue_configure_shipping_security_test_product targetName)
+        set_target_properties(
+            "${targetName}"
+            PROPERTIES
+                MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+                MSVC_RUNTIME_CHECKS ""
+        )
+        target_compile_options("${targetName}" PRIVATE /GS /guard:cf /O2 /Ob2)
+        target_compile_definitions("${targetName}" PRIVATE NDEBUG)
+        target_link_options(
+            "${targetName}"
+            PRIVATE
+                /DYNAMICBASE
+                /HIGHENTROPYVA
+                /NXCOMPAT
+                /GUARD:CF
+                /CETCOMPAT
+                /DEPENDENTLOADFLAG:0x800
+                /INCREMENTAL:NO
+                /OPT:REF
+                /OPT:ICF
+        )
+    endfunction()
+
     add_executable(CueBuildShippingProductProbe ShippingProductProbe.cpp)
     target_compile_features(CueBuildShippingProductProbe PRIVATE cxx_std_20)
     target_compile_definitions(
@@ -101,6 +125,7 @@ if(WIN32)
             CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
             CUE_TEST_PRODUCT_CONFIGURATION="Release"
     )
+    cue_configure_shipping_security_test_product(CueBuildShippingProductProbe)
 
     add_executable(CueBuildWrongProjectShippingProductProbe ShippingProductProbe.cpp)
     target_compile_features(CueBuildWrongProjectShippingProductProbe PRIVATE cxx_std_20)
@@ -110,6 +135,7 @@ if(WIN32)
             CUE_TEST_PRODUCT_PROJECT_ID="51234567-89ab-4cde-8f01-23456789abcd"
             CUE_TEST_PRODUCT_CONFIGURATION="Release"
     )
+    cue_configure_shipping_security_test_product(CueBuildWrongProjectShippingProductProbe)
 
     add_executable(CueBuildWrongConfigurationShippingProductProbe ShippingProductProbe.cpp)
     target_compile_features(CueBuildWrongConfigurationShippingProductProbe PRIVATE cxx_std_20)
@@ -119,6 +145,7 @@ if(WIN32)
             CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
             CUE_TEST_PRODUCT_CONFIGURATION="Development"
     )
+    cue_configure_shipping_security_test_product(CueBuildWrongConfigurationShippingProductProbe)
 
     add_executable(CueBuildExtraFileShippingProductProbe ShippingProductProbe.cpp)
     target_compile_features(CueBuildExtraFileShippingProductProbe PRIVATE cxx_std_20)
@@ -128,6 +155,54 @@ if(WIN32)
             CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
             CUE_TEST_PRODUCT_CONFIGURATION="Release"
             CUE_TEST_PRODUCT_EXTRA_FILE=1
+    )
+    cue_configure_shipping_security_test_product(CueBuildExtraFileShippingProductProbe)
+
+    add_executable(CueBuildUnhardenedShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildUnhardenedShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildUnhardenedShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+    )
+
+    add_executable(CueBuildLoaderShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildLoaderShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildLoaderShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+            CUE_TEST_PRODUCT_LOADER_IMPORT=1
+    )
+    cue_configure_shipping_security_test_product(CueBuildLoaderShippingProductProbe)
+
+    add_executable(CueBuildPackagedLoaderShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildPackagedLoaderShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildPackagedLoaderShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+            CUE_TEST_PRODUCT_PACKAGED_LOADER_IMPORT=1
+    )
+    cue_configure_shipping_security_test_product(CueBuildPackagedLoaderShippingProductProbe)
+
+    add_executable(CueBuildWindowsProductSecurityTests WindowsProductSecurityTests.cpp)
+    target_link_libraries(CueBuildWindowsProductSecurityTests PRIVATE Cue.Build.Windows)
+    target_compile_features(CueBuildWindowsProductSecurityTests PRIVATE cxx_std_20)
+    target_include_directories(
+        CueBuildWindowsProductSecurityTests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/Engine/Source/Build/Windows/Private"
+    )
+    add_dependencies(
+        CueBuildWindowsProductSecurityTests
+        CueBuildShippingProductProbe
+        CueBuildUnhardenedShippingProductProbe
+        CueBuildLoaderShippingProductProbe
+        CueBuildPackagedLoaderShippingProductProbe
     )
 
     add_executable(CueBuildCMakeRunnerProcessTests CMakeRunnerProcessTests.cpp)
@@ -151,6 +226,11 @@ if(WIN32)
     add_executable(CueBuildWindowsArtifactPublisherTests WindowsArtifactPublisherTests.cpp)
     target_link_libraries(CueBuildWindowsArtifactPublisherTests PRIVATE Cue.Build.Windows Cue.Project)
     target_compile_features(CueBuildWindowsArtifactPublisherTests PRIVATE cxx_std_20)
+    target_include_directories(
+        CueBuildWindowsArtifactPublisherTests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/Engine/Source/Build/Windows/Private"
+    )
     target_compile_definitions(
         CueBuildWindowsArtifactPublisherTests
         PRIVATE
@@ -167,6 +247,18 @@ if(WIN32)
             CUE_TEST_MSVC_TOOLSET_VERSION="${cueTestMsvcToolsetVersion}"
             CUE_TEST_WINDOWS_SDK_VERSION="${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}"
     )
+    add_dependencies(
+        CueBuildWindowsArtifactPublisherTests
+        CueBuildArtifactProbe
+        CueBuildInvalidArtifactProbe
+        CueBuildCrashingArtifactProbe
+        CueBuildHangingArtifactProbe
+        CueBuildZeroExitArtifactProbe
+        CueBuildShippingProductProbe
+        CueBuildWrongProjectShippingProductProbe
+        CueBuildWrongConfigurationShippingProductProbe
+        CueBuildExtraFileShippingProductProbe
+    )
     list(
         APPEND
         cueBuildTestTargets
@@ -175,6 +267,10 @@ if(WIN32)
         CueBuildWrongProjectShippingProductProbe
         CueBuildWrongConfigurationShippingProductProbe
         CueBuildExtraFileShippingProductProbe
+        CueBuildUnhardenedShippingProductProbe
+        CueBuildLoaderShippingProductProbe
+        CueBuildPackagedLoaderShippingProductProbe
+        CueBuildWindowsProductSecurityTests
         CueBuildCMakeRunnerProcessTests
         CueBuildWindowsToolchainTests
         CueBuildWindowsPublicHeaderTest
@@ -250,4 +346,11 @@ if(WIN32)
                      $<TARGET_FILE:CueBuildWrongConfigurationShippingProductProbe>
                      $<TARGET_FILE:CueBuildExtraFileShippingProductProbe>)
     set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 60)
+
+    add_test(NAME Cue.Build.Windows.ProductSecurity
+             COMMAND CueBuildWindowsProductSecurityTests $<TARGET_FILE:CueBuildShippingProductProbe>
+                     $<TARGET_FILE:CueBuildUnhardenedShippingProductProbe>
+                     $<TARGET_FILE:CueBuildLoaderShippingProductProbe>
+                     $<TARGET_FILE:CueBuildPackagedLoaderShippingProductProbe>)
+    set_tests_properties(Cue.Build.Windows.ProductSecurity PROPERTIES LABELS "Build;Windows;Security" TIMEOUT 30)
 endif()
