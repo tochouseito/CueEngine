@@ -19,6 +19,8 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <optional>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -30,6 +32,7 @@ constexpr std::string_view k_projectId = "41234567-89ab-4cde-8f01-23456789abcd";
 constexpr std::string_view k_sceneId = "51234567-89ab-4cde-8f01-23456789abcd";
 constexpr std::string_view k_scenePath = "Data/Scenes/51234567-89ab-4cde-8f01-23456789abcd.cueruntime.json";
 constexpr std::string_view k_xHash = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
+constexpr std::string_view k_publisherKeyId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 class TestFatalHandler final : public cue::FatalHandler
 {
@@ -47,10 +50,11 @@ class TestFatalHandler final : public cue::FatalHandler
 };
 
 /// @brief 条件違反時にTest Processを失敗終了する
-void require(bool a_condition) noexcept
+void require(bool a_condition, const std::source_location &a_location = std::source_location::current()) noexcept
 {
     if (!a_condition)
     {
+        std::cerr << "Requirement failed at " << a_location.file_name() << ':' << a_location.line() << '\n';
         std::abort();
     }
 }
@@ -78,6 +82,15 @@ template <typename T>
         cue::package::PackageFileEntry::create(a_role, std::move(a_path), 1U, std::string(k_xHash), a_assertContext));
 }
 
+/// @brief 指定Sizeと固定SHA-256を持つ検証済みManifest Entryを構築する
+[[nodiscard]] cue::package::PackageFileEntry make_sized_entry(cue::package::PackageFileRole a_role, std::string a_path,
+                                                              std::uint64_t a_byteSize,
+                                                              const cue::AssertContext &a_assertContext)
+{
+    return take_value(cue::package::PackageFileEntry::create(a_role, std::move(a_path), a_byteSize,
+                                                             std::string(k_xHash), a_assertContext));
+}
+
 /// @brief 必須五Roleを一つずつ持つ最小Package Inventoryを構築する
 [[nodiscard]] std::vector<cue::package::PackageFileEntry> make_required_files(const cue::AssertContext &a_assertContext)
 {
@@ -98,6 +111,43 @@ template <typename T>
     return take_value(cue::package::PackageManifest::create(
         std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Development, std::string(k_sceneId),
         std::string(k_scenePath), make_required_files(a_assertContext), a_assertContext));
+}
+
+/// @brief Monolithic v2が許可する三Roleだけを持つ最小Inventoryを構築する
+[[nodiscard]] std::vector<cue::package::PackageFileEntry> make_monolithic_files(
+    const cue::AssertContext &a_assertContext)
+{
+    using cue::package::PackageFileRole;
+    std::vector<cue::package::PackageFileEntry> files;
+    files.push_back(make_entry(PackageFileRole::ApplicationExecutable, "CueGameProduct.exe", a_assertContext));
+    files.push_back(make_entry(PackageFileRole::ProjectRuntimeData, "Data/CueProject.runtime.json", a_assertContext));
+    files.push_back(make_entry(PackageFileRole::StartupSceneRuntimeData, std::string(k_scenePath), a_assertContext));
+    return files;
+}
+
+/// @brief 指定Role Sizeを持つMonolithic三File Inventoryを構築する
+[[nodiscard]] std::vector<cue::package::PackageFileEntry> make_sized_monolithic_files(
+    std::uint64_t a_executableBytes, std::uint64_t a_projectBytes, std::uint64_t a_sceneBytes,
+    const cue::AssertContext &a_assertContext)
+{
+    using cue::package::PackageFileRole;
+    std::vector<cue::package::PackageFileEntry> files;
+    files.push_back(make_sized_entry(PackageFileRole::ApplicationExecutable, "CueGameProduct.exe", a_executableBytes,
+                                     a_assertContext));
+    files.push_back(make_sized_entry(PackageFileRole::ProjectRuntimeData, "Data/CueProject.runtime.json",
+                                     a_projectBytes, a_assertContext));
+    files.push_back(make_sized_entry(PackageFileRole::StartupSceneRuntimeData, std::string(k_scenePath), a_sceneBytes,
+                                     a_assertContext));
+    return files;
+}
+
+/// @brief 固定Identityと三RoleからUnsignedLocal Monolithic Manifest v2を構築する
+[[nodiscard]] cue::package::PackageManifest make_monolithic_manifest(const cue::AssertContext &a_assertContext)
+{
+    return take_value(cue::package::PackageManifest::create_monolithic(
+        std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Release, std::string(k_sceneId),
+        std::string(k_scenePath), cue::ShippingTrustMode::UnsignedLocal, std::nullopt, std::nullopt,
+        make_monolithic_files(a_assertContext), a_assertContext));
 }
 
 /// @brief Test Root相対Fileを親Directory作成付きで書き込む
@@ -181,16 +231,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     if (!a_imports.empty())
     {
         write_u32(bytes, optional + 120U, 0x1000U);
-        write_u32(bytes, optional + 124U,
-                  static_cast<std::uint32_t>((a_imports.size() + 1U) * 20U));
+        write_u32(bytes, optional + 124U, static_cast<std::uint32_t>((a_imports.size() + 1U) * 20U));
         std::size_t nameOffset = 0x300U;
         for (std::size_t index = 0U; index < a_imports.size(); ++index)
         {
             const std::uint32_t lookupRva = 0x1500U + static_cast<std::uint32_t>(index * 0x20U);
             const std::uint32_t addressRva = 0x1600U + static_cast<std::uint32_t>(index * 0x20U);
             write_u32(bytes, 0x200U + index * 20U, lookupRva);
-            write_u32(bytes, 0x200U + index * 20U + 12U,
-                      0x1000U + static_cast<std::uint32_t>(nameOffset - 0x200U));
+            write_u32(bytes, 0x200U + index * 20U + 12U, 0x1000U + static_cast<std::uint32_t>(nameOffset - 0x200U));
             write_u32(bytes, 0x200U + index * 20U + 16U, addressRva);
             write_u64(bytes, 0x700U + index * 0x20U, 0x8000000000000001ULL);
             write_u64(bytes, 0x800U + index * 0x20U, 0x8000000000000001ULL);
@@ -201,20 +249,15 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     if (!a_delayImports.empty())
     {
         write_u32(bytes, optional + 216U, 0x1200U);
-        write_u32(bytes, optional + 220U,
-                  static_cast<std::uint32_t>((a_delayImports.size() + 1U) * 32U));
+        write_u32(bytes, optional + 220U, static_cast<std::uint32_t>((a_delayImports.size() + 1U) * 32U));
         std::size_t nameOffset = 0x500U;
         for (std::size_t index = 0U; index < a_delayImports.size(); ++index)
         {
             write_u32(bytes, 0x400U + index * 32U, 1U);
-            write_u32(bytes, 0x400U + index * 32U + 4U,
-                      0x1200U + static_cast<std::uint32_t>(nameOffset - 0x400U));
-            write_u32(bytes, 0x400U + index * 32U + 8U,
-                      0x1700U + static_cast<std::uint32_t>(index * 8U));
-            write_u32(bytes, 0x400U + index * 32U + 12U,
-                      0x1800U + static_cast<std::uint32_t>(index * 0x20U));
-            write_u32(bytes, 0x400U + index * 32U + 16U,
-                      0x1900U + static_cast<std::uint32_t>(index * 0x20U));
+            write_u32(bytes, 0x400U + index * 32U + 4U, 0x1200U + static_cast<std::uint32_t>(nameOffset - 0x400U));
+            write_u32(bytes, 0x400U + index * 32U + 8U, 0x1700U + static_cast<std::uint32_t>(index * 8U));
+            write_u32(bytes, 0x400U + index * 32U + 12U, 0x1800U + static_cast<std::uint32_t>(index * 0x20U));
+            write_u32(bytes, 0x400U + index * 32U + 16U, 0x1900U + static_cast<std::uint32_t>(index * 0x20U));
             write_u64(bytes, 0xa00U + index * 0x20U, 0x8000000000000001ULL);
             write_u64(bytes, 0xb00U + index * 0x20U, 0x8000000000000001ULL);
             write_ascii(bytes, nameOffset, a_delayImports[index]);
@@ -246,8 +289,27 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
 {
     const cue::package::PackageManifest manifest = make_manifest(a_assertContext);
     const std::string serialized = take_value(cue::package::serialize_package_manifest(manifest, a_assertContext));
+    constexpr std::string_view expectedLegacy =
+        "{\"schemaVersion\":1,\"projectId\":\"41234567-89ab-4cde-8f01-23456789abcd\","
+        "\"engineVersion\":\"1.2.3\",\"configuration\":\"Development\",\"startupScene\":{"
+        "\"sceneAssetId\":\"51234567-89ab-4cde-8f01-23456789abcd\",\"runtimeDataPath\":"
+        "\"Data/Scenes/51234567-89ab-4cde-8f01-23456789abcd.cueruntime.json\"},\"files\":["
+        "{\"role\":\"runtimeHost\",\"path\":\"CueRuntimeHost.exe\",\"sizeBytes\":1,\"sha256\":"
+        "\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\"},"
+        "{\"role\":\"projectRuntimeData\",\"path\":\"Data/CueProject.runtime.json\",\"sizeBytes\":1,"
+        "\"sha256\":\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\"},"
+        "{\"role\":\"startupSceneRuntimeData\",\"path\":"
+        "\"Data/Scenes/51234567-89ab-4cde-8f01-23456789abcd.cueruntime.json\",\"sizeBytes\":1,"
+        "\"sha256\":\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\"},"
+        "{\"role\":\"gameModule\",\"path\":\"Game/CueGameModule.dll\",\"sizeBytes\":1,\"sha256\":"
+        "\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\"},"
+        "{\"role\":\"gameModuleMetadata\",\"path\":\"Game/CueGameModule.metadata.json\",\"sizeBytes\":1,"
+        "\"sha256\":\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\"}]}\n";
     auto parsed = cue::package::parse_package_manifest(serialized, a_assertContext);
-    if (!parsed || parsed.try_value()->schema_version() != cue::package::k_packageManifestSchemaVersion ||
+    if (serialized != expectedLegacy || !parsed ||
+        parsed.try_value()->schema_version() != cue::package::k_packageManifestSchemaVersion ||
+        parsed.try_value()->execution_model() != cue::package::PackageExecutionModel::Modular ||
+        parsed.try_value()->application_executable() || parsed.try_value()->trust_mode() ||
         parsed.try_value()->project_id() != k_projectId || parsed.try_value()->engine_version().major != 1U ||
         parsed.try_value()->engine_version().minor != 2U || parsed.try_value()->engine_version().patch != 3U ||
         parsed.try_value()->configuration() != cue::BuildConfiguration::Development ||
@@ -266,7 +328,7 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     std::string futureVersion = serialized;
     const std::size_t version = futureVersion.find("\"schemaVersion\":1");
     require(version != std::string::npos);
-    futureVersion[version + std::string_view("\"schemaVersion\":").size()] = '2';
+    futureVersion[version + std::string_view("\"schemaVersion\":").size()] = '3';
     auto unsupported = cue::package::parse_package_manifest(futureVersion, a_assertContext);
 
     std::string unknownMember = serialized;
@@ -296,11 +358,139 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     return is_package_error(unsupported, cue::package::PackageError::UnsupportedPackageManifestVersion) &&
            is_package_error(unknown, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(invalidRole, cue::package::PackageError::InvalidPackageManifest) &&
-           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
-           zeroSize && maximumSize && is_package_error(negativeSize, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(overLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded) && zeroSize &&
+           maximumSize && is_package_error(negativeSize, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(fractionalSize, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(exponentialSize, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(oversizedFile, cue::package::PackageError::PackageManifestResourceLimitExceeded);
+}
+
+/// @brief Manifest v2のCanonical往復とMonolithic、Release、Trust、Role分離を検証する
+[[nodiscard]] bool test_monolithic_manifest_wire_contract(const cue::AssertContext &a_assertContext)
+{
+    const cue::package::PackageManifest manifest = make_monolithic_manifest(a_assertContext);
+    const std::string serialized = take_value(cue::package::serialize_package_manifest(manifest, a_assertContext));
+    constexpr std::string_view expected = R"json({
+  "schemaVersion": 2,
+  "projectId": "41234567-89ab-4cde-8f01-23456789abcd",
+  "engineVersion": "1.2.3",
+  "architecture": "x64",
+  "configuration": "Release",
+  "executionModel": "monolithic",
+  "startupScene": {
+    "sceneAssetId": "51234567-89ab-4cde-8f01-23456789abcd",
+    "runtimeDataPath": "Data/Scenes/51234567-89ab-4cde-8f01-23456789abcd.cueruntime.json"
+  },
+  "applicationExecutable": "CueGameProduct.exe",
+  "trust": {
+    "mode": "UnsignedLocal",
+    "publisherKeyId": null,
+    "manifestSignaturePath": null
+  },
+  "files": [
+    { "role": "applicationExecutable", "path": "CueGameProduct.exe", "sizeBytes": 1, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" },
+    { "role": "projectRuntimeData", "path": "Data/CueProject.runtime.json", "sizeBytes": 1, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" },
+    { "role": "startupSceneRuntimeData", "path": "Data/Scenes/51234567-89ab-4cde-8f01-23456789abcd.cueruntime.json", "sizeBytes": 1, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" }
+  ]
+}
+)json";
+    if (serialized != expected)
+    {
+        std::cerr << "Unexpected Manifest v2 canonical bytes:\n" << serialized;
+        return false;
+    }
+    auto parsed = cue::package::parse_package_manifest(serialized, a_assertContext);
+    if (!parsed || parsed.try_value()->schema_version() != cue::package::k_monolithicPackageManifestSchemaVersion ||
+        parsed.try_value()->execution_model() != cue::package::PackageExecutionModel::Monolithic ||
+        parsed.try_value()->configuration() != cue::BuildConfiguration::Release ||
+        parsed.try_value()->application_executable() != std::optional<std::string_view>("CueGameProduct.exe") ||
+        parsed.try_value()->trust_mode() !=
+            std::optional<cue::ShippingTrustMode>(cue::ShippingTrustMode::UnsignedLocal) ||
+        parsed.try_value()->publisher_key_id() || parsed.try_value()->manifest_signature_path() ||
+        parsed.try_value()->files().size() != 3U)
+    {
+        return false;
+    }
+    auto serializedAgain = cue::package::serialize_package_manifest(*parsed.try_value(), a_assertContext);
+    if (!serializedAgain || *serializedAgain.try_value() != serialized ||
+        serialized.find("\"architecture\": \"x64\"") == std::string::npos ||
+        serialized.find("\"executionModel\": \"monolithic\"") == std::string::npos ||
+        serialized.find("\"publisherKeyId\": null") == std::string::npos ||
+        serialized.find("\"manifestSignaturePath\": null") == std::string::npos)
+    {
+        return false;
+    }
+
+    auto signedManifest = cue::package::PackageManifest::create_monolithic(
+        std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Release, std::string(k_sceneId),
+        std::string(k_scenePath), cue::ShippingTrustMode::PublisherSigned, std::string(k_publisherKeyId),
+        std::string("CuePackage.signature.p7s"), make_monolithic_files(a_assertContext), a_assertContext);
+    if (!signedManifest)
+    {
+        return false;
+    }
+    auto signedSerialized = cue::package::serialize_package_manifest(*signedManifest.try_value(), a_assertContext);
+    if (!signedSerialized)
+    {
+        return false;
+    }
+    auto signedParsed = cue::package::parse_package_manifest(*signedSerialized.try_value(), a_assertContext);
+    auto debugManifest = cue::package::PackageManifest::create_monolithic(
+        std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Debug, std::string(k_sceneId),
+        std::string(k_scenePath), cue::ShippingTrustMode::UnsignedLocal, std::nullopt, std::nullopt,
+        make_monolithic_files(a_assertContext), a_assertContext);
+    std::vector<cue::package::PackageFileEntry> modularMix = make_monolithic_files(a_assertContext);
+    modularMix[0U] = make_entry(cue::package::PackageFileRole::RuntimeHost, "CueRuntimeHost.exe", a_assertContext);
+    auto mixedManifest = cue::package::PackageManifest::create_monolithic(
+        std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Release, std::string(k_sceneId),
+        std::string(k_scenePath), cue::ShippingTrustMode::UnsignedLocal, std::nullopt, std::nullopt,
+        std::move(modularMix), a_assertContext);
+    auto wrongExecution = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"executionModel\": \"monolithic\"", "\"executionModel\": \"modular\""),
+        a_assertContext);
+    auto unknownRole = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"role\": \"applicationExecutable\"", "\"role\": \"unknown\""), a_assertContext);
+    auto traversal = cue::package::parse_package_manifest(
+        replace_first(serialized, "\"path\": \"CueGameProduct.exe\"", "\"path\": \"../CueGameProduct.exe\""),
+        a_assertContext);
+    auto duplicateTop =
+        cue::package::parse_package_manifest(replace_first(serialized, "\"architecture\": \"x64\"",
+                                                           "\"architecture\": \"x64\",\n  \"architecture\": \"x64\""),
+                                             a_assertContext);
+    return signedParsed &&
+           signedParsed.try_value()->publisher_key_id() == std::optional<std::string_view>(k_publisherKeyId) &&
+           signedParsed.try_value()->manifest_signature_path() ==
+               std::optional<std::string_view>("CuePackage.signature.p7s") &&
+           is_package_error(debugManifest, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(mixedManifest, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(wrongExecution, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(unknownRole, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(traversal, cue::package::PackageError::InvalidPackagePath) &&
+           is_package_error(duplicateTop, cue::package::PackageError::InvalidPackageManifest);
+}
+
+/// @brief Monolithic File RoleごとのSize上限値と一Byte超過拒否を検証する
+[[nodiscard]] bool test_monolithic_role_size_limits(const cue::AssertContext &a_assertContext)
+{
+    const auto createManifest =
+        /// @brief 指定Size InventoryからUnsignedLocal Manifest v2を構築する
+        [&](std::uint64_t a_executableBytes, std::uint64_t a_projectBytes, std::uint64_t a_sceneBytes)
+    {
+        return cue::package::PackageManifest::create_monolithic(
+            std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Release, std::string(k_sceneId),
+            std::string(k_scenePath), cue::ShippingTrustMode::UnsignedLocal, std::nullopt, std::nullopt,
+            make_sized_monolithic_files(a_executableBytes, a_projectBytes, a_sceneBytes, a_assertContext),
+            a_assertContext);
+    };
+    auto boundary = createManifest(cue::package::k_maximumMonolithicExecutableBytes,
+                                   cue::package::k_maximumMonolithicProjectDataBytes,
+                                   cue::package::k_maximumMonolithicSceneDataBytes);
+    auto executableOver = createManifest(cue::package::k_maximumMonolithicExecutableBytes + 1U, 1U, 1U);
+    auto projectOver = createManifest(1U, cue::package::k_maximumMonolithicProjectDataBytes + 1U, 1U);
+    auto sceneOver = createManifest(1U, 1U, cue::package::k_maximumMonolithicSceneDataBytes + 1U);
+    return boundary && is_package_error(executableOver, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(projectOver, cue::package::PackageError::InvalidPackageManifest) &&
+           is_package_error(sceneOver, cue::package::PackageError::InvalidPackageManifest);
 }
 
 /// @brief Path、Hash、必須Role、case alias、PDBの不正Inventory拒否を検証する
@@ -348,8 +538,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         std::string(k_scenePath), std::move(nestedDependencyFiles), a_assertContext);
 
     return is_package_error(absolute, cue::package::PackageError::InvalidPackagePath) &&
-           is_package_error(invalidHash, cue::package::PackageError::InvalidPackageManifest) &&
-           zeroSize && zeroSize.try_value()->byte_size() == 0U &&
+           is_package_error(invalidHash, cue::package::PackageError::InvalidPackageManifest) && zeroSize &&
+           zeroSize.try_value()->byte_size() == 0U &&
            is_package_error(missing, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(duplicate, cue::package::PackageError::InvalidPackageManifest) &&
            is_package_error(alias, cue::package::PackageError::InvalidPackageManifest) &&
@@ -392,36 +582,31 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
                                                                     std::move(wrongRole), a_assertContext);
 
     std::vector<cue::package::RuntimeDependencyCandidate> oversized;
-    oversized.push_back(
-        {cue::BuildConfiguration::Debug,
-         take_value(cue::package::PackageFileEntry::create(
-             PackageFileRole::RuntimeDependency, "Runtime/LargeA.dll", cue::package::k_maximumPackagedFileBytes,
-             std::string(k_xHash), a_assertContext))});
-    oversized.push_back(
-        {cue::BuildConfiguration::Debug,
-         take_value(cue::package::PackageFileEntry::create(
-             PackageFileRole::RuntimeDependency, "Runtime/LargeB.dll", cue::package::k_maximumPackagedFileBytes,
-             std::string(k_xHash), a_assertContext))});
-    oversized.push_back(
-        {cue::BuildConfiguration::Debug,
-         take_value(cue::package::PackageFileEntry::create(
-             PackageFileRole::RuntimeDependency, "Runtime/LargeC.dll", 1U, std::string(k_xHash), a_assertContext))});
+    oversized.push_back({cue::BuildConfiguration::Debug,
+                         take_value(cue::package::PackageFileEntry::create(
+                             PackageFileRole::RuntimeDependency, "Runtime/LargeA.dll",
+                             cue::package::k_maximumPackagedFileBytes, std::string(k_xHash), a_assertContext))});
+    oversized.push_back({cue::BuildConfiguration::Debug,
+                         take_value(cue::package::PackageFileEntry::create(
+                             PackageFileRole::RuntimeDependency, "Runtime/LargeB.dll",
+                             cue::package::k_maximumPackagedFileBytes, std::string(k_xHash), a_assertContext))});
+    oversized.push_back({cue::BuildConfiguration::Debug, take_value(cue::package::PackageFileEntry::create(
+                                                             PackageFileRole::RuntimeDependency, "Runtime/LargeC.dll",
+                                                             1U, std::string(k_xHash), a_assertContext))});
     auto overLimit = cue::package::validate_runtime_dependency_inventory(cue::BuildConfiguration::Debug,
                                                                          std::move(oversized), a_assertContext);
 
     std::vector<cue::package::RuntimeDependencyCandidate> overCount;
     overCount.reserve(cue::package::k_maximumPackageFileEntries - cue::package::k_requiredPackageFileEntries + 1U);
     for (std::size_t index = 0U;
-         index < cue::package::k_maximumPackageFileEntries - cue::package::k_requiredPackageFileEntries + 1U;
-         ++index)
+         index < cue::package::k_maximumPackageFileEntries - cue::package::k_requiredPackageFileEntries + 1U; ++index)
     {
-        overCount.push_back(
-            {cue::BuildConfiguration::Debug,
-             make_entry(PackageFileRole::RuntimeDependency,
-                        "Runtime/Dependency" + std::to_string(index) + ".dll", a_assertContext)});
+        overCount.push_back({cue::BuildConfiguration::Debug,
+                             make_entry(PackageFileRole::RuntimeDependency,
+                                        "Runtime/Dependency" + std::to_string(index) + ".dll", a_assertContext)});
     }
     auto tooMany = cue::package::validate_runtime_dependency_inventory(cue::BuildConfiguration::Debug,
-                                                                        std::move(overCount), a_assertContext);
+                                                                       std::move(overCount), a_assertContext);
 
     return inventory && inventory.try_value()->size() == 2U &&
            inventory.try_value()->front().relative_path() == "Runtime/A.dll" &&
@@ -444,12 +629,11 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     const std::vector<std::byte> game = make_test_pe(gameImports, {});
     const std::vector<std::byte> localA = make_test_pe({}, localADelayImports);
     const std::vector<std::byte> localB = make_test_pe(localBImports, {});
-    const std::array dependencies = {
-        cue::package::RuntimePeImageView{"LocalA.dll", localA},
-        cue::package::RuntimePeImageView{"LocalB.dll", localB}};
-    auto valid = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, dependencies,
-        a_assertContext);
+    const std::array dependencies = {cue::package::RuntimePeImageView{"LocalA.dll", localA},
+                                     cue::package::RuntimePeImageView{"LocalB.dll", localB}};
+    auto valid =
+        cue::package::validate_runtime_dependency_closure(cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+                                                          {"CueGameModule.dll", game}, dependencies, a_assertContext);
     auto loadOrder = cue::package::create_runtime_dependency_load_order(
         cue::BuildConfiguration::Debug, {"CueGameModule.dll", game}, dependencies, a_assertContext);
 
@@ -464,23 +648,22 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     constexpr std::array spacedImports = {std::string_view("My Library.dll")};
     const std::vector<std::byte> spacedGame = make_test_pe(spacedImports, {});
     const std::vector<std::byte> spacedDependencyImage = make_test_pe({}, {});
-    const std::array spacedDependency = {
-        cue::package::RuntimePeImageView{"My Library.dll", spacedDependencyImage}};
+    const std::array spacedDependency = {cue::package::RuntimePeImageView{"My Library.dll", spacedDependencyImage}};
     auto validSpacedImport = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", spacedGame},
         spacedDependency, a_assertContext);
 
     constexpr std::array missingImports = {std::string_view("Missing.dll")};
     const std::vector<std::byte> missingGame = make_test_pe(missingImports, {});
-    auto missing = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", missingGame}, {},
-        a_assertContext);
+    auto missing =
+        cue::package::validate_runtime_dependency_closure(cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+                                                          {"CueGameModule.dll", missingGame}, {}, a_assertContext);
 
     constexpr std::array releaseRuntime = {std::string_view("msvcp140.dll")};
     const std::vector<std::byte> mixedGame = make_test_pe(releaseRuntime, {});
-    auto mixed = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", mixedGame}, {},
-        a_assertContext);
+    auto mixed =
+        cue::package::validate_runtime_dependency_closure(cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
+                                                          {"CueGameModule.dll", mixedGame}, {}, a_assertContext);
 
     constexpr std::array hostLocalImport = {std::string_view("LocalA.dll")};
     const std::vector<std::byte> invalidHost = make_test_pe(hostLocalImport, {});
@@ -489,9 +672,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
         a_assertContext);
 
     const std::vector<std::byte> noImports = make_test_pe({}, {});
-    const std::array unreachableDependencies = {
-        cue::package::RuntimePeImageView{"LocalA.dll", noImports},
-        cue::package::RuntimePeImageView{"LocalB.dll", noImports}};
+    const std::array unreachableDependencies = {cue::package::RuntimePeImageView{"LocalA.dll", noImports},
+                                                cue::package::RuntimePeImageView{"LocalB.dll", noImports}};
     auto unreachable = cue::package::validate_runtime_dependency_closure(
         cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
         unreachableDependencies, a_assertContext);
@@ -500,18 +682,17 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     constexpr std::array localBImportsLocalA = {std::string_view("LocalA.dll")};
     const std::vector<std::byte> cyclicLocalA = make_test_pe(localAImports, {});
     const std::vector<std::byte> cyclicLocalB = make_test_pe(localBImportsLocalA, {});
-    const std::array cyclicDependencies = {
-        cue::package::RuntimePeImageView{"LocalA.dll", cyclicLocalA},
-        cue::package::RuntimePeImageView{"LocalB.dll", cyclicLocalB}};
+    const std::array cyclicDependencies = {cue::package::RuntimePeImageView{"LocalA.dll", cyclicLocalA},
+                                           cue::package::RuntimePeImageView{"LocalB.dll", cyclicLocalB}};
     auto cyclic = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
-        cyclicDependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, cyclicDependencies,
+        a_assertContext);
 
     const std::vector<std::byte> forwarded = make_test_pe({}, {}, true);
     const std::array forwardedDependency = {cue::package::RuntimePeImageView{"LocalA.dll", forwarded}};
     auto forwarder = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game},
-        forwardedDependency, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", game}, forwardedDependency,
+        a_assertContext);
 
     const std::vector<std::byte> malformed(128U, std::byte{0U});
     auto invalidPe = cue::package::validate_runtime_dependency_closure(
@@ -528,8 +709,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     std::vector<std::byte> shortImportAddressTable = game;
     write_u64(shortImportAddressTable, 0x800U, 0U);
     auto mismatchedImportThunkCount = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
-        {"CueGameModule.dll", shortImportAddressTable}, dependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", shortImportAddressTable},
+        dependencies, a_assertContext);
 
     std::vector<std::byte> invalidImportByName = game;
     write_u64(invalidImportByName, 0x700U, 0x00ffffffU);
@@ -541,8 +722,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u32(unterminatedImportThunk, 0x200U, 0x1df8U);
     write_u64(unterminatedImportThunk, 0xff8U, 0x8000000000000001ULL);
     auto unterminatedImport = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
-        {"CueGameModule.dll", unterminatedImportThunk}, dependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", unterminatedImportThunk},
+        dependencies, a_assertContext);
 
     std::vector<std::byte> missingDelayThunk = localA;
     write_u32(missingDelayThunk, 0x400U + 12U, 0U);
@@ -571,8 +752,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u32(headerCrossingHost, 0x114U, 20U);
     std::fill(headerCrossingHost.begin() + 0x1f8U, headerCrossingHost.begin() + 0x20cU, std::byte{0U});
     auto invalidHeaderRange = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerCrossingHost},
-        {"CueGameModule.dll", game}, dependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerCrossingHost}, {"CueGameModule.dll", game},
+        dependencies, a_assertContext);
 
     std::vector<std::byte> headerSectionAliasHost = host;
     write_u32(headerSectionAliasHost, 0x110U, 0x1f8U);
@@ -581,8 +762,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u32(headerSectionAliasHost, 0x19cU, 0x300U);
     std::fill(headerSectionAliasHost.begin() + 0x300U, headerSectionAliasHost.begin() + 0x314U, std::byte{0U});
     auto invalidHeaderSectionAlias = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerSectionAliasHost},
-        {"CueGameModule.dll", game}, dependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", headerSectionAliasHost}, {"CueGameModule.dll", game},
+        dependencies, a_assertContext);
 
     std::vector<std::byte> zeroImageSize = game;
     write_u32(zeroImageSize, 0xd0U, 0U);
@@ -602,14 +783,14 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u32(truncatedSectionImage, secondSection + 8U, 0x100U);
     write_u32(truncatedSectionImage, secondSection + 12U, 0x2000U);
     auto invalidSectionImageExtent = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
-        {"CueGameModule.dll", truncatedSectionImage}, dependencies, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", truncatedSectionImage},
+        dependencies, a_assertContext);
 
     std::vector<std::byte> unalignedSectionImage = noImports;
     write_u32(unalignedSectionImage, 0x194U, 0x1001U);
     auto invalidSectionAlignment = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
-        {"CueGameModule.dll", unalignedSectionImage}, {}, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", unalignedSectionImage}, {},
+        a_assertContext);
 
     std::vector<std::byte> undersizedHeaders = game;
     write_u32(undersizedHeaders, 0xd4U, 0U);
@@ -622,8 +803,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     write_u32(overlappingSections, secondSection + 8U, 0x100U);
     write_u32(overlappingSections, secondSection + 12U, 0x1000U);
     auto invalidSectionOverlap = cue::package::validate_runtime_dependency_closure(
-        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host},
-        {"CueGameModule.dll", overlappingSections}, {}, a_assertContext);
+        cue::BuildConfiguration::Debug, {"CueRuntimeHost.exe", host}, {"CueGameModule.dll", overlappingSections}, {},
+        a_assertContext);
     return valid && loadOrder && loadOrder.try_value()->size() == 2U && (*loadOrder.try_value())[0] == 1U &&
            (*loadOrder.try_value())[1] == 0U && validNamedImport && validSpacedImport &&
            is_package_error(missing, cue::package::PackageError::RuntimeDependencyViolation) &&
@@ -663,29 +844,101 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     const cue::package::PackageManifest manifest = make_manifest(a_assertContext);
     write_manifest_files(a_testRoot, manifest);
     auto verified = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    if (!verified)
+    {
+        std::cerr << "Legacy Package verification failed: " << verified.try_error()->summary() << '\n';
+    }
+    require(verified.has_value());
 #if defined(_WIN32)
     const std::filesystem::path guardedPath = a_testRoot / "Game/CueGameModule.dll";
-    const HANDLE writer = CreateFileW(guardedPath.c_str(), GENERIC_WRITE,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+    const HANDLE writer =
+        CreateFileW(guardedPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     require(writer != nullptr && writer != INVALID_HANDLE_VALUE);
     auto writeShared =
         cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
     require(CloseHandle(writer) != FALSE);
+    require(is_package_error(writeShared, cue::package::PackageError::PackageFileMissing));
 #endif
     write_file(a_testRoot, "Game/CueGameModule.dll", "y");
     auto mismatched =
         cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(is_package_error(mismatched, cue::package::PackageError::PackageFileMismatch));
     write_file(a_testRoot, "Game/CueGameModule.dll", "x");
     require(std::filesystem::remove(a_testRoot / "Data/CueProject.runtime.json", error) && !error);
     auto missing = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(is_package_error(missing, cue::package::PackageError::PackageFileMissing));
     std::filesystem::remove_all(a_testRoot, error);
-    return verified &&
+    require(!error);
+    return true;
+}
+
+/// @brief Manifest v2の完全File集合、未知File、署名混入、空Directory、間接Path拒否を検証する
+[[nodiscard]] bool test_monolithic_tree_verification(const std::filesystem::path &a_testRoot,
+                                                     const cue::AssertContext &a_assertContext)
+{
+    std::error_code error;
+    std::filesystem::remove_all(a_testRoot, error);
+    if (error || !std::filesystem::create_directories(a_testRoot, error) || error)
+    {
+        return false;
+    }
+    const cue::package::PackageManifest manifest = make_monolithic_manifest(a_assertContext);
+    write_manifest_files(a_testRoot, manifest);
+    write_file(a_testRoot, "CuePackage.json",
+               take_value(cue::package::serialize_package_manifest(manifest, a_assertContext)));
+    auto verified = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+
+    write_file(a_testRoot, "Unexpected.dll", "x");
+    auto unexpected =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(std::filesystem::remove(a_testRoot / "Unexpected.dll", error) && !error);
+    write_file(a_testRoot, "CuePackage.signature.p7s", "x");
+    auto unsignedSignature =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(std::filesystem::remove(a_testRoot / "CuePackage.signature.p7s", error) && !error);
+    require(std::filesystem::create_directory(a_testRoot / "Empty", error) && !error);
+    auto emptyDirectory =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    require(std::filesystem::remove(a_testRoot / "Empty", error) && !error);
+
+    bool indirectRejected = true;
 #if defined(_WIN32)
-           is_package_error(writeShared, cue::package::PackageError::PackageFileMissing) &&
+    indirectRejected = false;
+    const std::filesystem::path outside = a_testRoot.parent_path() / "CuePackageManifestIndirectTarget";
+    std::filesystem::remove_all(outside, error);
+    require(!error && std::filesystem::create_directories(outside, error) && !error);
+    const DWORD flags = SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    require(CreateSymbolicLinkW((a_testRoot / "Linked").c_str(), outside.c_str(), flags) != FALSE);
+    auto indirect = cue::package::verify_package_manifest_files(a_testRoot.generic_string(), manifest, a_assertContext);
+    indirectRejected = is_package_error(indirect, cue::package::PackageError::InvalidPackagePath);
+    require(std::filesystem::remove(a_testRoot / "Linked", error) && !error);
+    std::filesystem::remove_all(outside, error);
+    require(!error);
 #endif
-           is_package_error(mismatched, cue::package::PackageError::PackageFileMismatch) &&
-           is_package_error(missing, cue::package::PackageError::PackageFileMissing) && !error;
+
+    const cue::package::PackageManifest signedManifest = take_value(cue::package::PackageManifest::create_monolithic(
+        std::string(k_projectId), {1U, 2U, 3U}, cue::BuildConfiguration::Release, std::string(k_sceneId),
+        std::string(k_scenePath), cue::ShippingTrustMode::PublisherSigned, std::string(k_publisherKeyId),
+        std::string("CuePackage.signature.p7s"), make_monolithic_files(a_assertContext), a_assertContext));
+    write_file(a_testRoot, "CuePackage.json",
+               take_value(cue::package::serialize_package_manifest(signedManifest, a_assertContext)));
+    std::string signature(cue::package::k_maximumMonolithicSignatureBytes, 's');
+    write_file(a_testRoot, "CuePackage.signature.p7s", signature);
+    auto signedMaximum =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), signedManifest, a_assertContext);
+    signature.push_back('s');
+    write_file(a_testRoot, "CuePackage.signature.p7s", signature);
+    auto signedOverLimit =
+        cue::package::verify_package_manifest_files(a_testRoot.generic_string(), signedManifest, a_assertContext);
+
+    std::filesystem::remove_all(a_testRoot, error);
+    return verified && is_package_error(unexpected, cue::package::PackageError::PackageFileMismatch) &&
+           is_package_error(unsignedSignature, cue::package::PackageError::PackageFileMismatch) &&
+           is_package_error(emptyDirectory, cue::package::PackageError::PackageFileMismatch) && indirectRejected &&
+           signedMaximum &&
+           is_package_error(signedOverLimit, cue::package::PackageError::PackageManifestResourceLimitExceeded) &&
+           !error;
 }
 
 /// @brief Binary File全体をBenchmark入力として読み込む
@@ -728,8 +981,8 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     if (!warmVerification)
     {
         const cue::Error &error = *warmVerification.try_error();
-        std::cerr << "hash_verification_error=" << error.summary() << " root_code=" << error.root_code().domain()
-                  << ':' << error.root_code().value() << '\n';
+        std::cerr << "hash_verification_error=" << error.summary() << " root_code=" << error.root_code().domain() << ':'
+                  << error.root_code().value() << '\n';
         return false;
     }
 
@@ -766,20 +1019,15 @@ void write_ascii(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::str
     std::ranges::sort(parseMicroseconds);
     std::ranges::sort(hashMilliseconds);
     const auto mean = [](const std::vector<double> &a_samples) noexcept
-    {
-        return std::accumulate(a_samples.begin(), a_samples.end(), 0.0) / static_cast<double>(a_samples.size());
-    };
+    { return std::accumulate(a_samples.begin(), a_samples.end(), 0.0) / static_cast<double>(a_samples.size()); };
     const auto percentile = [](const std::vector<double> &a_samples, std::size_t a_percentile) noexcept
-    {
-        return a_samples[((a_samples.size() - 1U) * a_percentile) / 100U];
-    };
+    { return a_samples[((a_samples.size() - 1U) * a_percentile) / 100U]; };
     std::cout << std::fixed << std::setprecision(3) << "manifest_bytes=" << manifestBytes.size()
               << " file_count=" << manifest.files().size() << " package_bytes=" << packageBytes
               << " parse_iterations=" << parseIterations << " parse_mean_us=" << mean(parseMicroseconds)
               << " parse_p50_us=" << percentile(parseMicroseconds, 50U)
-              << " parse_p95_us=" << percentile(parseMicroseconds, 95U)
-              << " hash_iterations=" << hashIterations << " hash_mean_ms=" << mean(hashMilliseconds)
-              << " hash_p50_ms=" << percentile(hashMilliseconds, 50U)
+              << " parse_p95_us=" << percentile(parseMicroseconds, 95U) << " hash_iterations=" << hashIterations
+              << " hash_mean_ms=" << mean(hashMilliseconds) << " hash_p50_ms=" << percentile(hashMilliseconds, 50U)
               << " hash_p95_ms=" << percentile(hashMilliseconds, 95U) << '\n';
     return true;
 }
@@ -799,9 +1047,13 @@ int main(int a_argumentCount, char **a_arguments)
         return run_manifest_benchmark(a_arguments[2], assertContext) ? 0 : 1;
     }
     const std::filesystem::path testRoot = std::filesystem::path(a_arguments[1]) / "CuePackageManifestTests";
-    return test_manifest_wire_contract(assertContext) && test_manifest_validation(assertContext) &&
-                   test_runtime_dependency_inventory(assertContext) &&
-                   test_runtime_dependency_closure(assertContext) && test_file_verification(testRoot, assertContext)
-               ? 0
-               : 1;
+    require(test_manifest_wire_contract(assertContext));
+    require(test_monolithic_manifest_wire_contract(assertContext));
+    require(test_monolithic_role_size_limits(assertContext));
+    require(test_manifest_validation(assertContext));
+    require(test_runtime_dependency_inventory(assertContext));
+    require(test_runtime_dependency_closure(assertContext));
+    require(test_file_verification(testRoot, assertContext));
+    require(test_monolithic_tree_verification(testRoot, assertContext));
+    return 0;
 }

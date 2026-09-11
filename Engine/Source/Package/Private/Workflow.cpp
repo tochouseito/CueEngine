@@ -370,6 +370,7 @@ struct GamePackageWorkflowService::Impl final
                 case PackageFileRole::GameModuleMetadata:
                 case PackageFileRole::ProjectRuntimeData:
                 case PackageFileRole::StartupSceneRuntimeData:
+                case PackageFileRole::ApplicationExecutable:
                     break;
                 }
             }

@@ -1,5 +1,6 @@
 #include <Cue/Package/Manifest.h>
 
+#include "ManifestVerification.h"
 #include "Sha256.h"
 
 #include <Cue/Foundation/Assert.h>
@@ -766,6 +767,33 @@ template <typename Value> [[nodiscard]] bool parse_unsigned(const JsonValue &a_v
     return std::nullopt;
 }
 
+/// @brief Shipping Trust ModeをManifestの固定文字列へ変換する
+[[nodiscard]] std::string_view trust_mode_text(cue::ShippingTrustMode a_mode) noexcept
+{
+    switch (a_mode)
+    {
+    case cue::ShippingTrustMode::UnsignedLocal:
+        return "UnsignedLocal";
+    case cue::ShippingTrustMode::PublisherSigned:
+        return "PublisherSigned";
+    }
+    return {};
+}
+
+/// @brief Manifest文字列をShipping Trust Modeへ変換する
+[[nodiscard]] std::optional<cue::ShippingTrustMode> parse_trust_mode(std::string_view a_value) noexcept
+{
+    if (a_value == "UnsignedLocal")
+    {
+        return cue::ShippingTrustMode::UnsignedLocal;
+    }
+    if (a_value == "PublisherSigned")
+    {
+        return cue::ShippingTrustMode::PublisherSigned;
+    }
+    return std::nullopt;
+}
+
 /// @brief Package File RoleをManifestの固定文字列へ変換する
 [[nodiscard]] std::string_view role_text(cue::package::PackageFileRole a_role) noexcept
 {
@@ -783,6 +811,8 @@ template <typename Value> [[nodiscard]] bool parse_unsigned(const JsonValue &a_v
         return "startupSceneRuntimeData";
     case cue::package::PackageFileRole::RuntimeDependency:
         return "runtimeDependency";
+    case cue::package::PackageFileRole::ApplicationExecutable:
+        return "applicationExecutable";
     }
     return {};
 }
@@ -814,6 +844,10 @@ template <typename Value> [[nodiscard]] bool parse_unsigned(const JsonValue &a_v
     if (a_value == "runtimeDependency")
     {
         return PackageFileRole::RuntimeDependency;
+    }
+    if (a_value == "applicationExecutable")
+    {
+        return PackageFileRole::ApplicationExecutable;
     }
     return std::nullopt;
 }
@@ -885,11 +919,68 @@ void append_engine_version(std::string &a_output, const cue::EngineVersion &a_ve
     case PackageFileRole::RuntimeDependency:
     {
         constexpr std::string_view prefix = "Runtime/";
-        const std::string_view fileName = a_path.starts_with(prefix) ? a_path.substr(prefix.size()) : std::string_view{};
+        const std::string_view fileName =
+            a_path.starts_with(prefix) ? a_path.substr(prefix.size()) : std::string_view{};
         return !fileName.empty() && fileName.find('/') == std::string_view::npos;
     }
+    case PackageFileRole::ApplicationExecutable:
+        return a_path == "CueGameProduct.exe";
     }
     return false;
+}
+
+/// @brief JSON File配列をCanonical Path順の検証済みPackage Entryへ変換する
+[[nodiscard]] cue::Result<std::vector<cue::package::PackageFileEntry>> parse_file_entries(
+    const JsonValue &a_files, const cue::AssertContext &a_assertContext)
+{
+    using cue::package::k_maximumPackageFileEntries;
+    using cue::package::PackageError;
+    using cue::package::PackageFileEntry;
+    if (a_files.kind != JsonKind::Array || a_files.elements.size() > k_maximumPackageFileEntries)
+    {
+        return cue::Result<std::vector<PackageFileEntry>>::failure(
+            manifest_error(a_assertContext, PackageError::PackageManifestResourceLimitExceeded,
+                           "Package file entry count exceeds its limit"));
+    }
+    std::vector<PackageFileEntry> parsedFiles;
+    parsedFiles.reserve(a_files.elements.size());
+    std::string_view previousPath;
+    constexpr std::array fileNames = {std::string_view("role"), std::string_view("path"), std::string_view("sizeBytes"),
+                                      std::string_view("sha256")};
+    for (const JsonValue &file : a_files.elements)
+    {
+        if (!has_exact_members(file, fileNames))
+        {
+            return cue::Result<std::vector<PackageFileEntry>>::failure(manifest_error(
+                a_assertContext, PackageError::InvalidPackageManifest, "Package file entry members are invalid"));
+        }
+        const JsonValue *role = find_member(file, "role");
+        const JsonValue *path = find_member(file, "path");
+        const JsonValue *size = find_member(file, "sizeBytes");
+        const JsonValue *hash = find_member(file, "sha256");
+        std::uint64_t parsedSize = 0U;
+        if (role == nullptr || role->kind != JsonKind::String || path == nullptr || path->kind != JsonKind::String ||
+            size == nullptr || !parse_unsigned(*size, parsedSize) || hash == nullptr || hash->kind != JsonKind::String)
+        {
+            return cue::Result<std::vector<PackageFileEntry>>::failure(manifest_error(
+                a_assertContext, PackageError::InvalidPackageManifest, "Package file entry value is invalid"));
+        }
+        const std::optional<cue::package::PackageFileRole> parsedRole = parse_role(role->text);
+        if (!parsedRole || (!previousPath.empty() && !(previousPath < path->text)))
+        {
+            return cue::Result<std::vector<PackageFileEntry>>::failure(
+                manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                               "Package file role or canonical path order is invalid"));
+        }
+        auto entry = PackageFileEntry::create(*parsedRole, path->text, parsedSize, hash->text, a_assertContext);
+        if (!entry)
+        {
+            return cue::Result<std::vector<PackageFileEntry>>::failure(std::move(*entry.try_error()));
+        }
+        parsedFiles.push_back(std::move(*entry.try_value()));
+        previousPath = parsedFiles.back().relative_path();
+    }
+    return cue::Result<std::vector<PackageFileEntry>>::success(std::move(parsedFiles));
 }
 
 /// @brief Manifest内のPDB Entryを拡張子のASCII case-insensitive比較で検出する
@@ -964,6 +1055,160 @@ void append_engine_version(std::string &a_output, const cue::EngineVersion &a_ve
 #endif
 }
 
+/// @brief Native PathのRoot相対要素をUTF-8 slash表現へ変換する
+[[nodiscard]] std::string generic_utf8_text(const std::filesystem::path &a_path)
+{
+    const std::u8string text = a_path.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(text.data()), text.size());
+}
+
+/// @brief Monolithic Packageで許可される全Fileと親Directoryを決定順に構築する
+void collect_monolithic_package_tree(const cue::package::PackageManifest &a_manifest, std::vector<std::string> &a_files,
+                                     std::vector<std::string> &a_directories)
+{
+    a_files.emplace_back("CuePackage.json");
+    for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+    {
+        a_files.emplace_back(entry.relative_path());
+        std::filesystem::path parent = std::filesystem::path(entry.relative_path()).parent_path();
+        while (!parent.empty())
+        {
+            const std::string directory = generic_utf8_text(parent);
+            if (std::find(a_directories.begin(), a_directories.end(), directory) == a_directories.end())
+            {
+                a_directories.push_back(directory);
+            }
+            parent = parent.parent_path();
+        }
+    }
+    if (a_manifest.manifest_signature_path())
+    {
+        a_files.emplace_back(*a_manifest.manifest_signature_path());
+    }
+    std::ranges::sort(a_files);
+    std::ranges::sort(a_directories);
+}
+
+/// @brief Monolithic Package Rootを再帰列挙し許可されたFileとDirectory以外を拒否する
+[[nodiscard]] cue::Result<void> verify_monolithic_package_tree_impl(const std::filesystem::path &a_root,
+                                                                    const cue::package::PackageManifest &a_manifest,
+                                                                    const cue::AssertContext &a_assertContext)
+{
+    std::vector<std::string> expectedFiles;
+    std::vector<std::string> expectedDirectories;
+    expectedFiles.reserve(a_manifest.files().size() + 2U);
+    expectedDirectories.reserve(a_manifest.files().size() * 2U);
+    collect_monolithic_package_tree(a_manifest, expectedFiles, expectedDirectories);
+
+    std::error_code error;
+    const std::filesystem::file_status rootStatus =
+        std::filesystem::symlink_status(native_inspection_path(a_root), error);
+    std::error_code indirectError;
+    const bool isRootIndirect = is_indirect_path(a_root, indirectError);
+    if (error || indirectError || !a_root.is_absolute() || !std::filesystem::is_directory(rootStatus) || isRootIndirect)
+    {
+        return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                         cue::package::PackageError::InvalidPackagePath,
+                                                         "Monolithic Package Root is unavailable or indirect"));
+    }
+
+    const std::filesystem::path inspectionRoot = native_inspection_path(a_root);
+    error.clear();
+    std::filesystem::recursive_directory_iterator iterator(inspectionRoot, std::filesystem::directory_options::none,
+                                                           error);
+    const std::filesystem::recursive_directory_iterator end;
+    if (error)
+    {
+        return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                         cue::package::PackageError::InvalidPackagePath,
+                                                         "Monolithic Package Root could not be enumerated"));
+    }
+
+    std::size_t fileCount = 0U;
+    std::size_t directoryCount = 0U;
+    while (iterator != end)
+    {
+        const std::filesystem::directory_entry &entry = *iterator;
+        error.clear();
+        const bool isIndirect = is_indirect_path(entry.path(), error);
+        if (error || isIndirect)
+        {
+            return cue::Result<void>::failure(
+                manifest_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                               "Monolithic Package contains an indirect or unavailable entry"));
+        }
+
+        const std::filesystem::path relative = entry.path().lexically_relative(inspectionRoot);
+        const std::string relativeText = generic_utf8_text(relative);
+        error.clear();
+        const std::filesystem::file_status status = entry.symlink_status(error);
+        if (error || relative.empty() || relative.is_absolute() || !is_valid_package_path(relativeText))
+        {
+            return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                             cue::package::PackageError::InvalidPackagePath,
+                                                             "Monolithic Package contains an invalid entry path"));
+        }
+        if (std::filesystem::is_regular_file(status))
+        {
+            if (!std::ranges::binary_search(expectedFiles, relativeText))
+            {
+                return cue::Result<void>::failure(
+                    manifest_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                                   "Monolithic Package contains a file outside the complete inventory"));
+            }
+            if (a_manifest.manifest_signature_path() == std::optional<std::string_view>(relativeText))
+            {
+                error.clear();
+                const std::uintmax_t signatureSize = entry.file_size(error);
+                if (error)
+                {
+                    return cue::Result<void>::failure(
+                        manifest_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                                       "Monolithic Package signature size could not be inspected"));
+                }
+                if (signatureSize > cue::package::k_maximumMonolithicSignatureBytes)
+                {
+                    return cue::Result<void>::failure(manifest_error(
+                        a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
+                        "Monolithic Package signature exceeds its byte limit"));
+                }
+            }
+            ++fileCount;
+        }
+        else if (std::filesystem::is_directory(status))
+        {
+            if (!std::ranges::binary_search(expectedDirectories, relativeText))
+            {
+                return cue::Result<void>::failure(
+                    manifest_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                                   "Monolithic Package contains an unknown or empty directory"));
+            }
+            ++directoryCount;
+        }
+        else
+        {
+            return cue::Result<void>::failure(
+                manifest_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                               "Monolithic Package contains an unsupported filesystem entry"));
+        }
+
+        iterator.increment(error);
+        if (error)
+        {
+            return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                             cue::package::PackageError::InvalidPackagePath,
+                                                             "Monolithic Package Root enumeration failed"));
+        }
+    }
+    if (fileCount != expectedFiles.size() || directoryCount != expectedDirectories.size())
+    {
+        return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                         cue::package::PackageError::PackageFileMismatch,
+                                                         "Monolithic Package filesystem inventory is incomplete"));
+    }
+    return cue::Result<void>::success();
+}
+
 #if defined(_WIN32)
 enum class DirectoryChainResult
 {
@@ -1027,6 +1272,28 @@ enum class DirectoryChainResult
 }
 #endif
 } // namespace
+
+namespace cue::package_private
+{
+Result<void> verify_monolithic_package_tree(std::string_view a_packageRoot, const package::PackageManifest &a_manifest,
+                                            const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        if (a_manifest.schema_version() != package::k_monolithicPackageManifestSchemaVersion)
+        {
+            return Result<void>::failure(
+                package::make_package_error(a_assertContext, package::PackageError::InvalidPackageManifest,
+                                            "Complete Package tree verification requires Manifest v2"));
+        }
+        return verify_monolithic_package_tree_impl(native_path(a_packageRoot), a_manifest, a_assertContext);
+    }
+    catch (...)
+    {
+        terminate_manifest_exception(a_assertContext);
+    }
+}
+} // namespace cue::package_private
 
 namespace cue::package
 {
@@ -1149,13 +1416,21 @@ Result<std::vector<PackageFileEntry>> validate_runtime_dependency_inventory(
     }
 }
 
-PackageManifest::PackageManifest(std::string a_projectId, EngineVersion a_engineVersion,
-                                 BuildConfiguration a_configuration, std::string a_startupSceneAssetId,
-                                 std::string a_startupSceneRuntimeDataPath,
+PackageManifest::PackageManifest(std::uint32_t a_schemaVersion, std::string a_projectId, EngineVersion a_engineVersion,
+                                 BuildConfiguration a_configuration, PackageExecutionModel a_executionModel,
+                                 std::string a_startupSceneAssetId, std::string a_startupSceneRuntimeDataPath,
+                                 std::optional<std::string> a_applicationExecutable,
+                                 std::optional<ShippingTrustMode> a_trustMode,
+                                 std::optional<std::string> a_publisherKeyId,
+                                 std::optional<std::string> a_manifestSignaturePath,
                                  std::vector<PackageFileEntry> a_files) noexcept
-    : m_projectId(std::move(a_projectId)), m_engineVersion(a_engineVersion), m_configuration(a_configuration),
+    : m_schemaVersion(a_schemaVersion), m_projectId(std::move(a_projectId)), m_engineVersion(a_engineVersion),
+      m_configuration(a_configuration), m_executionModel(a_executionModel),
       m_startupSceneAssetId(std::move(a_startupSceneAssetId)),
-      m_startupSceneRuntimeDataPath(std::move(a_startupSceneRuntimeDataPath)), m_files(std::move(a_files))
+      m_startupSceneRuntimeDataPath(std::move(a_startupSceneRuntimeDataPath)),
+      m_applicationExecutable(std::move(a_applicationExecutable)), m_trustMode(a_trustMode),
+      m_publisherKeyId(std::move(a_publisherKeyId)), m_manifestSignaturePath(std::move(a_manifestSignaturePath)),
+      m_files(std::move(a_files))
 {
 }
 
@@ -1188,7 +1463,7 @@ Result<PackageManifest> PackageManifest::create(std::string a_projectId, EngineV
                   /// @brief Package File EntryをUTF-8相対Path順へ並べる
                   [](const PackageFileEntry &a_left, const PackageFileEntry &a_right) noexcept
                   { return a_left.relative_path() < a_right.relative_path(); });
-        std::array<std::size_t, 6U> roleCounts{};
+        std::array<std::size_t, 7U> roleCounts{};
         std::uint64_t totalBytes = 0U;
         std::vector<std::string> caseKeys;
         caseKeys.reserve(a_files.size());
@@ -1212,7 +1487,7 @@ Result<PackageManifest> PackageManifest::create(std::string a_projectId, EngineV
             totalBytes += file.byte_size();
             caseKeys.push_back(caseKey);
         }
-        for (std::size_t index = 0U; index < roleCounts.size() - 1U; ++index)
+        for (std::size_t index = 0U; index < 5U; ++index)
         {
             if (roleCounts[index] != 1U)
             {
@@ -1221,9 +1496,102 @@ Result<PackageManifest> PackageManifest::create(std::string a_projectId, EngineV
                                    "Package Manifest requires exactly one entry for every mandatory role"));
             }
         }
+        if (roleCounts[static_cast<std::size_t>(PackageFileRole::ApplicationExecutable) - 1U] != 0U)
+        {
+            return Result<PackageManifest>::failure(
+                manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                               "Package Manifest v1 cannot contain an application executable role"));
+        }
+        return Result<PackageManifest>::success(PackageManifest(
+            k_packageManifestSchemaVersion, std::move(a_projectId), a_engineVersion, a_configuration,
+            PackageExecutionModel::Modular, std::move(a_startupSceneAssetId), std::move(a_startupSceneRuntimeDataPath),
+            std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::move(a_files)));
+    }
+    catch (...)
+    {
+        terminate_manifest_exception(a_assertContext);
+    }
+}
+
+Result<PackageManifest> PackageManifest::create_monolithic(
+    std::string a_projectId, EngineVersion a_engineVersion, BuildConfiguration a_configuration,
+    std::string a_startupSceneAssetId, std::string a_startupSceneRuntimeDataPath, ShippingTrustMode a_trustMode,
+    std::optional<std::string> a_publisherKeyId, std::optional<std::string> a_manifestSignaturePath,
+    std::vector<PackageFileEntry> a_files, const AssertContext &a_assertContext) noexcept
+{
+    auto projectId = ProjectId::parse(a_projectId, a_assertContext);
+    auto sceneId = scene::SceneAssetId::parse(a_startupSceneAssetId, a_assertContext);
+    const bool isUnsigned =
+        a_trustMode == ShippingTrustMode::UnsignedLocal && !a_publisherKeyId && !a_manifestSignaturePath;
+    const bool isSigned = a_trustMode == ShippingTrustMode::PublisherSigned && a_publisherKeyId &&
+                          is_valid_sha256(*a_publisherKeyId) && a_manifestSignaturePath &&
+                          *a_manifestSignaturePath == "CuePackage.signature.p7s";
+    if (!projectId || !sceneId || a_configuration != BuildConfiguration::Release || (!isUnsigned && !isSigned))
+    {
+        return Result<PackageManifest>::failure(
+            manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                           "Monolithic Package identity, configuration, or trust policy is invalid"));
+    }
+    try
+    {
+        const std::string canonicalSceneId = scene_id_text(*sceneId.try_value());
+        const std::string expectedScenePath = "Data/Scenes/" + canonicalSceneId + ".cueruntime.json";
+        if (a_startupSceneRuntimeDataPath != expectedScenePath || a_files.size() != 3U)
+        {
+            return Result<PackageManifest>::failure(
+                manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                               "Monolithic Package startup scene path or file count is invalid"));
+        }
+        std::sort(a_files.begin(), a_files.end(),
+                  /// @brief Monolithic Package EntryをUTF-8相対Path順へ固定する
+                  [](const PackageFileEntry &a_left, const PackageFileEntry &a_right) noexcept
+                  { return a_left.relative_path() < a_right.relative_path(); });
+        std::array<std::size_t, 7U> roleCounts{};
+        std::uint64_t totalBytes = 0U;
+        std::vector<std::string> caseKeys;
+        caseKeys.reserve(a_files.size());
+        for (const PackageFileEntry &file : a_files)
+        {
+            const std::size_t roleIndex = static_cast<std::size_t>(file.role()) - 1U;
+            const std::string caseKey = ascii_case_key(file.relative_path());
+            const bool isRoleSizeValid = (file.role() == PackageFileRole::ApplicationExecutable &&
+                                          file.byte_size() <= k_maximumMonolithicExecutableBytes) ||
+                                         (file.role() == PackageFileRole::ProjectRuntimeData &&
+                                          file.byte_size() <= k_maximumMonolithicProjectDataBytes) ||
+                                         (file.role() == PackageFileRole::StartupSceneRuntimeData &&
+                                          file.byte_size() <= k_maximumMonolithicSceneDataBytes);
+            if (roleIndex >= roleCounts.size() || !is_valid_package_path(file.relative_path()) ||
+                !is_valid_sha256(file.sha256()) || !isRoleSizeValid ||
+                !role_matches_path(file.role(), file.relative_path(), expectedScenePath) ||
+                is_pdb_path(file.relative_path()) ||
+                std::find(caseKeys.begin(), caseKeys.end(), caseKey) != caseKeys.end() ||
+                totalBytes > k_maximumPackageInventoryBytes - file.byte_size())
+            {
+                return Result<PackageManifest>::failure(
+                    manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                                   "Monolithic Package inventory contains an invalid, duplicate, or oversized entry"));
+            }
+            ++roleCounts[roleIndex];
+            totalBytes += file.byte_size();
+            caseKeys.push_back(caseKey);
+        }
+        for (std::size_t index = 0U; index < roleCounts.size(); ++index)
+        {
+            const bool isRequired = index == static_cast<std::size_t>(PackageFileRole::ProjectRuntimeData) - 1U ||
+                                    index == static_cast<std::size_t>(PackageFileRole::StartupSceneRuntimeData) - 1U ||
+                                    index == static_cast<std::size_t>(PackageFileRole::ApplicationExecutable) - 1U;
+            if (roleCounts[index] != (isRequired ? 1U : 0U))
+            {
+                return Result<PackageManifest>::failure(
+                    manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                                   "Monolithic Package requires exactly one entry for each supported role"));
+            }
+        }
         return Result<PackageManifest>::success(
-            PackageManifest(std::move(a_projectId), a_engineVersion, a_configuration, std::move(a_startupSceneAssetId),
-                            std::move(a_startupSceneRuntimeDataPath), std::move(a_files)));
+            PackageManifest(k_monolithicPackageManifestSchemaVersion, std::move(a_projectId), a_engineVersion,
+                            a_configuration, PackageExecutionModel::Monolithic, std::move(a_startupSceneAssetId),
+                            std::move(a_startupSceneRuntimeDataPath), std::string("CueGameProduct.exe"), a_trustMode,
+                            std::move(a_publisherKeyId), std::move(a_manifestSignaturePath), std::move(a_files)));
     }
     catch (...)
     {
@@ -1233,7 +1601,7 @@ Result<PackageManifest> PackageManifest::create(std::string a_projectId, EngineV
 
 std::uint32_t PackageManifest::schema_version() const noexcept
 {
-    return k_packageManifestSchemaVersion;
+    return m_schemaVersion;
 }
 
 std::string_view PackageManifest::project_id() const noexcept
@@ -1251,6 +1619,11 @@ BuildConfiguration PackageManifest::configuration() const noexcept
     return m_configuration;
 }
 
+PackageExecutionModel PackageManifest::execution_model() const noexcept
+{
+    return m_executionModel;
+}
+
 std::string_view PackageManifest::startup_scene_asset_id() const noexcept
 {
     return m_startupSceneAssetId;
@@ -1259,6 +1632,26 @@ std::string_view PackageManifest::startup_scene_asset_id() const noexcept
 std::string_view PackageManifest::startup_scene_runtime_data_path() const noexcept
 {
     return m_startupSceneRuntimeDataPath;
+}
+
+std::optional<std::string_view> PackageManifest::application_executable() const noexcept
+{
+    return m_applicationExecutable ? std::optional<std::string_view>(*m_applicationExecutable) : std::nullopt;
+}
+
+std::optional<ShippingTrustMode> PackageManifest::trust_mode() const noexcept
+{
+    return m_trustMode;
+}
+
+std::optional<std::string_view> PackageManifest::publisher_key_id() const noexcept
+{
+    return m_publisherKeyId ? std::optional<std::string_view>(*m_publisherKeyId) : std::nullopt;
+}
+
+std::optional<std::string_view> PackageManifest::manifest_signature_path() const noexcept
+{
+    return m_manifestSignaturePath ? std::optional<std::string_view>(*m_manifestSignaturePath) : std::nullopt;
 }
 
 std::span<const PackageFileEntry> PackageManifest::files() const noexcept
@@ -1273,6 +1666,76 @@ Result<std::string> serialize_package_manifest(const PackageManifest &a_manifest
     {
         std::string output;
         output.reserve(1024U + a_manifest.files().size() * 192U);
+        if (a_manifest.schema_version() == k_monolithicPackageManifestSchemaVersion)
+        {
+            const std::optional<std::string_view> executable = a_manifest.application_executable();
+            const std::optional<ShippingTrustMode> trustMode = a_manifest.trust_mode();
+            if (a_manifest.execution_model() != PackageExecutionModel::Monolithic || !executable || !trustMode)
+            {
+                return Result<std::string>::failure(
+                    manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
+                                   "Monolithic Package Manifest is missing its execution or trust identity"));
+            }
+            output.append("{\n  \"schemaVersion\": 2,\n  \"projectId\": \"");
+            output.append(a_manifest.project_id());
+            output.append("\",\n  \"engineVersion\": \"");
+            append_engine_version(output, a_manifest.engine_version());
+            output.append("\",\n  \"architecture\": \"x64\",\n  \"configuration\": \"");
+            output.append(configuration_text(a_manifest.configuration()));
+            output.append(
+                "\",\n  \"executionModel\": \"monolithic\",\n  \"startupScene\": {\n    \"sceneAssetId\": \"");
+            output.append(a_manifest.startup_scene_asset_id());
+            output.append("\",\n    \"runtimeDataPath\": \"");
+            output.append(a_manifest.startup_scene_runtime_data_path());
+            output.append("\"\n  },\n  \"applicationExecutable\": \"");
+            output.append(*executable);
+            output.append("\",\n  \"trust\": {\n    \"mode\": \"");
+            output.append(trust_mode_text(*trustMode));
+            output.append("\",\n    \"publisherKeyId\": ");
+            if (const std::optional<std::string_view> keyId = a_manifest.publisher_key_id())
+            {
+                output.push_back('"');
+                output.append(*keyId);
+                output.push_back('"');
+            }
+            else
+            {
+                output.append("null");
+            }
+            output.append(",\n    \"manifestSignaturePath\": ");
+            if (const std::optional<std::string_view> signaturePath = a_manifest.manifest_signature_path())
+            {
+                output.push_back('"');
+                output.append(*signaturePath);
+                output.push_back('"');
+            }
+            else
+            {
+                output.append("null");
+            }
+            output.append("\n  },\n  \"files\": [\n");
+            for (std::size_t index = 0U; index < a_manifest.files().size(); ++index)
+            {
+                const PackageFileEntry &file = a_manifest.files()[index];
+                output.append("    { \"role\": \"");
+                output.append(role_text(file.role()));
+                output.append("\", \"path\": \"");
+                output.append(file.relative_path());
+                output.append("\", \"sizeBytes\": ");
+                output.append(std::to_string(file.byte_size()));
+                output.append(", \"sha256\": \"");
+                output.append(file.sha256());
+                output.append(index + 1U == a_manifest.files().size() ? "\" }\n" : "\" },\n");
+            }
+            output.append("  ]\n}\n");
+            if (output.size() > k_maximumPackageManifestBytes)
+            {
+                return Result<std::string>::failure(
+                    manifest_error(a_assertContext, PackageError::PackageManifestResourceLimitExceeded,
+                                   "Serialized Package Manifest exceeds its byte limit"));
+            }
+            return Result<std::string>::success(std::move(output));
+        }
         output.append("{\"schemaVersion\":1,\"projectId\":\"");
         output.append(a_manifest.project_id());
         output.append("\",\"engineVersion\":\"");
@@ -1328,14 +1791,10 @@ Result<PackageManifest> parse_package_manifest(std::string_view a_json, const As
     {
         JsonValue root;
         JsonParser parser(a_json);
-        constexpr std::array topNames = {std::string_view("schemaVersion"), std::string_view("projectId"),
-                                         std::string_view("engineVersion"), std::string_view("configuration"),
-                                         std::string_view("startupScene"),  std::string_view("files")};
-        if (!parser.parse(root) || !has_exact_members(root, topNames))
+        if (!parser.parse(root) || root.kind != JsonKind::Object)
         {
-            return Result<PackageManifest>::failure(
-                manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
-                               "Package Manifest JSON or top-level member set is invalid"));
+            return Result<PackageManifest>::failure(manifest_error(
+                a_assertContext, PackageError::InvalidPackageManifest, "Package Manifest JSON root is invalid"));
         }
         std::uint32_t schemaVersion = 0U;
         const JsonValue *schema = find_member(root, "schemaVersion");
@@ -1344,11 +1803,30 @@ Result<PackageManifest> parse_package_manifest(std::string_view a_json, const As
             return Result<PackageManifest>::failure(manifest_error(
                 a_assertContext, PackageError::InvalidPackageManifest, "Package Manifest schema version is invalid"));
         }
-        if (schemaVersion != k_packageManifestSchemaVersion)
+        if (schemaVersion != k_packageManifestSchemaVersion &&
+            schemaVersion != k_monolithicPackageManifestSchemaVersion)
         {
             return Result<PackageManifest>::failure(manifest_error(a_assertContext,
                                                                    PackageError::UnsupportedPackageManifestVersion,
                                                                    "Package Manifest schema version is unsupported"));
+        }
+        constexpr std::array legacyTopNames = {std::string_view("schemaVersion"), std::string_view("projectId"),
+                                               std::string_view("engineVersion"), std::string_view("configuration"),
+                                               std::string_view("startupScene"),  std::string_view("files")};
+        constexpr std::array monolithicTopNames = {
+            std::string_view("schemaVersion"), std::string_view("projectId"),
+            std::string_view("engineVersion"), std::string_view("architecture"),
+            std::string_view("configuration"), std::string_view("executionModel"),
+            std::string_view("startupScene"),  std::string_view("applicationExecutable"),
+            std::string_view("trust"),         std::string_view("files")};
+        const bool hasExpectedMembers = schemaVersion == k_packageManifestSchemaVersion
+                                            ? has_exact_members(root, legacyTopNames)
+                                            : has_exact_members(root, monolithicTopNames);
+        if (!hasExpectedMembers)
+        {
+            return Result<PackageManifest>::failure(manifest_error(a_assertContext,
+                                                                   PackageError::InvalidPackageManifest,
+                                                                   "Package Manifest top-level member set is invalid"));
         }
         const JsonValue *projectId = find_member(root, "projectId");
         const JsonValue *engineVersion = find_member(root, "engineVersion");
@@ -1359,8 +1837,7 @@ Result<PackageManifest> parse_package_manifest(std::string_view a_json, const As
         if (projectId == nullptr || projectId->kind != JsonKind::String || engineVersion == nullptr ||
             engineVersion->kind != JsonKind::String || configuration == nullptr ||
             configuration->kind != JsonKind::String || startupScene == nullptr ||
-            !has_exact_members(*startupScene, startupNames) || files == nullptr || files->kind != JsonKind::Array ||
-            files->elements.size() > k_maximumPackageFileEntries)
+            !has_exact_members(*startupScene, startupNames) || files == nullptr)
         {
             return Result<PackageManifest>::failure(manifest_error(
                 a_assertContext, PackageError::InvalidPackageManifest, "Package Manifest value types are invalid"));
@@ -1377,47 +1854,63 @@ Result<PackageManifest> parse_package_manifest(std::string_view a_json, const As
                 manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
                                "Package engine, configuration, or startup scene value is invalid"));
         }
-        std::vector<PackageFileEntry> parsedFiles;
-        parsedFiles.reserve(files->elements.size());
-        std::string_view previousPath;
-        constexpr std::array fileNames = {std::string_view("role"), std::string_view("path"),
-                                          std::string_view("sizeBytes"), std::string_view("sha256")};
-        for (const JsonValue &file : files->elements)
+        auto parsedFiles = parse_file_entries(*files, a_assertContext);
+        if (!parsedFiles)
         {
-            if (!has_exact_members(file, fileNames))
-            {
-                return Result<PackageManifest>::failure(manifest_error(
-                    a_assertContext, PackageError::InvalidPackageManifest, "Package file entry members are invalid"));
-            }
-            const JsonValue *role = find_member(file, "role");
-            const JsonValue *path = find_member(file, "path");
-            const JsonValue *size = find_member(file, "sizeBytes");
-            const JsonValue *hash = find_member(file, "sha256");
-            std::uint64_t parsedSize = 0U;
-            if (role == nullptr || role->kind != JsonKind::String || path == nullptr ||
-                path->kind != JsonKind::String || size == nullptr || !parse_unsigned(*size, parsedSize) ||
-                hash == nullptr || hash->kind != JsonKind::String)
-            {
-                return Result<PackageManifest>::failure(manifest_error(
-                    a_assertContext, PackageError::InvalidPackageManifest, "Package file entry value is invalid"));
-            }
-            const std::optional<PackageFileRole> parsedRole = parse_role(role->text);
-            if (!parsedRole.has_value() || (!previousPath.empty() && !(previousPath < path->text)))
-            {
-                return Result<PackageManifest>::failure(
-                    manifest_error(a_assertContext, PackageError::InvalidPackageManifest,
-                                   "Package file role or canonical path order is invalid"));
-            }
-            auto entry = PackageFileEntry::create(*parsedRole, path->text, parsedSize, hash->text, a_assertContext);
-            if (!entry)
-            {
-                return Result<PackageManifest>::failure(std::move(*entry.try_error()));
-            }
-            parsedFiles.push_back(std::move(*entry.try_value()));
-            previousPath = parsedFiles.back().relative_path();
+            return Result<PackageManifest>::failure(std::move(*parsedFiles.try_error()));
         }
-        return PackageManifest::create(projectId->text, parsedEngineVersion, *parsedConfiguration, sceneAssetId->text,
-                                       runtimeDataPath->text, std::move(parsedFiles), a_assertContext);
+        if (schemaVersion == k_packageManifestSchemaVersion)
+        {
+            return PackageManifest::create(projectId->text, parsedEngineVersion, *parsedConfiguration,
+                                           sceneAssetId->text, runtimeDataPath->text,
+                                           std::move(*parsedFiles.try_value()), a_assertContext);
+        }
+        const JsonValue *architecture = find_member(root, "architecture");
+        const JsonValue *executionModel = find_member(root, "executionModel");
+        const JsonValue *applicationExecutable = find_member(root, "applicationExecutable");
+        const JsonValue *trust = find_member(root, "trust");
+        constexpr std::array trustNames = {std::string_view("mode"), std::string_view("publisherKeyId"),
+                                           std::string_view("manifestSignaturePath")};
+        if (architecture == nullptr || architecture->kind != JsonKind::String || architecture->text != "x64" ||
+            executionModel == nullptr || executionModel->kind != JsonKind::String ||
+            executionModel->text != "monolithic" || applicationExecutable == nullptr ||
+            applicationExecutable->kind != JsonKind::String || applicationExecutable->text != "CueGameProduct.exe" ||
+            trust == nullptr || !has_exact_members(*trust, trustNames))
+        {
+            return Result<PackageManifest>::failure(manifest_error(a_assertContext,
+                                                                   PackageError::InvalidPackageManifest,
+                                                                   "Monolithic Package execution identity is invalid"));
+        }
+        const JsonValue *trustMode = find_member(*trust, "mode");
+        const JsonValue *publisherKeyId = find_member(*trust, "publisherKeyId");
+        const JsonValue *manifestSignaturePath = find_member(*trust, "manifestSignaturePath");
+        const std::optional<ShippingTrustMode> parsedTrustMode =
+            trustMode != nullptr && trustMode->kind == JsonKind::String ? parse_trust_mode(trustMode->text)
+                                                                        : std::nullopt;
+        const bool isPublisherValue = publisherKeyId != nullptr && (publisherKeyId->kind == JsonKind::Null ||
+                                                                    publisherKeyId->kind == JsonKind::String);
+        const bool isSignatureValue =
+            manifestSignaturePath != nullptr &&
+            (manifestSignaturePath->kind == JsonKind::Null || manifestSignaturePath->kind == JsonKind::String);
+        if (!parsedTrustMode || !isPublisherValue || !isSignatureValue)
+        {
+            return Result<PackageManifest>::failure(manifest_error(
+                a_assertContext, PackageError::InvalidPackageManifest, "Monolithic Package trust value is invalid"));
+        }
+        std::optional<std::string> parsedPublisherKeyId;
+        std::optional<std::string> parsedManifestSignaturePath;
+        if (publisherKeyId->kind == JsonKind::String)
+        {
+            parsedPublisherKeyId = publisherKeyId->text;
+        }
+        if (manifestSignaturePath->kind == JsonKind::String)
+        {
+            parsedManifestSignaturePath = manifestSignaturePath->text;
+        }
+        return PackageManifest::create_monolithic(
+            projectId->text, parsedEngineVersion, *parsedConfiguration, sceneAssetId->text, runtimeDataPath->text,
+            *parsedTrustMode, std::move(parsedPublisherKeyId), std::move(parsedManifestSignaturePath),
+            std::move(*parsedFiles.try_value()), a_assertContext);
     }
     catch (...)
     {
@@ -1596,6 +2089,14 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
             {
                 return Result<void>::failure(manifest_error(a_assertContext, PackageError::PackageFileMismatch,
                                                             "Package file size or SHA-256 differs from the Manifest"));
+            }
+        }
+        if (a_manifest.schema_version() == k_monolithicPackageManifestSchemaVersion)
+        {
+            auto tree = package_private::verify_monolithic_package_tree(a_packageRoot, a_manifest, a_assertContext);
+            if (!tree)
+            {
+                return tree;
             }
         }
         return Result<void>::success();

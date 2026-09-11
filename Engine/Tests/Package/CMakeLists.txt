@@ -25,6 +25,11 @@ if(WIN32)
     add_executable(CuePackagePublisherTests PublisherTests.cpp)
     target_link_libraries(CuePackagePublisherTests PRIVATE Cue.Package Cue.IO.Windows)
     target_compile_features(CuePackagePublisherTests PRIVATE cxx_std_20)
+    target_include_directories(
+        CuePackagePublisherTests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../Source/Package/Private"
+    )
 
     add_executable(CuePackageWorkflowTests WorkflowTests.cpp)
     target_link_libraries(CuePackageWorkflowTests PRIVATE Cue.Package Cue.IO.Windows Cue.Schema)

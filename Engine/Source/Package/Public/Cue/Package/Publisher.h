@@ -6,6 +6,7 @@
 #include <Cue/IO/Filesystem.h>
 #include <Cue/IO/RelativePath.h>
 #include <Cue/Package/Manifest.h>
+#include <Cue/Package/RuntimeData.h>
 
 #include <atomic>
 #include <cstddef>
@@ -149,8 +150,25 @@ class PackageCancellation final : public StagingPublishAuthorization, public Bui
 /// 存続させる。同一Filesystem Instanceへの並行呼出しは行わない。PackageCancellationはOperationごとに新規作成する。
 /// Publish前失敗と取消ではDestinationを作らずStagingだけをRollbackする。Publish後のDurabilityUnknownまたは再検証失敗では
 /// Destinationを削除せず成功扱いにしない。
-[[nodiscard]] PackagePublishReport publish_runtime_package(
-    FilesystemRoot &a_filesystem, const RelativePath &a_destination, const PackageManifest &a_manifest,
-    std::span<const PackageFilePayload> a_payloads, const PackageCancellation &a_cancellation,
-    const AssertContext &a_assertContext) noexcept;
+[[nodiscard]] PackagePublishReport publish_runtime_package(FilesystemRoot &a_filesystem,
+                                                           const RelativePath &a_destination,
+                                                           const PackageManifest &a_manifest,
+                                                           std::span<const PackageFilePayload> a_payloads,
+                                                           const PackageCancellation &a_cancellation,
+                                                           const AssertContext &a_assertContext) noexcept;
+
+/// @brief Release Shipping ArtifactとRuntime DataからManifest v2 Monolithic Packageを公開する
+///
+/// Filesystem、Reader、Artifact、Runtime Data、Destination、Cancellation、AssertContextは呼出中だけ借用する。
+/// Project RootはFilesystemのRoot Identityと入口で照合し、Artifact Locator変換とStaging／公開後の完全列挙に使用する。
+/// Rootの絶対PathはPackageへ保存しない。ArtifactのShared Read Leaseが示すProject IdentityとRuntime Dataを照合した状態で
+/// 固定Executableを一度だけ読み、InventoryのSizeとSHA-256へ照合後にLeaseを解放する。UnsignedLocal ShippingProductだけを
+/// 受理し、PublisherSignedは署名検証境界が実装されるまで拒否する。
+/// 入力組立失敗はError、公開処理へ到達後の結果はPackagePublishReportとして返す。同一FilesystemとReaderへの並行呼出しは
+/// 行わず、失敗または取消では既存Artifactを変更しない。
+[[nodiscard]] Result<PackagePublishReport> publish_monolithic_runtime_package(
+    FilesystemRoot &a_projectFilesystem, std::string_view a_projectRoot, BuildArtifactReader &a_artifactReader,
+    const BuildArtifactInventory &a_artifact, EngineVersion a_engineVersion,
+    const MinimalRuntimeDataPublication &a_runtimeData, const RelativePath &a_destination,
+    const PackageCancellation &a_cancellation, const AssertContext &a_assertContext) noexcept;
 } // namespace cue::package

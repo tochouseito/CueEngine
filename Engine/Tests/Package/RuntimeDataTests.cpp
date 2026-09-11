@@ -154,7 +154,9 @@ template <typename Value>
     constexpr std::string_view expectedScene =
         "{\"schemaVersion\":1,\"sceneAssetId\":\"10000000-0000-4000-8000-000000000001\","
         "\"objects\":[]}\n";
-    return first && second && first.try_value()->project_data().relative_path() == "Data/CueProject.runtime.json" &&
+    return first && second && first.try_value()->project_id() == k_projectId &&
+           first.try_value()->startup_scene_asset_id() == k_sceneId &&
+           first.try_value()->project_data().relative_path() == "Data/CueProject.runtime.json" &&
            first.try_value()->startup_scene_data().relative_path() ==
                "Data/Scenes/10000000-0000-4000-8000-000000000001.cueruntime.json" &&
            first.try_value()->project_data().bytes() == expectedProject &&
@@ -208,11 +210,11 @@ template <typename Value>
     {
         return false;
     }
-    auto transform = cue::math::Transform::create(
-        a_assertContext.fatal_handler(), cue::math::Vector3{0.1F, -0.2F, 1.25F}, cue::math::Quaternion{},
-        cue::math::Vector3{1.0F, 1.0F, 1.0F}, *tolerance.try_value());
-    if (!transform || !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt,
-                                                     *transform.try_value()))
+    auto transform = cue::math::Transform::create(a_assertContext.fatal_handler(),
+                                                  cue::math::Vector3{0.1F, -0.2F, 1.25F}, cue::math::Quaternion{},
+                                                  cue::math::Vector3{1.0F, 1.0F, 1.0F}, *tolerance.try_value());
+    if (!transform ||
+        !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt, *transform.try_value()))
     {
         return false;
     }
@@ -221,8 +223,8 @@ template <typename Value>
         snapshot ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
                                                               a_assertContext)
                  : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(std::move(*snapshot.try_error()));
-    return published && published.try_value()->startup_scene_data().bytes().find(
-                            "\"translation\":[0.1,-0.2,1.25]") != std::string_view::npos;
+    return published && published.try_value()->startup_scene_data().bytes().find("\"translation\":[0.1,-0.2,1.25]") !=
+                            std::string_view::npos;
 }
 
 /// @brief 緩い生成Toleranceを通過した非単位QuaternionをPublisher境界で拒否するか検証する
@@ -239,8 +241,8 @@ template <typename Value>
     auto transform = cue::math::Transform::create(
         a_assertContext.fatal_handler(), cue::math::Vector3{}, cue::math::Quaternion{0.0F, 0.0F, 0.0F, 2.0F},
         cue::math::Vector3{1.0F, 1.0F, 1.0F}, *permissiveTolerance.try_value());
-    if (!transform || !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt,
-                                                     *transform.try_value()))
+    if (!transform ||
+        !scene.try_value()->add_object(*objectId.try_value(), "Object", true, std::nullopt, *transform.try_value()))
     {
         return false;
     }
@@ -249,8 +251,8 @@ template <typename Value>
     {
         return false;
     }
-    auto published = cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(),
-                                                                a_assertContext);
+    auto published =
+        cue::package::publish_minimal_runtime_data(*descriptor.try_value(), *snapshot.try_value(), a_assertContext);
     return has_package_error(published, cue::package::PackageError::UnsupportedRuntimeSceneData);
 }
 
@@ -343,8 +345,7 @@ template <typename Value>
     auto schemaVersion = cue::schema::SchemaVersion::create(1U, a_assertContext);
     auto fieldId = cue::schema::FieldId::create(7U, a_assertContext);
     auto assetReference = cue::scene::AssetReferenceValue::create("asset://unresolved", a_assertContext);
-    if (!descriptor || !scene || !objectId || !componentId || !typeId || !schemaVersion || !fieldId ||
-        !assetReference)
+    if (!descriptor || !scene || !objectId || !componentId || !typeId || !schemaVersion || !fieldId || !assetReference)
     {
         return false;
     }

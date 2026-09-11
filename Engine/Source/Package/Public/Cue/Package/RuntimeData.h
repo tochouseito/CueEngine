@@ -82,6 +82,8 @@ class MinimalRuntimeDataPublication final
     [[nodiscard]] const RuntimeDataFile &project_data() const noexcept;
     /// @brief Startup Scene Runtime Data Fileを返す
     [[nodiscard]] const RuntimeDataFile &startup_scene_data() const noexcept;
+    /// @brief Runtime Project Dataへ固定したProjectIdを返す
+    [[nodiscard]] std::string_view project_id() const noexcept;
     /// @brief 両Dataへ固定したStartup SceneAssetIdを返す
     [[nodiscard]] std::string_view startup_scene_asset_id() const noexcept;
 
@@ -92,10 +94,11 @@ class MinimalRuntimeDataPublication final
 
     /// @brief 完全に生成・検証済みの二FileとIdentityを所有する
     MinimalRuntimeDataPublication(RuntimeDataFile a_projectData, RuntimeDataFile a_startupSceneData,
-                                  std::string a_startupSceneAssetId) noexcept;
+                                  std::string a_projectId, std::string a_startupSceneAssetId) noexcept;
 
     RuntimeDataFile m_projectData;
     RuntimeDataFile m_startupSceneData;
+    std::string m_projectId;
     std::string m_startupSceneAssetId;
 };
 

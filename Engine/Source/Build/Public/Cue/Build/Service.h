@@ -61,6 +61,8 @@ class BuildArtifactReadLease
     BuildArtifactReadLease &operator=(const BuildArtifactReadLease &) = delete;
     /// @brief 派生Leaseを通してNative Lockを解放する
     virtual ~BuildArtifactReadLease() = default;
+    /// @brief Lease発行元Artifact StoreへBindingされたProject Identityを返す
+    [[nodiscard]] virtual std::string_view project_id() const noexcept = 0;
 
   protected:
     /// @brief 派生Leaseだけに構築を許可する
@@ -122,9 +124,9 @@ class BuildArtifactInventory final
     ///
     /// File検証はcreateと同じ契約を使用し、Version Directoryだけを旧
     /// `Generated/Artifacts/<Configuration>/Versions/<ArtifactId>`へ設定する。ShippingProductには使用できない。
-    [[nodiscard]] static Result<BuildArtifactInventory>
-    create_legacy_game_module(const BuildPlan &a_plan, std::string a_artifactId,
-                              std::vector<BuildArtifactFile> a_files, const AssertContext &a_assertContext) noexcept;
+    [[nodiscard]] static Result<BuildArtifactInventory> create_legacy_game_module(
+        const BuildPlan &a_plan, std::string a_artifactId, std::vector<BuildArtifactFile> a_files,
+        const AssertContext &a_assertContext) noexcept;
 
     /// @brief Artifact Versionを識別するlowercase UUID v4を返す
     [[nodiscard]] std::string_view artifact_id() const noexcept;
@@ -153,9 +155,9 @@ class BuildArtifactInventory final
 /// JSONとInventoryとAssertContextは呼出中だけ借用する。Member順と意味を持たない空白には依存せず、未知／重複／欠落Member、
 /// 型不一致、未知Schema、末尾Data、Profile／Inventory不一致をInvalidArtifactとして拒否する。v1はGameModuleだけに許可し、
 /// v2はTarget、Trust Identity、File用途も照合する。共有状態を変更しないため同時に呼べる。
-[[nodiscard]] Result<void> validate_build_artifact_current_manifest(
-    std::string_view a_json, const BuildArtifactInventory &a_expected,
-    const AssertContext &a_assertContext) noexcept;
+[[nodiscard]] Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
+                                                                    const BuildArtifactInventory &a_expected,
+                                                                    const AssertContext &a_assertContext) noexcept;
 
 /// @brief Current Manifestと参照Versionを検証してShared Read Leaseを発行するArtifact Store Reader
 class BuildArtifactReader
