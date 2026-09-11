@@ -123,6 +123,16 @@ void clear_dynamic_base(std::vector<std::byte> &a_bytes)
     std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
 }
 
+/// @brief PE File HeaderからLarge Address Aware Flagを除去する
+void clear_large_address_aware(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t fileOffset = file_header_offset(a_bytes);
+    IMAGE_FILE_HEADER fileHeader{};
+    std::memcpy(&fileHeader, a_bytes.data() + fileOffset, sizeof(fileHeader));
+    fileHeader.Characteristics = static_cast<WORD>(fileHeader.Characteristics & ~IMAGE_FILE_LARGE_ADDRESS_AWARE);
+    std::memcpy(a_bytes.data() + fileOffset, &fileHeader, sizeof(fileHeader));
+}
+
 /// @brief Load Configuration DirectoryのRVAを除去する
 void clear_load_configuration_rva(std::vector<std::byte> &a_bytes)
 {
@@ -993,6 +1003,13 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(missingAslr, bytes);
     require(
         !cue::validate_windows_shipping_product_security(missingAslr.generic_string(), localProfile, a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    clear_large_address_aware(bytes);
+    const std::filesystem::path missingLargeAddressAware = directory / "MissingLargeAddressAware.exe";
+    write_bytes(missingLargeAddressAware, bytes);
+    require(!cue::validate_windows_shipping_product_security(missingLargeAddressAware.generic_string(), localProfile,
+                                                             a_assertContext));
 
     bytes = read_bytes(a_validProduct);
     replace_import_library(bytes);
