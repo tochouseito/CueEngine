@@ -23,7 +23,10 @@ enum class WindowsBuildArtifactError : std::int64_t
     CurrentManifestFailed,
     CurrentManifestDurabilityUnknown,
     ArtifactVersionDurabilityUnknown,
-    PublisherUnavailable
+    PublisherUnavailable,
+    SecurityPolicyViolation,
+    SignatureVerificationFailed,
+    PublisherMismatch
 };
 
 /// @brief Project契約を所有するWindows Build Artifact Publisherを構築する

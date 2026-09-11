@@ -163,7 +163,7 @@ class PackageCancellation final : public StagingPublishAuthorization, public Bui
 /// Project RootはFilesystemのRoot Identityと入口で照合し、Artifact Locator変換とStaging／公開後の完全列挙に使用する。
 /// Rootの絶対PathはPackageへ保存しない。ArtifactのShared Read Leaseが示すProject IdentityとRuntime Dataを照合した状態で
 /// 固定Executableを一度だけ読み、InventoryのSizeとSHA-256へ照合後にLeaseを解放する。UnsignedLocal ShippingProductだけを
-/// 受理し、PublisherSignedは署名検証境界が実装されるまで拒否する。
+/// 受理し、PublisherSignedは外部署名、Detached Manifest Signature、外部Trust Anchorが実装されるまで拒否する。
 /// 入力組立失敗はError、公開処理へ到達後の結果はPackagePublishReportとして返す。同一FilesystemとReaderへの並行呼出しは
 /// 行わず、失敗または取消では既存Artifactを変更しない。
 [[nodiscard]] Result<PackagePublishReport> publish_monolithic_runtime_package(

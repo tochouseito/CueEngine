@@ -1,4 +1,5 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
+#include <Cue/Build/Windows/WindowsProductSecurity.h>
 
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Platform/Windows/WindowsProcess.h>
@@ -417,6 +418,42 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         return "UnsignedLocal";
     case cue::ShippingTrustMode::PublisherSigned:
         return "PublisherSigned";
+    }
+    return {};
+}
+
+/// @brief Product署名状態をMetadataの安定名へ変換する
+[[nodiscard]] std::string_view product_signature_status_name(cue::WindowsProductSignatureStatus a_status) noexcept
+{
+    switch (a_status)
+    {
+    case cue::WindowsProductSignatureStatus::Trusted:
+        return "Trusted";
+    case cue::WindowsProductSignatureStatus::Unsigned:
+        return "Unsigned";
+    case cue::WindowsProductSignatureStatus::InvalidSignature:
+        return "InvalidSignature";
+    case cue::WindowsProductSignatureStatus::CertificateExpired:
+        return "CertificateExpired";
+    case cue::WindowsProductSignatureStatus::CertificateRevoked:
+        return "CertificateRevoked";
+    case cue::WindowsProductSignatureStatus::ChainInvalid:
+        return "ChainInvalid";
+    case cue::WindowsProductSignatureStatus::VerificationUnavailable:
+        return "VerificationUnavailable";
+    }
+    return {};
+}
+
+/// @brief Product Artifact単体の配布到達点をMetadataの安定名へ変換する
+[[nodiscard]] std::string_view product_distribution_status_name(cue::WindowsProductDistributionStatus a_status) noexcept
+{
+    switch (a_status)
+    {
+    case cue::WindowsProductDistributionStatus::LocalExecutionOnly:
+        return "LocalExecutionOnly";
+    case cue::WindowsProductDistributionStatus::PublisherVerifiedArtifact:
+        return "PublisherVerifiedArtifact";
     }
     return {};
 }
@@ -1828,41 +1865,6 @@ template <typename Cancellation>
     return cue::Result<void>::success();
 }
 
-/// @brief Candidate Productがx64 PE ExecutableかHeader範囲を検証して確認する
-[[nodiscard]] cue::Result<void> validate_x64_product_image(const std::filesystem::path &a_path,
-                                                           const cue::AssertContext &a_assertContext) noexcept
-{
-    std::error_code sizeError;
-    const std::uintmax_t size = std::filesystem::file_size(a_path, sizeError);
-    if (sizeError || size < sizeof(IMAGE_DOS_HEADER) + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER))
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product PE image is incomplete"));
-    }
-    std::ifstream input(a_path, std::ios::binary);
-    IMAGE_DOS_HEADER dos{};
-    input.read(reinterpret_cast<char *>(&dos), sizeof(dos));
-    const std::uint64_t headerOffset = dos.e_lfanew < 0 ? size : static_cast<std::uint64_t>(dos.e_lfanew);
-    if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE || headerOffset > size - sizeof(DWORD) - sizeof(IMAGE_FILE_HEADER))
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product DOS or PE header is invalid"));
-    }
-    input.seekg(static_cast<std::streamoff>(headerOffset));
-    DWORD signature = 0U;
-    IMAGE_FILE_HEADER fileHeader{};
-    input.read(reinterpret_cast<char *>(&signature), sizeof(signature));
-    input.read(reinterpret_cast<char *>(&fileHeader), sizeof(fileHeader));
-    if (!input || signature != IMAGE_NT_SIGNATURE || fileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        (fileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) == 0U ||
-        (fileHeader.Characteristics & IMAGE_FILE_DLL) != 0U)
-    {
-        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                                                     "Game Product must be an x64 PE executable"));
-    }
-    return cue::Result<void>::success();
-}
-
 /// @brief 別ProcessでのArtifact検証完了種別
 enum class ArtifactProbeStatus : std::uint8_t
 {
@@ -2294,13 +2296,11 @@ enum class ArtifactProbeStatus : std::uint8_t
 }
 
 /// @brief Shipping Product Metadata v1をBuild由来情報とPayload Hashから決定的に直列化する
-[[nodiscard]] std::string serialize_product_metadata(std::string_view a_artifactId, std::string_view a_projectId,
-                                                     const cue::EngineCompatibility &a_compatibility,
-                                                     const cue::BuildPlan &a_plan,
-                                                     const ShippingBuildProvenance &a_provenance,
-                                                     const ShippingToolchainIdentity &a_toolchain,
-                                                     const cue::BuildArtifactFile &a_product,
-                                                     const std::optional<cue::BuildArtifactFile> &a_symbol)
+[[nodiscard]] std::string serialize_product_metadata(
+    std::string_view a_artifactId, std::string_view a_projectId, const cue::EngineCompatibility &a_compatibility,
+    const cue::BuildPlan &a_plan, const ShippingBuildProvenance &a_provenance,
+    const ShippingToolchainIdentity &a_toolchain, const cue::WindowsProductSecurityValidation &a_security,
+    const cue::BuildArtifactFile &a_product, const std::optional<cue::BuildArtifactFile> &a_symbol)
 {
     const cue::BuildToolVersion &toolsetVersion = a_plan.workspace_compatibility().toolsetVersion;
     const std::uint64_t compilerVersion =
@@ -2380,7 +2380,30 @@ enum class ArtifactProbeStatus : std::uint8_t
         output.append(a_plan.profile().publisher_key_id());
         output.push_back('"');
     }
-    output.append(",\n    \"product\": {\n        \"path\": \"");
+    output.append(",\n    \"securityValidation\": {\n        \"policyVersion\": 1,\n"
+                  "        \"machine\": \"x64\",\n        \"aslr\": true,\n"
+                  "        \"highEntropyVa\": true,\n        \"dep\": true,\n"
+                  "        \"controlFlowGuard\": true,\n        \"cetCompatible\": true,\n"
+                  "        \"stackSecurityCheck\": true,\n"
+                  "        \"dependentLoadFlags\": \"0x0800\",\n"
+                  "        \"importPolicy\": \"M17AllowlistV1\",\n"
+                  "        \"gameModuleLoaderLinked\": false,\n"
+                  "        \"importedLibraries\": [");
+    for (std::size_t index = 0U; index < a_security.importedLibraries.size(); ++index)
+    {
+        if (index != 0U)
+        {
+            output.append(", ");
+        }
+        output.push_back('"');
+        output.append(a_security.importedLibraries[index]);
+        output.push_back('"');
+    }
+    output.append("],\n        \"signatureStatus\": \"");
+    output.append(product_signature_status_name(a_security.trustEvidence.signatureStatus));
+    output.append("\",\n        \"distributionStatus\": \"");
+    output.append(product_distribution_status_name(a_security.distributionStatus));
+    output.append("\",\n        \"publicDistributionReady\": false\n    },\n    \"product\": {\n        \"path\": \"");
     output.append(a_product.relativePath);
     output.append("\",\n        \"sizeBytes\": ");
     output.append(std::to_string(a_product.byteSize));
@@ -2904,8 +2927,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 a_plan.profile().minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
-                               "PublisherSigned artifact publication requires the #304 trust verifier"));
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::PublisherUnavailable,
+                               "PublisherSigned artifact publication requires an external signer and sealed source "
+                               "snapshot; M17 only publishes UnsignedLocal artifacts"));
             }
             auto *windowsLease = dynamic_cast<WindowsBuildWorkspaceLease *>(a_buildLease.get());
             if (windowsLease == nullptr || !windowsLease->matches(a_plan.workspace_key()) ||
@@ -3118,13 +3142,17 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     return failCandidate(std::move(*pdbCopied.try_error()));
                 }
             }
+            std::optional<cue::WindowsProductSecurityValidation> productSecurity;
             if (isShippingProduct)
             {
-                cue::Result<void> imageValidated = validate_x64_product_image(candidatePayload, *m_assertContext);
+                cue::Result<cue::WindowsProductSecurityValidation> imageValidated =
+                    cue::validate_windows_shipping_product_security(path_to_utf8(candidatePayload), a_plan.profile(),
+                                                                    *m_assertContext);
                 if (!imageValidated)
                 {
                     return failCandidate(std::move(*imageValidated.try_error()));
                 }
+                productSecurity.emplace(std::move(*imageValidated.try_value()));
             }
             cue::Result<ArtifactProbeStatus> validated =
                 isShippingProduct ? validate_product(candidatePayload, m_projectId, candidate, *m_processRunner,
@@ -3160,7 +3188,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 isShippingProduct
                     ? serialize_product_metadata(a_plan.operation_id(), m_projectId, m_compatibility, a_plan,
                                                  *windowsLease->shipping_provenance(), *shippingToolchain,
-                                                 *candidatePayloadHash.try_value(), candidatePdbHash)
+                                                 *productSecurity, *candidatePayloadHash.try_value(), candidatePdbHash)
                     : serialize_metadata(a_plan.operation_id(), m_projectId, m_compatibility,
                                          a_plan.profile().configuration(),
                                          a_plan.workspace_compatibility().toolsetVersion);

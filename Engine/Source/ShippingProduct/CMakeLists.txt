@@ -3,6 +3,9 @@ if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "Cue Shipping Product initially supports Windows x64 with MSVC only")
 endif()
 
+# Shipping Link Closure内の全Engine SourceをCFGとStack Security Check付きでCompileする。
+add_compile_options(/GS /guard:cf)
+
 function(cue_add_shipping_engine_module relativePath)
     string(REPLACE "/" "-" binaryName "${relativePath}")
     add_subdirectory(
@@ -60,11 +63,23 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
     target_compile_options(
         "${targetName}"
         PRIVATE
+            /GS
+            /guard:cf
             /W4
             /WX
             /permissive-
             /Zc:__cplusplus
             /utf-8
     )
-    target_link_options("${targetName}" PRIVATE /DEPENDENTLOADFLAG:0x800)
+    target_compile_options("${gameModuleTarget}" PRIVATE /GS /guard:cf)
+    target_link_options(
+        "${targetName}"
+        PRIVATE
+            /DYNAMICBASE
+            /HIGHENTROPYVA
+            /NXCOMPAT
+            /GUARD:CF
+            /CETCOMPAT
+            /DEPENDENTLOADFLAG:0x800
+    )
 endfunction()

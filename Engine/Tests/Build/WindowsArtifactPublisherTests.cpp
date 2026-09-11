@@ -30,9 +30,9 @@ namespace
 {
 constexpr std::string_view k_projectId = "41234567-89ab-4cde-8f01-23456789abcd";
 constexpr std::string_view k_otherProjectId = "61234567-89ab-4cde-8f01-23456789abcd";
-constexpr cue::BuildToolVersion k_currentCompilerVersion{
-    static_cast<std::uint32_t>(_MSC_VER / 100), static_cast<std::uint32_t>(_MSC_VER % 100),
-    static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
+constexpr cue::BuildToolVersion k_currentCompilerVersion{static_cast<std::uint32_t>(_MSC_VER / 100),
+                                                         static_cast<std::uint32_t>(_MSC_VER % 100),
+                                                         static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
 
 /// @brief TestをCompileした実MSVCの4要素File Version表現を返す
 [[nodiscard]] std::string current_compiler_version_text()
@@ -130,12 +130,12 @@ class TestFatalHandler final : public cue::FatalHandler
     /// @brief Test中の引数なしFatalを即時失敗として終了する
     [[noreturn]] void terminate() noexcept override
     {
-        std::abort();
+        std::_Exit(EXIT_FAILURE);
     }
     /// @brief Test中のFatalを即時失敗として終了する
     [[noreturn]] void terminate(std::string_view) noexcept override
     {
-        std::abort();
+        std::_Exit(EXIT_FAILURE);
     }
 };
 
@@ -157,7 +157,7 @@ void require(bool a_condition, const std::source_location a_location = std::sour
     {
         std::fprintf(stderr, "Requirement failed at %s:%u\n", a_location.file_name(), a_location.line());
         std::fflush(stderr);
-        std::abort();
+        std::_Exit(EXIT_FAILURE);
     }
 }
 
@@ -169,10 +169,9 @@ template <typename T>
     if (!a_result.has_value() && a_result.try_error() != nullptr)
     {
         const cue::Error &error = *a_result.try_error();
-        std::fprintf(stderr, "Result error: %.*s/%lld %.*s\n",
-                     static_cast<int>(error.root_code().domain().size()), error.root_code().domain().data(),
-                     static_cast<long long>(error.root_code().value()), static_cast<int>(error.summary().size()),
-                     error.summary().data());
+        std::fprintf(stderr, "Result error: %.*s/%lld %.*s\n", static_cast<int>(error.root_code().domain().size()),
+                     error.root_code().domain().data(), static_cast<long long>(error.root_code().value()),
+                     static_cast<int>(error.summary().size()), error.summary().data());
         for (const cue::ErrorContext &context : error.contexts())
         {
             std::fprintf(stderr, "  Context: %.*s\n", static_cast<int>(context.message().size()),
@@ -287,8 +286,7 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     write_text(a_binary / "CMakeCache.txt", cache);
 
     const std::filesystem::path compilerDirectory = a_binary / "CMakeFiles" / cmakeVersion;
-    require(std::filesystem::create_directories(compilerDirectory) ||
-            std::filesystem::is_directory(compilerDirectory));
+    require(std::filesystem::create_directories(compilerDirectory) || std::filesystem::is_directory(compilerDirectory));
     std::string compilerEvidence("set(CMAKE_CXX_COMPILER \"");
     compilerEvidence.append(CUE_TEST_CXX_COMPILER);
     compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_VERSION \"");
@@ -319,14 +317,13 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
 }
 
 /// @brief UnsignedLocal Shipping Product用Release Build Planを構築する
-[[nodiscard]] cue::BuildPlan make_shipping_plan(const std::filesystem::path &a_projectRoot,
-                                                std::string a_operationId,
+[[nodiscard]] cue::BuildPlan make_shipping_plan(const std::filesystem::path &a_projectRoot, std::string a_operationId,
                                                 const cue::AssertContext &a_assertContext)
 {
     cue::BuildProfile profile = take_value(cue::BuildProfile::create_shipping_product(
         cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext));
-    constexpr cue::BuildWorkspaceCompatibility compatibility{
-        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
+    constexpr cue::BuildWorkspaceCompatibility compatibility{cue::BuildGenerator::VisualStudio2026,
+                                                             cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
     return take_value(cue::create_build_plan(
         {generic_path(a_projectRoot), std::move(profile), std::move(a_operationId), compatibility}, a_assertContext));
 }
@@ -339,20 +336,18 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     cue::BuildProfile profile = take_value(cue::BuildProfile::create_shipping_product(
         cue::BuildConfiguration::Release, cue::ShippingTrustMode::PublisherSigned, std::string(64U, 'a'),
         a_assertContext));
-    constexpr cue::BuildWorkspaceCompatibility compatibility{
-        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
+    constexpr cue::BuildWorkspaceCompatibility compatibility{cue::BuildGenerator::VisualStudio2026,
+                                                             cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
     return take_value(cue::create_build_plan(
         {generic_path(a_projectRoot), std::move(profile), std::move(a_operationId), compatibility}, a_assertContext));
 }
 
 /// @brief Plan作成後に追加されたJunction経由のRoot外読書きとRollbackを拒否する
-void test_reparse_revalidation(const std::filesystem::path &a_probe,
-                              const cue::AssertContext &a_assertContext)
+void test_reparse_revalidation(const std::filesystem::path &a_probe, const cue::AssertContext &a_assertContext)
 {
     const std::filesystem::path parent =
         std::filesystem::temp_directory_path() /
-        ("CueBuildArtifactReparse-" + std::to_string(GetCurrentProcessId()) + "-" +
-         std::string(k_configurationName));
+        ("CueBuildArtifactReparse-" + std::to_string(GetCurrentProcessId()) + "-" + std::string(k_configurationName));
     const std::filesystem::path project = parent / "Project";
     const std::filesystem::path outside = parent / "Outside";
     std::error_code error;
@@ -364,10 +359,9 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     require(!error);
 
     cue::ProjectDescriptor descriptor = make_descriptor(a_assertContext);
-    std::unique_ptr<cue::BuildArtifactPublisher> publisher = take_value(
-        cue::create_windows_build_artifact_publisher(generic_path(project), descriptor, a_assertContext));
-    cue::BuildPlan lockPlan =
-        make_plan(project, "91234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    std::unique_ptr<cue::BuildArtifactPublisher> publisher =
+        take_value(cue::create_windows_build_artifact_publisher(generic_path(project), descriptor, a_assertContext));
+    cue::BuildPlan lockPlan = make_plan(project, "91234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     require(create_directory_link(project / "Generated", outside));
     cue::ChildProcessCancellation cancellation;
     require(!publisher->acquire_build_lease(lockPlan, cancellation, std::nullopt).has_value());
@@ -375,8 +369,7 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     require(std::filesystem::remove(project / "Generated", error));
     require(!error);
 
-    cue::BuildPlan candidatePlan =
-        make_plan(project, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    cue::BuildPlan candidatePlan = make_plan(project, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     const std::filesystem::path output =
         std::filesystem::path(candidatePlan.binary_directory()) / "bin" / k_configurationName;
     require(std::filesystem::create_directories(output, error));
@@ -398,8 +391,7 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     require(std::filesystem::remove(project / "Generated" / "Build" / "Candidates", error));
     require(!error);
 
-    cue::BuildPlan storePlan =
-        make_plan(project, "b1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    cue::BuildPlan storePlan = make_plan(project, "b1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     auto storeLease = take_value(publisher->acquire_build_lease(storePlan, cancellation, std::nullopt));
     require(storeLease.has_value());
     const std::filesystem::path outsideStore = outside / "Store";
@@ -514,9 +506,8 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
             otherProjectRead.try_error()->root_code().value() ==
                 static_cast<std::int64_t>(cue::WindowsBuildArtifactError::InvalidSettings));
     std::vector<cue::BuildArtifactFile> legacyFiles(published->files().begin(), published->files().end());
-    cue::BuildArtifactInventory legacyInventory =
-        take_value(cue::BuildArtifactInventory::create_legacy_game_module(
-            plan, std::string(published->artifact_id()), std::move(legacyFiles), a_assertContext));
+    cue::BuildArtifactInventory legacyInventory = take_value(cue::BuildArtifactInventory::create_legacy_game_module(
+        plan, std::string(published->artifact_id()), std::move(legacyFiles), a_assertContext));
     const std::filesystem::path legacyVersion(legacyInventory.version_directory());
     require(std::filesystem::create_directories(legacyVersion));
     for (const cue::BuildArtifactFile &file : legacyInventory.files())
@@ -525,29 +516,25 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     }
     const std::filesystem::path legacyStore = legacyVersion.parent_path().parent_path();
     write_text(legacyStore / "Current.json", make_reordered_current(legacyInventory));
-    auto legacyReadLease = take_value(
-        reader->acquire_current_read_lease(legacyInventory, readCancellation, std::nullopt));
+    auto legacyReadLease =
+        take_value(reader->acquire_current_read_lease(legacyInventory, readCancellation, std::nullopt));
     require(legacyReadLease.has_value());
     legacyReadLease.reset();
     write_text(currentPath, make_reordered_current(*published));
-    auto firstReadLease = take_value(
-        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
-    auto secondReadLease = take_value(
-        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    auto firstReadLease = take_value(reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    auto secondReadLease = take_value(reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
     require(firstReadLease.has_value() && secondReadLease.has_value());
     HANDLE exclusive = CreateFileW((store / "Access.lock").c_str(), GENERIC_READ | GENERIC_WRITE,
                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                                    FILE_ATTRIBUTE_NORMAL, nullptr);
     require(exclusive != INVALID_HANDLE_VALUE);
     OVERLAPPED overlap{};
-    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) ==
-            FALSE);
+    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) == FALSE);
     require(GetLastError() == ERROR_LOCK_VIOLATION);
     firstReadLease.reset();
     secondReadLease.reset();
     overlap = {};
-    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) !=
-            FALSE);
+    require(LockFileEx(exclusive, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0U, 1U, 0U, &overlap) != FALSE);
     require(UnlockFileEx(exclusive, 0U, 1U, 0U, &overlap) != FALSE);
     require(CloseHandle(exclusive) != FALSE);
     write_text(currentPath, R"json({"schemaVersion":2})json");
@@ -669,8 +656,7 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
 {
     const std::filesystem::path projectRoot =
         std::filesystem::temp_directory_path() /
-        ("CueBSA-" + std::to_string(GetCurrentProcessId()) + "-" +
-         std::string(k_configurationName));
+        ("CueBSA-" + std::to_string(GetCurrentProcessId()) + "-" + std::string(k_configurationName));
     std::error_code error;
     std::filesystem::remove_all(projectRoot, error);
     require(!error && std::filesystem::create_directories(projectRoot));
@@ -683,8 +669,7 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     cue::ProjectDescriptor descriptor = make_descriptor(a_assertContext);
     std::unique_ptr<cue::BuildArtifactPublisher> publisher = take_value(
         cue::create_windows_build_artifact_publisher(generic_path(projectRoot), descriptor, a_assertContext));
-    cue::BuildPlan plan =
-        make_shipping_plan(projectRoot, "01234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    cue::BuildPlan plan = make_shipping_plan(projectRoot, "01234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     const std::filesystem::path binary(plan.binary_directory());
     const std::filesystem::path output = binary / "bin" / "Release";
     require(std::filesystem::create_directories(output));
@@ -720,31 +705,36 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
             current.find("\"minimumTrustMode\": \"UnsignedLocal\"") != std::string::npos &&
             current.find("\"publisherKeyId\": null") != std::string::npos &&
             current.find("\"purpose\": \"DevelopmentSymbol\"") != std::string::npos);
-    require(metadata.find(std::string(k_projectId)) != std::string::npos &&
-             metadata.find("\"configuration\": \"Release\"") != std::string::npos &&
-             metadata.find("\"architecture\": \"x64\"") != std::string::npos &&
-             metadata.find("\"engineBuildPolicyVersion\": 1") != std::string::npos &&
-             metadata.find("\"engineCommit\": \"") != std::string::npos &&
-             metadata.find("\"engineSourceTreeState\": \"") != std::string::npos &&
-             metadata.find("\"engineSourceInventory\": {") != std::string::npos &&
-             metadata.find("\"gameSourceInventory\": {") != std::string::npos &&
-             metadata.find("\"cmake\": {") != std::string::npos &&
-             metadata.find("\"version\": \"" + std::string(CUE_TEST_CMAKE_VERSION) + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"generator\": \"" + std::string(CUE_TEST_CMAKE_GENERATOR) + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"platformToolset\": \"" + std::string(CUE_TEST_PLATFORM_TOOLSET) + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"msvcToolsetVersion\": \"" + std::string(CUE_TEST_MSVC_TOOLSET_VERSION) + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"compilerSha256\": \"") != std::string::npos &&
-             metadata.find("\"compilerFileVersion\": \"" + current_compiler_version_text() + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"windowsSdkVersion\": \"" + std::string(CUE_TEST_WINDOWS_SDK_VERSION) + "\"") !=
-                 std::string::npos &&
-             metadata.find("\"vcpkgManifestSha256\": \"") != std::string::npos &&
-             metadata.find("\"vcpkgBaselineSha256\": \"") != std::string::npos &&
-             metadata.find(published->files()[0].contentHash) != std::string::npos);
+    require(
+        metadata.find(std::string(k_projectId)) != std::string::npos &&
+        metadata.find("\"configuration\": \"Release\"") != std::string::npos &&
+        metadata.find("\"architecture\": \"x64\"") != std::string::npos &&
+        metadata.find("\"engineBuildPolicyVersion\": 1") != std::string::npos &&
+        metadata.find("\"engineCommit\": \"") != std::string::npos &&
+        metadata.find("\"engineSourceTreeState\": \"") != std::string::npos &&
+        metadata.find("\"engineSourceInventory\": {") != std::string::npos &&
+        metadata.find("\"gameSourceInventory\": {") != std::string::npos &&
+        metadata.find("\"cmake\": {") != std::string::npos &&
+        metadata.find("\"version\": \"" + std::string(CUE_TEST_CMAKE_VERSION) + "\"") != std::string::npos &&
+        metadata.find("\"generator\": \"" + std::string(CUE_TEST_CMAKE_GENERATOR) + "\"") != std::string::npos &&
+        metadata.find("\"platformToolset\": \"" + std::string(CUE_TEST_PLATFORM_TOOLSET) + "\"") != std::string::npos &&
+        metadata.find("\"msvcToolsetVersion\": \"" + std::string(CUE_TEST_MSVC_TOOLSET_VERSION) + "\"") !=
+            std::string::npos &&
+        metadata.find("\"compilerSha256\": \"") != std::string::npos &&
+        metadata.find("\"compilerFileVersion\": \"" + current_compiler_version_text() + "\"") != std::string::npos &&
+        metadata.find("\"windowsSdkVersion\": \"" + std::string(CUE_TEST_WINDOWS_SDK_VERSION) + "\"") !=
+            std::string::npos &&
+        metadata.find("\"vcpkgManifestSha256\": \"") != std::string::npos &&
+        metadata.find("\"vcpkgBaselineSha256\": \"") != std::string::npos &&
+        metadata.find("\"securityValidation\": {") != std::string::npos &&
+        metadata.find("\"dependentLoadFlags\": \"0x0800\"") != std::string::npos &&
+        metadata.find("\"importPolicy\": \"M17AllowlistV1\"") != std::string::npos &&
+        metadata.find("\"gameModuleLoaderLinked\": false") != std::string::npos &&
+        metadata.find("\"kernel32.dll\"") != std::string::npos &&
+        metadata.find("\"signatureStatus\": \"Unsigned\"") != std::string::npos &&
+        metadata.find("\"distributionStatus\": \"LocalExecutionOnly\"") != std::string::npos &&
+        metadata.find("\"publicDistributionReady\": false") != std::string::npos &&
+        metadata.find(published->files()[0].contentHash) != std::string::npos);
 
     std::unique_ptr<cue::BuildArtifactReader> reader =
         take_value(cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
@@ -764,28 +754,26 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
         make_shipping_plan(projectRoot, "71234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     cue::ChildProcessCancellation acquireCancellation;
     acquireCancellation.request_cancel();
-    auto acquireCancelled =
-        publisher->acquire_build_lease(acquireCancelledPlan, acquireCancellation, std::nullopt);
+    auto acquireCancelled = publisher->acquire_build_lease(acquireCancelledPlan, acquireCancellation, std::nullopt);
     require(acquireCancelled.has_value() && !acquireCancelled.try_value()->has_value());
     require(read_text(currentPath) == current);
 
     cue::BuildPlan publishCancelledPlan =
         make_shipping_plan(projectRoot, "81234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto publishCancelledLease = take_value(
-        publisher->acquire_build_lease(publishCancelledPlan, cancellation, std::nullopt));
+    auto publishCancelledLease =
+        take_value(publisher->acquire_build_lease(publishCancelledPlan, cancellation, std::nullopt));
     require(publishCancelledLease.has_value());
     cue::ChildProcessCancellation publishCancellation;
     publishCancellation.request_cancel();
-    auto publishCancelled = publisher->publish(publishCancelledPlan, publishCancellation,
-                                               std::move(*publishCancelledLease), std::nullopt);
+    auto publishCancelled =
+        publisher->publish(publishCancelledPlan, publishCancellation, std::move(*publishCancelledLease), std::nullopt);
     require(publishCancelled.has_value() && !publishCancelled.try_value()->has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(publishCancelledPlan.candidate_directory())));
 
     cue::BuildPlan lateCancelledPlan =
         make_shipping_plan(projectRoot, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto lateCancelledLease = take_value(
-        publisher->acquire_build_lease(lateCancelledPlan, cancellation, std::nullopt));
+    auto lateCancelledLease = take_value(publisher->acquire_build_lease(lateCancelledPlan, cancellation, std::nullopt));
     require(lateCancelledLease.has_value());
     {
         constexpr std::streamoff cancellationWindowBytes = 32LL * 1024LL * 1024LL;
@@ -801,12 +789,10 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
         [&]()
         {
             lateCancelledResult = std::make_unique<PublishResult>(
-                publisher->publish(lateCancelledPlan, lateCancellation, std::move(*lateCancelledLease),
-                                   std::nullopt));
+                publisher->publish(lateCancelledPlan, lateCancellation, std::move(*lateCancelledLease), std::nullopt));
         });
-    const std::filesystem::path lateVersion =
-        std::filesystem::path(lateCancelledPlan.artifact_store_directory()) / "Versions" /
-        std::string(lateCancelledPlan.operation_id());
+    const std::filesystem::path lateVersion = std::filesystem::path(lateCancelledPlan.artifact_store_directory()) /
+                                              "Versions" / std::string(lateCancelledPlan.operation_id());
     for (std::size_t attempt = 0U; attempt < 5000U && !std::filesystem::exists(lateVersion); ++attempt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -821,61 +807,57 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
 
     cue::BuildPlan mismatchedToolchainPlan =
         make_shipping_plan(projectRoot, "91234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto mismatchedToolchainLease = take_value(
-        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    auto mismatchedToolchainLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
     require(mismatchedToolchainLease.has_value());
     write_shipping_toolchain_evidence(binary, "0.0.0.0");
-    require(!publisher
-                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedToolchainLease),
-                           std::nullopt)
-                 .has_value());
+    require(
+        !publisher->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedToolchainLease), std::nullopt)
+             .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
     write_shipping_toolchain_evidence(binary);
-    auto mismatchedMinorToolsetLease = take_value(
-        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    auto mismatchedMinorToolsetLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
     require(mismatchedMinorToolsetLease.has_value());
     write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
                                       CUE_TEST_ENGINE_ROOT, "14.99.99999");
     require(!publisher
-                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedMinorToolsetLease),
-                           std::nullopt)
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedMinorToolsetLease), std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
     write_shipping_toolchain_evidence(binary);
-    auto mismatchedPlatformToolsetLease = take_value(
-        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    auto mismatchedPlatformToolsetLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
     require(mismatchedPlatformToolsetLease.has_value());
     write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, "v999");
-    require(!publisher
-                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedPlatformToolsetLease),
-                           std::nullopt)
-                 .has_value());
+    require(
+        !publisher
+             ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedPlatformToolsetLease), std::nullopt)
+             .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
     write_shipping_toolchain_evidence(binary);
-    auto mismatchedEngineRootLease = take_value(
-        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    auto mismatchedEngineRootLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
     require(mismatchedEngineRootLease.has_value());
     write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
                                       generic_path(projectRoot));
-    require(!publisher
-                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedEngineRootLease),
-                           std::nullopt)
-                 .has_value());
+    require(
+        !publisher->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedEngineRootLease), std::nullopt)
+             .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
     write_shipping_toolchain_evidence(binary);
 
     cue::BuildPlan changedSourcePlan =
         make_shipping_plan(projectRoot, "41234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    auto changedSourceLease = take_value(
-        publisher->acquire_build_lease(changedSourcePlan, cancellation, std::nullopt));
+    auto changedSourceLease = take_value(publisher->acquire_build_lease(changedSourcePlan, cancellation, std::nullopt));
     require(changedSourceLease.has_value());
     write_text(projectRoot / "Source" / "Game" / "Test.cpp", "int cue_shipping_test = 2;\n");
-    require(!publisher->publish(changedSourcePlan, cancellation, std::move(*changedSourceLease), std::nullopt)
-                 .has_value());
+    require(
+        !publisher->publish(changedSourcePlan, cancellation, std::move(*changedSourceLease), std::nullopt).has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(changedSourcePlan.candidate_directory())));
     write_text(projectRoot / "Source" / "Game" / "Test.cpp", "int cue_shipping_test = 1;\n");
@@ -884,7 +866,10 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
         make_signed_shipping_plan(projectRoot, "51234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     auto signedLease = take_value(publisher->acquire_build_lease(signedPlan, cancellation, std::nullopt));
     require(signedLease.has_value());
-    require(!publisher->publish(signedPlan, cancellation, std::move(*signedLease), std::nullopt).has_value());
+    auto signedPublish = publisher->publish(signedPlan, cancellation, std::move(*signedLease), std::nullopt);
+    require(!signedPublish && signedPublish.try_error()->root_code().domain() == "Cue.Build.Windows.Artifact" &&
+            signedPublish.try_error()->root_code().value() ==
+                static_cast<std::int64_t>(cue::WindowsBuildArtifactError::PublisherUnavailable));
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(signedPlan.artifact_store_directory()) / "Current.json"));
 
@@ -893,8 +878,7 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
         cue::BuildPlan rejectedPlan = make_shipping_plan(projectRoot, std::move(a_operationId), a_assertContext);
         require(std::filesystem::remove(output / "CueGameProduct.exe"));
         require(std::filesystem::copy_file(a_source, output / "CueGameProduct.exe"));
-        auto rejectedLease = take_value(
-            publisher->acquire_build_lease(rejectedPlan, cancellation, std::nullopt));
+        auto rejectedLease = take_value(publisher->acquire_build_lease(rejectedPlan, cancellation, std::nullopt));
         require(rejectedLease.has_value());
         require(!publisher->publish(rejectedPlan, cancellation, std::move(*rejectedLease), std::nullopt).has_value());
         require(read_text(currentPath) == current &&
@@ -907,14 +891,12 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     cue::BuildPlan incompletePlan =
         make_shipping_plan(projectRoot, "31234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     require(std::filesystem::remove(output / "CueGameProduct.exe"));
-    auto incompleteLease = take_value(
-        publisher->acquire_build_lease(incompletePlan, cancellation, std::nullopt));
+    auto incompleteLease = take_value(publisher->acquire_build_lease(incompletePlan, cancellation, std::nullopt));
     require(incompleteLease.has_value());
     require(!publisher->publish(incompletePlan, cancellation, std::move(*incompleteLease), std::nullopt).has_value());
     require(read_text(currentPath) == current);
 
-    auto retainedRead = take_value(
-        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    auto retainedRead = take_value(reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
     require(retainedRead.has_value());
     retainedRead.reset();
     write_text(metadataPath, metadata + "tampered");
@@ -935,8 +917,8 @@ int main(int a_argumentCount, char **a_arguments)
     cue::AssertContext assertContext(logger, fatalHandler);
     test_reparse_revalidation(std::filesystem::path(a_arguments[1]), assertContext);
     test_windows_artifact_publisher(std::filesystem::path(a_arguments[1]), std::filesystem::path(a_arguments[2]),
-                                     std::filesystem::path(a_arguments[3]), std::filesystem::path(a_arguments[4]),
-                                     std::filesystem::path(a_arguments[5]), assertContext);
+                                    std::filesystem::path(a_arguments[3]), std::filesystem::path(a_arguments[4]),
+                                    std::filesystem::path(a_arguments[5]), assertContext);
     test_shipping_product_publisher(std::filesystem::path(a_arguments[6]), std::filesystem::path(a_arguments[7]),
                                     std::filesystem::path(a_arguments[8]), std::filesystem::path(a_arguments[9]),
                                     assertContext);
