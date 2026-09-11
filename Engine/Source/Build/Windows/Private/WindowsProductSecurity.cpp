@@ -842,7 +842,13 @@ template <typename Value>
     }
 
     const IMAGE_DATA_DIRECTORY &loadDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
-    constexpr std::size_t requiredLoadConfigSize = offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD);
+    constexpr std::size_t requiredLoadConfigSize =
+        std::max({offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)});
     const std::optional<std::size_t> loadOffset =
         loadDirectory.VirtualAddress != 0U && loadDirectory.Size >= sizeof(DWORD)
             ? rva_to_offset(loadDirectory.VirtualAddress, sizeof(DWORD), *optional, sections, bytes.size())
@@ -872,6 +878,10 @@ template <typename Value>
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const std::optional<ULONGLONG> guardDispatch = read_value<ULONGLONG>(
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    const std::optional<ULONGLONG> guardFunctionTable = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
+    const std::optional<ULONGLONG> guardFunctionCount = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount));
     const std::optional<DWORD> guardFlags =
         read_value<DWORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     const std::optional<WORD> dependentLoadFlags =
@@ -885,6 +895,19 @@ template <typename Value>
     const std::optional<MappedImageFileRange> guardDispatchRange =
         guardDispatch ? mapped_image_va_range(*guardDispatch, sizeof(ULONGLONG), *optional, sections, bytes.size())
                       : std::nullopt;
+    const std::size_t guardFunctionTableStride =
+        guardFlags ? sizeof(std::uint32_t) + ((*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >>
+                                              IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT)
+                   : 0U;
+    const bool hasValidFunctionTableSize =
+        guardFunctionTable && guardFunctionCount && guardFunctionTableStride >= sizeof(std::uint32_t) &&
+        *guardFunctionCount <= std::numeric_limits<std::size_t>::max() / guardFunctionTableStride;
+    const std::size_t guardFunctionTableSize =
+        hasValidFunctionTableSize ? static_cast<std::size_t>(*guardFunctionCount) * guardFunctionTableStride : 0U;
+    const std::optional<MappedImageFileRange> guardFunctionTableRange =
+        guardFunctionTable && hasValidFunctionTableSize && *guardFunctionCount > 0U
+            ? mapped_image_va_range(*guardFunctionTable, guardFunctionTableSize, *optional, sections, bytes.size())
+            : std::nullopt;
     const std::optional<ULONGLONG> guardCheckTarget =
         guardCheckRange && has_section_characteristics(*guardCheckRange, k_readOnlyDataSection,
                                                        IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)
@@ -910,13 +933,18 @@ template <typename Value>
     const bool hasMappedGuardDispatch =
         guardDispatchTargetRange &&
         has_section_characteristics(*guardDispatchTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
-    const std::array<std::uint64_t, 5U> requiredRelocations = {
+    const bool hasMappedFunctionTable =
+        guardFunctionTableRange && has_section_characteristics(*guardFunctionTableRange, k_readOnlyDataSection,
+                                                               IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE);
+    const std::array<std::uint64_t, 6U> requiredRelocations = {
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer),
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable),
         guardCheck && *guardCheck >= optional->ImageBase ? *guardCheck - optional->ImageBase
                                                          : std::numeric_limits<std::uint64_t>::max(),
         guardDispatch && *guardDispatch >= optional->ImageBase ? *guardDispatch - optional->ImageBase
@@ -929,6 +957,7 @@ template <typename Value>
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
     if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+        (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
     {

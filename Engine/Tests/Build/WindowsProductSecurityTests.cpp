@@ -231,6 +231,36 @@ void set_load_configuration_pointer(std::vector<std::byte> &a_bytes, std::size_t
     return value;
 }
 
+/// @brief Load Configurationの指定ULONGLONG値を指定値へ改変する
+void set_load_configuration_ulonglong(std::vector<std::byte> &a_bytes, std::size_t a_fieldOffset, ULONGLONG a_value)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    require(a_fieldOffset <= directory.Size && sizeof(a_value) <= directory.Size - a_fieldOffset);
+    std::memcpy(a_bytes.data() + loadOffset + a_fieldOffset, &a_value, sizeof(a_value));
+}
+
+/// @brief GuardFlagsからFunction-Table-Enabledフラグを除去する
+void clear_guard_function_table_flag(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    DWORD guardFlags = 0U;
+    std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                sizeof(guardFlags));
+    guardFlags &= ~IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT;
+    std::memcpy(a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags), &guardFlags,
+                sizeof(guardFlags));
+}
+
 /// @brief 指定RVAを対象とするDIR64再配置EntryをABSOLUTEへ置換する
 void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva)
 {
@@ -327,7 +357,7 @@ void overlap_dir64_relocation(std::vector<std::byte> &a_bytes, std::span<const s
 }
 
 /// @brief Security Evidenceが参照する全絶対VA格納位置のRVAを返す
-[[nodiscard]] std::array<std::uint32_t, 5U> required_security_relocation_rvas(std::span<const std::byte> a_bytes)
+[[nodiscard]] std::array<std::uint32_t, 6U> required_security_relocation_rvas(std::span<const std::byte> a_bytes)
 {
     const std::size_t optionalOffset = optional_header_offset(a_bytes);
     IMAGE_OPTIONAL_HEADER64 optional{};
@@ -337,14 +367,20 @@ void overlap_dir64_relocation(std::vector<std::byte> &a_bytes, std::span<const s
         load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const ULONGLONG guardDispatch =
         load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    const ULONGLONG guardFunctionTable =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
     require(guardCheck >= optional.ImageBase && guardCheck - optional.ImageBase <= std::numeric_limits<DWORD>::max());
     require(guardDispatch >= optional.ImageBase &&
             guardDispatch - optional.ImageBase <= std::numeric_limits<DWORD>::max());
+    require(guardFunctionTable >= optional.ImageBase &&
+            guardFunctionTable - optional.ImageBase <= std::numeric_limits<DWORD>::max());
     return {loadDirectory.VirtualAddress + static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie)),
             loadDirectory.VirtualAddress +
                 static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer)),
             loadDirectory.VirtualAddress +
                 static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer)),
+            loadDirectory.VirtualAddress +
+                static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable)),
             static_cast<DWORD>(guardCheck - optional.ImageBase),
             static_cast<DWORD>(guardDispatch - optional.ImageBase)};
 }
@@ -458,6 +494,38 @@ void mark_security_cookie_section_shared(std::vector<std::byte> &a_bytes)
             continue;
         }
         section.Characteristics |= IMAGE_SCN_MEM_SHARED;
+        std::memcpy(a_bytes.data() + sectionOffset, &section, sizeof(section));
+        return;
+    }
+    require(false);
+}
+
+/// @brief Guard Function Tableが格納されるSectionへ実行属性を付与する
+void mark_guard_function_table_section_executable(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    IMAGE_FILE_HEADER fileHeader{};
+    std::memcpy(&fileHeader, a_bytes.data() + file_header_offset(a_bytes), sizeof(fileHeader));
+    const ULONGLONG guardFunctionTable =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
+    require(guardFunctionTable >= optional.ImageBase &&
+            guardFunctionTable - optional.ImageBase <= std::numeric_limits<DWORD>::max());
+    const std::uint32_t functionTableRva = static_cast<std::uint32_t>(guardFunctionTable - optional.ImageBase);
+    const std::size_t sectionsOffset = optionalOffset + fileHeader.SizeOfOptionalHeader;
+    for (std::size_t index = 0U; index < fileHeader.NumberOfSections; ++index)
+    {
+        const std::size_t sectionOffset = sectionsOffset + index * sizeof(IMAGE_SECTION_HEADER);
+        IMAGE_SECTION_HEADER section{};
+        std::memcpy(&section, a_bytes.data() + sectionOffset, sizeof(section));
+        const std::uint64_t sectionStart = section.VirtualAddress;
+        const std::uint64_t sectionSize = std::max(section.Misc.VirtualSize, section.SizeOfRawData);
+        if (functionTableRva < sectionStart || functionTableRva - sectionStart >= sectionSize)
+        {
+            continue;
+        }
+        section.Characteristics |= IMAGE_SCN_MEM_EXECUTE;
         std::memcpy(a_bytes.data() + sectionOffset, &section, sizeof(section));
         return;
     }
@@ -749,7 +817,7 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     require(!cue::validate_windows_shipping_product_security(truncatedRelocations.generic_string(), localProfile,
                                                              a_assertContext));
 
-    const std::array<std::uint32_t, 5U> requiredRelocations = required_security_relocation_rvas(bytes);
+    const std::array<std::uint32_t, 6U> requiredRelocations = required_security_relocation_rvas(bytes);
     for (std::size_t index = 0U; index < requiredRelocations.size(); ++index)
     {
         bytes = read_bytes(a_validProduct);
@@ -786,10 +854,11 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     require(!cue::validate_windows_shipping_product_security(headerBoundary.generic_string(), localProfile,
                                                              a_assertContext));
 
-    constexpr std::array<std::size_t, 3U> loadPointerOffsets = {
+    constexpr std::array<std::size_t, 4U> loadPointerOffsets = {
         offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
         offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
-        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer)};
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer),
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable)};
     const std::vector<ULONGLONG> invalidPointerValues = invalid_load_configuration_pointer_values(bytes);
     for (std::size_t fieldIndex = 0U; fieldIndex < loadPointerOffsets.size(); ++fieldIndex)
     {
@@ -881,6 +950,28 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     const std::filesystem::path unusedSecurityCookie = directory / "UnusedSecurityCookie.exe";
     write_bytes(unusedSecurityCookie, bytes);
     require(!cue::validate_windows_shipping_product_security(unusedSecurityCookie.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    clear_guard_function_table_flag(bytes);
+    const std::filesystem::path functionTableFlagMissing = directory / "MissingFunctionTableFlag.exe";
+    write_bytes(functionTableFlagMissing, bytes);
+    require(!cue::validate_windows_shipping_product_security(functionTableFlagMissing.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    set_load_configuration_ulonglong(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount),
+                                     std::numeric_limits<ULONGLONG>::max());
+    const std::filesystem::path functionTableOverrun = directory / "FunctionTableOverrun.exe";
+    write_bytes(functionTableOverrun, bytes);
+    require(!cue::validate_windows_shipping_product_security(functionTableOverrun.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    mark_guard_function_table_section_executable(bytes);
+    const std::filesystem::path executableFunctionTable = directory / "ExecutableFunctionTable.exe";
+    write_bytes(executableFunctionTable, bytes);
+    require(!cue::validate_windows_shipping_product_security(executableFunctionTable.generic_string(), localProfile,
                                                              a_assertContext));
 
     bytes = read_bytes(a_validProduct);
