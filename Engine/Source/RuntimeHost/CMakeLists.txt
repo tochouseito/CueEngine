@@ -65,34 +65,40 @@ add_library(Cue.RuntimeHost.Static STATIC StaticGameModuleQueryProvider.cpp)
 target_link_libraries(Cue.RuntimeHost.Static PUBLIC Cue.RuntimeHost.Core)
 cue_configure_runtime_host_library(Cue.RuntimeHost.Static)
 
-add_library(Cue.RuntimeHost.Dynamic.Windows STATIC)
-target_sources(
-    Cue.RuntimeHost.Dynamic.Windows
-    PRIVATE
-        RuntimeModuleIdentity.cpp
-        RuntimeModuleIdentity.h
-        RuntimePackage.cpp
-        RuntimePackage.h
-        RuntimePath.h
-)
-target_link_libraries(
-    Cue.RuntimeHost.Dynamic.Windows
-    PUBLIC
-        Cue.RuntimeHost.Core
-    PRIVATE
-        Cue.IO.Windows
-        Cue.Package
-)
-cue_configure_runtime_host_library(Cue.RuntimeHost.Dynamic.Windows)
+if(NOT DEFINED CUE_RUNTIME_HOST_BUILD_DYNAMIC)
+    set(CUE_RUNTIME_HOST_BUILD_DYNAMIC ON)
+endif()
 
-add_executable(CueRuntimeHost Main.cpp)
-target_link_libraries(
-    CueRuntimeHost
-    PRIVATE
-        Cue.RuntimeHost.Core
+if(CUE_RUNTIME_HOST_BUILD_DYNAMIC)
+    add_library(Cue.RuntimeHost.Dynamic.Windows STATIC)
+    target_sources(
         Cue.RuntimeHost.Dynamic.Windows
-)
-target_compile_features(CueRuntimeHost PRIVATE cxx_std_20)
+        PRIVATE
+            RuntimeModuleIdentity.cpp
+            RuntimeModuleIdentity.h
+            RuntimePackage.cpp
+            RuntimePackage.h
+            RuntimePath.h
+    )
+    target_link_libraries(
+        Cue.RuntimeHost.Dynamic.Windows
+        PUBLIC
+            Cue.RuntimeHost.Core
+        PRIVATE
+            Cue.IO.Windows
+            Cue.Package
+    )
+    cue_configure_runtime_host_library(Cue.RuntimeHost.Dynamic.Windows)
+
+    add_executable(CueRuntimeHost Main.cpp)
+    target_link_libraries(
+        CueRuntimeHost
+        PRIVATE
+            Cue.RuntimeHost.Core
+            Cue.RuntimeHost.Dynamic.Windows
+    )
+    target_compile_features(CueRuntimeHost PRIVATE cxx_std_20)
+endif()
 
 if(BUILD_TESTING)
     target_link_libraries(Cue.RuntimeHost.Core PRIVATE Cue.Platform.Windows.TestSupport)
@@ -107,14 +113,16 @@ target_compile_definitions(
         $<$<CONFIG:Release>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=0>
 )
 
-set_target_properties(
-    CueRuntimeHost
-    PROPERTIES
-        CXX_EXTENSIONS OFF
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-)
+if(CUE_RUNTIME_HOST_BUILD_DYNAMIC)
+    set_target_properties(
+        CueRuntimeHost
+        PROPERTIES
+            CXX_EXTENSIONS OFF
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    )
+endif()
 
-if(MSVC)
+if(MSVC AND CUE_RUNTIME_HOST_BUILD_DYNAMIC)
     target_compile_options(
         CueRuntimeHost
         PRIVATE

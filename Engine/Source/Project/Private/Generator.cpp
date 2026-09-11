@@ -49,53 +49,67 @@ if(NOT DEFINED CUE_ENGINE_ROOT OR CUE_ENGINE_ROOT STREQUAL "")
     message(FATAL_ERROR "CUE_ENGINE_ROOT must locate the CueEngine source checkout")
 endif()
 cmake_path(ABSOLUTE_PATH CUE_ENGINE_ROOT NORMALIZE OUTPUT_VARIABLE cueEngineRoot)
-set(cueGameModuleCMake "${cueEngineRoot}/Engine/Source/GameModule/CMakeLists.txt")
-if(NOT EXISTS "${cueGameModuleCMake}")
-    message(FATAL_ERROR "CUE_ENGINE_ROOT does not contain Engine/Source/GameModule")
+set(cueShippingProductCMake "${cueEngineRoot}/Engine/Source/ShippingProduct/CMakeLists.txt")
+if(NOT EXISTS "${cueShippingProductCMake}")
+    message(FATAL_ERROR "CUE_ENGINE_ROOT does not contain Engine/Source/ShippingProduct")
 endif()
 
-add_subdirectory("${cueEngineRoot}/Engine/Source/GameModule" "${CMAKE_BINARY_DIR}/CueEngine/GameModule")
+add_subdirectory("${cueEngineRoot}/Engine/Source/ShippingProduct" "${CMAKE_BINARY_DIR}/CueEngine/ShippingProduct")
 add_subdirectory(Source/Game)
 )cmake";
 
-constexpr std::string_view k_gameCMake = R"cmake(add_library(CueGameModule SHARED)
+constexpr std::string_view k_gameCMake = R"cmake(function(cue_configure_game_module targetName)
+    target_sources(${targetName} PRIVATE GameModule.cpp)
+    target_link_libraries(${targetName} PRIVATE Cue.GameModule.Abi)
+    target_compile_features(${targetName} PRIVATE cxx_std_20)
+    target_compile_definitions(
+        ${targetName}
+        PRIVATE
+            $<$<CONFIG:Debug>:CUE_GAME_MODULE_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_GAME_MODULE_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_GAME_MODULE_CONFIGURATION=3>
+    )
+    set_target_properties(
+        ${targetName}
+        PROPERTIES
+            CXX_EXTENSIONS OFF
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+            PREFIX ""
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>"
+    )
+    target_compile_options(
+        ${targetName}
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
+    target_link_options(${targetName} PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+endfunction()
 
-target_sources(CueGameModule PRIVATE GameModule.cpp)
-target_link_libraries(CueGameModule PRIVATE Cue.GameModule.Abi)
-target_compile_features(CueGameModule PRIVATE cxx_std_20)
-target_compile_definitions(
-    CueGameModule
-    PRIVATE
-        CUE_GAME_MODULE_BUILD=1
-        $<$<CONFIG:Debug>:CUE_GAME_MODULE_CONFIGURATION=1>
-        $<$<CONFIG:Development>:CUE_GAME_MODULE_CONFIGURATION=2>
-        $<$<CONFIG:Release>:CUE_GAME_MODULE_CONFIGURATION=3>
-)
-
+add_library(CueGameModule SHARED)
+cue_configure_game_module(CueGameModule)
+target_compile_definitions(CueGameModule PRIVATE CUE_GAME_MODULE_BUILD=1)
 set_target_properties(
     CueGameModule
     PROPERTIES
-        CXX_EXTENSIONS OFF
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
         OUTPUT_NAME "CueGameModule"
-        PREFIX ""
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>"
         PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
 )
 
-target_compile_options(
-    CueGameModule
-    PRIVATE
-        /W4
-        /WX
-        /permissive-
-        /Zc:__cplusplus
-        /utf-8
-        $<$<CONFIG:Development>:/O2>
-        $<$<CONFIG:Development>:/Zi>
-)
-target_link_options(CueGameModule PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+add_library(CueGameModule.Static STATIC EXCLUDE_FROM_ALL)
+cue_configure_game_module(CueGameModule.Static)
+target_compile_definitions(CueGameModule.Static PUBLIC CUE_GAME_MODULE_STATIC=1)
+set_target_properties(CueGameModule.Static PROPERTIES OUTPUT_NAME "CueGameModule.Static")
+
+if(CUE_GAME_CONFIGURATION STREQUAL "Release")
+    cue_add_shipping_product(CueGameProduct CueGameModule.Static "@PROJECT_ID@")
+endif()
 )cmake";
 
 constexpr std::string_view k_projectPresets = R"json({
@@ -433,12 +447,21 @@ void rollback_staging(cue::FilesystemRoot &a_filesystem, cue::StagingArea &a_sta
     return source;
 }
 
+/// @brief 検証済みProject IDをStatic Product Targetへ固定したGame CMakeを生成する
+[[nodiscard]] std::string make_game_cmake(const cue::ProjectId &a_projectId)
+{
+    constexpr std::string_view marker = "@PROJECT_ID@";
+    std::string cmake(k_gameCMake);
+    cmake.replace(cmake.find(marker), marker.size(), a_projectId.text());
+    return cmake;
+}
+
 /// @brief Project固有値を反映したGame SourceとCMake Workspace Templateを所有値として構築する
 [[nodiscard]] GameWorkspaceFiles make_game_workspace_files(const cue::ProjectId &a_projectId)
 {
     return {GeneratedProjectFile{"CMakeLists.txt", std::string(k_projectCMake)},
             GeneratedProjectFile{"CMakePresets.json", std::string(k_projectPresets)},
-            GeneratedProjectFile{"Source/Game/CMakeLists.txt", std::string(k_gameCMake)},
+            GeneratedProjectFile{"Source/Game/CMakeLists.txt", make_game_cmake(a_projectId)},
             GeneratedProjectFile{"Source/Game/GameModule.cpp", make_game_module_source(a_projectId)}};
 }
 

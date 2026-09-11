@@ -407,6 +407,7 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
     }
     const std::string_view projectCMake = filesystem.file_contents("CMakeLists.txt");
     const std::string_view presets = filesystem.file_contents("CMakePresets.json");
+    const std::string_view gameCMake = filesystem.file_contents("Source/Game/CMakeLists.txt");
     const std::string_view module = filesystem.file_contents("Source/Game/GameModule.cpp");
     const std::string_view scene = filesystem.file_contents("Assets/Source/Scenes/Default.cuescene");
     auto serialized = cue::serialize_project_descriptor(*generated.try_value(), a_assertContext);
@@ -418,12 +419,22 @@ class GeneratorFilesystem final : public cue::FilesystemRoot
            serialized.try_value()->find("CMakeLists") == std::string::npos &&
            serialized.try_value()->find("Renderer") == std::string::npos &&
            projectCMake.find("CUE_ENGINE_ROOT") != std::string_view::npos &&
+           projectCMake.find("Engine/Source/ShippingProduct") != std::string_view::npos &&
            projectCMake.find("CMAKE_VS_PLATFORM_NAME STREQUAL \"x64\"") != std::string_view::npos &&
            projectCMake.find("Sample Project") == std::string_view::npos &&
            presets.find("windows-vs2026-debug") != std::string_view::npos &&
            presets.find("windows-vs2026-development") != std::string_view::npos &&
            presets.find("windows-vs2026-release") != std::string_view::npos &&
            presets.find("$env{CUE_ENGINE_ROOT}") != std::string_view::npos &&
+           gameCMake.find("add_library(CueGameModule SHARED)") != std::string_view::npos &&
+           gameCMake.find("add_library(CueGameModule.Static STATIC EXCLUDE_FROM_ALL)") != std::string_view::npos &&
+           gameCMake.find("target_compile_definitions(CueGameModule.Static PUBLIC CUE_GAME_MODULE_STATIC=1)") !=
+               std::string_view::npos &&
+           gameCMake.find("cue_add_shipping_product(CueGameProduct CueGameModule.Static ") !=
+               std::string_view::npos &&
+           gameCMake.find("12345678-1234-4abc-8def-1234567890ab") != std::string_view::npos &&
+           gameCMake.find("file(COPY") == std::string_view::npos &&
+           gameCMake.find("install(") == std::string_view::npos &&
            module.find("0x12U, 0x34U, 0x56U, 0x78U") != std::string_view::npos &&
            module.find("a_sink->reserved[0] != 0U") != std::string_view::npos &&
            module.find("a_sink->reserved[3] != 0U") != std::string_view::npos &&

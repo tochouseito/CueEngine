@@ -21,7 +21,8 @@
 
 namespace
 {
-#if !defined(CUE_TEST_CMAKE_COMMAND) || !defined(CUE_TEST_ENGINE_ROOT)
+#if !defined(CUE_TEST_CMAKE_COMMAND) || !defined(CUE_TEST_ENGINE_ROOT) || \
+    !defined(CUE_TEST_BUILD_CONFIGURATION)
 #error Generator workspace tests require CMake command and Engine root definitions
 #endif
 
@@ -54,7 +55,7 @@ class TestDirectory final
             return;
         }
         m_path = temporary.data();
-        m_path += L"CueProjectGeneratorTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+        m_path += L"CueGen-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
                   std::to_wstring(GetTickCount64());
         m_isCreated = CreateDirectoryW(m_path.c_str(), nullptr) != FALSE;
     }
@@ -155,7 +156,7 @@ class TestDirectory final
         return false;
     }
     CloseHandle(process.hThread);
-    const DWORD wait = WaitForSingleObject(process.hProcess, 120000U);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 300000U);
     DWORD exitCode = 1U;
     const bool completed = wait == WAIT_OBJECT_0 && GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
     if (wait == WAIT_TIMEOUT)
@@ -177,6 +178,22 @@ class TestDirectory final
 [[nodiscard]] bool build_preset(const std::wstring &a_projectRoot, std::wstring_view a_preset)
 {
     return run_cmake(a_projectRoot, L"--build --preset " + std::wstring(a_preset) + L" --parallel");
+}
+
+/// @brief Generated Projectの指定Presetから一TargetだけをBuildする
+[[nodiscard]] bool build_target_preset(const std::wstring &a_projectRoot, std::wstring_view a_preset,
+                                       std::wstring_view a_target)
+{
+    return run_cmake(a_projectRoot, L"--build --preset " + std::wstring(a_preset) + L" --target " +
+                                        std::wstring(a_target) + L" --parallel");
+}
+
+/// @brief Release Monolithic ProductをWARP一Frameで実行する
+[[nodiscard]] bool run_product_smoke(const std::wstring &a_projectRoot, const std::wstring &a_product)
+{
+    const std::filesystem::path productPath(a_product);
+    return run_cmake(a_projectRoot, L"-E chdir \"" + productPath.parent_path().native() + L"\" \"" +
+                                        productPath.native() + L"\" --package-smoke-test");
 }
 
 /// @brief 実 Windows IO で生成・再 Open・既存先拒否を一連の Process 契約として検証する
@@ -243,6 +260,22 @@ class TestDirectory final
     {
         return false;
     }
+
+#if CUE_TEST_BUILD_CONFIGURATION == 3
+    const std::wstring productPath = directory.child(
+        L"SampleProject\\Generated\\Build\\windows-vs2026-x64-release\\bin\\Release\\CueGameProduct.exe");
+    const std::wstring isolatedDirectory = directory.child(L"ProductSmoke");
+    const std::wstring isolatedProduct = directory.child(L"ProductSmoke\\CueGameProduct.exe");
+    if (!build_target_preset(projectRootPath, L"windows-vs2026-release", L"CueGameProduct") ||
+        !is_file(directory.child(
+            L"SampleProject\\Generated\\Build\\windows-vs2026-x64-release\\lib\\Release\\CueGameModule.Static.lib")) ||
+        !is_file(productPath) || CreateDirectoryW(isolatedDirectory.c_str(), nullptr) == FALSE ||
+        CopyFileW(productPath.c_str(), isolatedProduct.c_str(), TRUE) == FALSE ||
+        !run_product_smoke(projectRootPath, isolatedProduct))
+    {
+        return false;
+    }
+#endif
 
     auto projectRoot = cue::create_windows_filesystem_root(directory.utf8_path() + "/SampleProject", a_assertContext);
     auto loaded =
