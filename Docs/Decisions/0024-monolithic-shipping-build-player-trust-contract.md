@@ -228,7 +228,21 @@ Shipping ArtifactのEXEまたはMetadataを変更しない。
 Game ProjectはGit Repositoryであることを要求しない。Publisherは`Source/Game`以下の通常File、Project Rootの
 `CMakeLists.txt`、`CMakePresets.json`、`CueProject.json`をRoot相対PathのUTF-8 Byte順に列挙し、Path、Size、SHA-256から
 Canonical Source Inventory Hashを生成する。Reparse Point、Root外参照、列挙中のIdentity変化を拒否する。
-Build完了後、Candidateを公開する前に同じInventory Hashを再計算し、Build中の入力変更を拒否する。
+
+`PublisherSigned` BuildはSource Treeを直接Compiler入力にしない。Build開始時に、記録Commitから復元したEngineの追跡済み
+Build入力と、共有なしHandleで一度だけ読み取ったGame Source／Project Build入力をOperation-owned Source Snapshotへ複製する。
+Snapshot生成中は各入力のFile Identity、Size、HashをHandleから検証し、Pathの再Open結果へ依存しない。CMake ConfigureとBuildは
+Snapshot内のPathだけをSource入力として使用し、元のEngine RootまたはProject RootをSource／Include Pathへ含めない。
+SnapshotはBuild Operation以外から書込み可能な共有を持たず、生成完了後に封印し、Build前後でInventory Hashを検証する。
+Snapshotの変更、元Sourceへの参照、Inventory不一致を検出した場合は署名もArtifact公開も行わない。
+
+Toolchain、Windows SDK、vcpkg Install TreeはSnapshot外の信頼済みBuild Environment入力とする。VersionとManifest／Baseline Hashに加え、
+実際に解決したCompiler、Linker、Header、LibraryのIdentityをProvenanceへ記録する。同じUser権限の悪意あるProcessがBuild Environmentや
+Operation-owned Snapshotを書き換えられる環境は信頼済み署名環境ではない。Public Distribution用Buildは、Access ControlとProcess分離を
+備えた専用Build Agent上で行い、開発者Desktop上の署名成功だけをPublic ReadyのEvidenceにしない。
+
+`UnsignedLocal` Buildは従来どおりSource TreeからBuildできるが、開始時とBuild完了後に同じInventory Hashを再計算し、
+Build中の入力変更を拒否する。この二回のHash確認はLocal診断用であり、PublisherSigned Provenanceの代用にしない。
 
 ProvenanceはEngine Commitとclean状態、Game Source Inventory Hash、CMake Version／Generator、MSVC Compiler Version、
 Windows SDK Version、Architecture、Configuration、Build Policy Version、vcpkg Manifest／Baseline Hashを記録する。
@@ -389,7 +403,13 @@ AuthenticodeのCertificate Chain、Code Signing EKU、Timestamp、RevocationはP
 期限切れCertificateは、有効なRFC 3161 Timestampが署名時刻をCertificate有効期間内と証明する場合だけ受理する。
 Public Ready検証ではOnline Revocation確認を要求し、NetworkまたはRevocation Serviceへ到達できず結果を確定できない場合は
 Fail-closedで公開しない。Player RuntimeはOffline実行を妨げないためChain／RevocationをNetwork再確認せず、埋込Public Keyとの一致、
-CMS Signature、Manifest Inventoryを検証する。OS、署名済みInstaller、App Control等がProduct EXE自体の外部Trust Anchorとなる。
+CMS Signature、Manifest Inventoryを検証する。OS、署名済みInstaller／Launcher、App Control等がProduct EXE自体の
+外部Trust Anchorとなる。
+
+`PublicDistributionReady`には、実際の配布・起動経路が許可Publisherの署名を外部Trust Anchorとして強制することを必須とする。
+例えば、OSが信頼する署名済みInstallerからAccess ControlされたInstall Rootへ配置し、Installer／LauncherまたはApp Controlが
+Product Authenticode Signerを検証してから起動する。Packageを直接配布してUser書込み可能なDirectoryから任意実行できる状態、
+あるいは検証がBuild時だけで起動時に強制されない状態は、AuthenticodeとCMSが有効でも`PublicDistributionReady`ではない。
 
 Local Developmentでは、明示的な`UnsignedLocal` Trust Modeを選択してRelease Monolithic Packageを作成・実行できる。
 その成果物はUI、Operation Result、Metadataで`NotPublishable`と表示し、公開可能成功へ昇格しない。
@@ -398,7 +418,8 @@ Test用Self-signed Certificateは署名機構のTestだけに使用し、Public 
 M17は二つの完了状態を区別する。
 
 - `MonolithicLocalReady`: Release Product、UnsignedLocal Package、Relocation、Tamper、起動、終了を検証済み
-- `PublicDistributionReady`: 信頼された実運用CertificateでAuthenticode、Timestamp、Online Revocation、CMS署名、Publisher一致を検証済み
+- `PublicDistributionReady`: 信頼された実運用CertificateでAuthenticode、Timestamp、Online Revocation、CMS署名、Publisher一致を検証し、
+  許可Publisherを強制する外部Trust Anchor付き配布・起動経路を実機で検証済み
 
 M17 Completion GateとMilestone Closeに必須なのは`MonolithicLocalReady`である。実運用Certificateが提供されない場合は
 `PublicDistributionReady = false`をEvidenceとUIへ残し、「公開署名済み製品」「公開準備完了」と報告しない。
@@ -410,7 +431,10 @@ Manifest v2 PublisherはADR-0023のSibling Staging、同一Volume、Flush、置�
 `Committed`／`NotPublished`／`PublishedButDurabilityUnknown`を維持する。既存DestinationをMerge、削除、上書きしない。
 
 RuntimeはExecutable相対RootからManifest v2を読み、Resource Limit、Schema、Execution Model、Project、Engine、Architecture、
-Configuration、Role、Path、Size、Hash、Content Signature PolicyをFail-closedで検証する。検証完了前にRuntime Dataを使用しない。
+Configuration、Role、Path、Size、Hash、Content Signature PolicyをFail-closedで検証する。Manifestと各Runtime DataはReparse Pointを
+拒否してHandleで開き、最終PathとFile Identityを確認する。検証からSession読込み完了までWrite／Delete共有なしのHandleを保持し、
+Size／HashとParser入力を同じHandleから取得する。ParserとSessionへは検証済みByte Snapshotまたは保持中Handleだけを渡し、
+検証後にPathを再Openしない。これにより検証と使用の間の置換を拒否する。検証完了前にRuntime Dataを使用しない。
 
 Executable自身のHashは、実行中の同じProcessが信頼の起点として自己申告するだけでは完全な敵対的置換を防げない。
 OSのAuthenticode Policy、Installer／Launcher、App Control等の外部Trust Anchorと組み合わせる必要がある。
@@ -553,7 +577,8 @@ M17では最低限次を検証する。
 - Project共有FileへMachine絶対Engine Pathを書かない
 - Shipping Artifact失敗時に旧成功Artifactを保全する
 - PublisherSigned Artifactは署名後Byte列を不変公開し、Package時に変更しない
-- Engine clean状態とGame Source InventoryをBuild前後で一致させる
+- PublisherSigned BuildをOperation-owned Source Snapshotだけから行い、元Source参照とSnapshot変更を拒否する
+- UnsignedLocal BuildではEngine clean状態とGame Source InventoryをBuild前後で一致させる
 - Manifest v1 Modular Packageを従来どおり検証・起動できる
 - Manifest v2 Monolithic Packageが三つの必須Roleを各一件要求する
 - v2へGame Module、Metadata、RuntimeHost Roleを混在させると拒否する
@@ -562,7 +587,9 @@ M17では最低限次を検証する。
 - Product ImportがVersion付きAllowlist内にあり、Game Moduleまたは未知App-local DLLを含まない
 - `/DEPENDENTLOADFLAG:0x800`を最終PEで確認する
 - EXE、Manifest、Runtime DataのSize／Hash不一致を検出する
+- Runtime Dataを検証したHandleまたはByte Snapshotから使用し、検証後のPath再Openによる置換を許さない
 - Signatureなし、異なるPublisher、壊れたSignature、期限またはChain不正をPublic Readyにしない
+- 外部Trust Anchorが許可Publisherを実際の配布・起動経路で強制しない場合はPublic Readyにしない
 - Unsigned Local BuildをPublic Readyと表示しない
 - PublisherSigned ProductがUnsignedLocal Manifestを拒否し、Manifest変更でTrust Modeを降格できない
 - UnsignedLocal ProductとPublisherSigned Productが異なるBuild／Artifact Identityを持つ
