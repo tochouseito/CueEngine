@@ -36,6 +36,9 @@ constexpr std::uint16_t k_requiredDllCharacteristics =
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_GUARD_CF;
 constexpr std::uint16_t k_requiredDependentLoadFlags = LOAD_LIBRARY_SEARCH_SYSTEM32;
 constexpr std::uint32_t k_cetCompatible = IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT;
+constexpr DWORD k_writableDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
+constexpr DWORD k_readOnlyDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+constexpr DWORD k_executableCodeSection = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
 constexpr std::uint64_t k_maximumProductBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr std::size_t k_maximumImportNameBytes = 256U;
 constexpr std::size_t k_maximumImportDescriptors = 256U;
@@ -72,6 +75,13 @@ struct RvaFileRange final
 {
     std::size_t offset;
     std::size_t size;
+};
+
+/// @brief Image内VAに対応するFile OffsetとSection属性を保持する
+struct MappedImageFileRange final
+{
+    std::size_t offset;
+    DWORD sectionCharacteristics;
 };
 
 /// @brief Product Security検証中の予期しない例外をFatal境界へ渡す
@@ -401,19 +411,20 @@ template <typename Value>
     return range && a_size <= range->size ? std::optional<std::size_t>(range->offset) : std::nullopt;
 }
 
-/// @brief PE内VAがImage範囲とFile-backed Sectionの双方へ収まるか判定する
-[[nodiscard]] bool is_mapped_image_va(ULONGLONG a_va, std::size_t a_size, const IMAGE_OPTIONAL_HEADER64 &a_optional,
-                                      std::span<const IMAGE_SECTION_HEADER> a_sections, std::size_t a_fileSize) noexcept
+/// @brief PE内VAをImage範囲とFile-backed Sectionに限定したFile位置へ変換する
+[[nodiscard]] std::optional<MappedImageFileRange> mapped_image_va_range(
+    ULONGLONG a_va, std::size_t a_size, const IMAGE_OPTIONAL_HEADER64 &a_optional,
+    std::span<const IMAGE_SECTION_HEADER> a_sections, std::size_t a_fileSize) noexcept
 {
     if (a_va < a_optional.ImageBase)
     {
-        return false;
+        return std::nullopt;
     }
     const std::uint64_t rva = a_va - a_optional.ImageBase;
     if (rva > std::numeric_limits<std::uint32_t>::max() || rva >= a_optional.SizeOfImage ||
         a_size > static_cast<std::uint64_t>(a_optional.SizeOfImage) - rva)
     {
-        return false;
+        return std::nullopt;
     }
     for (const IMAGE_SECTION_HEADER &section : a_sections)
     {
@@ -426,12 +437,24 @@ template <typename Value>
         const std::uint64_t delta = rva - sectionRva;
         if (delta > section.SizeOfRawData || a_size > static_cast<std::uint64_t>(section.SizeOfRawData) - delta)
         {
-            return false;
+            return std::nullopt;
         }
         const std::uint64_t offset = static_cast<std::uint64_t>(section.PointerToRawData) + delta;
-        return offset <= a_fileSize && a_size <= static_cast<std::uint64_t>(a_fileSize) - offset;
+        if (offset > a_fileSize || a_size > static_cast<std::uint64_t>(a_fileSize) - offset)
+        {
+            return std::nullopt;
+        }
+        return MappedImageFileRange{static_cast<std::size_t>(offset), section.Characteristics};
     }
-    return false;
+    return std::nullopt;
+}
+
+/// @brief Mapped Sectionが要求属性を全て持ち禁止属性を一つも持たないか判定する
+[[nodiscard]] bool has_section_characteristics(const MappedImageFileRange &a_range, DWORD a_required,
+                                               DWORD a_forbidden) noexcept
+{
+    return (a_range.sectionCharacteristics & a_required) == a_required &&
+           (a_range.sectionCharacteristics & a_forbidden) == 0U;
 }
 
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
@@ -837,12 +860,40 @@ template <typename Value>
         read_value<DWORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     const std::optional<WORD> dependentLoadFlags =
         read_value<WORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
+    const std::optional<MappedImageFileRange> securityCookieRange =
+        securityCookie ? mapped_image_va_range(*securityCookie, sizeof(ULONGLONG), *optional, sections, bytes.size())
+                       : std::nullopt;
+    const std::optional<MappedImageFileRange> guardCheckRange =
+        guardCheck ? mapped_image_va_range(*guardCheck, sizeof(ULONGLONG), *optional, sections, bytes.size())
+                   : std::nullopt;
+    const std::optional<MappedImageFileRange> guardDispatchRange =
+        guardDispatch ? mapped_image_va_range(*guardDispatch, sizeof(ULONGLONG), *optional, sections, bytes.size())
+                      : std::nullopt;
+    const std::optional<ULONGLONG> guardCheckTarget =
+        guardCheckRange && has_section_characteristics(*guardCheckRange, k_readOnlyDataSection,
+                                                       IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)
+            ? read_value<ULONGLONG>(bytes, guardCheckRange->offset)
+            : std::nullopt;
+    const std::optional<ULONGLONG> guardDispatchTarget =
+        guardDispatchRange && has_section_characteristics(*guardDispatchRange, k_readOnlyDataSection,
+                                                          IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)
+            ? read_value<ULONGLONG>(bytes, guardDispatchRange->offset)
+            : std::nullopt;
+    const std::optional<MappedImageFileRange> guardCheckTargetRange =
+        guardCheckTarget ? mapped_image_va_range(*guardCheckTarget, 1U, *optional, sections, bytes.size())
+                         : std::nullopt;
+    const std::optional<MappedImageFileRange> guardDispatchTargetRange =
+        guardDispatchTarget ? mapped_image_va_range(*guardDispatchTarget, 1U, *optional, sections, bytes.size())
+                            : std::nullopt;
     const bool hasMappedSecurityCookie =
-        securityCookie && is_mapped_image_va(*securityCookie, sizeof(ULONGLONG), *optional, sections, bytes.size());
+        securityCookieRange &&
+        has_section_characteristics(*securityCookieRange, k_writableDataSection, IMAGE_SCN_MEM_EXECUTE);
     const bool hasMappedGuardCheck =
-        guardCheck && is_mapped_image_va(*guardCheck, sizeof(ULONGLONG), *optional, sections, bytes.size());
+        guardCheckTargetRange &&
+        has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
     const bool hasMappedGuardDispatch =
-        guardDispatch && is_mapped_image_va(*guardDispatch, sizeof(ULONGLONG), *optional, sections, bytes.size());
+        guardDispatchTargetRange &&
+        has_section_characteristics(*guardDispatchTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
     if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags)
@@ -914,6 +965,9 @@ class WinTrustState final
     case TRUST_E_BAD_DIGEST:
     case NTE_BAD_SIGNATURE:
     case TRUST_E_SUBJECT_NOT_TRUSTED:
+    case TRUST_E_MALFORMED_SIGNATURE:
+    case TRUST_E_COUNTER_SIGNER:
+    case TRUST_E_TIME_STAMP:
         return cue::WindowsProductSignatureStatus::InvalidSignature;
     case CERT_E_EXPIRED:
         return cue::WindowsProductSignatureStatus::CertificateExpired;
@@ -922,10 +976,30 @@ class WinTrustState final
     case CERT_E_CHAINING:
     case CERT_E_UNTRUSTEDROOT:
     case TRUST_E_EXPLICIT_DISTRUST:
+    case CERT_E_WRONG_USAGE:
+    case CERT_E_INVALID_NAME:
+    case CERT_E_INVALID_POLICY:
+    case CERT_E_CRITICAL:
+    case CERT_E_MALFORMED:
+    case CERT_E_PATHLENCONST:
+    case CERT_E_ISSUERCHAINING:
+    case CERT_E_UNTRUSTEDCA:
+    case CERT_E_UNTRUSTEDTESTROOT:
+    case CERT_E_VALIDITYPERIODNESTING:
+    case CERT_E_PURPOSE:
+    case CERT_E_ROLE:
+    case CERT_E_CN_NO_MATCH:
+    case TRUST_E_BASIC_CONSTRAINTS:
+    case TRUST_E_CERT_SIGNATURE:
+    case TRUST_E_FINANCIAL_CRITERIA:
+    case TRUST_E_NO_SIGNER_CERT:
         return cue::WindowsProductSignatureStatus::ChainInvalid;
     case CRYPT_E_REVOCATION_OFFLINE:
+    case CRYPT_E_NO_REVOCATION_CHECK:
+    case CERT_E_REVOCATION_FAILURE:
     case TRUST_E_SUBJECT_FORM_UNKNOWN:
     case TRUST_E_PROVIDER_UNKNOWN:
+    case TRUST_E_SYSTEM_ERROR:
     default:
         return cue::WindowsProductSignatureStatus::VerificationUnavailable;
     }
