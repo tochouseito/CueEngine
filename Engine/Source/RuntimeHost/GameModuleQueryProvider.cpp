@@ -617,6 +617,8 @@ Result<PreparedGameModule> connect_game_module(
         }
         std::shared_ptr<GameModuleConnection> connection = GameModuleConnectionFactory::create(
             std::move(resolved.try_value()->codeLifetime), api, moduleHandle);
+        PreparedGameModule prepared(
+            std::move(connection), std::move(a_identitySource), nullptr, {});
         RegistrationContext registration;
         Result<void> schemas = call_registration(api.registerSchemas, moduleHandle, registration,
                                                  RegistrationStage::Schemas, a_assertContext);
@@ -631,7 +633,7 @@ Result<PreparedGameModule> connect_game_module(
         {
             return Result<PreparedGameModule>::failure(std::move(*registeredSystems.try_error()));
         }
-        schema::SchemaRegistryBuilder builder(*a_identitySource, a_assertContext);
+        schema::SchemaRegistryBuilder builder(*prepared.m_schemaIdentitySource, a_assertContext);
         Result<void> coreSchemas = runtime::add_runtime_schema_types(builder, a_assertContext);
         if (!coreSchemas)
         {
@@ -642,15 +644,15 @@ Result<PreparedGameModule> connect_game_module(
         {
             return Result<PreparedGameModule>::failure(std::move(*registry.try_error()));
         }
+        prepared.m_schemaRegistry = std::move(*registry.try_value());
         Result<std::vector<runtime::RuntimeSystemRegistration>> systems =
-            create_systems(connection, moduleHandle, std::move(registration.systems), a_assertContext);
+            create_systems(prepared.m_connection, moduleHandle, std::move(registration.systems), a_assertContext);
         if (!systems)
         {
             return Result<PreparedGameModule>::failure(std::move(*systems.try_error()));
         }
-        return Result<PreparedGameModule>::success(
-            PreparedGameModule(std::move(connection), std::move(a_identitySource),
-                               std::move(*registry.try_value()), std::move(*systems.try_value())));
+        prepared.m_systems = std::move(*systems.try_value());
+        return Result<PreparedGameModule>::success(std::move(prepared));
     }
     catch (...)
     {
