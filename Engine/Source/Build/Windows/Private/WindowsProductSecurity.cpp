@@ -550,15 +550,21 @@ template <typename Value>
             const std::uint64_t targetRva = static_cast<std::uint64_t>(block->VirtualAddress) + (*entry & 0x0fffU);
             const bool overlapsRelocationDirectory =
                 targetRva < relocationDirectoryEnd && relocationDirectoryStart < targetRva + sizeof(std::uint64_t);
+            const std::optional<std::size_t> targetOffset =
+                targetRva <= std::numeric_limits<std::uint32_t>::max()
+                    ? rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional,
+                                    a_sections, a_bytes.size())
+                    : std::nullopt;
+            const std::optional<std::uint64_t> targetValue =
+                targetOffset ? read_value<std::uint64_t>(a_bytes, *targetOffset) : std::nullopt;
+            const bool hasImageValue = targetValue && *targetValue >= a_optional.ImageBase &&
+                                       *targetValue - a_optional.ImageBase < a_optional.SizeOfImage;
             if (targetRva < a_optional.SizeOfHeaders || overlapsRelocationDirectory ||
-                targetRva > std::numeric_limits<std::uint32_t>::max() ||
-                !rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional, a_sections,
-                               a_bytes.size()))
+                targetRva > std::numeric_limits<std::uint32_t>::max() || !targetOffset || !hasImageValue)
             {
                 return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                               "Shipping Product base relocation target overlaps protected PE metadata or is outside "
-                               "the image"));
+                               "Shipping Product base relocation target or stored image VA is invalid"));
             }
             relocatedImagePointers.push_back(static_cast<std::uint32_t>(targetRva));
         }
