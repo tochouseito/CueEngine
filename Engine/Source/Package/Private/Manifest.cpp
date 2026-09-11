@@ -1219,7 +1219,8 @@ enum class DirectoryChainResult
 
 /// @brief 対象Directoryまでの各Componentを固定しPathの差し替えを防ぐ
 [[nodiscard]] DirectoryChainResult lock_directory_chain(const std::filesystem::path &a_directory,
-                                                        std::vector<UniqueHandle> &a_handles) noexcept
+                                                        std::vector<UniqueHandle> &a_handles,
+                                                        std::vector<std::wstring> &a_lockedDirectories) noexcept
 {
     if (!a_directory.is_absolute())
     {
@@ -1229,6 +1230,19 @@ enum class DirectoryChainResult
     for (const std::filesystem::path &segment : a_directory.relative_path())
     {
         current /= segment;
+        const std::wstring currentText = current.native();
+        const bool isAlreadyLocked = std::ranges::any_of(
+            a_lockedDirectories,
+            [&currentText](const std::wstring &a_locked)
+            {
+                return a_locked.size() == currentText.size() &&
+                       CompareStringOrdinal(a_locked.data(), static_cast<int>(a_locked.size()), currentText.data(),
+                                            static_cast<int>(currentText.size()), TRUE) == CSTR_EQUAL;
+            });
+        if (isAlreadyLocked)
+        {
+            continue;
+        }
         UniqueHandle handle(CreateFileW(native_inspection_path(current).c_str(), FILE_READ_ATTRIBUTES,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
@@ -1247,6 +1261,7 @@ enum class DirectoryChainResult
             return DirectoryChainResult::Indirect;
         }
         a_handles.push_back(std::move(handle));
+        a_lockedDirectories.push_back(currentText);
     }
     return a_handles.empty() ? DirectoryChainResult::Missing : DirectoryChainResult::Success;
 }
@@ -1949,8 +1964,9 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
     {
         const std::filesystem::path root = native_path(a_packageRoot);
 #if defined(_WIN32)
-        std::vector<UniqueHandle> rootHandles;
-        if (lock_directory_chain(root, rootHandles) != DirectoryChainResult::Success)
+        std::vector<UniqueHandle> verificationHandles;
+        std::vector<std::wstring> lockedDirectories;
+        if (lock_directory_chain(root, verificationHandles, lockedDirectories) != DirectoryChainResult::Success)
         {
             return Result<void>::failure(manifest_error(a_assertContext, PackageError::InvalidPackagePath,
                                                         "Package Root is unavailable or indirect"));
@@ -1972,9 +1988,8 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
         {
             const std::filesystem::path relative = native_path(expected.relative_path());
 #if defined(_WIN32)
-            std::vector<UniqueHandle> parentHandles;
             const DirectoryChainResult parentResult =
-                lock_directory_chain(root / relative.parent_path(), parentHandles);
+                lock_directory_chain(root / relative.parent_path(), verificationHandles, lockedDirectories);
             if (parentResult == DirectoryChainResult::Indirect)
             {
                 return Result<void>::failure(manifest_error(a_assertContext, PackageError::InvalidPackagePath,
@@ -2090,6 +2105,9 @@ Result<void> verify_package_manifest_files(std::string_view a_packageRoot, const
                 return Result<void>::failure(manifest_error(a_assertContext, PackageError::PackageFileMismatch,
                                                             "Package file size or SHA-256 differs from the Manifest"));
             }
+#if defined(_WIN32)
+            verificationHandles.push_back(std::move(input));
+#endif
         }
         if (a_manifest.schema_version() == k_monolithicPackageManifestSchemaVersion)
         {

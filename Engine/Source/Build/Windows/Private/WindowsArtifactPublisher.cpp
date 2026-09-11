@@ -35,6 +35,7 @@ constexpr std::size_t k_maximumSourceInventoryFiles = 8192U;
 constexpr std::size_t k_maximumSourceInventoryBytes = 32U * 1024U * 1024U;
 constexpr std::uint64_t k_maximumSourceInputBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t k_maximumToolchainEvidenceBytes = 2ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumRuntimeMetadataBytes = 2ULL * 1024ULL * 1024ULL;
 /// @brief WindowsのExtended-length Path上限で128 Entryを直列化しても超えないCurrent読込上限
 constexpr std::uint64_t k_maximumCurrentManifestBytes = 32U * 1024U * 1024U;
 constexpr DWORD k_lockRetryMilliseconds = 10U;
@@ -1187,6 +1188,45 @@ template <typename Cancellation>
         cursor = end + 1U;
     }
     return value;
+}
+
+/// @brief 一意なCanonical JSON String行からEscapeなしの値を取得する
+[[nodiscard]] std::optional<std::string> unique_metadata_string_value(std::string_view a_text,
+                                                                      std::string_view a_prefix)
+{
+    std::optional<std::string> value = unique_line_value(a_text, a_prefix);
+    if (!value || value->size() < 2U || !value->ends_with("\","))
+    {
+        return std::nullopt;
+    }
+    value->resize(value->size() - 2U);
+    if (value->find('"') != std::string::npos || value->find('\\') != std::string::npos)
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// @brief Publisher生成Metadata v1のArtifactとProject Identityを厳格に取得する
+[[nodiscard]] std::optional<std::string> parse_runtime_metadata_project_id(
+    std::string_view a_text, const cue::BuildArtifactInventory &a_inventory)
+{
+    const std::optional<std::string> schema = unique_line_value(a_text, "    \"schemaVersion\": ");
+    const std::optional<std::string> artifact = unique_metadata_string_value(a_text, "    \"artifactId\": \"");
+    std::optional<std::string> project = unique_metadata_string_value(a_text, "    \"projectId\": \"");
+    if (!schema || *schema != "1," || !artifact || *artifact != a_inventory.artifact_id() || !project)
+    {
+        return std::nullopt;
+    }
+    if (a_inventory.profile().target() == cue::BuildTarget::ShippingProduct)
+    {
+        const std::optional<std::string> target = unique_metadata_string_value(a_text, "    \"target\": \"");
+        if (!target || *target != "ShippingProduct")
+        {
+            return std::nullopt;
+        }
+    }
+    return project;
 }
 
 /// @brief 一意なCMake Cache Entryの型に依存せず値を返す
@@ -2417,44 +2457,56 @@ enum class ArtifactProbeStatus : std::uint8_t
     return output;
 }
 
-/// @brief Current ManifestをRegular File Handleから上限付きで未変換読込する
-[[nodiscard]] cue::Result<std::string> read_current_manifest(const std::filesystem::path &a_path,
-                                                             const cue::AssertContext &a_assertContext) noexcept
+enum class ArtifactTextKind : std::uint8_t
+{
+    CurrentManifest,
+    RuntimeMetadata
+};
+
+/// @brief Artifact Text FileをRegular File Handleから種別別上限付きで未変換読込する
+[[nodiscard]] cue::Result<std::string> read_guarded_artifact_text(const std::filesystem::path &a_path,
+                                                                  std::uint64_t a_maximumBytes, ArtifactTextKind a_kind,
+                                                                  const cue::AssertContext &a_assertContext) noexcept
 {
     UniqueHandle file(CreateFileW(native_path(a_path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
                                   nullptr));
     if (!file.is_valid())
     {
-        return cue::Result<std::string>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-                               "Current artifact manifest could not be opened"));
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest could not be opened"
+                                                        : "Runtime Metadata could not be opened"));
     }
     BY_HANDLE_FILE_INFORMATION information{};
     if (GetFileInformationByHandle(file.get(), &information) == FALSE)
     {
-        return cue::Result<std::string>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-                               "Current artifact manifest attributes could not be read"));
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest attributes could not be read"
+                                                        : "Runtime Metadata attributes could not be read"));
     }
     if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
     {
-        return cue::Result<std::string>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
-                               ERROR_FILE_INVALID, "Current artifact manifest is not a regular file"));
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_INVALID,
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest is not a regular file"
+                                                        : "Runtime Metadata is not a regular file"));
     }
     LARGE_INTEGER size{};
     if (GetFileSizeEx(file.get(), &size) == FALSE)
     {
-        return cue::Result<std::string>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-                               "Current artifact manifest size could not be read"));
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest size could not be read"
+                                                        : "Runtime Metadata size could not be read"));
     }
-    if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > k_maximumCurrentManifestBytes)
+    if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > a_maximumBytes)
     {
-        return cue::Result<std::string>::failure(
-            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
-                               ERROR_FILE_TOO_LARGE, "Current artifact manifest size is invalid"));
+        return cue::Result<std::string>::failure(make_windows_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_TOO_LARGE,
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest size is invalid"
+                                                        : "Runtime Metadata size is invalid"));
     }
     std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
     std::size_t offset = 0U;
@@ -2465,13 +2517,87 @@ enum class ArtifactProbeStatus : std::uint8_t
         if (ReadFile(file.get(), bytes.data() + offset, request, &read, nullptr) == FALSE || read == 0U)
         {
             const DWORD code = read == 0U ? ERROR_HANDLE_EOF : GetLastError();
-            return cue::Result<std::string>::failure(
-                make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, code,
-                                   "Current artifact manifest could not be read"));
+            return cue::Result<std::string>::failure(make_windows_error(
+                a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, code,
+                a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest could not be read"
+                                                            : "Runtime Metadata could not be read"));
         }
         offset += read;
     }
     return cue::Result<std::string>::success(std::move(bytes));
+}
+
+/// @brief Current Manifestを上限付きで未変換読込する
+[[nodiscard]] cue::Result<std::string> read_current_manifest(const std::filesystem::path &a_path,
+                                                             const cue::AssertContext &a_assertContext) noexcept
+{
+    return read_guarded_artifact_text(a_path, k_maximumCurrentManifestBytes, ArtifactTextKind::CurrentManifest,
+                                      a_assertContext);
+}
+
+/// @brief Runtime Metadataの検証済みByte列からProject IDを取得する
+[[nodiscard]] cue::Result<std::string> read_runtime_metadata_project_id(
+    const std::filesystem::path &a_version, const cue::BuildArtifactInventory &a_inventory,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    const cue::BuildArtifactFile *metadata = nullptr;
+    for (const cue::BuildArtifactFile &file : a_inventory.files())
+    {
+        if (file.purpose != cue::BuildArtifactFilePurpose::RuntimeMetadata)
+        {
+            continue;
+        }
+        if (metadata != nullptr)
+        {
+            return cue::Result<std::string>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                           "Visible artifact contains multiple Runtime Metadata files"));
+        }
+        metadata = &file;
+    }
+    const std::optional<std::filesystem::path> relative =
+        metadata == nullptr ? std::nullopt : to_path(metadata->relativePath);
+    if (metadata == nullptr || !relative || metadata->byteSize == 0U ||
+        metadata->byteSize > k_maximumRuntimeMetadataBytes)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata is unavailable or outside the supported limit"));
+    }
+
+    cue::Result<std::string> bytes = read_guarded_artifact_text(a_version / *relative, k_maximumRuntimeMetadataBytes,
+                                                                ArtifactTextKind::RuntimeMetadata, a_assertContext);
+    if (!bytes)
+    {
+        return cue::Result<std::string>::failure(std::move(*bytes.try_error()));
+    }
+    cue::Result<std::string> hash = hash_bytes(*bytes.try_value(), a_assertContext);
+    if (!hash)
+    {
+        return cue::Result<std::string>::failure(std::move(*hash.try_error()));
+    }
+    if (bytes.try_value()->size() != metadata->byteSize || *hash.try_value() != metadata->contentHash)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata differs from its inventory"));
+    }
+
+    std::optional<std::string> projectId = parse_runtime_metadata_project_id(*bytes.try_value(), a_inventory);
+    if (!projectId)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata has no unique top-level Project identity"));
+    }
+    cue::Result<cue::ProjectId> parsed = cue::ProjectId::parse(*projectId, a_assertContext);
+    if (!parsed)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata Project identity is invalid"));
+    }
+    return cue::Result<std::string>::success(std::string(parsed.try_value()->text()));
 }
 
 /// @brief Current.jsonをSibling Temporary FileからAtomic Replaceする
@@ -2626,8 +2752,21 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
                     std::move(*verified.try_error()));
             }
-            std::unique_ptr<cue::BuildArtifactReadLease> lease =
-                std::make_unique<WindowsBuildArtifactReadLease>(std::move(**lock.try_value()), m_projectId);
+            cue::Result<std::string> artifactProjectId =
+                read_runtime_metadata_project_id(normalizedVersion, a_expected, *m_assertContext);
+            if (!artifactProjectId)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*artifactProjectId.try_error()));
+            }
+            if (*artifactProjectId.try_value() != m_projectId)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Visible artifact Project identity does not match the reader Project"));
+            }
+            std::unique_ptr<cue::BuildArtifactReadLease> lease = std::make_unique<WindowsBuildArtifactReadLease>(
+                std::move(**lock.try_value()), std::move(*artifactProjectId.try_value()));
             return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
                 std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>(std::move(lease)));
         }
