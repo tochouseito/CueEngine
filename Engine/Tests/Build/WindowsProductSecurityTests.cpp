@@ -265,6 +265,47 @@ void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_tar
     require(false);
 }
 
+/// @brief 非必須DIR64 Entryを指定必須RVAの重複Entryへ置換する
+void duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva,
+                                std::span<const std::uint32_t> a_requiredRvas)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    const std::size_t directoryOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    std::size_t cursor = 0U;
+    while (cursor < directory.Size)
+    {
+        IMAGE_BASE_RELOCATION block{};
+        std::memcpy(&block, a_bytes.data() + directoryOffset + cursor, sizeof(block));
+        require(block.SizeOfBlock >= sizeof(block) && block.SizeOfBlock <= directory.Size - cursor);
+        if (a_targetRva >= block.VirtualAddress && a_targetRva - block.VirtualAddress <= 0x0fffU)
+        {
+            const std::uint16_t duplicate = static_cast<std::uint16_t>(
+                (IMAGE_REL_BASED_DIR64 << 12U) | static_cast<std::uint16_t>(a_targetRva - block.VirtualAddress));
+            const std::size_t entryCount = (block.SizeOfBlock - sizeof(block)) / sizeof(std::uint16_t);
+            for (std::size_t index = 0U; index < entryCount; ++index)
+            {
+                const std::size_t entryOffset =
+                    directoryOffset + cursor + sizeof(block) + index * sizeof(std::uint16_t);
+                std::uint16_t entry = 0U;
+                std::memcpy(&entry, a_bytes.data() + entryOffset, sizeof(entry));
+                const std::uint32_t target = block.VirtualAddress + (entry & 0x0fffU);
+                const bool required = std::ranges::find(a_requiredRvas, target) != a_requiredRvas.end();
+                if ((entry >> 12U) == IMAGE_REL_BASED_DIR64 && !required)
+                {
+                    std::memcpy(a_bytes.data() + entryOffset, &duplicate, sizeof(duplicate));
+                    return;
+                }
+            }
+        }
+        cursor += block.SizeOfBlock;
+    }
+    require(false);
+}
+
 /// @brief Security Evidenceが参照する全絶対VA格納位置のRVAを返す
 [[nodiscard]] std::array<std::uint32_t, 5U> required_security_relocation_rvas(std::span<const std::byte> a_bytes)
 {
@@ -699,6 +740,13 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         require(!cue::validate_windows_shipping_product_security(missingSecurityRelocation.generic_string(),
                                                                  localProfile, a_assertContext));
     }
+
+    bytes = read_bytes(a_validProduct);
+    duplicate_dir64_relocation(bytes, requiredRelocations.front(), requiredRelocations);
+    const std::filesystem::path duplicateSecurityRelocation = directory / "DuplicateSecurityRelocation.exe";
+    write_bytes(duplicateSecurityRelocation, bytes);
+    require(!cue::validate_windows_shipping_product_security(duplicateSecurityRelocation.generic_string(), localProfile,
+                                                             a_assertContext));
 
     bytes = read_bytes(a_validProduct);
     cross_header_boundary_for_load_configuration(bytes);

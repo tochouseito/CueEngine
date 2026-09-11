@@ -536,8 +536,13 @@ template <typename Value>
                        "Shipping Product base relocation directory has no x64 relocation entry"));
     }
     std::ranges::sort(relocatedImagePointers);
-    relocatedImagePointers.erase(std::unique(relocatedImagePointers.begin(), relocatedImagePointers.end()),
-                                 relocatedImagePointers.end());
+    if (std::adjacent_find(relocatedImagePointers.begin(), relocatedImagePointers.end()) !=
+        relocatedImagePointers.end())
+    {
+        return cue::Result<std::vector<std::uint32_t>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product base relocation directory contains a duplicate target"));
+    }
     return cue::Result<std::vector<std::uint32_t>>::success(std::move(relocatedImagePointers));
 }
 
