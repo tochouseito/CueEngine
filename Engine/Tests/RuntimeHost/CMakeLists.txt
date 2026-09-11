@@ -1,4 +1,7 @@
 get_target_property(cueRuntimeHostLinks CueRuntimeHost LINK_LIBRARIES)
+get_target_property(cueRuntimeHostCoreLinks Cue.RuntimeHost.Core LINK_LIBRARIES)
+get_target_property(cueRuntimeHostStaticLinks Cue.RuntimeHost.Static LINK_LIBRARIES)
+get_target_property(cueRuntimeHostDynamicLinks Cue.RuntimeHost.Dynamic.Windows LINK_LIBRARIES)
 
 add_library(
     CueRuntimeHostRhiOwnershipCompile
@@ -25,6 +28,17 @@ target_compile_definitions(
         $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
 )
 set_target_properties(CueRuntimePackageProbe PROPERTIES OUTPUT_NAME CueGameModule)
+
+add_executable(CueRuntimeHostGameModuleQueryProviderTests GameModuleQueryProviderTests.cpp)
+target_link_libraries(CueRuntimeHostGameModuleQueryProviderTests PRIVATE Cue.RuntimeHost.Static)
+target_compile_features(CueRuntimeHostGameModuleQueryProviderTests PRIVATE cxx_std_20)
+target_compile_definitions(
+    CueRuntimeHostGameModuleQueryProviderTests
+    PRIVATE
+        $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+        $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+        $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+)
 
 add_executable(CueRuntimeHostPathTests RuntimePathTests.cpp)
 target_include_directories(
@@ -118,6 +132,17 @@ if(MSVC)
             $<$<CONFIG:Development>:/Zi>
     )
     target_compile_options(
+        CueRuntimeHostGameModuleQueryProviderTests
+        PRIVATE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+    )
+    target_compile_options(
         CueRuntimeHostModuleIdentityTests
         PRIVATE
             /W4
@@ -129,6 +154,7 @@ if(MSVC)
             $<$<CONFIG:Development>:/Zi>
     )
     target_link_options(CueRuntimeHostPathTests PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+    target_link_options(CueRuntimeHostGameModuleQueryProviderTests PRIVATE $<$<CONFIG:Development>:/DEBUG>)
     target_link_options(CueRuntimeHostModuleIdentityTests PRIVATE $<$<CONFIG:Development>:/DEBUG>)
 endif()
 
@@ -148,6 +174,7 @@ add_custom_target(
     DEPENDS
         CueRhiD3d12AdapterSelectionProcess
         CueRuntimeHost
+        CueRuntimeHostGameModuleQueryProviderTests
         CueRuntimePackageDependencyProbe
         CueRuntimePackageProbe
         CueRuntimeHostModuleIdentityTests
@@ -156,6 +183,7 @@ add_custom_target(
 )
 
 add_test(NAME Cue.RuntimeHost.PathUtf8 COMMAND CueRuntimeHostPathTests)
+add_test(NAME Cue.RuntimeHost.GameModuleQueryProvider COMMAND CueRuntimeHostGameModuleQueryProviderTests)
 
 add_test(
     NAME Cue.RuntimeHost.ModuleIdentity
@@ -298,6 +326,7 @@ set_tests_properties(
 
 set_tests_properties(
     Cue.RuntimeHost.Dependencies
+    Cue.RuntimeHost.GameModuleQueryProvider
     Cue.RuntimeHost.InitializationFailure
     Cue.RuntimeHost.InvalidModeCombination
     Cue.RuntimeHost.ModuleIdentity
