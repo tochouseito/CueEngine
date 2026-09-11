@@ -34,6 +34,7 @@ constexpr std::size_t k_sha256Bytes = 32U;
 constexpr std::size_t k_maximumSourceInventoryFiles = 8192U;
 constexpr std::size_t k_maximumSourceInventoryBytes = 32U * 1024U * 1024U;
 constexpr std::uint64_t k_maximumSourceInputBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumToolchainEvidenceBytes = 2ULL * 1024ULL * 1024ULL;
 /// @brief WindowsのExtended-length Path上限で128 Entryを直列化しても超えないCurrent読込上限
 constexpr std::uint64_t k_maximumCurrentManifestBytes = 32U * 1024U * 1024U;
 constexpr DWORD k_lockRetryMilliseconds = 10U;
@@ -71,6 +72,16 @@ struct ShippingBuildProvenance final
     std::string vcpkgBaselineHash;
 
     [[nodiscard]] bool operator==(const ShippingBuildProvenance &) const noexcept = default;
+};
+
+/// @brief Project Binary Treeから再検証した実使用Toolchain Identity
+struct ShippingToolchainIdentity final
+{
+    std::string cmakeVersion;
+    std::string cmakeGenerator;
+    std::string platformToolset;
+    std::string compilerSha256;
+    std::string windowsSdkVersion;
 };
 
 /// @brief Build PlanからTarget別Artifact Layoutを返す
@@ -1122,6 +1133,241 @@ template <typename Cancellation>
     return cue::Result<std::string>::success(std::move(hashText));
 }
 
+/// @brief Provenance検証用の小さいRegular Text Fileを上限付きで読む
+[[nodiscard]] cue::Result<std::string> read_toolchain_evidence_file(
+    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+{
+    std::error_code statusError;
+    const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, statusError);
+    std::error_code sizeError;
+    const std::uintmax_t byteSize = std::filesystem::file_size(a_path, sizeError);
+    if (statusError || sizeError || !std::filesystem::is_regular_file(status) || byteSize == 0U ||
+        byteSize > k_maximumToolchainEvidenceBytes)
+    {
+        return cue::Result<std::string>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping toolchain evidence is unavailable or outside the supported limit"));
+    }
+    std::ifstream input(a_path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(byteSize), '\0');
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!input || input.peek() != std::char_traits<char>::eof() || bytes.find('\0') != std::string::npos)
+    {
+        return cue::Result<std::string>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping toolchain evidence could not be read as bounded text"));
+    }
+    return cue::Result<std::string>::success(std::move(bytes));
+}
+
+/// @brief 一意な行Prefixに続く値を返す
+[[nodiscard]] std::optional<std::string> unique_line_value(std::string_view a_text,
+                                                           std::string_view a_prefix)
+{
+    std::optional<std::string> value;
+    std::size_t cursor = 0U;
+    while (cursor <= a_text.size())
+    {
+        const std::size_t end = a_text.find('\n', cursor);
+        std::string_view line = a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor
+                                                                                   : end - cursor);
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.remove_suffix(1U);
+        }
+        if (line.starts_with(a_prefix))
+        {
+            if (value)
+            {
+                return std::nullopt;
+            }
+            value.emplace(line.substr(a_prefix.size()));
+        }
+        if (end == std::string_view::npos)
+        {
+            break;
+        }
+        cursor = end + 1U;
+    }
+    return value;
+}
+
+/// @brief CMake Compiler設定の一意なquoted set値を返す
+[[nodiscard]] std::optional<std::string> unique_cmake_quoted_value(std::string_view a_text,
+                                                                   std::string_view a_variable)
+{
+    std::string prefix("set(");
+    prefix.append(a_variable);
+    prefix.append(" \"");
+    std::optional<std::string> value = unique_line_value(a_text, prefix);
+    constexpr std::string_view suffix = "\")";
+    if (!value || !std::string_view(*value).ends_with(suffix))
+    {
+        return std::nullopt;
+    }
+    value->resize(value->size() - suffix.size());
+    return value;
+}
+
+/// @brief XML内に一回以上現れる同一Tag値だけを返す
+[[nodiscard]] std::optional<std::string> uniform_xml_tag_value(std::string_view a_text,
+                                                               std::string_view a_tag)
+{
+    std::string opening("<");
+    opening.append(a_tag);
+    opening.push_back('>');
+    std::string closing("</");
+    closing.append(a_tag);
+    closing.push_back('>');
+    std::optional<std::string> value;
+    std::size_t cursor = 0U;
+    while ((cursor = a_text.find(opening, cursor)) != std::string_view::npos)
+    {
+        const std::size_t valueStart = cursor + opening.size();
+        const std::size_t valueEnd = a_text.find(closing, valueStart);
+        if (valueEnd == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        const std::string current(a_text.substr(valueStart, valueEnd - valueStart));
+        if (current.empty() || (value && *value != current))
+        {
+            return std::nullopt;
+        }
+        value = current;
+        cursor = valueEnd + closing.size();
+    }
+    return value;
+}
+
+/// @brief Build Tool VersionをCMakeの4要素表現へ変換する
+[[nodiscard]] std::string build_tool_version_text(const cue::BuildToolVersion &a_version)
+{
+    std::string output = std::to_string(a_version.major);
+    output.push_back('.');
+    output.append(std::to_string(a_version.minor));
+    output.push_back('.');
+    output.append(std::to_string(a_version.patch));
+    output.push_back('.');
+    output.append(std::to_string(a_version.build));
+    return output;
+}
+
+/// @brief Project Binary Treeが実際に選択したCMake、MSVC、Windows SDKを検証する
+[[nodiscard]] cue::Result<std::optional<ShippingToolchainIdentity>> collect_shipping_toolchain_identity(
+    const std::filesystem::path &a_binary, const cue::BuildPlan &a_plan,
+    const cue::ChildProcessCancellation &a_cancellation, const cue::AssertContext &a_assertContext) noexcept
+{
+    if (a_cancellation.is_cancel_requested())
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::success(std::nullopt);
+    }
+    cue::Result<std::string> cache = read_toolchain_evidence_file(a_binary / "CMakeCache.txt", a_assertContext);
+    if (!cache)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*cache.try_error()));
+    }
+    const std::optional<std::string> cmakeCommand =
+        unique_line_value(*cache.try_value(), "CMAKE_COMMAND:INTERNAL=");
+    const std::optional<std::string> cmakeMajor =
+        unique_line_value(*cache.try_value(), "CMAKE_CACHE_MAJOR_VERSION:INTERNAL=");
+    const std::optional<std::string> cmakeMinor =
+        unique_line_value(*cache.try_value(), "CMAKE_CACHE_MINOR_VERSION:INTERNAL=");
+    const std::optional<std::string> cmakePatch =
+        unique_line_value(*cache.try_value(), "CMAKE_CACHE_PATCH_VERSION:INTERNAL=");
+    const std::optional<std::string> generator =
+        unique_line_value(*cache.try_value(), "CMAKE_GENERATOR:INTERNAL=");
+    const std::optional<std::string> generatorInstance =
+        unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_INSTANCE:INTERNAL=");
+    const std::optional<std::string> generatorPlatform =
+        unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_PLATFORM:INTERNAL=");
+    if (!cmakeCommand || !cmakeMajor || !cmakeMinor || !cmakePatch || !generator || !generatorInstance ||
+        !generatorPlatform)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping CMake cache is missing required toolchain identity"));
+    }
+    const std::optional<std::filesystem::path> cmakePath = to_path(*cmakeCommand);
+    const std::optional<std::filesystem::path> visualStudioPath = to_path(*generatorInstance);
+    std::string cmakeVersion = *cmakeMajor + "." + *cmakeMinor + "." + *cmakePatch;
+    if (!cmakePath || !visualStudioPath || cmakeVersion != cue::build_metadata::k_cmakeVersion ||
+        *generator != cue::build_metadata::k_cmakeGenerator || *generatorPlatform != "x64" ||
+        !same_root(*cmakePath, cue::build_metadata::k_cmakeCommand) ||
+        !same_root(*visualStudioPath, cue::build_metadata::k_visualStudioRoot))
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping CMake selection differs from the Engine Build Plan"));
+    }
+
+    cue::Result<std::string> compilerEvidence = read_toolchain_evidence_file(
+        a_binary / "CMakeFiles" / cmakeVersion / "CMakeCXXCompiler.cmake", a_assertContext);
+    if (!compilerEvidence)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            std::move(*compilerEvidence.try_error()));
+    }
+    const std::optional<std::string> compiler =
+        unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER");
+    const std::optional<std::string> compilerVersion =
+        unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER_VERSION");
+    const std::optional<std::string> compilerArchitecture =
+        unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER_ARCHITECTURE_ID");
+    const std::optional<std::filesystem::path> compilerPath = compiler ? to_path(*compiler) : std::nullopt;
+    if (!compilerPath || !compilerVersion || !compilerArchitecture || *compilerArchitecture != "x64" ||
+        *compilerVersion != build_tool_version_text(a_plan.workspace_compatibility().toolsetVersion) ||
+        !same_root(*compilerPath, cue::build_metadata::k_msvcCompiler))
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping MSVC compiler differs from the Build Plan"));
+    }
+
+    cue::Result<std::string> project =
+        read_toolchain_evidence_file(a_binary / "CueGameProduct.vcxproj", a_assertContext);
+    if (!project)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*project.try_error()));
+    }
+    const std::optional<std::string> platformToolset =
+        uniform_xml_tag_value(*project.try_value(), "PlatformToolset");
+    const std::optional<std::string> windowsSdkVersion =
+        uniform_xml_tag_value(*project.try_value(), "WindowsTargetPlatformVersion");
+    const bool validPlatformToolset = platformToolset && platformToolset->size() <= 32U &&
+                                      std::all_of(platformToolset->begin(), platformToolset->end(), [](char a_value)
+                                                  { return (a_value >= '0' && a_value <= '9') ||
+                                                           (a_value >= 'A' && a_value <= 'Z') ||
+                                                           (a_value >= 'a' && a_value <= 'z') || a_value == '.' ||
+                                                           a_value == '_' || a_value == '-'; });
+    if (!validPlatformToolset || !windowsSdkVersion ||
+        *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping Visual Studio project differs from the selected Windows toolchain"));
+    }
+    cue::Result<cue::BuildArtifactFile> compilerHash =
+        hash_file(*compilerPath, "cl.exe", cue::BuildArtifactFilePurpose::Unspecified, a_assertContext);
+    if (!compilerHash)
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            std::move(*compilerHash.try_error()));
+    }
+    if (a_cancellation.is_cancel_requested())
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::success(std::nullopt);
+    }
+    ShippingToolchainIdentity identity;
+    identity.cmakeVersion = std::move(cmakeVersion);
+    identity.cmakeGenerator = std::move(*generator);
+    identity.platformToolset = std::move(*platformToolset);
+    identity.compilerSha256 = std::move(compilerHash.try_value()->contentHash);
+    identity.windowsSdkVersion = std::move(*windowsSdkVersion);
+    return cue::Result<std::optional<ShippingToolchainIdentity>>::success(
+        std::optional<ShippingToolchainIdentity>(std::move(identity)));
+}
+
 /// @brief 指定Root配下のBuild入力を決定的なPath、Size、Content Hash集合へ変換する
 [[nodiscard]] cue::Result<std::optional<SourceInventoryIdentity>> collect_source_inventory(
     const std::filesystem::path &a_root, std::span<const std::filesystem::path> a_directories,
@@ -1914,8 +2160,8 @@ enum class ArtifactProbeStatus : std::uint8_t
 [[nodiscard]] std::string serialize_product_metadata(
     std::string_view a_artifactId, std::string_view a_projectId,
     const cue::EngineCompatibility &a_compatibility, const cue::BuildPlan &a_plan,
-    const ShippingBuildProvenance &a_provenance, const cue::BuildArtifactFile &a_product,
-    const std::optional<cue::BuildArtifactFile> &a_symbol)
+    const ShippingBuildProvenance &a_provenance, const ShippingToolchainIdentity &a_toolchain,
+    const cue::BuildArtifactFile &a_product, const std::optional<cue::BuildArtifactFile> &a_symbol)
 {
     const cue::BuildToolVersion &toolsetVersion = a_plan.workspace_compatibility().toolsetVersion;
     const std::uint64_t compilerVersion =
@@ -1957,9 +2203,9 @@ enum class ArtifactProbeStatus : std::uint8_t
     output.append(",\n            \"sha256\": \"");
     output.append(a_provenance.gameSource.hash);
     output.append("\"\n        },\n        \"cmake\": {\n            \"version\": \"");
-    output.append(cue::build_metadata::k_cmakeVersion);
+    output.append(a_toolchain.cmakeVersion);
     output.append("\",\n            \"generator\": \"");
-    output.append(cue::build_metadata::k_cmakeGenerator);
+    output.append(a_toolchain.cmakeGenerator);
     output.append("\"\n        },\n        \"engineBuildPolicyVersion\": ");
     output.append(std::to_string(a_plan.workspace_compatibility().engineBuildPolicyVersion));
     output.append(",\n        \"msvcToolset\": {\n            \"compilerVersion\": ");
@@ -1968,8 +2214,12 @@ enum class ArtifactProbeStatus : std::uint8_t
     output.append(std::to_string(fullVersion));
     output.append(",\n            \"build\": ");
     output.append(std::to_string(toolsetVersion.build));
-    output.append("\n        },\n        \"windowsSdkVersion\": \"");
-    output.append(cue::build_metadata::k_windowsSdkVersion);
+    output.append("\n        },\n        \"platformToolset\": \"");
+    output.append(a_toolchain.platformToolset);
+    output.append("\",\n        \"compilerSha256\": \"");
+    output.append(a_toolchain.compilerSha256);
+    output.append("\",\n        \"windowsSdkVersion\": \"");
+    output.append(a_toolchain.windowsSdkVersion);
     output.append("\",\n        \"architecture\": \"x64\",\n        \"configuration\": \"Release\",\n"
                   "        \"vcpkgManifestSha256\": \"");
     output.append(a_provenance.vcpkgManifestHash);
@@ -2468,6 +2718,22 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*storeChain.try_error()));
             }
+            std::optional<ShippingToolchainIdentity> shippingToolchain;
+            if (isShippingProduct)
+            {
+                cue::Result<std::optional<ShippingToolchainIdentity>> collectedToolchain =
+                    collect_shipping_toolchain_identity(*binary, a_plan, a_cancellation, *m_assertContext);
+                if (!collectedToolchain)
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        std::move(*collectedToolchain.try_error()));
+                }
+                if (!collectedToolchain.try_value()->has_value())
+                {
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
+                }
+                shippingToolchain.emplace(std::move(**collectedToolchain.try_value()));
+            }
             cue::Result<void> candidateParentCreated = ensure_directory(
                 m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
                 *m_assertContext);
@@ -2641,7 +2907,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             const std::string metadata =
                 isShippingProduct
                     ? serialize_product_metadata(a_plan.operation_id(), m_projectId, m_compatibility, a_plan,
-                                                 *windowsLease->shipping_provenance(),
+                                                 *windowsLease->shipping_provenance(), *shippingToolchain,
                                                  *candidatePayloadHash.try_value(), candidatePdbHash)
                     : serialize_metadata(a_plan.operation_id(), m_projectId, m_compatibility,
                                          a_plan.profile().configuration(),
@@ -2780,6 +3046,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*inventory.try_error()));
+            }
+            if (a_cancellation.is_cancel_requested())
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
             }
             const std::string currentContent = serialize_current(*inventory.try_value());
             cue::Result<void> current = publish_current(store, a_plan.operation_id(), currentContent, *m_assertContext);

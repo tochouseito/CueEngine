@@ -248,8 +248,26 @@ ProvenanceはEngine Commitとclean状態、Game Source Inventory Hash、CMake Ve
 Windows SDK Version、Architecture、Configuration、Build Policy Version、vcpkg Manifest／Baseline Hashを記録する。
 Machine絶対Path、User名、Environment全体、Credentialは記録しない。
 
+Shipping PublisherはMetadataをEngine構成時の定数だけから組み立てない。Project Binary Treeの`CMakeCache.txt`、
+`CMakeFiles/<CMakeVersion>/CMakeCXXCompiler.cmake`、生成済み`CueGameProduct.vcxproj`を上限付きで読み、実際に選択された
+CMake実行File／Version／Generator／Visual Studio Instance、C++ Compiler／Version／Architecture、`PlatformToolset`、
+Windows SDK VersionをBuild PlanおよびEngine構成時の信頼済みIdentityと照合する。Compiler実体のSHA-256を含む照合済みの値だけを
+Metadataへ記録し、絶対Pathは記録しない。不一致、重複値、欠落、未知ArchitectureはArtifact公開前に拒否する。
+
+Artifact選択用`Current.json`のschema version 1は、M15のGameModule用旧形式として意味と読取互換性を維持する。
+version 1は`schemaVersion`、`artifactId`、`configuration`、`files`だけを持ち、File Entryに用途を持たない。
+version 2は`schemaVersion`、`artifactId`、`configuration`、`target`、`minimumTrustMode`、`publisherKeyId`、`files`を必須とし、
+各File Entryへ`purpose`を持つ。新規Publisherは常にversion 2を書き、Readerはversion 1をGameModuleにだけ許可する。
+Readerは旧Manifestを自動書換えせず、未知／重複／余分／欠落Memberを拒否し、読取後にFile用途を推測しない。
+
+この移行のため`BuildArtifactInventory`は完全な`BuildProfile`を値として所有し、公開`profile()`でTarget、Configuration、
+Trust Identityを返す。既存利用側向けの`configuration()`は互換Accessorとして`profile()`内のConfigurationを返す。
+これによりGameModuleのversion 1読取境界を限定したまま、ShippingProductのversion 2を同じReader Lease契約で扱う。
+
 PDBはArtifact Storeの開発側Symbol領域へ保持できるが、Package Publisherの入力Roleにしない。
-Candidate検証またはPublishが失敗した場合、以前の成功`Current.json`を変更しない。
+Candidate検証またはPublishが失敗した場合、以前の成功`Current.json`を変更しない。取消は`Current.json`のAtomic Replace直前まで
+受理する。Candidateを不変VersionへRenameした後に取消された場合は、以前の`Current.json`を保持し、公開済みだが未選択のVersionを
+後続Cleanup対象として残す。`Current.json`の置換が可視になった後は、呼出側の取消より可視状態の検証とDurability結果を優先する。
 
 ### Package Manifest Version 2
 

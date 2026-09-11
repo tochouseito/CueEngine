@@ -29,6 +29,9 @@
 namespace
 {
 constexpr std::string_view k_projectId = "41234567-89ab-4cde-8f01-23456789abcd";
+constexpr cue::BuildToolVersion k_currentCompilerVersion{
+    static_cast<std::uint32_t>(_MSC_VER / 100), static_cast<std::uint32_t>(_MSC_VER % 100),
+    static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
 
 /// @brief Junction用Mount Point Reparse BufferのNative Layoutを表す
 struct MountPointReparseBuffer final
@@ -230,6 +233,55 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
                                                            "00000000-0000-4000-8000-000000000099", a_assertContext));
 }
 
+/// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
+void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
+                                       std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION)
+{
+    const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
+    const std::size_t firstDot = cmakeVersion.find('.');
+    const std::size_t secondDot = cmakeVersion.find('.', firstDot + 1U);
+    require(firstDot != std::string::npos && secondDot != std::string::npos &&
+            cmakeVersion.find('.', secondDot + 1U) == std::string::npos);
+    std::string cache;
+    cache.append("CMAKE_COMMAND:INTERNAL=");
+    cache.append(CUE_TEST_CMAKE_COMMAND);
+    cache.append("\nCMAKE_CACHE_MAJOR_VERSION:INTERNAL=");
+    cache.append(cmakeVersion.substr(0U, firstDot));
+    cache.append("\nCMAKE_CACHE_MINOR_VERSION:INTERNAL=");
+    cache.append(cmakeVersion.substr(firstDot + 1U, secondDot - firstDot - 1U));
+    cache.append("\nCMAKE_CACHE_PATCH_VERSION:INTERNAL=");
+    cache.append(cmakeVersion.substr(secondDot + 1U));
+    cache.append("\nCMAKE_GENERATOR:INTERNAL=");
+    cache.append(CUE_TEST_CMAKE_GENERATOR);
+    cache.append("\nCMAKE_GENERATOR_INSTANCE:INTERNAL=");
+    cache.append(CUE_TEST_CMAKE_GENERATOR_INSTANCE);
+    cache.append("\nCMAKE_GENERATOR_PLATFORM:INTERNAL=x64\n");
+    write_text(a_binary / "CMakeCache.txt", cache);
+
+    const std::filesystem::path compilerDirectory = a_binary / "CMakeFiles" / cmakeVersion;
+    require(std::filesystem::create_directories(compilerDirectory) ||
+            std::filesystem::is_directory(compilerDirectory));
+    std::string compilerEvidence("set(CMAKE_CXX_COMPILER \"");
+    compilerEvidence.append(CUE_TEST_CXX_COMPILER);
+    compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_VERSION \"");
+    compilerEvidence.append(std::to_string(k_currentCompilerVersion.major));
+    compilerEvidence.push_back('.');
+    compilerEvidence.append(std::to_string(k_currentCompilerVersion.minor));
+    compilerEvidence.push_back('.');
+    compilerEvidence.append(std::to_string(k_currentCompilerVersion.patch));
+    compilerEvidence.push_back('.');
+    compilerEvidence.append(std::to_string(k_currentCompilerVersion.build));
+    compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_ARCHITECTURE_ID \"x64\")\n");
+    write_text(compilerDirectory / "CMakeCXXCompiler.cmake", compilerEvidence);
+
+    std::string project("<Project><PropertyGroup><WindowsTargetPlatformVersion>");
+    project.append(a_windowsSdkVersion);
+    project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
+    project.append(CUE_TEST_PLATFORM_TOOLSET);
+    project.append("</PlatformToolset></PropertyGroup></Project>\n");
+    write_text(a_binary / "CueGameProduct.vcxproj", project);
+}
+
 /// @brief Test用Build PlanをOperation ID別に構築する
 [[nodiscard]] cue::BuildPlan make_plan(const std::filesystem::path &a_projectRoot, std::string a_operationId,
                                        const cue::AssertContext &a_assertContext)
@@ -250,7 +302,7 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
     cue::BuildProfile profile = take_value(cue::BuildProfile::create_shipping_product(
         cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext));
     constexpr cue::BuildWorkspaceCompatibility compatibility{
-        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, {19U, 51U, 36256U, 0U}, 1U};
+        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
     return take_value(cue::create_build_plan(
         {generic_path(a_projectRoot), std::move(profile), std::move(a_operationId), compatibility}, a_assertContext));
 }
@@ -264,7 +316,7 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
         cue::BuildConfiguration::Release, cue::ShippingTrustMode::PublisherSigned, std::string(64U, 'a'),
         a_assertContext));
     constexpr cue::BuildWorkspaceCompatibility compatibility{
-        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, {19U, 51U, 36256U, 0U}, 1U};
+        cue::BuildGenerator::VisualStudio2026, cue::BuildArchitecture::X64, k_currentCompilerVersion, 1U};
     return take_value(cue::create_build_plan(
         {generic_path(a_projectRoot), std::move(profile), std::move(a_operationId), compatibility}, a_assertContext));
 }
@@ -596,9 +648,10 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
         cue::create_windows_build_artifact_publisher(generic_path(projectRoot), descriptor, a_assertContext));
     cue::BuildPlan plan =
         make_shipping_plan(projectRoot, "01234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
-    const std::filesystem::path output =
-        std::filesystem::path(plan.binary_directory()) / "bin" / "Release";
+    const std::filesystem::path binary(plan.binary_directory());
+    const std::filesystem::path output = binary / "bin" / "Release";
     require(std::filesystem::create_directories(output));
+    write_shipping_toolchain_evidence(binary);
     require(std::filesystem::copy_file(a_product, output / "CueGameProduct.exe"));
     {
         std::ofstream pdb(output / "CueGameProduct.pdb", std::ios::binary | std::ios::trunc);
@@ -638,6 +691,16 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
              metadata.find("\"engineSourceTreeState\": \"") != std::string::npos &&
              metadata.find("\"engineSourceInventory\": {") != std::string::npos &&
              metadata.find("\"gameSourceInventory\": {") != std::string::npos &&
+             metadata.find("\"cmake\": {") != std::string::npos &&
+             metadata.find("\"version\": \"" + std::string(CUE_TEST_CMAKE_VERSION) + "\"") !=
+                 std::string::npos &&
+             metadata.find("\"generator\": \"" + std::string(CUE_TEST_CMAKE_GENERATOR) + "\"") !=
+                 std::string::npos &&
+             metadata.find("\"platformToolset\": \"" + std::string(CUE_TEST_PLATFORM_TOOLSET) + "\"") !=
+                 std::string::npos &&
+             metadata.find("\"compilerSha256\": \"") != std::string::npos &&
+             metadata.find("\"windowsSdkVersion\": \"" + std::string(CUE_TEST_WINDOWS_SDK_VERSION) + "\"") !=
+                 std::string::npos &&
              metadata.find("\"vcpkgManifestSha256\": \"") != std::string::npos &&
              metadata.find("\"vcpkgBaselineSha256\": \"") != std::string::npos &&
              metadata.find(published->files()[0].contentHash) != std::string::npos);
@@ -671,6 +734,57 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     require(publishCancelled.has_value() && !publishCancelled.try_value()->has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(publishCancelledPlan.candidate_directory())));
+
+    cue::BuildPlan lateCancelledPlan =
+        make_shipping_plan(projectRoot, "a1234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto lateCancelledLease = take_value(
+        publisher->acquire_build_lease(lateCancelledPlan, cancellation, std::nullopt));
+    require(lateCancelledLease.has_value());
+    {
+        constexpr std::streamoff cancellationWindowBytes = 32LL * 1024LL * 1024LL;
+        std::ofstream pdb(output / "CueGameProduct.pdb", std::ios::binary | std::ios::trunc);
+        pdb.seekp(cancellationWindowBytes - 1LL);
+        pdb.put('\0');
+        require(static_cast<bool>(pdb));
+    }
+    using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
+    std::unique_ptr<PublishResult> lateCancelledResult;
+    cue::ChildProcessCancellation lateCancellation;
+    std::thread lateCancellationThread(
+        [&]()
+        {
+            lateCancelledResult = std::make_unique<PublishResult>(
+                publisher->publish(lateCancelledPlan, lateCancellation, std::move(*lateCancelledLease),
+                                   std::nullopt));
+        });
+    const std::filesystem::path lateVersion =
+        std::filesystem::path(lateCancelledPlan.artifact_store_directory()) / "Versions" /
+        std::string(lateCancelledPlan.operation_id());
+    for (std::size_t attempt = 0U; attempt < 5000U && !std::filesystem::exists(lateVersion); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(std::filesystem::exists(lateVersion));
+    lateCancellation.request_cancel();
+    lateCancellationThread.join();
+    require(lateCancelledResult != nullptr && lateCancelledResult->has_value() &&
+            !lateCancelledResult->try_value()->has_value());
+    require(read_text(currentPath) == current && std::filesystem::is_directory(lateVersion));
+    write_text(output / "CueGameProduct.pdb", "shipping-product-development-symbol");
+
+    cue::BuildPlan mismatchedToolchainPlan =
+        make_shipping_plan(projectRoot, "91234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
+    auto mismatchedToolchainLease = take_value(
+        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedToolchainLease.has_value());
+    write_shipping_toolchain_evidence(binary, "0.0.0.0");
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedToolchainLease),
+                           std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
 
     cue::BuildPlan changedSourcePlan =
         make_shipping_plan(projectRoot, "41234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
