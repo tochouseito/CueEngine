@@ -183,4 +183,5 @@ out/build/windows-vs2026/bin/Debug/CueProjectHubTool.exe
 - [M04 D3D12 Frame Infrastructure completion evidence](Docs/Milestones/M04-D3D12-Frame-Infrastructure.md)
 - [M05 Render Target Clear completion evidence](Docs/Milestones/M05-Render-Target-Clear.md)
 - [M16 Runtime Package contract](Docs/Decisions/0023-runtime-package-manifest-layout-contract.md)
+- [M17 Monolithic Shipping Build and Player Trust contract](Docs/Decisions/0024-monolithic-shipping-build-player-trust-contract.md)
 - [M16 First Usable Engine Workflow](Docs/Testing/M16-first-usable-engine-workflow.md)
