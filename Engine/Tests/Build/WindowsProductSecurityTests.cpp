@@ -322,6 +322,29 @@ void set_guard_function_table_entry(std::vector<std::byte> &a_bytes, std::size_t
     return static_cast<std::uint32_t>(functionTable - optional.ImageBase);
 }
 
+/// @brief Guard Function Table全体のByte Sizeを返す
+[[nodiscard]] std::size_t guard_function_table_size(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    ULONGLONG functionCount = 0U;
+    DWORD guardFlags = 0U;
+    std::memcpy(&functionCount,
+                a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount),
+                sizeof(functionCount));
+    std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                sizeof(guardFlags));
+    const std::size_t stride = sizeof(std::uint32_t) + ((guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >>
+                                                        IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT);
+    require(stride >= sizeof(std::uint32_t) && functionCount > 0U &&
+            functionCount <= std::numeric_limits<std::size_t>::max() / stride);
+    return static_cast<std::size_t>(functionCount) * stride;
+}
+
 /// @brief 指定RVAを対象とするDIR64再配置EntryをABSOLUTEへ置換する
 void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva)
 {
@@ -1000,6 +1023,25 @@ void test_product_security(const std::filesystem::path &a_validProduct,
             directory / ("RelocatedSecurityCookie-Offset" + std::to_string(offset) + ".exe");
         write_bytes(relocatedSecurityCookie, bytes);
         require(!cue::validate_windows_shipping_product_security(relocatedSecurityCookie.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
+
+    const std::uint32_t guardFunctionTableRva = guard_function_table_rva(bytes);
+    const std::size_t guardFunctionTableSize = guard_function_table_size(bytes);
+    require(guardFunctionTableRva >= 7U && guardFunctionTableSize > 1U &&
+            guardFunctionTableSize - 1U <= std::numeric_limits<std::uint32_t>::max() - guardFunctionTableRva);
+    const std::array<std::uint32_t, 5U> relocatedFunctionTableRvas = {
+        guardFunctionTableRva - 7U, guardFunctionTableRva - 1U, guardFunctionTableRva,
+        guardFunctionTableRva + static_cast<std::uint32_t>(guardFunctionTableSize / 2U),
+        guardFunctionTableRva + static_cast<std::uint32_t>(guardFunctionTableSize - 1U)};
+    for (std::size_t index = 0U; index < relocatedFunctionTableRvas.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, relocatedFunctionTableRvas[index]);
+        const std::filesystem::path relocatedFunctionTable =
+            directory / ("RelocatedGuardFunctionTable-" + std::to_string(index) + ".exe");
+        write_bytes(relocatedFunctionTable, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedFunctionTable.generic_string(), localProfile,
                                                                  a_assertContext));
     }
 
