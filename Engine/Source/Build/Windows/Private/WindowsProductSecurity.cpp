@@ -36,6 +36,7 @@ constexpr std::uint16_t k_requiredDllCharacteristics =
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_GUARD_CF;
 constexpr std::uint16_t k_requiredDependentLoadFlags = LOAD_LIBRARY_SEARCH_SYSTEM32;
 constexpr std::uint32_t k_cetCompatible = IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT;
+constexpr std::uint64_t k_msvcX64DefaultSecurityCookie = 0x00002B992DDFA232ULL;
 constexpr DWORD k_writableDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 constexpr DWORD k_readOnlyDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 constexpr DWORD k_executableCodeSection = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
@@ -457,6 +458,34 @@ template <typename Value>
            (a_range.sectionCharacteristics & a_forbidden) == 0U;
 }
 
+/// @brief CFG Function Tableの各RVAが厳密昇順かつ実行可能Code Sectionを指すか検証する
+[[nodiscard]] bool has_valid_guard_function_entries(std::span<const std::byte> a_bytes,
+                                                    const MappedImageFileRange &a_tableRange, std::size_t a_entryCount,
+                                                    std::size_t a_entryStride,
+                                                    const IMAGE_OPTIONAL_HEADER64 &a_optional,
+                                                    std::span<const IMAGE_SECTION_HEADER> a_sections) noexcept
+{
+    std::optional<std::uint32_t> previous;
+    for (std::size_t index = 0U; index < a_entryCount; ++index)
+    {
+        const std::optional<std::uint32_t> targetRva =
+            read_value<std::uint32_t>(a_bytes, a_tableRange.offset + index * a_entryStride);
+        if (!targetRva || *targetRva >= a_optional.SizeOfImage || (previous.has_value() && *targetRva <= *previous) ||
+            *targetRva > std::numeric_limits<std::uint64_t>::max() - a_optional.ImageBase)
+        {
+            return false;
+        }
+        const std::optional<MappedImageFileRange> targetRange =
+            mapped_image_va_range(a_optional.ImageBase + *targetRva, 1U, a_optional, a_sections, a_bytes.size());
+        if (!targetRange || !has_section_characteristics(*targetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE))
+        {
+            return false;
+        }
+        previous = targetRva;
+    }
+    return true;
+}
+
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
 [[nodiscard]] cue::Result<std::vector<std::uint32_t>> validate_base_relocations(
     std::span<const std::byte> a_bytes, const IMAGE_OPTIONAL_HEADER64 &a_optional,
@@ -477,6 +506,8 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product base relocation directory is outside the PE image"));
     }
+    const std::uint64_t relocationDirectoryStart = directory.VirtualAddress;
+    const std::uint64_t relocationDirectoryEnd = relocationDirectoryStart + directory.Size;
 
     std::size_t cursor = 0U;
     std::vector<std::uint32_t> relocatedImagePointers;
@@ -517,13 +548,17 @@ template <typename Value>
                                "Shipping Product uses a base relocation type outside the x64 policy"));
             }
             const std::uint64_t targetRva = static_cast<std::uint64_t>(block->VirtualAddress) + (*entry & 0x0fffU);
-            if (targetRva > std::numeric_limits<std::uint32_t>::max() ||
+            const bool overlapsRelocationDirectory =
+                targetRva < relocationDirectoryEnd && relocationDirectoryStart < targetRva + sizeof(std::uint64_t);
+            if (targetRva < a_optional.SizeOfHeaders || overlapsRelocationDirectory ||
+                targetRva > std::numeric_limits<std::uint32_t>::max() ||
                 !rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional, a_sections,
                                a_bytes.size()))
             {
                 return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                               "Shipping Product base relocation target is outside the PE image"));
+                               "Shipping Product base relocation target overlaps protected PE metadata or is outside "
+                               "the image"));
             }
             relocatedImagePointers.push_back(static_cast<std::uint32_t>(targetRva));
         }
@@ -594,22 +629,50 @@ template <typename Value>
     return result;
 }
 
+/// @brief Base Relocationの8-byte Targetと指定RVA範囲が重なるかを返す
+[[nodiscard]] bool has_relocation_overlap(std::span<const std::uint32_t> a_relocations,
+                                          const std::uint64_t a_rangeStart, const std::size_t a_rangeSize) noexcept
+{
+    if (a_rangeSize == 0U || a_rangeStart > std::numeric_limits<std::uint64_t>::max() - a_rangeSize)
+    {
+        return a_rangeSize != 0U;
+    }
+    const std::uint64_t rangeEnd = a_rangeStart + a_rangeSize;
+    return std::ranges::any_of(a_relocations,
+                               [a_rangeStart, rangeEnd](const std::uint32_t a_relocationRva) noexcept
+                               {
+                                   const std::uint64_t relocationStart = a_relocationRva;
+                                   return relocationStart < rangeEnd &&
+                                          a_rangeStart < relocationStart + sizeof(std::uint64_t);
+                               });
+}
+
 /// @brief 一LibraryのImport名とGame Module Loader API不在を検証する
 [[nodiscard]] cue::Result<void> validate_import_functions(std::span<const std::byte> a_bytes, std::uint32_t a_thunkRva,
+                                                          std::uint32_t a_firstThunkRva,
                                                           const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                                           std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                                          std::span<const std::uint32_t> a_relocations,
                                                           const cue::AssertContext &a_assertContext) noexcept
 {
     for (std::size_t index = 0U; index < k_maximumImportsPerLibrary; ++index)
     {
         const std::uint64_t thunkRva = static_cast<std::uint64_t>(a_thunkRva) + index * sizeof(IMAGE_THUNK_DATA64);
-        if (thunkRva > std::numeric_limits<std::uint32_t>::max())
+        const std::uint64_t firstThunkRva =
+            static_cast<std::uint64_t>(a_firstThunkRva) + index * sizeof(IMAGE_THUNK_DATA64);
+        if (thunkRva > std::numeric_limits<std::uint32_t>::max() ||
+            firstThunkRva > std::numeric_limits<std::uint32_t>::max())
         {
             break;
         }
         const std::optional<std::size_t> thunkOffset = rva_to_offset(
             static_cast<std::uint32_t>(thunkRva), sizeof(IMAGE_THUNK_DATA64), a_optional, a_sections, a_bytes.size());
-        if (!thunkOffset)
+        const std::optional<std::size_t> firstThunkOffset =
+            rva_to_offset(static_cast<std::uint32_t>(firstThunkRva), sizeof(IMAGE_THUNK_DATA64), a_optional, a_sections,
+                          a_bytes.size());
+        if (!thunkOffset || !firstThunkOffset ||
+            has_relocation_overlap(a_relocations, thunkRva, sizeof(IMAGE_THUNK_DATA64)) ||
+            has_relocation_overlap(a_relocations, firstThunkRva, sizeof(IMAGE_THUNK_DATA64)))
         {
             break;
         }
@@ -639,7 +702,7 @@ template <typename Value>
             nameRange && nameRange->size > sizeof(WORD)
                 ? read_ascii_string(a_bytes, nameRange->offset + sizeof(WORD), nameRange->size - sizeof(WORD))
                 : std::nullopt;
-        if (!name)
+        if (!name || has_relocation_overlap(a_relocations, thunk->u1.AddressOfData, sizeof(WORD) + name->size() + 1U))
         {
             return cue::Result<void>::failure(make_error(a_assertContext,
                                                          cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -661,6 +724,7 @@ template <typename Value>
 [[nodiscard]] cue::Result<std::vector<std::string>> validate_imports(std::span<const std::byte> a_bytes,
                                                                      const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                                                      std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                                                     std::span<const std::uint32_t> a_relocations,
                                                                      const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
@@ -677,6 +741,12 @@ template <typename Value>
         return cue::Result<std::vector<std::string>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product import directory is invalid"));
+    }
+    if (has_relocation_overlap(a_relocations, directory.VirtualAddress, directory.Size))
+    {
+        return cue::Result<std::vector<std::string>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product import directory overlaps a base relocation target"));
     }
     const std::size_t descriptorLimit = std::min(
         k_maximumImportDescriptors, static_cast<std::size_t>(directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR)));
@@ -699,7 +769,7 @@ template <typename Value>
             rva_to_file_range(descriptor->Name, a_optional, a_sections, a_bytes.size());
         const std::optional<std::string_view> name =
             nameRange ? read_ascii_string(a_bytes, nameRange->offset, nameRange->size) : std::nullopt;
-        if (!name)
+        if (!name || has_relocation_overlap(a_relocations, descriptor->Name, name->size() + 1U))
         {
             return cue::Result<std::vector<std::string>>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -714,8 +784,8 @@ template <typename Value>
         }
         const std::uint32_t thunkRva =
             descriptor->OriginalFirstThunk != 0U ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
-        cue::Result<void> functions =
-            validate_import_functions(a_bytes, thunkRva, a_optional, a_sections, a_assertContext);
+        cue::Result<void> functions = validate_import_functions(a_bytes, thunkRva, descriptor->FirstThunk, a_optional,
+                                                                a_sections, a_relocations, a_assertContext);
         if (!functions)
         {
             return cue::Result<std::vector<std::string>>::failure(std::move(*functions.try_error()));
@@ -731,6 +801,7 @@ template <typename Value>
 [[nodiscard]] cue::Result<void> validate_cet(std::span<const std::byte> a_bytes,
                                              const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                              std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                             std::span<const std::uint32_t> a_relocations,
                                              const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
@@ -748,6 +819,12 @@ template <typename Value>
         return cue::Result<void>::failure(make_error(a_assertContext,
                                                      cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                                      "Shipping Product debug directory is invalid"));
+    }
+    if (has_relocation_overlap(a_relocations, directory.VirtualAddress, directory.Size))
+    {
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product debug directory overlaps a base relocation target"));
     }
     const std::size_t count = directory.Size / sizeof(IMAGE_DEBUG_DIRECTORY);
     for (std::size_t index = 0U; index < count; ++index)
@@ -768,6 +845,12 @@ template <typename Value>
             return cue::Result<void>::failure(make_error(a_assertContext,
                                                          cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                                          "Shipping Product extended DLL characteristics are invalid"));
+        }
+        if (has_relocation_overlap(a_relocations, debug->AddressOfRawData, debug->SizeOfData))
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product extended DLL characteristics overlap a base relocation target"));
         }
         const std::optional<std::uint32_t> characteristics =
             read_value<std::uint32_t>(a_bytes, debug->PointerToRawData);
@@ -842,7 +925,13 @@ template <typename Value>
     }
 
     const IMAGE_DATA_DIRECTORY &loadDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
-    constexpr std::size_t requiredLoadConfigSize = offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD);
+    constexpr std::size_t requiredLoadConfigSize =
+        std::max({offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)});
     const std::optional<std::size_t> loadOffset =
         loadDirectory.VirtualAddress != 0U && loadDirectory.Size >= sizeof(DWORD)
             ? rva_to_offset(loadDirectory.VirtualAddress, sizeof(DWORD), *optional, sections, bytes.size())
@@ -872,6 +961,10 @@ template <typename Value>
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const std::optional<ULONGLONG> guardDispatch = read_value<ULONGLONG>(
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    const std::optional<ULONGLONG> guardFunctionTable = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
+    const std::optional<ULONGLONG> guardFunctionCount = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount));
     const std::optional<DWORD> guardFlags =
         read_value<DWORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     const std::optional<WORD> dependentLoadFlags =
@@ -885,6 +978,19 @@ template <typename Value>
     const std::optional<MappedImageFileRange> guardDispatchRange =
         guardDispatch ? mapped_image_va_range(*guardDispatch, sizeof(ULONGLONG), *optional, sections, bytes.size())
                       : std::nullopt;
+    const std::size_t guardFunctionTableStride =
+        guardFlags ? sizeof(std::uint32_t) + ((*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >>
+                                              IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT)
+                   : 0U;
+    const bool hasValidFunctionTableSize =
+        guardFunctionTable && guardFunctionCount && guardFunctionTableStride >= sizeof(std::uint32_t) &&
+        *guardFunctionCount <= std::numeric_limits<std::size_t>::max() / guardFunctionTableStride;
+    const std::size_t guardFunctionTableSize =
+        hasValidFunctionTableSize ? static_cast<std::size_t>(*guardFunctionCount) * guardFunctionTableStride : 0U;
+    const std::optional<MappedImageFileRange> guardFunctionTableRange =
+        guardFunctionTable && hasValidFunctionTableSize && *guardFunctionCount > 0U
+            ? mapped_image_va_range(*guardFunctionTable, guardFunctionTableSize, *optional, sections, bytes.size())
+            : std::nullopt;
     const std::optional<ULONGLONG> guardCheckTarget =
         guardCheckRange && has_section_characteristics(*guardCheckRange, k_readOnlyDataSection,
                                                        IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)
@@ -902,21 +1008,60 @@ template <typename Value>
         guardDispatchTarget ? mapped_image_va_range(*guardDispatchTarget, 1U, *optional, sections, bytes.size())
                             : std::nullopt;
     const bool hasMappedSecurityCookie =
-        securityCookieRange && has_section_characteristics(*securityCookieRange, k_writableDataSection,
-                                                           IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED);
+        securityCookieRange &&
+        has_section_characteristics(*securityCookieRange, k_writableDataSection,
+                                    IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED) &&
+        read_value<ULONGLONG>(bytes, securityCookieRange->offset) == k_msvcX64DefaultSecurityCookie;
+    const std::uint64_t securityCookieRva = securityCookie && *securityCookie >= optional->ImageBase
+                                                ? *securityCookie - optional->ImageBase
+                                                : std::numeric_limits<std::uint64_t>::max();
+    const auto hasNoRelocationOverlap =
+        [&relocations](const std::uint64_t a_rangeStart, const std::size_t a_rangeSize) noexcept
+    { return a_rangeSize != 0U && !has_relocation_overlap(*relocations.try_value(), a_rangeStart, a_rangeSize); };
+    const bool hasUnrelocatedSecurityCookie =
+        hasMappedSecurityCookie && hasNoRelocationOverlap(securityCookieRva, sizeof(ULONGLONG));
+    const std::uint64_t guardFunctionTableRva = guardFunctionTable && *guardFunctionTable >= optional->ImageBase
+                                                    ? *guardFunctionTable - optional->ImageBase
+                                                    : std::numeric_limits<std::uint64_t>::max();
+    const bool hasUnrelocatedFunctionTable =
+        guardFunctionTableRange && hasNoRelocationOverlap(guardFunctionTableRva, guardFunctionTableSize);
+    const std::array<std::pair<std::uint64_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size),
+                  sizeof(DWORD)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount),
+                  sizeof(ULONGLONG)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                  sizeof(DWORD)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags),
+                  sizeof(WORD)}};
+    const bool hasUnrelocatedLoadConfigurationControls = std::ranges::all_of(
+        unrelocatedLoadConfigurationControls, [&hasNoRelocationOverlap](const auto &a_range) noexcept
+        { return hasNoRelocationOverlap(a_range.first, a_range.second); });
     const bool hasMappedGuardCheck =
         guardCheckTargetRange &&
         has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
     const bool hasMappedGuardDispatch =
         guardDispatchTargetRange &&
         has_section_characteristics(*guardDispatchTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
-    const std::array<std::uint64_t, 5U> requiredRelocations = {
+    const bool hasMappedFunctionTable =
+        guardFunctionTableRange &&
+        has_section_characteristics(*guardFunctionTableRange, k_readOnlyDataSection,
+                                    IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE) &&
+        has_valid_guard_function_entries(bytes, *guardFunctionTableRange, static_cast<std::size_t>(*guardFunctionCount),
+                                         guardFunctionTableStride, *optional, sections);
+    const std::array<std::uint64_t, 6U> requiredRelocations = {
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer),
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable),
         guardCheck && *guardCheck >= optional->ImageBase ? *guardCheck - optional->ImageBase
                                                          : std::numeric_limits<std::uint64_t>::max(),
         guardDispatch && *guardDispatch >= optional->ImageBase ? *guardDispatch - optional->ImageBase
@@ -928,7 +1073,9 @@ template <typename Value>
             return a_rva <= std::numeric_limits<std::uint32_t>::max() &&
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
-    if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+    if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasUnrelocatedLoadConfigurationControls ||
+        !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+        (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
     {
@@ -943,12 +1090,13 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product delay imports are not allowed by the M17 policy"));
     }
-    cue::Result<std::vector<std::string>> imports = validate_imports(bytes, *optional, sections, a_assertContext);
+    cue::Result<std::vector<std::string>> imports =
+        validate_imports(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!imports)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*imports.try_error()));
     }
-    cue::Result<void> cet = validate_cet(bytes, *optional, sections, a_assertContext);
+    cue::Result<void> cet = validate_cet(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!cet)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*cet.try_error()));
@@ -988,13 +1136,18 @@ class WinTrustState final
 };
 
 /// @brief WinTrust失敗Codeを安定した署名状態へ分類する
-[[nodiscard]] cue::WindowsProductSignatureStatus classify_trust_status(LONG a_status) noexcept
+[[nodiscard]] cue::WindowsProductSignatureStatus classify_trust_status(LONG a_status, DWORD a_lastError) noexcept
 {
     switch (a_status)
     {
     case ERROR_SUCCESS:
         return cue::WindowsProductSignatureStatus::Trusted;
     case TRUST_E_NOSIGNATURE:
+        if (a_lastError == static_cast<DWORD>(TRUST_E_PROVIDER_UNKNOWN) ||
+            a_lastError == static_cast<DWORD>(TRUST_E_SUBJECT_FORM_UNKNOWN))
+        {
+            return cue::WindowsProductSignatureStatus::VerificationUnavailable;
+        }
         return cue::WindowsProductSignatureStatus::Unsigned;
     case TRUST_E_BAD_DIGEST:
     case NTE_BAD_SIGNATURE:
@@ -1126,10 +1279,12 @@ class WinTrustState final
     data.dwUIContext = WTD_UICONTEXT_EXECUTE;
 
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    SetLastError(ERROR_SUCCESS);
     const LONG status = WinVerifyTrust(nullptr, &action, &data);
+    const DWORD trustLastError = GetLastError();
     WinTrustState state(data);
     cue::WindowsProductTrustEvidence evidence;
-    evidence.signatureStatus = classify_trust_status(status);
+    evidence.signatureStatus = classify_trust_status(status, trustLastError);
     if (status != ERROR_SUCCESS)
     {
         return cue::Result<cue::WindowsProductTrustEvidence>::success(std::move(evidence));
@@ -1191,9 +1346,10 @@ WindowsProductSecurityValidation WindowsProductSecuritySnapshot::take_validation
     return std::move(m_state->validation);
 }
 
-WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status) noexcept
+WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status,
+                                                                    std::uint32_t a_lastError) noexcept
 {
-    return classify_trust_status(static_cast<LONG>(a_status));
+    return classify_trust_status(static_cast<LONG>(a_status), static_cast<DWORD>(a_lastError));
 }
 
 Result<WindowsProductSecuritySnapshot> validate_windows_shipping_product_security_snapshot(

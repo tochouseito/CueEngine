@@ -69,8 +69,9 @@ class WindowsProductSecuritySnapshot final
 [[nodiscard]] Result<WindowsProductSecuritySnapshot> validate_windows_shipping_product_security_snapshot(
     std::string a_absoluteProductPath, const BuildProfile &a_profile, const AssertContext &a_assertContext) noexcept;
 
-/// @brief WinVerifyTrust Statusを署名状態へ副作用なしで分類する
-[[nodiscard]] WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status) noexcept;
+/// @brief WinVerifyTrust Statusと直後のLastErrorを署名状態へ副作用なしで分類する
+[[nodiscard]] WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status,
+                                                                                  std::uint32_t a_lastError) noexcept;
 
 /// @brief Security Snapshot Observerを借用するTest用Windows Artifact Publisherを構築する
 [[nodiscard]] Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_publisher_for_test(
