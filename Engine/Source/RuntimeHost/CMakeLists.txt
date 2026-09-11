@@ -1,49 +1,110 @@
-add_executable(CueRuntimeHost)
+function(cue_configure_runtime_host_library targetName)
+    target_compile_features(${targetName} PUBLIC cxx_std_20)
+    target_compile_definitions(
+        ${targetName}
+        PRIVATE
+            $<$<CONFIG:Debug>:CUE_RUNTIME_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_RUNTIME_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_RUNTIME_BUILD_CONFIGURATION=3>
+    )
+    set_target_properties(
+        ${targetName}
+        PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>"
+            CXX_EXTENSIONS OFF
+    )
+    if(MSVC)
+        target_compile_options(
+            ${targetName}
+            PRIVATE
+                /W4
+                /WX
+                /permissive-
+                /Zc:__cplusplus
+                /utf-8
+                $<$<CONFIG:Development>:/O2>
+                $<$<CONFIG:Development>:/Zi>
+        )
+        target_link_options(${targetName} PRIVATE $<$<CONFIG:Development>:/DEBUG>)
+    endif()
+endfunction()
 
+add_library(Cue.RuntimeHost.Core STATIC)
 target_sources(
-    CueRuntimeHost
+    Cue.RuntimeHost.Core
     PRIVATE
-        Main.cpp
+        GameModuleQueryProvider.cpp
         RuntimeHostApplication.cpp
-        RuntimeHostApplication.h
-        RuntimeModuleIdentity.cpp
-        RuntimeModuleIdentity.h
-        RuntimePackage.cpp
-        RuntimePackage.h
-        RuntimePath.h
+        RuntimeHostProcess.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS Public
+        FILES
+            Public/Cue/RuntimeHost/GameModuleQueryProvider.h
+            Public/Cue/RuntimeHost/RuntimeHostApplication.h
+            Public/Cue/RuntimeHost/RuntimeHostProcess.h
+            Public/Cue/RuntimeHost/RuntimeHostStartup.h
 )
-
 target_link_libraries(
-    CueRuntimeHost
-    PRIVATE
+    Cue.RuntimeHost.Core
+    PUBLIC
         Cue.Foundation
         Cue.GameCore
         Cue.GameModule.Abi
         Cue.Input.Windows
-        Cue.IO.Windows
-        Cue.Package
         Cue.Platform.Windows
         Cue.RHI.D3D12.Windows
         Cue.Runtime
         Cue.Scene
         Cue.Schema
 )
+target_include_directories(Cue.RuntimeHost.Core PUBLIC Public)
+cue_configure_runtime_host_library(Cue.RuntimeHost.Core)
+
+add_library(Cue.RuntimeHost.Static STATIC StaticGameModuleQueryProvider.cpp)
+target_link_libraries(Cue.RuntimeHost.Static PUBLIC Cue.RuntimeHost.Core)
+cue_configure_runtime_host_library(Cue.RuntimeHost.Static)
+
+add_library(Cue.RuntimeHost.Dynamic.Windows STATIC)
+target_sources(
+    Cue.RuntimeHost.Dynamic.Windows
+    PRIVATE
+        RuntimeModuleIdentity.cpp
+        RuntimeModuleIdentity.h
+        RuntimePackage.cpp
+        RuntimePackage.h
+        RuntimePath.h
+)
+target_link_libraries(
+    Cue.RuntimeHost.Dynamic.Windows
+    PUBLIC
+        Cue.RuntimeHost.Core
+    PRIVATE
+        Cue.IO.Windows
+        Cue.Package
+)
+cue_configure_runtime_host_library(Cue.RuntimeHost.Dynamic.Windows)
+
+add_executable(CueRuntimeHost Main.cpp)
+target_link_libraries(
+    CueRuntimeHost
+    PRIVATE
+        Cue.RuntimeHost.Core
+        Cue.RuntimeHost.Dynamic.Windows
+)
 target_compile_features(CueRuntimeHost PRIVATE cxx_std_20)
 
 if(BUILD_TESTING)
-    target_link_libraries(CueRuntimeHost PRIVATE Cue.Platform.Windows.TestSupport)
-    target_compile_definitions(CueRuntimeHost PRIVATE CUE_RUNTIME_RESIZE_SMOKE_SUPPORT=1)
+    target_link_libraries(Cue.RuntimeHost.Core PRIVATE Cue.Platform.Windows.TestSupport)
+    target_compile_definitions(Cue.RuntimeHost.Core PRIVATE CUE_RUNTIME_RESIZE_SMOKE_SUPPORT=1)
 endif()
 
 target_compile_definitions(
-    CueRuntimeHost
+    Cue.RuntimeHost.Core
     PRIVATE
         $<$<CONFIG:Debug>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=1>
-        $<$<CONFIG:Debug>:CUE_RUNTIME_BUILD_CONFIGURATION=1>
         $<$<CONFIG:Development>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=1>
-        $<$<CONFIG:Development>:CUE_RUNTIME_BUILD_CONFIGURATION=2>
         $<$<CONFIG:Release>:CUE_RUNTIME_GRAPHICS_DIAGNOSTICS_DEFAULT=0>
-        $<$<CONFIG:Release>:CUE_RUNTIME_BUILD_CONFIGURATION=3>
 )
 
 set_target_properties(
@@ -65,7 +126,6 @@ if(MSVC)
             $<$<CONFIG:Development>:/O2>
             $<$<CONFIG:Development>:/Zi>
     )
-
     target_link_options(
         CueRuntimeHost
         PRIVATE

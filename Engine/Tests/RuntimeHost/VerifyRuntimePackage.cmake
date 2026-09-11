@@ -187,7 +187,8 @@ execute_process(
 set(reservedApiCombined "${reservedApiOutput}\n${reservedApiError}")
 string(FIND "${reservedApiCombined}" "Game Module API identity or lifecycle is incompatible"
     reservedApiMessagePosition)
-if(reservedApiResult EQUAL 0 OR reservedApiMessagePosition EQUAL -1)
+string(FIND "${reservedApiCombined}" "Error: Cue.Package/5" reservedApiDomainPosition)
+if(reservedApiResult EQUAL 0 OR reservedApiMessagePosition EQUAL -1 OR reservedApiDomainPosition EQUAL -1)
     message(FATAL_ERROR "Non-zero Game Module API reserved tail was accepted\n${reservedApiCombined}")
 endif()
 
@@ -202,7 +203,8 @@ execute_process(
 )
 set(reservedQueryCombined "${reservedQueryOutput}\n${reservedQueryError}")
 string(FIND "${reservedQueryCombined}" "Game Module rejected the RuntimeHost ABI" reservedQueryMessagePosition)
-if(reservedQueryResult EQUAL 0 OR reservedQueryMessagePosition EQUAL -1)
+string(FIND "${reservedQueryCombined}" "Error: Cue.Package/5" reservedQueryDomainPosition)
+if(reservedQueryResult EQUAL 0 OR reservedQueryMessagePosition EQUAL -1 OR reservedQueryDomainPosition EQUAL -1)
     message(FATAL_ERROR "Non-zero Game Module Query Output reserved field was accepted\n${reservedQueryCombined}")
 endif()
 

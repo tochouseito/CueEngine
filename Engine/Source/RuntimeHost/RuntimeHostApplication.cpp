@@ -1,6 +1,4 @@
-#include "RuntimeHostApplication.h"
-
-#include "RuntimePackage.h"
+#include <Cue/RuntimeHost/RuntimeHostApplication.h>
 
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
@@ -10,12 +8,12 @@
 #include <Cue/Platform/Windows/WindowsMessageSink.h>
 #include <Cue/Runtime/Error.h>
 #include <Cue/Runtime/RuntimeSchema.h>
+#include <Cue/RuntimeHost/GameModuleQueryProvider.h>
 #include <Cue/Scene/Instantiation.h>
 #include <Cue/Schema/Registry.h>
 
 #include <exception>
 #include <new>
-#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -68,52 +66,53 @@ class RuntimeHostApplication::State final
 
     Window *window;
     const AssertContext *assertContext;
-    schema::SchemaRegistryIdentitySource schemaIdentitySource;
     game_core::WorldIdentitySource worldIdentitySource;
     game_core::SteadyMonotonicClock clock;
-    std::shared_ptr<RuntimePackageModule> gameModule;
+    std::shared_ptr<GameModuleConnection> gameModule;
+    std::unique_ptr<schema::SchemaRegistryIdentitySource> schemaIdentitySource;
     std::unique_ptr<schema::SchemaRegistry> schemaRegistry;
     std::unique_ptr<runtime::RuntimeApplicationSession> session;
     std::unique_ptr<WindowsInputMessageSink> inputSink;
     bool isInputSinkAttached = false;
 };
 
+Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start_fixed_smoke(
+    Window &a_window, const AssertContext &a_assertContext) noexcept
+{
+    auto identitySource = std::make_unique<schema::SchemaRegistryIdentitySource>();
+    Result<std::unique_ptr<schema::SchemaRegistry>> registry =
+        make_schema_registry(*identitySource, a_assertContext);
+    if (!registry)
+    {
+        return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registry.try_error()));
+    }
+    Result<scene::SceneSnapshot> snapshot = make_startup_scene(a_assertContext);
+    if (!snapshot)
+    {
+        return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*snapshot.try_error()));
+    }
+    return start(a_window,
+                 RuntimeHostStartup(nullptr, std::move(identitySource), std::move(*registry.try_value()),
+                                    std::move(*snapshot.try_value()), {}),
+                 a_assertContext);
+}
+
 Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
-    Window &a_window, RuntimeHostStartupSource a_source, const AssertContext &a_assertContext) noexcept
+    Window &a_window, RuntimeHostStartup a_startup, const AssertContext &a_assertContext) noexcept
 {
     try
     {
         std::unique_ptr<State> state = std::make_unique<State>(a_window, a_assertContext);
-        std::optional<scene::SceneSnapshot> startupSnapshot;
-        std::vector<runtime::RuntimeSystemRegistration> systems;
-        if (a_source == RuntimeHostStartupSource::ExecutableRelativePackage)
+        std::vector<runtime::RuntimeSystemRegistration> systems = a_startup.take_systems();
+        state->gameModule = a_startup.take_game_module();
+        state->schemaIdentitySource = a_startup.take_schema_identity_source();
+        state->schemaRegistry = a_startup.take_schema_registry();
+        scene::SceneSnapshot startupSnapshot = a_startup.take_startup_scene();
+        if (!state->schemaIdentitySource || !state->schemaRegistry)
         {
-            Result<LoadedRuntimePackage> package =
-                load_runtime_package(state->schemaIdentitySource, a_assertContext);
-            if (!package)
-            {
-                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*package.try_error()));
-            }
-            systems = package.try_value()->take_systems();
-            state->gameModule = package.try_value()->take_module();
-            state->schemaRegistry = package.try_value()->take_schema_registry();
-            startupSnapshot.emplace(package.try_value()->take_startup_scene());
-        }
-        else
-        {
-            Result<std::unique_ptr<schema::SchemaRegistry>> registry =
-                make_schema_registry(state->schemaIdentitySource, a_assertContext);
-            if (!registry)
-            {
-                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registry.try_error()));
-            }
-            state->schemaRegistry = std::move(*registry.try_value());
-            Result<scene::SceneSnapshot> snapshot = make_startup_scene(a_assertContext);
-            if (!snapshot)
-            {
-                return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*snapshot.try_error()));
-            }
-            startupSnapshot.emplace(std::move(*snapshot.try_value()));
+            return Result<std::unique_ptr<RuntimeHostApplication>>::failure(runtime::make_runtime_error(
+                a_assertContext, runtime::RuntimeError::InvalidApplicationConfiguration,
+                "Runtime Host startup is missing its Schema Registry"));
         }
 
         Result<std::unique_ptr<runtime::RuntimeApplicationSession>> session =
@@ -161,7 +160,7 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
         }
 
         Result<void> started = application->m_state->session->start(
-            *startupSnapshot, application->m_state->worldIdentitySource, *application->m_state->schemaRegistry,
+            startupSnapshot, application->m_state->worldIdentitySource, *application->m_state->schemaRegistry,
             std::move(schemaTypeIds.try_value()->transform), std::move(schemaTypeIds.try_value()->sceneObjectState));
         if (!started)
         {

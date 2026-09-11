@@ -11,9 +11,14 @@ file(STRINGS "${REPORT_FILE}" dependencyReportLines)
 foreach(
     requiredLine
     IN ITEMS
-        "CueRuntimeHost LINK_LIBRARIES: Cue.Foundation;Cue.GameCore;Cue.GameModule.Abi;Cue.Input.Windows;Cue.IO.Windows;Cue.Package;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema;Cue.Platform.Windows.TestSupport"
-        "Allowed direct dependencies: Cue.Foundation;Cue.GameCore;Cue.GameModule.Abi;Cue.Input.Windows;Cue.IO.Windows;Cue.Package;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema"
-        "Testing-only direct dependency: Cue.Platform.Windows.TestSupport"
+        "CueRuntimeHost LINK_LIBRARIES: Cue.RuntimeHost.Core;Cue.RuntimeHost.Dynamic.Windows"
+        "Cue.RuntimeHost.Core LINK_LIBRARIES: Cue.Foundation;Cue.GameCore;Cue.GameModule.Abi;Cue.Input.Windows;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema;Cue.Platform.Windows.TestSupport"
+        "Cue.RuntimeHost.Static LINK_LIBRARIES: Cue.RuntimeHost.Core"
+        "Cue.RuntimeHost.Dynamic.Windows LINK_LIBRARIES: Cue.RuntimeHost.Core;Cue.IO.Windows;Cue.Package"
+        "Core must not link: Cue.RuntimeHost.Dynamic.Windows;Cue.IO.Windows;Cue.Package"
+        "Static must link only: Cue.RuntimeHost.Core"
+        "Process implementation target: Cue.RuntimeHost.Core"
+        "Testing-only Core dependency: Cue.Platform.Windows.TestSupport"
         "Forbidden source dependencies: D3D12NativeTypes;Renderer;Editor;ProjectFiles;ECS"
 )
     cue_require_report_line(
@@ -21,6 +26,21 @@ foreach(
         "${requiredLine}"
         "Runtime Host dependency report is missing an exact line: "
     )
+endforeach()
+
+foreach(
+    loaderFreeSource
+    IN ITEMS
+        "${RUNTIME_HOST_SOURCE_DIR}/GameModuleQueryProvider.cpp"
+        "${RUNTIME_HOST_SOURCE_DIR}/RuntimeHostApplication.cpp"
+        "${RUNTIME_HOST_SOURCE_DIR}/RuntimeHostProcess.cpp"
+        "${RUNTIME_HOST_SOURCE_DIR}/StaticGameModuleQueryProvider.cpp"
+)
+    file(READ "${loaderFreeSource}" loaderFreeContents)
+    string(REGEX MATCH "LoadLibraryExW|GetProcAddress|FreeLibrary" loaderReference "${loaderFreeContents}")
+    if(loaderReference)
+        message(FATAL_ERROR "Runtime Host Core or Static source references a Dynamic Loader API: ${loaderFreeSource}")
+    endif()
 endforeach()
 
 file(
