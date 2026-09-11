@@ -235,7 +235,8 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
 
 /// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
 void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
-                                       std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION)
+                                       std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
+                                       std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET)
 {
     const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
     const std::size_t firstDot = cmakeVersion.find('.');
@@ -277,7 +278,7 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     std::string project("<Project><PropertyGroup><WindowsTargetPlatformVersion>");
     project.append(a_windowsSdkVersion);
     project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
-    project.append(CUE_TEST_PLATFORM_TOOLSET);
+    project.append(a_platformToolset);
     project.append("</PlatformToolset></PropertyGroup></Project>\n");
     write_text(a_binary / "CueGameProduct.vcxproj", project);
 }
@@ -780,6 +781,17 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     write_shipping_toolchain_evidence(binary, "0.0.0.0");
     require(!publisher
                  ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedToolchainLease),
+                           std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
+    auto mismatchedPlatformToolsetLease = take_value(
+        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedPlatformToolsetLease.has_value());
+    write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, "v999");
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedPlatformToolsetLease),
                            std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&

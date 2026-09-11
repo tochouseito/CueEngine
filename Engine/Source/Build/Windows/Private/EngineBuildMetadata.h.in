@@ -15,6 +15,7 @@ inline constexpr std::string_view k_visualStudioRoot = "@cueBuildVisualStudioRoo
 inline constexpr std::string_view k_visualStudioMsbuild = "@cueBuildVisualStudioMsbuild@";
 inline constexpr std::uint32_t k_visualStudioMajor = @cueBuildVisualStudioMajor@U;
 inline constexpr std::string_view k_msvcCompiler = "@cueBuildMsvcCompiler@";
+inline constexpr std::string_view k_platformToolset = "@cueBuildPlatformToolset@";
 inline constexpr std::string_view k_windowsSdkVersion = "@cueBuildWindowsSdkVersion@";
 inline constexpr std::string_view k_windowsSdkRoot = "@cueBuildWindowsSdkRoot@";
 inline constexpr std::string_view k_engineSourceRoot = "@cueBuildEngineSourceRoot@";

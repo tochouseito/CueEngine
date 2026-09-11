@@ -28,6 +28,7 @@ set(cueBuildVisualStudioRootValue "${CMAKE_MATCH_1}")
 cue_escape_cpp_string(cueBuildVisualStudioRoot "${cueBuildVisualStudioRootValue}")
 cue_escape_cpp_string(cueBuildVisualStudioMsbuild "${cueBuildVisualStudioMsbuildValue}")
 cue_escape_cpp_string(cueBuildMsvcCompiler "${CMAKE_CXX_COMPILER}")
+cue_escape_cpp_string(cueBuildPlatformToolset "${CMAKE_VS_PLATFORM_TOOLSET}")
 cue_escape_cpp_string(cueBuildWindowsSdkVersion "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
 
 if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR} AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")

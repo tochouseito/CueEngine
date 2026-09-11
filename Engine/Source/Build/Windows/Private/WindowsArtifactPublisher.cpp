@@ -1340,7 +1340,7 @@ template <typename Cancellation>
                                                            (a_value >= 'A' && a_value <= 'Z') ||
                                                            (a_value >= 'a' && a_value <= 'z') || a_value == '.' ||
                                                            a_value == '_' || a_value == '-'; });
-    if (!validPlatformToolset || !windowsSdkVersion ||
+    if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset || !windowsSdkVersion ||
         *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
@@ -2373,8 +2373,9 @@ enum class ArtifactProbeStatus : std::uint8_t
 }
 
 /// @brief Current.jsonをSibling Temporary FileからAtomic Replaceする
-[[nodiscard]] cue::Result<void> publish_current(const std::filesystem::path &a_store, std::string_view a_operationId,
+[[nodiscard]] cue::Result<bool> publish_current(const std::filesystem::path &a_store, std::string_view a_operationId,
                                                 std::string_view a_content,
+                                                const cue::ChildProcessCancellation &a_cancellation,
                                                 const cue::AssertContext &a_assertContext) noexcept
 {
     const std::filesystem::path temporary = a_store / (".Current-" + std::string(a_operationId) + ".tmp");
@@ -2383,7 +2384,17 @@ enum class ArtifactProbeStatus : std::uint8_t
         write_new_file(temporary, a_content, cue::WindowsBuildArtifactError::CurrentManifestFailed, a_assertContext);
     if (!written)
     {
-        return written;
+        return cue::Result<bool>::failure(std::move(*written.try_error()));
+    }
+    if (a_cancellation.is_cancel_requested())
+    {
+        if (DeleteFileW(temporary.c_str()) == FALSE)
+        {
+            return cue::Result<bool>::failure(make_windows_error(
+                a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
+                "Cancelled Current artifact temporary manifest rollback failed"));
+        }
+        return cue::Result<bool>::success(false);
     }
     if (MoveFileExW(temporary.c_str(), current.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
     {
@@ -2413,9 +2424,9 @@ enum class ArtifactProbeStatus : std::uint8_t
             publicationError.append_secondary_diagnostics(
                 a_assertContext, *cleanupError, "Current temporary manifest could not be removed", "Rollback");
         }
-        return cue::Result<void>::failure(std::move(publicationError));
+        return cue::Result<bool>::failure(std::move(publicationError));
     }
-    return cue::Result<void>::success();
+    return cue::Result<bool>::success(true);
 }
 
 /// @brief Shared Byte Range LockをBuild Artifact Reader契約へ公開するRAII Token
@@ -3052,7 +3063,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
             }
             const std::string currentContent = serialize_current(*inventory.try_value());
-            cue::Result<void> current = publish_current(store, a_plan.operation_id(), currentContent, *m_assertContext);
+            cue::Result<bool> current =
+                publish_current(store, a_plan.operation_id(), currentContent, a_cancellation, *m_assertContext);
             if (!current)
             {
                 cue::Error publicationError = std::move(*current.try_error());
@@ -3101,6 +3113,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     }
                 }
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(publicationError));
+            }
+            if (!*current.try_value())
+            {
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
             }
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(
                 std::optional<cue::BuildArtifactInventory>(std::move(*inventory.try_value())));
