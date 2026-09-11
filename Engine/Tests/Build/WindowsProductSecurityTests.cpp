@@ -153,6 +153,17 @@ void mark_relocations_stripped(std::vector<std::byte> &a_bytes)
     std::memcpy(a_bytes.data() + fileOffset, &fileHeader, sizeof(fileHeader));
 }
 
+/// @brief PE Section 数を M17 Resource Limit 超過へ改変する
+void exceed_section_count_limit(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t fileOffset = file_header_offset(a_bytes);
+    IMAGE_FILE_HEADER fileHeader{};
+    std::memcpy(&fileHeader, a_bytes.data() + fileOffset, sizeof(fileHeader));
+    constexpr WORD maximumSectionCount = 96U;
+    fileHeader.NumberOfSections = maximumSectionCount + 1U;
+    std::memcpy(a_bytes.data() + fileOffset, &fileHeader, sizeof(fileHeader));
+}
+
 /// @brief Base Relocation DirectoryをBlock Header未満へ切り詰める
 void truncate_relocation_directory(std::vector<std::byte> &a_bytes)
 {
@@ -171,6 +182,19 @@ void exceed_relocation_directory_limit(std::vector<std::byte> &a_bytes)
     std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
     constexpr DWORD maximumBaseRelocationDirectoryBytes = 1024U * 1024U;
     optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = maximumBaseRelocationDirectoryBytes + 1U;
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
+/// @brief PE の SizeOfImage を Base Relocation Directory 終端直前まで切り詰める
+void truncate_image_at_relocation_directory(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    require(directory.Size > 0U &&
+            directory.VirtualAddress <= std::numeric_limits<DWORD>::max() - (directory.Size - 1U));
+    optional.SizeOfImage = directory.VirtualAddress + directory.Size - 1U;
     std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
 }
 
@@ -279,6 +303,23 @@ void clear_guard_function_table_flag(std::vector<std::byte> &a_bytes)
     std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
                 sizeof(guardFlags));
     guardFlags &= ~IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT;
+    std::memcpy(a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags), &guardFlags,
+                sizeof(guardFlags));
+}
+
+/// @brief GuardFlags へ指定した未対応 Metadata Flag を追加する
+void add_guard_flag(std::vector<std::byte> &a_bytes, DWORD a_flag)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    DWORD guardFlags = 0U;
+    std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                sizeof(guardFlags));
+    guardFlags |= a_flag;
     std::memcpy(a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags), &guardFlags,
                 sizeof(guardFlags));
 }
@@ -1115,6 +1156,16 @@ void test_product_security(const std::filesystem::path &a_validProduct,
                                                              a_assertContext));
 
     bytes = read_bytes(a_validProduct);
+    exceed_section_count_limit(bytes);
+    const std::filesystem::path excessiveSections = directory / "ExcessiveSections.exe";
+    write_bytes(excessiveSections, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> excessiveSectionsResult =
+        cue::validate_windows_shipping_product_security(excessiveSections.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!excessiveSectionsResult && excessiveSectionsResult.try_error()->summary() ==
+                                            "Shipping Product section count exceeds the M17 resource limit");
+
+    bytes = read_bytes(a_validProduct);
     truncate_relocation_directory(bytes);
     const std::filesystem::path truncatedRelocations = directory / "TruncatedRelocations.exe";
     write_bytes(truncatedRelocations, bytes);
@@ -1131,6 +1182,13 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     require(!oversizedRelocationResult &&
             oversizedRelocationResult.try_error()->summary() ==
                 "Shipping Product base relocation directory exceeds the M17 resource limit");
+
+    bytes = read_bytes(a_validProduct);
+    truncate_image_at_relocation_directory(bytes);
+    const std::filesystem::path relocationOutsideImage = directory / "RelocationCrossesImageEnd.exe";
+    write_bytes(relocationOutsideImage, bytes);
+    require(!cue::validate_windows_shipping_product_security(relocationOutsideImage.generic_string(), localProfile,
+                                                             a_assertContext));
 
     const std::array<std::uint32_t, 6U> requiredRelocations = required_security_relocation_rvas(bytes);
     for (std::size_t index = 0U; index < requiredRelocations.size(); ++index)
@@ -1238,6 +1296,29 @@ void test_product_security(const std::filesystem::path &a_validProduct,
             directory / ("UnsupportedGuardCount-" + std::to_string(index) + ".exe");
         write_bytes(unsupportedGuardCount, bytes);
         require(!cue::validate_windows_shipping_product_security(unsupportedGuardCount.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
+
+    constexpr std::array<DWORD, 7U> unsupportedGuardFlags = {
+        IMAGE_GUARD_RF_INSTRUMENTED, IMAGE_GUARD_RF_ENABLE,
+        IMAGE_GUARD_RF_STRICT,       IMAGE_GUARD_EH_CONTINUATION_TABLE_PRESENT,
+        IMAGE_GUARD_XFG_ENABLED,     IMAGE_GUARD_CASTGUARD_PRESENT,
+        IMAGE_GUARD_MEMCPY_PRESENT};
+    for (std::size_t index = 0U; index < unsupportedGuardFlags.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        if (unsupportedGuardFlags[index] == IMAGE_GUARD_EH_CONTINUATION_TABLE_PRESENT)
+        {
+            set_load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardEHContinuationTable),
+                                           guardFunctionTable);
+            set_load_configuration_ulonglong(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardEHContinuationCount),
+                                             1U);
+        }
+        add_guard_flag(bytes, unsupportedGuardFlags[index]);
+        const std::filesystem::path unsupportedGuardFlag =
+            directory / ("UnsupportedGuardFlag-" + std::to_string(index) + ".exe");
+        write_bytes(unsupportedGuardFlag, bytes);
+        require(!cue::validate_windows_shipping_product_security(unsupportedGuardFlag.generic_string(), localProfile,
                                                                  a_assertContext));
     }
 

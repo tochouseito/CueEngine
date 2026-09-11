@@ -44,9 +44,14 @@ constexpr std::uint64_t k_maximumProductBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr std::uint32_t k_maximumBaseRelocationDirectoryBytes = 1024U * 1024U;
 constexpr std::uint64_t k_maximumGuardFunctionEntries = 1'048'576ULL;
 constexpr std::size_t k_maximumDebugDirectoryEntries = 4096U;
+constexpr std::uint16_t k_maximumSectionCount = 96U;
 constexpr std::size_t k_maximumImportNameBytes = 256U;
 constexpr std::size_t k_maximumImportDescriptors = 256U;
 constexpr std::size_t k_maximumImportsPerLibrary = 65536U;
+constexpr DWORD k_unsupportedGuardMetadataFlags = IMAGE_GUARD_RF_INSTRUMENTED | IMAGE_GUARD_RF_ENABLE |
+                                                  IMAGE_GUARD_RF_STRICT | IMAGE_GUARD_EH_CONTINUATION_TABLE_PRESENT |
+                                                  IMAGE_GUARD_XFG_ENABLED | IMAGE_GUARD_CASTGUARD_PRESENT |
+                                                  IMAGE_GUARD_MEMCPY_PRESENT;
 
 constexpr std::array<std::string_view, 15U> k_allowedImports = {"api-ms-win-crt-heap-l1-1-0.dll",
                                                                 "api-ms-win-crt-locale-l1-1-0.dll",
@@ -370,9 +375,15 @@ template <typename Value>
                                                             std::size_t a_fileSize) noexcept
 {
     const std::uint64_t rva = a_rva;
+    if (rva >= a_optional.SizeOfImage)
+    {
+        return std::nullopt;
+    }
     if (rva < a_optional.SizeOfHeaders)
     {
-        const std::uint64_t headerEnd = std::min<std::uint64_t>(a_optional.SizeOfHeaders, a_fileSize);
+        const std::uint64_t headerEnd =
+            std::min({static_cast<std::uint64_t>(a_optional.SizeOfHeaders),
+                      static_cast<std::uint64_t>(a_optional.SizeOfImage), static_cast<std::uint64_t>(a_fileSize)});
         if (rva < headerEnd)
         {
             return RvaFileRange{static_cast<std::size_t>(rva), static_cast<std::size_t>(headerEnd - rva)};
@@ -399,8 +410,9 @@ template <typename Value>
         }
         const std::uint64_t rawAvailable = section.SizeOfRawData - delta;
         const std::uint64_t fileAvailable = a_fileSize - offset;
+        const std::uint64_t imageAvailable = static_cast<std::uint64_t>(a_optional.SizeOfImage) - rva;
         return RvaFileRange{static_cast<std::size_t>(offset),
-                            static_cast<std::size_t>(std::min(rawAvailable, fileAvailable))};
+                            static_cast<std::size_t>(std::min({rawAvailable, fileAvailable, imageAvailable}))};
     }
     return std::nullopt;
 }
@@ -993,9 +1005,20 @@ template <typename Value>
                        "Shipping Product does not satisfy ASLR, High Entropy VA, DEP, and CFG header policy"));
     }
     const std::size_t sectionsOffset = optionalOffset + fileHeader->SizeOfOptionalHeader;
-    if (fileHeader->NumberOfSections == 0U || sectionsOffset > bytes.size() ||
-        static_cast<std::size_t>(fileHeader->NumberOfSections) >
-            (bytes.size() - sectionsOffset) / sizeof(IMAGE_SECTION_HEADER))
+    if (fileHeader->NumberOfSections == 0U)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product section table is invalid"));
+    }
+    if (fileHeader->NumberOfSections > k_maximumSectionCount)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product section count exceeds the M17 resource limit"));
+    }
+    if (sectionsOffset > bytes.size() || static_cast<std::size_t>(fileHeader->NumberOfSections) >
+                                             (bytes.size() - sectionsOffset) / sizeof(IMAGE_SECTION_HEADER))
     {
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -1217,6 +1240,7 @@ template <typename Value>
         });
     if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasUnrelocatedLoadConfigurationControls ||
         !hasMappedGuardCheck || !hasMappedGuardDispatch || !hasNoUnsupportedAuxiliaryGuardTables || !guardFlags ||
+        (*guardFlags & k_unsupportedGuardMetadataFlags) != 0U ||
         (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
