@@ -629,22 +629,50 @@ template <typename Value>
     return result;
 }
 
+/// @brief Base Relocationの8-byte Targetと指定RVA範囲が重なるかを返す
+[[nodiscard]] bool has_relocation_overlap(std::span<const std::uint32_t> a_relocations,
+                                          const std::uint64_t a_rangeStart, const std::size_t a_rangeSize) noexcept
+{
+    if (a_rangeSize == 0U || a_rangeStart > std::numeric_limits<std::uint64_t>::max() - a_rangeSize)
+    {
+        return a_rangeSize != 0U;
+    }
+    const std::uint64_t rangeEnd = a_rangeStart + a_rangeSize;
+    return std::ranges::any_of(a_relocations,
+                               [a_rangeStart, rangeEnd](const std::uint32_t a_relocationRva) noexcept
+                               {
+                                   const std::uint64_t relocationStart = a_relocationRva;
+                                   return relocationStart < rangeEnd &&
+                                          a_rangeStart < relocationStart + sizeof(std::uint64_t);
+                               });
+}
+
 /// @brief 一LibraryのImport名とGame Module Loader API不在を検証する
 [[nodiscard]] cue::Result<void> validate_import_functions(std::span<const std::byte> a_bytes, std::uint32_t a_thunkRva,
+                                                          std::uint32_t a_firstThunkRva,
                                                           const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                                           std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                                          std::span<const std::uint32_t> a_relocations,
                                                           const cue::AssertContext &a_assertContext) noexcept
 {
     for (std::size_t index = 0U; index < k_maximumImportsPerLibrary; ++index)
     {
         const std::uint64_t thunkRva = static_cast<std::uint64_t>(a_thunkRva) + index * sizeof(IMAGE_THUNK_DATA64);
-        if (thunkRva > std::numeric_limits<std::uint32_t>::max())
+        const std::uint64_t firstThunkRva =
+            static_cast<std::uint64_t>(a_firstThunkRva) + index * sizeof(IMAGE_THUNK_DATA64);
+        if (thunkRva > std::numeric_limits<std::uint32_t>::max() ||
+            firstThunkRva > std::numeric_limits<std::uint32_t>::max())
         {
             break;
         }
         const std::optional<std::size_t> thunkOffset = rva_to_offset(
             static_cast<std::uint32_t>(thunkRva), sizeof(IMAGE_THUNK_DATA64), a_optional, a_sections, a_bytes.size());
-        if (!thunkOffset)
+        const std::optional<std::size_t> firstThunkOffset =
+            rva_to_offset(static_cast<std::uint32_t>(firstThunkRva), sizeof(IMAGE_THUNK_DATA64), a_optional, a_sections,
+                          a_bytes.size());
+        if (!thunkOffset || !firstThunkOffset ||
+            has_relocation_overlap(a_relocations, thunkRva, sizeof(IMAGE_THUNK_DATA64)) ||
+            has_relocation_overlap(a_relocations, firstThunkRva, sizeof(IMAGE_THUNK_DATA64)))
         {
             break;
         }
@@ -674,7 +702,7 @@ template <typename Value>
             nameRange && nameRange->size > sizeof(WORD)
                 ? read_ascii_string(a_bytes, nameRange->offset + sizeof(WORD), nameRange->size - sizeof(WORD))
                 : std::nullopt;
-        if (!name)
+        if (!name || has_relocation_overlap(a_relocations, thunk->u1.AddressOfData, sizeof(WORD) + name->size() + 1U))
         {
             return cue::Result<void>::failure(make_error(a_assertContext,
                                                          cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -696,6 +724,7 @@ template <typename Value>
 [[nodiscard]] cue::Result<std::vector<std::string>> validate_imports(std::span<const std::byte> a_bytes,
                                                                      const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                                                      std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                                                     std::span<const std::uint32_t> a_relocations,
                                                                      const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
@@ -712,6 +741,12 @@ template <typename Value>
         return cue::Result<std::vector<std::string>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product import directory is invalid"));
+    }
+    if (has_relocation_overlap(a_relocations, directory.VirtualAddress, directory.Size))
+    {
+        return cue::Result<std::vector<std::string>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product import directory overlaps a base relocation target"));
     }
     const std::size_t descriptorLimit = std::min(
         k_maximumImportDescriptors, static_cast<std::size_t>(directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR)));
@@ -734,7 +769,7 @@ template <typename Value>
             rva_to_file_range(descriptor->Name, a_optional, a_sections, a_bytes.size());
         const std::optional<std::string_view> name =
             nameRange ? read_ascii_string(a_bytes, nameRange->offset, nameRange->size) : std::nullopt;
-        if (!name)
+        if (!name || has_relocation_overlap(a_relocations, descriptor->Name, name->size() + 1U))
         {
             return cue::Result<std::vector<std::string>>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -749,8 +784,8 @@ template <typename Value>
         }
         const std::uint32_t thunkRva =
             descriptor->OriginalFirstThunk != 0U ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
-        cue::Result<void> functions =
-            validate_import_functions(a_bytes, thunkRva, a_optional, a_sections, a_assertContext);
+        cue::Result<void> functions = validate_import_functions(a_bytes, thunkRva, descriptor->FirstThunk, a_optional,
+                                                                a_sections, a_relocations, a_assertContext);
         if (!functions)
         {
             return cue::Result<std::vector<std::string>>::failure(std::move(*functions.try_error()));
@@ -766,6 +801,7 @@ template <typename Value>
 [[nodiscard]] cue::Result<void> validate_cet(std::span<const std::byte> a_bytes,
                                              const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                              std::span<const IMAGE_SECTION_HEADER> a_sections,
+                                             std::span<const std::uint32_t> a_relocations,
                                              const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
@@ -783,6 +819,12 @@ template <typename Value>
         return cue::Result<void>::failure(make_error(a_assertContext,
                                                      cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                                      "Shipping Product debug directory is invalid"));
+    }
+    if (has_relocation_overlap(a_relocations, directory.VirtualAddress, directory.Size))
+    {
+        return cue::Result<void>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product debug directory overlaps a base relocation target"));
     }
     const std::size_t count = directory.Size / sizeof(IMAGE_DEBUG_DIRECTORY);
     for (std::size_t index = 0U; index < count; ++index)
@@ -803,6 +845,12 @@ template <typename Value>
             return cue::Result<void>::failure(make_error(a_assertContext,
                                                          cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                                          "Shipping Product extended DLL characteristics are invalid"));
+        }
+        if (has_relocation_overlap(a_relocations, debug->AddressOfRawData, debug->SizeOfData))
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product extended DLL characteristics overlap a base relocation target"));
         }
         const std::optional<std::uint32_t> characteristics =
             read_value<std::uint32_t>(a_bytes, debug->PointerToRawData);
@@ -969,19 +1017,7 @@ template <typename Value>
                                                 : std::numeric_limits<std::uint64_t>::max();
     const auto hasNoRelocationOverlap =
         [&relocations](const std::uint64_t a_rangeStart, const std::size_t a_rangeSize) noexcept
-    {
-        if (a_rangeSize == 0U || a_rangeStart > std::numeric_limits<std::uint64_t>::max() - a_rangeSize)
-        {
-            return false;
-        }
-        return std::ranges::none_of(*relocations.try_value(),
-                                    [a_rangeStart, a_rangeSize](const std::uint32_t a_relocationRva) noexcept
-                                    {
-                                        const std::uint64_t relocationStart = a_relocationRva;
-                                        return relocationStart < a_rangeStart + a_rangeSize &&
-                                               a_rangeStart < relocationStart + sizeof(ULONGLONG);
-                                    });
-    };
+    { return a_rangeSize != 0U && !has_relocation_overlap(*relocations.try_value(), a_rangeStart, a_rangeSize); };
     const bool hasUnrelocatedSecurityCookie =
         hasMappedSecurityCookie && hasNoRelocationOverlap(securityCookieRva, sizeof(ULONGLONG));
     const std::uint64_t guardFunctionTableRva = guardFunctionTable && *guardFunctionTable >= optional->ImageBase
@@ -1054,12 +1090,13 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product delay imports are not allowed by the M17 policy"));
     }
-    cue::Result<std::vector<std::string>> imports = validate_imports(bytes, *optional, sections, a_assertContext);
+    cue::Result<std::vector<std::string>> imports =
+        validate_imports(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!imports)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*imports.try_error()));
     }
-    cue::Result<void> cet = validate_cet(bytes, *optional, sections, a_assertContext);
+    cue::Result<void> cet = validate_cet(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!cet)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*cet.try_error()));

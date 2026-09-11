@@ -735,6 +735,54 @@ void mismatch_cet_data_rva(std::vector<std::byte> &a_bytes)
     require(false);
 }
 
+/// @brief 最初のImport Descriptorが参照するLibrary名、Lookup Thunk、IAT、Import名RVAを返す
+[[nodiscard]] std::array<std::uint32_t, 4U> first_import_metadata_rvas(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    const std::size_t descriptorOffset =
+        section_rva_offset(directory.VirtualAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR), sections, a_bytes);
+    IMAGE_IMPORT_DESCRIPTOR descriptor{};
+    std::memcpy(&descriptor, a_bytes.data() + descriptorOffset, sizeof(descriptor));
+    const std::uint32_t lookupThunk =
+        descriptor.OriginalFirstThunk != 0U ? descriptor.OriginalFirstThunk : descriptor.FirstThunk;
+    require(descriptor.Name != 0U && lookupThunk != 0U && descriptor.FirstThunk != 0U);
+    const std::size_t thunkOffset = section_rva_offset(lookupThunk, sizeof(IMAGE_THUNK_DATA64), sections, a_bytes);
+    IMAGE_THUNK_DATA64 thunk{};
+    std::memcpy(&thunk, a_bytes.data() + thunkOffset, sizeof(thunk));
+    require(!IMAGE_SNAP_BY_ORDINAL64(thunk.u1.Ordinal) &&
+            thunk.u1.AddressOfData <= std::numeric_limits<std::uint32_t>::max());
+    return {descriptor.Name, lookupThunk, descriptor.FirstThunk, static_cast<std::uint32_t>(thunk.u1.AddressOfData)};
+}
+
+/// @brief CET Evidenceに使うDebug DescriptorとExtended DLL Characteristics DataのRVAを返す
+[[nodiscard]] std::array<std::uint32_t, 2U> cet_metadata_rvas(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    require(directory.Size >= sizeof(IMAGE_DEBUG_DIRECTORY) && directory.Size % sizeof(IMAGE_DEBUG_DIRECTORY) == 0U);
+    const std::size_t directoryOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    const std::size_t count = directory.Size / sizeof(IMAGE_DEBUG_DIRECTORY);
+    for (std::size_t index = 0U; index < count; ++index)
+    {
+        IMAGE_DEBUG_DIRECTORY debug{};
+        std::memcpy(&debug, a_bytes.data() + directoryOffset + index * sizeof(debug), sizeof(debug));
+        if (debug.Type == IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS)
+        {
+            return {directory.VirtualAddress + static_cast<std::uint32_t>(index * sizeof(debug)),
+                    debug.AddressOfRawData};
+        }
+    }
+    require(false);
+    return {};
+}
+
 /// @brief 許可済みSystem DLL名を同じ長さの未知App-local DLL名へ置換する
 void replace_import_library(std::vector<std::byte> &a_bytes)
 {
@@ -1087,6 +1135,53 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         write_bytes(relocatedRelocationDirectory, bytes);
         require(!cue::validate_windows_shipping_product_security(relocatedRelocationDirectory.generic_string(),
                                                                  localProfile, a_assertContext));
+    }
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 importOptional{};
+    std::memcpy(&importOptional, bytes.data() + optional_header_offset(bytes), sizeof(importOptional));
+    const IMAGE_DATA_DIRECTORY &importDirectory = importOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    require(importDirectory.VirtualAddress >= 7U && importDirectory.Size > 1U &&
+            importDirectory.Size - 1U <= std::numeric_limits<std::uint32_t>::max() - importDirectory.VirtualAddress);
+    const std::array<std::uint32_t, 5U> relocatedImportDirectoryRvas = {
+        importDirectory.VirtualAddress - 7U, importDirectory.VirtualAddress - 1U, importDirectory.VirtualAddress,
+        importDirectory.VirtualAddress + static_cast<std::uint32_t>(importDirectory.Size / 2U),
+        importDirectory.VirtualAddress + importDirectory.Size - 1U};
+    for (std::size_t index = 0U; index < relocatedImportDirectoryRvas.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, relocatedImportDirectoryRvas[index]);
+        const std::filesystem::path relocatedImportDirectory =
+            directory / ("RelocatedImportDirectory-" + std::to_string(index) + ".exe");
+        write_bytes(relocatedImportDirectory, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedImportDirectory.generic_string(),
+                                                                 localProfile, a_assertContext));
+    }
+
+    bytes = read_bytes(a_validProduct);
+    const std::array<std::uint32_t, 4U> importMetadataRvas = first_import_metadata_rvas(bytes);
+    for (std::size_t index = 0U; index < importMetadataRvas.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, importMetadataRvas[index]);
+        const std::filesystem::path relocatedImportMetadata =
+            directory / ("RelocatedImportMetadata-" + std::to_string(index) + ".exe");
+        write_bytes(relocatedImportMetadata, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedImportMetadata.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
+
+    bytes = read_bytes(a_validProduct);
+    const std::array<std::uint32_t, 2U> cetMetadataRvas = cet_metadata_rvas(bytes);
+    for (std::size_t index = 0U; index < cetMetadataRvas.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, cetMetadataRvas[index]);
+        const std::filesystem::path relocatedCetMetadata =
+            directory / ("RelocatedCetMetadata-" + std::to_string(index) + ".exe");
+        write_bytes(relocatedCetMetadata, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedCetMetadata.generic_string(), localProfile,
+                                                                 a_assertContext));
     }
 
     constexpr std::array<std::pair<std::size_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
