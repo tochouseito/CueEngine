@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1043,6 +1044,33 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         write_bytes(relocatedFunctionTable, bytes);
         require(!cue::validate_windows_shipping_product_security(relocatedFunctionTable.generic_string(), localProfile,
                                                                  a_assertContext));
+    }
+
+    IMAGE_OPTIONAL_HEADER64 loadControlOptional{};
+    std::memcpy(&loadControlOptional, bytes.data() + optional_header_offset(bytes), sizeof(loadControlOptional));
+    const IMAGE_DATA_DIRECTORY &loadControlDirectory =
+        loadControlOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    constexpr std::array<std::pair<std::size_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
+        std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size), sizeof(DWORD)},
+        std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount), sizeof(ULONGLONG)},
+        std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags), sizeof(DWORD)},
+        std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags), sizeof(WORD)}};
+    for (std::size_t fieldIndex = 0U; fieldIndex < unrelocatedLoadConfigurationControls.size(); ++fieldIndex)
+    {
+        for (std::size_t byteIndex = 0U; byteIndex < unrelocatedLoadConfigurationControls[fieldIndex].second;
+             ++byteIndex)
+        {
+            bytes = read_bytes(a_validProduct);
+            append_dir64_relocation(bytes, loadControlDirectory.VirtualAddress +
+                                               static_cast<std::uint32_t>(
+                                                   unrelocatedLoadConfigurationControls[fieldIndex].first + byteIndex));
+            const std::filesystem::path relocatedLoadConfigurationControl =
+                directory / ("RelocatedLoadConfigurationControl-" + std::to_string(fieldIndex) + "-" +
+                             std::to_string(byteIndex) + ".exe");
+            write_bytes(relocatedLoadConfigurationControl, bytes);
+            require(!cue::validate_windows_shipping_product_security(relocatedLoadConfigurationControl.generic_string(),
+                                                                     localProfile, a_assertContext));
+        }
     }
 
     bytes = read_bytes(a_validProduct);

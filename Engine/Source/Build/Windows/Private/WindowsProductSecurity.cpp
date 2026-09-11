@@ -961,28 +961,44 @@ template <typename Value>
     const std::uint64_t securityCookieRva = securityCookie && *securityCookie >= optional->ImageBase
                                                 ? *securityCookie - optional->ImageBase
                                                 : std::numeric_limits<std::uint64_t>::max();
+    const auto hasNoRelocationOverlap =
+        [&relocations](const std::uint64_t a_rangeStart, const std::size_t a_rangeSize) noexcept
+    {
+        if (a_rangeSize == 0U || a_rangeStart > std::numeric_limits<std::uint64_t>::max() - a_rangeSize)
+        {
+            return false;
+        }
+        return std::ranges::none_of(*relocations.try_value(),
+                                    [a_rangeStart, a_rangeSize](const std::uint32_t a_relocationRva) noexcept
+                                    {
+                                        const std::uint64_t relocationStart = a_relocationRva;
+                                        return relocationStart < a_rangeStart + a_rangeSize &&
+                                               a_rangeStart < relocationStart + sizeof(ULONGLONG);
+                                    });
+    };
     const bool hasUnrelocatedSecurityCookie =
-        hasMappedSecurityCookie &&
-        std::ranges::none_of(*relocations.try_value(),
-                             [securityCookieRva](const std::uint32_t a_relocationRva) noexcept
-                             {
-                                 const std::uint64_t relocationStart = a_relocationRva;
-                                 return relocationStart < securityCookieRva + sizeof(ULONGLONG) &&
-                                        securityCookieRva < relocationStart + sizeof(ULONGLONG);
-                             });
+        hasMappedSecurityCookie && hasNoRelocationOverlap(securityCookieRva, sizeof(ULONGLONG));
     const std::uint64_t guardFunctionTableRva = guardFunctionTable && *guardFunctionTable >= optional->ImageBase
                                                     ? *guardFunctionTable - optional->ImageBase
                                                     : std::numeric_limits<std::uint64_t>::max();
     const bool hasUnrelocatedFunctionTable =
-        guardFunctionTableRange &&
-        std::ranges::none_of(
-            *relocations.try_value(),
-            [guardFunctionTableRva, guardFunctionTableSize](const std::uint32_t a_relocationRva) noexcept
-            {
-                const std::uint64_t relocationStart = a_relocationRva;
-                return relocationStart < guardFunctionTableRva + guardFunctionTableSize &&
-                       guardFunctionTableRva < relocationStart + sizeof(ULONGLONG);
-            });
+        guardFunctionTableRange && hasNoRelocationOverlap(guardFunctionTableRva, guardFunctionTableSize);
+    const std::array<std::pair<std::uint64_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size),
+                  sizeof(DWORD)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount),
+                  sizeof(ULONGLONG)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                  sizeof(DWORD)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags),
+                  sizeof(WORD)}};
+    const bool hasUnrelocatedLoadConfigurationControls = std::ranges::all_of(
+        unrelocatedLoadConfigurationControls, [&hasNoRelocationOverlap](const auto &a_range) noexcept
+        { return hasNoRelocationOverlap(a_range.first, a_range.second); });
     const bool hasMappedGuardCheck =
         guardCheckTargetRange &&
         has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
@@ -1015,11 +1031,11 @@ template <typename Value>
             return a_rva <= std::numeric_limits<std::uint32_t>::max() &&
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
-    if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasMappedGuardCheck ||
-        !hasMappedGuardDispatch || !guardFlags || (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U ||
-        !hasMappedFunctionTable || (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U ||
-        (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U || !dependentLoadFlags ||
-        *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
+    if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasUnrelocatedLoadConfigurationControls ||
+        !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+        (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
+        (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
+        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
     {
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
