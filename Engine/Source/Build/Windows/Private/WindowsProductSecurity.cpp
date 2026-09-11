@@ -36,6 +36,7 @@ constexpr std::uint16_t k_requiredDllCharacteristics =
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_GUARD_CF;
 constexpr std::uint16_t k_requiredDependentLoadFlags = LOAD_LIBRARY_SEARCH_SYSTEM32;
 constexpr std::uint32_t k_cetCompatible = IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT;
+constexpr std::uint64_t k_msvcX64DefaultSecurityCookie = 0x00002B992DDFA232ULL;
 constexpr DWORD k_writableDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 constexpr DWORD k_readOnlyDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 constexpr DWORD k_executableCodeSection = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
@@ -953,8 +954,10 @@ template <typename Value>
         guardDispatchTarget ? mapped_image_va_range(*guardDispatchTarget, 1U, *optional, sections, bytes.size())
                             : std::nullopt;
     const bool hasMappedSecurityCookie =
-        securityCookieRange && has_section_characteristics(*securityCookieRange, k_writableDataSection,
-                                                           IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED);
+        securityCookieRange &&
+        has_section_characteristics(*securityCookieRange, k_writableDataSection,
+                                    IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED) &&
+        read_value<ULONGLONG>(bytes, securityCookieRange->offset) == k_msvcX64DefaultSecurityCookie;
     const bool hasMappedGuardCheck =
         guardCheckTargetRange &&
         has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
@@ -1048,13 +1051,18 @@ class WinTrustState final
 };
 
 /// @brief WinTrust失敗Codeを安定した署名状態へ分類する
-[[nodiscard]] cue::WindowsProductSignatureStatus classify_trust_status(LONG a_status) noexcept
+[[nodiscard]] cue::WindowsProductSignatureStatus classify_trust_status(LONG a_status, DWORD a_lastError) noexcept
 {
     switch (a_status)
     {
     case ERROR_SUCCESS:
         return cue::WindowsProductSignatureStatus::Trusted;
     case TRUST_E_NOSIGNATURE:
+        if (a_lastError == static_cast<DWORD>(TRUST_E_PROVIDER_UNKNOWN) ||
+            a_lastError == static_cast<DWORD>(TRUST_E_SUBJECT_FORM_UNKNOWN))
+        {
+            return cue::WindowsProductSignatureStatus::VerificationUnavailable;
+        }
         return cue::WindowsProductSignatureStatus::Unsigned;
     case TRUST_E_BAD_DIGEST:
     case NTE_BAD_SIGNATURE:
@@ -1186,10 +1194,12 @@ class WinTrustState final
     data.dwUIContext = WTD_UICONTEXT_EXECUTE;
 
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    SetLastError(ERROR_SUCCESS);
     const LONG status = WinVerifyTrust(nullptr, &action, &data);
+    const DWORD trustLastError = GetLastError();
     WinTrustState state(data);
     cue::WindowsProductTrustEvidence evidence;
-    evidence.signatureStatus = classify_trust_status(status);
+    evidence.signatureStatus = classify_trust_status(status, trustLastError);
     if (status != ERROR_SUCCESS)
     {
         return cue::Result<cue::WindowsProductTrustEvidence>::success(std::move(evidence));
@@ -1251,9 +1261,10 @@ WindowsProductSecurityValidation WindowsProductSecuritySnapshot::take_validation
     return std::move(m_state->validation);
 }
 
-WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status) noexcept
+WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status,
+                                                                    std::uint32_t a_lastError) noexcept
 {
-    return classify_trust_status(static_cast<LONG>(a_status));
+    return classify_trust_status(static_cast<LONG>(a_status), static_cast<DWORD>(a_lastError));
 }
 
 Result<WindowsProductSecuritySnapshot> validate_windows_shipping_product_security_snapshot(

@@ -742,31 +742,37 @@ void test_trust_policy(const cue::BuildProfile &a_localProfile, const cue::Build
 /// @brief WinVerifyTrustの署名なしとProvider検証不能を区別する
 void test_trust_status_classification()
 {
-    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE) ==
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::Unsigned);
-    require(cue::detail::classify_windows_product_trust_status(TRUST_E_MALFORMED_SIGNATURE) ==
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE,
+                                                               static_cast<std::uint32_t>(TRUST_E_PROVIDER_UNKNOWN)) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
+    require(cue::detail::classify_windows_product_trust_status(
+                TRUST_E_NOSIGNATURE, static_cast<std::uint32_t>(TRUST_E_SUBJECT_FORM_UNKNOWN)) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_MALFORMED_SIGNATURE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::InvalidSignature);
-    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NO_SIGNER_CERT) ==
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NO_SIGNER_CERT, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::InvalidSignature);
-    require(cue::detail::classify_windows_product_trust_status(TRUST_E_PROVIDER_UNKNOWN) ==
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_PROVIDER_UNKNOWN, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
-    require(cue::detail::classify_windows_product_trust_status(TRUST_E_SUBJECT_FORM_UNKNOWN) ==
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_SUBJECT_FORM_UNKNOWN, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
-    require(cue::detail::classify_windows_product_trust_status(CRYPT_E_REVOCATION_OFFLINE) ==
+    require(cue::detail::classify_windows_product_trust_status(CRYPT_E_REVOCATION_OFFLINE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
-    require(cue::detail::classify_windows_product_trust_status(CRYPT_E_NO_REVOCATION_CHECK) ==
+    require(cue::detail::classify_windows_product_trust_status(CRYPT_E_NO_REVOCATION_CHECK, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_REVOCATION_FAILURE) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_REVOCATION_FAILURE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_WRONG_USAGE) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_WRONG_USAGE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::ChainInvalid);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_INVALID_NAME) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_INVALID_NAME, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::ChainInvalid);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_INVALID_POLICY) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_INVALID_POLICY, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::ChainInvalid);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_VALIDITYPERIODNESTING) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_VALIDITYPERIODNESTING, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::ChainInvalid);
-    require(cue::detail::classify_windows_product_trust_status(CERT_E_UNTRUSTEDTESTROOT) ==
+    require(cue::detail::classify_windows_product_trust_status(CERT_E_UNTRUSTEDTESTROOT, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::ChainInvalid);
 }
 
@@ -943,8 +949,17 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const ULONGLONG guardDispatch =
         load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    constexpr ULONGLONG msvcX64DefaultSecurityCookie = 0x00002B992DDFA232ULL;
+    require(image_va_value(bytes, securityCookie) == msvcX64DefaultSecurityCookie);
     const ULONGLONG guardCheckTarget = image_va_value(bytes, guardCheck);
     const ULONGLONG guardDispatchTarget = image_va_value(bytes, guardDispatch);
+
+    bytes = read_bytes(a_validProduct);
+    set_image_va_value(bytes, securityCookie, msvcX64DefaultSecurityCookie + 2U);
+    const std::filesystem::path predictableSecurityCookie = directory / "PredictableSecurityCookie.exe";
+    write_bytes(predictableSecurityCookie, bytes);
+    require(!cue::validate_windows_shipping_product_security(predictableSecurityCookie.generic_string(), localProfile,
+                                                             a_assertContext));
 
     bytes = read_bytes(a_validProduct);
     set_load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie), guardCheck);
