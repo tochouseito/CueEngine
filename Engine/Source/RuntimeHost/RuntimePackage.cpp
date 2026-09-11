@@ -1,5 +1,7 @@
 #include "RuntimePackage.h"
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 #include "RuntimeModuleIdentity.h"
+#endif
 #include "RuntimePath.h"
 
 #include <Cue/Foundation/Assert.h>
@@ -13,8 +15,9 @@
 #include <Cue/Package/RuntimeData.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/Runtime/Error.h>
-#include <Cue/RuntimeHost/GameModuleQueryProvider.h>
 #include <Cue/Runtime/RuntimeSchema.h>
+#include <Cue/RuntimeHost/GameModuleQueryProvider.h>
+#include <Cue/RuntimeHost/StaticRuntimePackage.h>
 #include <Cue/Scene/Identity.h>
 #include <Cue/Scene/SceneDocument.h>
 #include <Cue/Schema/Registry.h>
@@ -44,9 +47,14 @@
 #error CUE_RUNTIME_BUILD_CONFIGURATION must identify the RuntimeHost build configuration
 #endif
 
+#if !defined(CUE_RUNTIME_PACKAGE_DYNAMIC) && !defined(CUE_RUNTIME_PACKAGE_STATIC)
+#error RuntimePackage.cpp requires a dynamic or static package loader selection
+#endif
+
 namespace
 {
 constexpr cue::EngineVersion k_engineVersion{1U, 0U, 0U};
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 constexpr std::size_t k_maximumGameModuleMetadataBytes = 64U * 1024U;
 constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 
@@ -73,6 +81,7 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
     }
     return true;
 }
+#endif
 
 /// @brief Filesystem PathをEngine内部契約のUTF-8表現へ変換する
 [[nodiscard]] std::string path_to_utf8(const std::filesystem::path &a_path)
@@ -82,6 +91,7 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 }
 
 /// @brief Absolute Windows PathをExtended-length形式へ変換する
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 [[nodiscard]] std::filesystem::path extended_windows_path(const std::filesystem::path &a_path)
 {
     std::filesystem::path preferred = a_path;
@@ -97,6 +107,7 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
     }
     return std::filesystem::path(L"\\\\?\\" + native);
 }
+#endif
 
 /// @brief Runtime Package処理中の予期しない例外をFatal境界へ渡す
 [[noreturn]] void terminate_package_exception(const cue::AssertContext &a_assertContext) noexcept
@@ -106,8 +117,7 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
 }
 
 /// @brief Runtime Package起動の失敗をPackage Domainへ分類する
-[[nodiscard]] cue::Error package_error(const cue::AssertContext &a_assertContext,
-                                       cue::package::PackageError a_code,
+[[nodiscard]] cue::Error package_error(const cue::AssertContext &a_assertContext, cue::package::PackageError a_code,
                                        std::string_view a_summary) noexcept
 {
     return cue::package::make_package_error(a_assertContext, a_code, a_summary);
@@ -118,8 +128,8 @@ constexpr std::uint64_t k_maximumJsonInteger = 9007199254740991ULL;
                                                cue::package::PackageError a_code, DWORD a_nativeCode,
                                                std::string_view a_summary) noexcept
 {
-    cue::ErrorCode code = cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Package",
-                                                 static_cast<std::int64_t>(a_code));
+    cue::ErrorCode code =
+        cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Package", static_cast<std::int64_t>(a_code));
     cue::NativeError native = cue::NativeError::create(a_assertContext.fatal_handler(), "Win32", a_nativeCode);
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary, std::move(native));
 }
@@ -183,6 +193,7 @@ class UniqueHandle final
 };
 
 /// @brief 事前Load済みDLLを依存元より後まで保持して逆順解放する
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
 {
     for (auto library = a_libraries.rbegin(); library != a_libraries.rend(); ++library)
@@ -196,8 +207,8 @@ void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
 }
 
 /// @brief RuntimeHostが同時保持するGame Moduleと依存PEの宣言Sizeを全体読込前に制限する
-[[nodiscard]] cue::Result<void> validate_runtime_pe_memory_contract(
-    const cue::package::PackageManifest &a_manifest, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_runtime_pe_memory_contract(const cue::package::PackageManifest &a_manifest,
+                                                                    const cue::AssertContext &a_assertContext) noexcept
 {
     std::uint64_t totalBytes = 0U;
     for (const cue::package::PackageFileEntry &entry : a_manifest.files())
@@ -210,14 +221,15 @@ void unload_libraries(std::vector<HMODULE> &a_libraries) noexcept
         if (entry.byte_size() > cue::package::k_maximumRuntimePeImageBytes ||
             totalBytes > cue::package::k_maximumRuntimePeInventoryBytes - entry.byte_size())
         {
-            return cue::Result<void>::failure(package_error(
-                a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
-                "Runtime PE image inventory exceeds the RuntimeHost memory contract"));
+            return cue::Result<void>::failure(
+                package_error(a_assertContext, cue::package::PackageError::PackageManifestResourceLimitExceeded,
+                              "Runtime PE image inventory exceeds the RuntimeHost memory contract"));
         }
         totalBytes += entry.byte_size();
     }
     return cue::Result<void>::success();
 }
+#endif
 
 /// @brief Canonical Runtime JSONを順序、重複、末尾Data込みでFail-closedに読むCursor
 class JsonCursor final
@@ -398,8 +410,8 @@ class JsonCursor final
                 return false;
             }
         }
-        const auto converted = std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_output,
-                                               std::chars_format::general);
+        const auto converted =
+            std::from_chars(m_input.data() + begin, m_input.data() + m_offset, a_output, std::chars_format::general);
         return converted.ec == std::errc{} && converted.ptr == m_input.data() + m_offset && std::isfinite(a_output);
     }
 
@@ -461,8 +473,8 @@ class JsonCursor final
 {
     const std::size_t first = a_text.find('.');
     const std::size_t second = first == std::string_view::npos ? first : a_text.find('.', first + 1U);
-    if (first == std::string_view::npos || second == std::string_view::npos || a_text.find('.', second + 1U) !=
-                                                                          std::string_view::npos)
+    if (first == std::string_view::npos || second == std::string_view::npos ||
+        a_text.find('.', second + 1U) != std::string_view::npos)
     {
         return false;
     }
@@ -503,8 +515,8 @@ struct RuntimeProjectInfo final
 };
 
 /// @brief Runtime Project Data v1をCanonical Member順とResource Limitへ検証する
-[[nodiscard]] cue::Result<RuntimeProjectInfo> parse_runtime_project(
-    std::string_view a_bytes, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<RuntimeProjectInfo> parse_runtime_project(std::string_view a_bytes,
+                                                                    const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -520,9 +532,9 @@ struct RuntimeProjectInfo final
             !cursor.member("engineCompatibility") || !cursor.consume('{') || !cursor.member("minimum") ||
             !cursor.string(minimumText) || !cursor.consume(',') || !cursor.member("maximumExclusive"))
         {
-            return cue::Result<RuntimeProjectInfo>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Project Data members are invalid"));
+            return cue::Result<RuntimeProjectInfo>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Project Data members are invalid"));
         }
         if (cursor.next_is('"'))
         {
@@ -530,38 +542,36 @@ struct RuntimeProjectInfo final
         }
         else if (!cursor.null_value())
         {
-            return cue::Result<RuntimeProjectInfo>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Project maximum compatibility is invalid"));
+            return cue::Result<RuntimeProjectInfo>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Project maximum compatibility is invalid"));
         }
         if (!cursor.consume('}') || !cursor.consume(',') || !cursor.member("requiredCapabilities") ||
             !cursor.consume('[') || !cursor.consume(']') || !cursor.consume(',') ||
-            !cursor.member("startupSceneAssetId") || !cursor.string(info.startupSceneAssetId) ||
-            !cursor.consume('}') || !cursor.finished() ||
-            !parse_engine_version(minimumText, info.compatibility.minimum))
+            !cursor.member("startupSceneAssetId") || !cursor.string(info.startupSceneAssetId) || !cursor.consume('}') ||
+            !cursor.finished() || !parse_engine_version(minimumText, info.compatibility.minimum))
         {
-            return cue::Result<RuntimeProjectInfo>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Project Data is not a supported canonical v1 document"));
+            return cue::Result<RuntimeProjectInfo>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Project Data is not a supported canonical v1 document"));
         }
         if (hasMaximum)
         {
             cue::EngineVersion maximum{};
             if (!parse_engine_version(maximumText, maximum) || maximum <= info.compatibility.minimum)
             {
-                return cue::Result<RuntimeProjectInfo>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Project compatibility range is invalid"));
+                return cue::Result<RuntimeProjectInfo>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Project compatibility range is invalid"));
             }
             info.compatibility.maximumExclusive = maximum;
         }
-        if (k_engineVersion < info.compatibility.minimum ||
-            (info.compatibility.maximumExclusive.has_value() &&
-             k_engineVersion >= *info.compatibility.maximumExclusive))
+        if (k_engineVersion < info.compatibility.minimum || (info.compatibility.maximumExclusive.has_value() &&
+                                                             k_engineVersion >= *info.compatibility.maximumExclusive))
         {
-            return cue::Result<RuntimeProjectInfo>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Project is incompatible with this Engine version"));
+            return cue::Result<RuntimeProjectInfo>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Project is incompatible with this Engine version"));
         }
         return cue::Result<RuntimeProjectInfo>::success(std::move(info));
     }
@@ -591,8 +601,7 @@ template <std::size_t Size>
 
 /// @brief Runtime Scene v1のCore ObjectをScene Snapshotへ復元する
 [[nodiscard]] cue::Result<cue::scene::SceneSnapshot> parse_runtime_scene(
-    std::string_view a_bytes, std::string_view a_expectedSceneId,
-    const cue::AssertContext &a_assertContext) noexcept
+    std::string_view a_bytes, std::string_view a_expectedSceneId, const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -604,24 +613,24 @@ template <std::size_t Size>
             !cursor.member("sceneAssetId") || !cursor.string(sceneIdText) || sceneIdText != a_expectedSceneId ||
             !cursor.consume(',') || !cursor.member("objects") || !cursor.consume('['))
         {
-            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Scene identity or schema is invalid"));
+            return cue::Result<cue::scene::SceneSnapshot>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Scene identity or schema is invalid"));
         }
         std::vector<cue::scene::RuntimeSceneObjectData> objects;
         while (!cursor.next_is(']'))
         {
             if (!objects.empty() && !cursor.consume(','))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object separator is invalid"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene object separator is invalid"));
             }
             if (objects.size() >= cue::scene::k_maximumRuntimeSceneObjectCount)
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::RuntimeDataResourceLimitExceeded,
-                    "Runtime Scene object count exceeds the supported limit"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::RuntimeDataResourceLimitExceeded,
+                                  "Runtime Scene object count exceeds the supported limit"));
             }
             std::string objectIdText;
             std::string parentIdText;
@@ -633,9 +642,9 @@ template <std::size_t Size>
             if (!cursor.consume('{') || !cursor.member("objectId") || !cursor.string(objectIdText) ||
                 !cursor.consume(',') || !cursor.member("parentObjectId"))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object identity is invalid"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene object identity is invalid"));
             }
             if (cursor.next_is('"'))
             {
@@ -643,32 +652,32 @@ template <std::size_t Size>
             }
             else if (!cursor.null_value())
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene parent identity is invalid"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene parent identity is invalid"));
             }
-            if (!cursor.consume(',') || !cursor.member("active") || !cursor.boolean(isActive) ||
-                !cursor.consume(',') || !cursor.member("transform") || !cursor.consume('{') ||
-                !cursor.member("translation") || !read_float_array(cursor, translation) || !cursor.consume(',') ||
-                !cursor.member("rotation") || !read_float_array(cursor, rotation) || !cursor.consume(',') ||
-                !cursor.member("scale") || !read_float_array(cursor, scale) || !cursor.consume('}') ||
-                !cursor.consume(',') || !cursor.member("components") || !cursor.consume('['))
+            if (!cursor.consume(',') || !cursor.member("active") || !cursor.boolean(isActive) || !cursor.consume(',') ||
+                !cursor.member("transform") || !cursor.consume('{') || !cursor.member("translation") ||
+                !read_float_array(cursor, translation) || !cursor.consume(',') || !cursor.member("rotation") ||
+                !read_float_array(cursor, rotation) || !cursor.consume(',') || !cursor.member("scale") ||
+                !read_float_array(cursor, scale) || !cursor.consume('}') || !cursor.consume(',') ||
+                !cursor.member("components") || !cursor.consume('['))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object values are invalid"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene object values are invalid"));
             }
             if (!cursor.consume(']'))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
-                    "RuntimeHost v1 does not yet instantiate custom Scene components"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                                  "RuntimeHost v1 does not yet instantiate custom Scene components"));
             }
             if (!cursor.consume('}'))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object has unsupported members"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene object has unsupported members"));
             }
             auto objectId = cue::scene::ObjectId::parse(objectIdText, a_assertContext);
             auto parentId = hasParent ? cue::scene::ObjectId::parse(parentIdText, a_assertContext)
@@ -679,28 +688,26 @@ template <std::size_t Size>
             const cue::math::Quaternion parsedRotation{rotation[0], rotation[1], rotation[2], rotation[3]};
             if (tolerance && !cue::math::is_unit_rotation(parsedRotation, *tolerance.try_value()))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
-                    "Runtime Scene rotation is not a supported unit Quaternion"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::UnsupportedRuntimeSceneData,
+                                  "Runtime Scene rotation is not a supported unit Quaternion"));
             }
-            auto transform = tolerance
-                                 ? cue::math::Transform::create(
-                                       a_assertContext.fatal_handler(),
-                                       {translation[0], translation[1], translation[2]},
-                                       parsedRotation,
-                                       {scale[0], scale[1], scale[2]}, *tolerance.try_value())
-                                 : cue::Result<cue::math::Transform>::failure(std::move(*tolerance.try_error()));
+            auto transform = tolerance ? cue::math::Transform::create(a_assertContext.fatal_handler(),
+                                                                      {translation[0], translation[1], translation[2]},
+                                                                      parsedRotation, {scale[0], scale[1], scale[2]},
+                                                                      *tolerance.try_value())
+                                       : cue::Result<cue::math::Transform>::failure(std::move(*tolerance.try_error()));
             if (!objectId || (hasParent && !parentId) || !transform)
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene contains an invalid Object identity or Transform"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene contains an invalid Object identity or Transform"));
             }
             if (!objects.empty() && !(objects.back().id < *objectId.try_value()))
             {
-                return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                    "Runtime Scene object order is not canonical"));
+                return cue::Result<cue::scene::SceneSnapshot>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                  "Runtime Scene object order is not canonical"));
             }
             std::optional<cue::scene::ObjectId> parsedParent;
             if (hasParent)
@@ -712,24 +719,23 @@ template <std::size_t Size>
         }
         if (!cursor.consume(']') || !cursor.consume('}') || !cursor.finished())
         {
-            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Scene has trailing or unsupported data"));
+            return cue::Result<cue::scene::SceneSnapshot>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Scene has trailing or unsupported data"));
         }
         auto sceneId = cue::scene::SceneAssetId::parse(sceneIdText, a_assertContext);
         if (!sceneId)
         {
             return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Scene identity is invalid"));
+                a_assertContext, cue::package::PackageError::InvalidRuntimeData, "Runtime Scene identity is invalid"));
         }
-        auto snapshot = cue::scene::create_runtime_scene_snapshot(
-            std::move(*sceneId.try_value()), std::move(objects), a_assertContext);
+        auto snapshot = cue::scene::create_runtime_scene_snapshot(std::move(*sceneId.try_value()), std::move(objects),
+                                                                  a_assertContext);
         if (!snapshot)
         {
-            return cue::Result<cue::scene::SceneSnapshot>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-                "Runtime Scene object set or hierarchy is invalid"));
+            return cue::Result<cue::scene::SceneSnapshot>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                              "Runtime Scene object set or hierarchy is invalid"));
         }
         return snapshot;
     }
@@ -740,42 +746,44 @@ template <std::size_t Size>
 }
 
 /// @brief Parse済みRuntime DataがPublisherのCanonical Byte列と完全一致するか検証する
-[[nodiscard]] cue::Result<void> validate_canonical_runtime_data(
-    const RuntimeProjectInfo &a_project, const cue::scene::SceneSnapshot &a_scene, std::string_view a_projectBytes,
-    std::string_view a_sceneBytes, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_canonical_runtime_data(const RuntimeProjectInfo &a_project,
+                                                                const cue::scene::SceneSnapshot &a_scene,
+                                                                std::string_view a_projectBytes,
+                                                                std::string_view a_sceneBytes,
+                                                                const cue::AssertContext &a_assertContext) noexcept
 {
     auto projectId = cue::ProjectId::parse(a_project.projectId, a_assertContext);
-    auto descriptor = projectId ? cue::create_blank_project_descriptor(
-                                      *projectId.try_value(), "Runtime Package", a_project.compatibility,
-                                      a_project.startupSceneAssetId, a_assertContext)
+    auto descriptor = projectId ? cue::create_blank_project_descriptor(*projectId.try_value(), "Runtime Package",
+                                                                       a_project.compatibility,
+                                                                       a_project.startupSceneAssetId, a_assertContext)
                                 : cue::Result<cue::ProjectDescriptor>::failure(std::move(*projectId.try_error()));
-    auto publication = descriptor
-                           ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), a_scene,
-                                                                         a_assertContext)
-                           : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(
-                                 std::move(*descriptor.try_error()));
+    auto publication =
+        descriptor
+            ? cue::package::publish_minimal_runtime_data(*descriptor.try_value(), a_scene, a_assertContext)
+            : cue::Result<cue::package::MinimalRuntimeDataPublication>::failure(std::move(*descriptor.try_error()));
     if (!publication)
     {
-        return cue::Result<void>::failure(package_error(
-            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-            "Runtime Data could not be reproduced by the canonical Publisher"));
+        return cue::Result<void>::failure(
+            package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                          "Runtime Data could not be reproduced by the canonical Publisher"));
     }
     if (publication.try_value()->project_data().bytes() != a_projectBytes)
     {
-        return cue::Result<void>::failure(package_error(
-            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-            "Runtime Project Data is not the canonical Publisher representation"));
+        return cue::Result<void>::failure(
+            package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                          "Runtime Project Data is not the canonical Publisher representation"));
     }
     if (publication.try_value()->startup_scene_data().bytes() != a_sceneBytes)
     {
-        return cue::Result<void>::failure(package_error(
-            a_assertContext, cue::package::PackageError::InvalidRuntimeData,
-            "Runtime Scene Data is not the canonical Publisher representation"));
+        return cue::Result<void>::failure(
+            package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                          "Runtime Scene Data is not the canonical Publisher representation"));
     }
     return cue::Result<void>::success();
 }
 
 /// @brief Game Module MetadataのEngine互換Rangeを所有する
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 struct ModuleMetadataCompatibility final
 {
     std::string minimum;
@@ -810,8 +818,7 @@ struct ModuleMetadataInfo final
 };
 
 /// @brief Metadata Engine Compatibility Objectを順序非依存かつ未知・重複拒否で読む
-[[nodiscard]] bool read_metadata_compatibility(
-    JsonCursor &a_cursor, ModuleMetadataCompatibility &a_compatibility)
+[[nodiscard]] bool read_metadata_compatibility(JsonCursor &a_cursor, ModuleMetadataCompatibility &a_compatibility)
 {
     constexpr std::uint32_t k_minimum = 1U << 0U;
     constexpr std::uint32_t k_maximumExclusive = 1U << 1U;
@@ -1039,9 +1046,10 @@ struct ModuleMetadataInfo final
 }
 
 /// @brief Metadata v1のPackage起動互換性を検証する
-[[nodiscard]] cue::Result<void> validate_module_metadata(
-    std::string_view a_bytes, const cue::package::PackageManifest &a_manifest,
-    const RuntimeProjectInfo &a_project, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_module_metadata(std::string_view a_bytes,
+                                                         const cue::package::PackageManifest &a_manifest,
+                                                         const RuntimeProjectInfo &a_project,
+                                                         const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -1054,8 +1062,7 @@ struct ModuleMetadataInfo final
                                                             cue::package::PackageError::InvalidRuntimeData,
                                                             "Game Module Metadata body is invalid"));
         }
-        if (info.schemaVersion != 1U || !is_canonical_uuid_v4(info.artifactId) ||
-            !is_canonical_uuid_v4(info.projectId))
+        if (info.schemaVersion != 1U || !is_canonical_uuid_v4(info.artifactId) || !is_canonical_uuid_v4(info.projectId))
         {
             return cue::Result<void>::failure(package_error(a_assertContext,
                                                             cue::package::PackageError::InvalidRuntimeData,
@@ -1063,13 +1070,11 @@ struct ModuleMetadataInfo final
         }
         cue::EngineVersion minimum{};
         cue::EngineVersion maximum{};
-        const bool compatibilityMatches = parse_engine_version(info.compatibility.minimum, minimum) &&
-                                          minimum == a_project.compatibility.minimum &&
-                                          (info.compatibility.hasMaximum ==
-                                           a_project.compatibility.maximumExclusive.has_value()) &&
-                                          (!info.compatibility.hasMaximum ||
-                                           (parse_engine_version(info.compatibility.maximumExclusive, maximum) &&
-                                            maximum == *a_project.compatibility.maximumExclusive));
+        const bool compatibilityMatches =
+            parse_engine_version(info.compatibility.minimum, minimum) && minimum == a_project.compatibility.minimum &&
+            (info.compatibility.hasMaximum == a_project.compatibility.maximumExclusive.has_value()) &&
+            (!info.compatibility.hasMaximum || (parse_engine_version(info.compatibility.maximumExclusive, maximum) &&
+                                                maximum == *a_project.compatibility.maximumExclusive));
         const std::string_view expectedConfiguration =
             a_manifest.configuration() == cue::BuildConfiguration::Debug
                 ? "Debug"
@@ -1080,9 +1085,8 @@ struct ModuleMetadataInfo final
             !compatibilityMatches || info.abiVersion != CUE_GAME_MODULE_ABI_VERSION_1 ||
             info.configuration != expectedConfiguration || info.architecture != "x64" ||
             info.compilerFamily != "msvc" || info.toolset.compilerVersion != _MSC_VER ||
-            info.runtimeLibrary != (debug ? "DebugDll" : "Dll") ||
-            info.iteratorDebugLevel != (debug ? 2U : 0U) || info.moduleFile != "CueGameModule.dll" ||
-            info.entrySymbol != "cue_game_module_query")
+            info.runtimeLibrary != (debug ? "DebugDll" : "Dll") || info.iteratorDebugLevel != (debug ? 2U : 0U) ||
+            info.moduleFile != "CueGameModule.dll" || info.entrySymbol != "cue_game_module_query")
         {
             return cue::Result<void>::failure(package_error(a_assertContext,
                                                             cue::package::PackageError::InvalidRuntimeData,
@@ -1095,10 +1099,10 @@ struct ModuleMetadataInfo final
         terminate_package_exception(a_assertContext);
     }
 }
+#endif
 
 /// @brief Executable Moduleの完全Pathを切捨てなしで取得する
-[[nodiscard]] cue::Result<std::filesystem::path> executable_path(
-    const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<std::filesystem::path> executable_path(const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
@@ -1109,9 +1113,9 @@ struct ModuleMetadataInfo final
             const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
             if (length == 0U)
             {
-                return cue::Result<std::filesystem::path>::failure(windows_package_error(
-                    a_assertContext, cue::package::PackageError::InvalidPackagePath, GetLastError(),
-                    "RuntimeHost executable path could not be resolved"));
+                return cue::Result<std::filesystem::path>::failure(
+                    windows_package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                                          GetLastError(), "RuntimeHost executable path could not be resolved"));
             }
             if (length < buffer.size() - 1U)
             {
@@ -1120,9 +1124,9 @@ struct ModuleMetadataInfo final
             }
             if (buffer.size() >= 32768U)
             {
-                return cue::Result<std::filesystem::path>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidPackagePath,
-                    "RuntimeHost executable path exceeds the Windows limit"));
+                return cue::Result<std::filesystem::path>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                                  "RuntimeHost executable path exceeds the Windows limit"));
             }
             buffer.resize(std::min<std::size_t>(buffer.size() * 2U, 32768U));
         }
@@ -1134,9 +1138,9 @@ struct ModuleMetadataInfo final
 }
 
 /// @brief FilesystemRootからManifestに列挙された一Fileだけを読んでByte Identityを再検証する
-[[nodiscard]] cue::Result<std::vector<std::byte>> read_manifest_file(
-    cue::FilesystemRoot &a_filesystem, const cue::package::PackageFileEntry &a_entry,
-    const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<std::vector<std::byte>> read_manifest_file(cue::FilesystemRoot &a_filesystem,
+                                                                     const cue::package::PackageFileEntry &a_entry,
+                                                                     const cue::AssertContext &a_assertContext) noexcept
 {
     auto path = cue::RelativePath::parse(a_entry.relative_path(), a_assertContext);
     if (!path)
@@ -1157,8 +1161,8 @@ struct ModuleMetadataInfo final
 }
 
 /// @brief Manifest内の必須Role一件を返す
-[[nodiscard]] const cue::package::PackageFileEntry *find_role(
-    const cue::package::PackageManifest &a_manifest, cue::package::PackageFileRole a_role) noexcept
+[[nodiscard]] const cue::package::PackageFileEntry *find_role(const cue::package::PackageManifest &a_manifest,
+                                                              cue::package::PackageFileRole a_role) noexcept
 {
     const auto found = std::find_if(a_manifest.files().begin(), a_manifest.files().end(),
                                     [a_role](const cue::package::PackageFileEntry &a_entry) noexcept
@@ -1173,6 +1177,7 @@ struct ModuleMetadataInfo final
 }
 
 /// @brief Package相対Pathから最後のFile Nameだけを借用する
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 [[nodiscard]] std::string_view package_file_name(std::string_view a_relativePath) noexcept
 {
     const std::size_t separator = a_relativePath.find_last_of('/');
@@ -1183,14 +1188,12 @@ struct ModuleMetadataInfo final
 class WindowsGameModuleCodeLifetime final : public cue::runtime_host::GameModuleCodeLifetime
 {
   public:
-    WindowsGameModuleCodeLifetime(HMODULE a_library, std::vector<HMODULE> a_runtimeLibraries,
-                                  UniqueHandle a_rootGuard, UniqueHandle a_gameGuard,
-                                  UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
+    WindowsGameModuleCodeLifetime(HMODULE a_library, std::vector<HMODULE> a_runtimeLibraries, UniqueHandle a_rootGuard,
+                                  UniqueHandle a_gameGuard, UniqueHandle a_runtimeGuard, UniqueHandle a_moduleGuard,
                                   std::vector<UniqueHandle> a_runtimeDependencyGuards) noexcept
-        : m_library(a_library), m_runtimeLibraries(std::move(a_runtimeLibraries)),
-          m_rootGuard(std::move(a_rootGuard)), m_gameGuard(std::move(a_gameGuard)),
-          m_runtimeGuard(std::move(a_runtimeGuard)), m_moduleGuard(std::move(a_moduleGuard)),
-          m_runtimeDependencyGuards(std::move(a_runtimeDependencyGuards))
+        : m_library(a_library), m_runtimeLibraries(std::move(a_runtimeLibraries)), m_rootGuard(std::move(a_rootGuard)),
+          m_gameGuard(std::move(a_gameGuard)), m_runtimeGuard(std::move(a_runtimeGuard)),
+          m_moduleGuard(std::move(a_moduleGuard)), m_runtimeDependencyGuards(std::move(a_runtimeDependencyGuards))
     {
     }
 
@@ -1234,17 +1237,17 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
         const FARPROC queryAddress = GetProcAddress(m_codeLifetime->library(), "cue_game_module_query");
         if (queryAddress == nullptr)
         {
-            return cue::Result<cue::runtime_host::ResolvedGameModuleQuery>::failure(windows_package_error(
-                a_assertContext, cue::package::PackageError::InvalidRuntimeData, ERROR_PROC_NOT_FOUND,
-                "Game Module entry symbol is missing"));
+            return cue::Result<cue::runtime_host::ResolvedGameModuleQuery>::failure(
+                windows_package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData,
+                                      ERROR_PROC_NOT_FOUND, "Game Module entry symbol is missing"));
         }
         const cue::runtime_host::GameModuleQueryFunction query =
             std::bit_cast<cue::runtime_host::GameModuleQueryFunction>(queryAddress);
         return cue::Result<cue::runtime_host::ResolvedGameModuleQuery>::success({query, m_codeLifetime});
     }
 
-    [[nodiscard]] cue::Error make_query_contract_error(
-        const cue::AssertContext &a_assertContext, std::string_view a_summary) const noexcept override
+    [[nodiscard]] cue::Error make_query_contract_error(const cue::AssertContext &a_assertContext,
+                                                       std::string_view a_summary) const noexcept override
     {
         return package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData, a_summary);
     }
@@ -1254,27 +1257,27 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
 };
 
 /// @brief DirectoryをReparse追跡なし、Delete共有なしで固定する
-[[nodiscard]] cue::Result<UniqueHandle> guard_directory(
-    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<UniqueHandle> guard_directory(const std::filesystem::path &a_path,
+                                                        const cue::AssertContext &a_assertContext) noexcept
 {
     const std::filesystem::path extendedPath = extended_windows_path(a_path);
-    UniqueHandle handle(CreateFileW(extendedPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    UniqueHandle handle(CreateFileW(extendedPath.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                    nullptr));
     if (!handle.is_valid())
     {
-        return cue::Result<UniqueHandle>::failure(windows_package_error(
-            a_assertContext, cue::package::PackageError::InvalidPackagePath, GetLastError(),
-            "Runtime Package directory could not be fixed"));
+        return cue::Result<UniqueHandle>::failure(
+            windows_package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath, GetLastError(),
+                                  "Runtime Package directory could not be fixed"));
     }
     FILE_ATTRIBUTE_TAG_INFO attributes{};
     if (GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
         (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
         (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
     {
-        return cue::Result<UniqueHandle>::failure(package_error(
-            a_assertContext, cue::package::PackageError::InvalidPackagePath,
-            "Runtime Package directory is not a regular non-reparse directory"));
+        return cue::Result<UniqueHandle>::failure(
+            package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                          "Runtime Package directory is not a regular non-reparse directory"));
     }
     return cue::Result<UniqueHandle>::success(std::move(handle));
 }
@@ -1311,9 +1314,9 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
             const std::string_view path = entry.relative_path();
             if (!path.starts_with(prefix) || path.size() == prefix.size())
             {
-                return cue::Result<bool>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::InvalidPackageManifest,
-                    "Runtime dependency path is outside the direct Runtime directory"));
+                return cue::Result<bool>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::InvalidPackageManifest,
+                                  "Runtime dependency path is outside the direct Runtime directory"));
             }
             const std::filesystem::path name =
                 cue::runtime_host::detail::filesystem_path_from_utf8(path.substr(prefix.size()));
@@ -1331,16 +1334,16 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
             {
                 return cue::Result<bool>::success(false);
             }
-            return cue::Result<bool>::failure(windows_package_error(
-                a_assertContext, cue::package::PackageError::PackageFileMissing, code,
-                "Runtime dependency directory could not be inspected"));
+            return cue::Result<bool>::failure(
+                windows_package_error(a_assertContext, cue::package::PackageError::PackageFileMissing, code,
+                                      "Runtime dependency directory could not be inspected"));
         }
         if ((runtimeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
             (runtimeAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
         {
-            return cue::Result<bool>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidPackagePath,
-                "Runtime dependency path is not a regular non-reparse directory"));
+            return cue::Result<bool>::failure(
+                package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                              "Runtime dependency path is not a regular non-reparse directory"));
         }
 
         std::vector<std::wstring> actual;
@@ -1354,25 +1357,25 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
             if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
                 (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
             {
-                return cue::Result<bool>::failure(package_error(
-                    a_assertContext, cue::package::PackageError::PackageFileMismatch,
-                    "Runtime directory contains a non-regular or reparse entry"));
+                return cue::Result<bool>::failure(
+                    package_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                                  "Runtime directory contains a non-regular or reparse entry"));
             }
             actual.push_back(ascii_case_key(iterator->path().filename().wstring()));
             iterator.increment(iteratorError);
         }
         if (iteratorError)
         {
-            return cue::Result<bool>::failure(package_error(
-                a_assertContext, cue::package::PackageError::InvalidPackagePath,
-                "Runtime dependency directory could not be enumerated"));
+            return cue::Result<bool>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::InvalidPackagePath,
+                                                            "Runtime dependency directory could not be enumerated"));
         }
         std::sort(actual.begin(), actual.end());
         if (actual != expected)
         {
-            return cue::Result<bool>::failure(package_error(
-                a_assertContext, cue::package::PackageError::PackageFileMismatch,
-                "Runtime directory inventory differs from the Manifest"));
+            return cue::Result<bool>::failure(package_error(a_assertContext,
+                                                            cue::package::PackageError::PackageFileMismatch,
+                                                            "Runtime directory inventory differs from the Manifest"));
         }
         return cue::Result<bool>::success(!expected.empty());
     }
@@ -1383,33 +1386,33 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
 }
 
 /// @brief Load対象Package FileをWrite／Delete共有なしで固定する
-[[nodiscard]] cue::Result<UniqueHandle> guard_package_file(
-    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<UniqueHandle> guard_package_file(const std::filesystem::path &a_path,
+                                                           const cue::AssertContext &a_assertContext) noexcept
 {
     const std::filesystem::path extendedPath = extended_windows_path(a_path);
     UniqueHandle handle(CreateFileW(extendedPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.is_valid())
     {
-        return cue::Result<UniqueHandle>::failure(windows_package_error(
-            a_assertContext, cue::package::PackageError::PackageFileMissing, GetLastError(),
-            "Runtime Package load target could not be fixed"));
+        return cue::Result<UniqueHandle>::failure(
+            windows_package_error(a_assertContext, cue::package::PackageError::PackageFileMissing, GetLastError(),
+                                  "Runtime Package load target could not be fixed"));
     }
     FILE_ATTRIBUTE_TAG_INFO attributes{};
     if (GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
         (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
         (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U || GetFileType(handle.get()) != FILE_TYPE_DISK)
     {
-        return cue::Result<UniqueHandle>::failure(package_error(
-            a_assertContext, cue::package::PackageError::InvalidPackagePath,
-            "Runtime Package load target is not a regular non-reparse file"));
+        return cue::Result<UniqueHandle>::failure(
+            package_error(a_assertContext, cue::package::PackageError::InvalidPackagePath,
+                          "Runtime Package load target is not a regular non-reparse file"));
     }
     return cue::Result<UniqueHandle>::success(std::move(handle));
 }
 
 /// @brief Load済みModuleが事前に固定したPackage Fileと同一実体か検証する
-[[nodiscard]] cue::Result<void> validate_loaded_module_identity(
-    HMODULE a_library, HANDLE a_guardedFile, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_loaded_module_identity(HMODULE a_library, HANDLE a_guardedFile,
+                                                                const cue::AssertContext &a_assertContext) noexcept
 {
     const cue::runtime_host::detail::RuntimeModuleIdentityResult identity =
         cue::runtime_host::detail::inspect_loaded_module_identity(a_library, a_guardedFile);
@@ -1419,18 +1422,20 @@ class WindowsDynamicGameModuleQueryProvider final : public cue::runtime_host::Ga
     }
     if (identity.status == cue::runtime_host::detail::RuntimeModuleIdentityStatus::Mismatch)
     {
-        return cue::Result<void>::failure(package_error(
-            a_assertContext, cue::package::PackageError::PackageFileMismatch,
-            "Loaded Runtime image identity differs from the guarded Package file"));
+        return cue::Result<void>::failure(
+            package_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                          "Loaded Runtime image identity differs from the guarded Package file"));
     }
-    return cue::Result<void>::failure(windows_package_error(
-        a_assertContext, cue::package::PackageError::InvalidRuntimeData, identity.nativeError,
-        "Loaded Runtime image file identity could not be queried"));
+    return cue::Result<void>::failure(
+        windows_package_error(a_assertContext, cue::package::PackageError::InvalidRuntimeData, identity.nativeError,
+                              "Loaded Runtime image file identity could not be queried"));
 }
+#endif
 } // namespace
 
 namespace cue::runtime_host
 {
+#if defined(CUE_RUNTIME_PACKAGE_DYNAMIC)
 Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertContext) noexcept
 {
     try
@@ -1438,9 +1443,9 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         auto schemaIdentitySource = std::make_unique<schema::SchemaRegistryIdentitySource>();
         if (SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) == FALSE)
         {
-            return Result<RuntimeHostStartup>::failure(windows_package_error(
-                a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
-                "RuntimeHost could not restrict the process DLL search policy"));
+            return Result<RuntimeHostStartup>::failure(
+                windows_package_error(a_assertContext, package::PackageError::InvalidPackagePath, GetLastError(),
+                                      "RuntimeHost could not restrict the process DLL search policy"));
         }
         auto executable = executable_path(a_assertContext);
         if (!executable)
@@ -1459,8 +1464,8 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         {
             return Result<RuntimeHostStartup>::failure(std::move(*manifestPath.try_error()));
         }
-        auto manifestBytes = filesystem.try_value()->get()->read_file(*manifestPath.try_value(),
-                                                                       package::k_maximumPackageManifestBytes);
+        auto manifestBytes =
+            filesystem.try_value()->get()->read_file(*manifestPath.try_value(), package::k_maximumPackageManifestBytes);
         if (!manifestBytes)
         {
             return Result<RuntimeHostStartup>::failure(std::move(*manifestBytes.try_error()));
@@ -1473,9 +1478,9 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         if (manifest.try_value()->engine_version() != k_engineVersion ||
             manifest.try_value()->configuration() != host_configuration())
         {
-            return Result<RuntimeHostStartup>::failure(package_error(
-                a_assertContext, package::PackageError::InvalidPackageManifest,
-                "Package Engine version or Build Configuration differs from RuntimeHost"));
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackageManifest,
+                              "Package Engine version or Build Configuration differs from RuntimeHost"));
         }
         const package::PackageFileEntry *runtimeHostEntry =
             find_role(*manifest.try_value(), package::PackageFileRole::RuntimeHost);
@@ -1490,36 +1495,33 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         if (runtimeHostEntry == nullptr || projectEntry == nullptr || sceneEntry == nullptr ||
             metadataEntry == nullptr || moduleEntry == nullptr)
         {
-            return Result<RuntimeHostStartup>::failure(package_error(
-                a_assertContext, package::PackageError::InvalidPackageManifest,
-                "Package is missing a required Runtime role"));
+            return Result<RuntimeHostStartup>::failure(package_error(a_assertContext,
+                                                                     package::PackageError::InvalidPackageManifest,
+                                                                     "Package is missing a required Runtime role"));
         }
         if (projectEntry->byte_size() > package::k_maximumRuntimeProjectDataBytes ||
             sceneEntry->byte_size() > package::k_maximumRuntimeSceneDataBytes)
         {
-            return Result<RuntimeHostStartup>::failure(package_error(
-                a_assertContext, package::PackageError::InvalidPackageManifest,
-                "Runtime Data role exceeds its Package startup size limit"));
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackageManifest,
+                              "Runtime Data role exceeds its Package startup size limit"));
         }
         if (metadataEntry->byte_size() > k_maximumGameModuleMetadataBytes)
         {
-            return Result<RuntimeHostStartup>::failure(package_error(
-                a_assertContext, package::PackageError::InvalidPackageManifest,
-                "Game Module Metadata role exceeds its Package startup size limit"));
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackageManifest,
+                              "Game Module Metadata role exceeds its Package startup size limit"));
         }
-        auto runtimePeMemoryContract =
-            validate_runtime_pe_memory_contract(*manifest.try_value(), a_assertContext);
+        auto runtimePeMemoryContract = validate_runtime_pe_memory_contract(*manifest.try_value(), a_assertContext);
         if (!runtimePeMemoryContract)
         {
-            return Result<RuntimeHostStartup>::failure(
-                std::move(*runtimePeMemoryContract.try_error()));
+            return Result<RuntimeHostStartup>::failure(std::move(*runtimePeMemoryContract.try_error()));
         }
-        if (executable.try_value()->filename() !=
-            detail::filesystem_path_from_utf8(runtimeHostEntry->relative_path()))
+        if (executable.try_value()->filename() != detail::filesystem_path_from_utf8(runtimeHostEntry->relative_path()))
         {
-            return Result<RuntimeHostStartup>::failure(package_error(
-                a_assertContext, package::PackageError::InvalidPackagePath,
-                "Running RuntimeHost executable does not match the Manifest role"));
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackagePath,
+                              "Running RuntimeHost executable does not match the Manifest role"));
         }
         auto inventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
         if (!inventory)
@@ -1532,8 +1534,8 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         if (!projectBytes || !sceneBytes || !metadataBytes)
         {
             Error error = !projectBytes ? std::move(*projectBytes.try_error())
-                                       : (!sceneBytes ? std::move(*sceneBytes.try_error())
-                                                      : std::move(*metadataBytes.try_error()));
+                                        : (!sceneBytes ? std::move(*sceneBytes.try_error())
+                                                       : std::move(*metadataBytes.try_error()));
             return Result<RuntimeHostStartup>::failure(std::move(error));
         }
         auto project = parse_runtime_project(text_view(*projectBytes.try_value()), a_assertContext);
@@ -1569,14 +1571,13 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         auto gameGuard = guard_directory(root / "Game", a_assertContext);
         if (!rootGuard || !gameGuard)
         {
-            return Result<RuntimeHostStartup>::failure(
-                !rootGuard ? std::move(*rootGuard.try_error()) : std::move(*gameGuard.try_error()));
+            return Result<RuntimeHostStartup>::failure(!rootGuard ? std::move(*rootGuard.try_error())
+                                                                  : std::move(*gameGuard.try_error()));
         }
         UniqueHandle runtimeGuard;
         std::vector<UniqueHandle> runtimeDependencyGuards;
         std::vector<const package::PackageFileEntry *> runtimeDependencyEntries;
-        auto runtimeInventory =
-            validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
+        auto runtimeInventory = validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext);
         if (!runtimeInventory)
         {
             return Result<RuntimeHostStartup>::failure(std::move(*runtimeInventory.try_error()));
@@ -1600,15 +1601,13 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
                     root / detail::filesystem_path_from_utf8(entry.relative_path()), a_assertContext);
                 if (!dependencyGuard)
                 {
-                    return Result<RuntimeHostStartup>::failure(
-                        std::move(*dependencyGuard.try_error()));
+                    return Result<RuntimeHostStartup>::failure(std::move(*dependencyGuard.try_error()));
                 }
                 runtimeDependencyGuards.push_back(std::move(*dependencyGuard.try_value()));
                 runtimeDependencyEntries.push_back(&entry);
             }
         }
-        const std::filesystem::path modulePath =
-            root / detail::filesystem_path_from_utf8(moduleEntry->relative_path());
+        const std::filesystem::path modulePath = root / detail::filesystem_path_from_utf8(moduleEntry->relative_path());
         auto moduleGuard = guard_package_file(modulePath, a_assertContext);
         if (!moduleGuard)
         {
@@ -1645,11 +1644,11 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         {
             return Result<RuntimeHostStartup>::failure(std::move(*runtimeLoadOrder.try_error()));
         }
-        auto guardedInventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
-        auto guardedRuntimeInventory = guardedInventory
-                                           ? validate_runtime_dependency_inventory(
-                                                 root, *manifest.try_value(), a_assertContext)
-                                           : Result<bool>::failure(std::move(*guardedInventory.try_error()));
+        auto guardedInventory =
+            package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
+        auto guardedRuntimeInventory =
+            guardedInventory ? validate_runtime_dependency_inventory(root, *manifest.try_value(), a_assertContext)
+                             : Result<bool>::failure(std::move(*guardedInventory.try_error()));
         if (!guardedRuntimeInventory || *guardedRuntimeInventory.try_value() != hasRuntimeDependencies)
         {
             return Result<RuntimeHostStartup>::failure(
@@ -1669,12 +1668,12 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
             {
                 const DWORD code = GetLastError();
                 unload_libraries(runtimeLibraries);
-                return Result<RuntimeHostStartup>::failure(windows_package_error(
-                    a_assertContext, package::PackageError::InvalidRuntimeData, code,
-                    "Manifest Runtime dependency could not be loaded from its fixed path"));
+                return Result<RuntimeHostStartup>::failure(
+                    windows_package_error(a_assertContext, package::PackageError::InvalidRuntimeData, code,
+                                          "Manifest Runtime dependency could not be loaded from its fixed path"));
             }
-            auto dependencyIdentity = validate_loaded_module_identity(
-                dependency, runtimeDependencyGuards[index].get(), a_assertContext);
+            auto dependencyIdentity =
+                validate_loaded_module_identity(dependency, runtimeDependencyGuards[index].get(), a_assertContext);
             if (!dependencyIdentity)
             {
                 FreeLibrary(dependency);
@@ -1689,9 +1688,9 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
         {
             const DWORD code = GetLastError();
             unload_libraries(runtimeLibraries);
-            return Result<RuntimeHostStartup>::failure(windows_package_error(
-                a_assertContext, package::PackageError::InvalidRuntimeData, code,
-                "Game Module could not be loaded from the Manifest path"));
+            return Result<RuntimeHostStartup>::failure(
+                windows_package_error(a_assertContext, package::PackageError::InvalidRuntimeData, code,
+                                      "Game Module could not be loaded from the Manifest path"));
         }
         auto moduleIdentity = validate_loaded_module_identity(library, moduleGuard.try_value()->get(), a_assertContext);
         if (!moduleIdentity)
@@ -1701,22 +1700,161 @@ Result<RuntimeHostStartup> load_runtime_package(const AssertContext &a_assertCon
             return Result<RuntimeHostStartup>::failure(std::move(*moduleIdentity.try_error()));
         }
         auto codeLifetime = std::make_shared<WindowsGameModuleCodeLifetime>(
-            library, std::move(runtimeLibraries), std::move(*rootGuard.try_value()),
-            std::move(*gameGuard.try_value()), std::move(runtimeGuard), std::move(*moduleGuard.try_value()),
-            std::move(runtimeDependencyGuards));
+            library, std::move(runtimeLibraries), std::move(*rootGuard.try_value()), std::move(*gameGuard.try_value()),
+            std::move(runtimeGuard), std::move(*moduleGuard.try_value()), std::move(runtimeDependencyGuards));
         WindowsDynamicGameModuleQueryProvider provider(codeLifetime);
-        Result<PreparedGameModule> prepared = connect_game_module(
-            provider, manifest.try_value()->project_id(), std::move(schemaIdentitySource), a_assertContext);
+        Result<PreparedGameModule> prepared = connect_game_module(provider, manifest.try_value()->project_id(),
+                                                                  std::move(schemaIdentitySource), a_assertContext);
         if (!prepared)
         {
             return Result<RuntimeHostStartup>::failure(std::move(*prepared.try_error()));
         }
-        return Result<RuntimeHostStartup>::success(RuntimeHostStartup(
-            std::move(*prepared.try_value()), std::move(*startupScene.try_value())));
+        return Result<RuntimeHostStartup>::success(
+            RuntimeHostStartup(std::move(*prepared.try_value()), std::move(*startupScene.try_value())));
     }
     catch (...)
     {
         terminate_package_exception(a_assertContext);
     }
 }
+#endif
+
+#if defined(CUE_RUNTIME_PACKAGE_STATIC)
+Result<RuntimeHostStartup> load_static_runtime_package(GameModuleQueryFunction a_query,
+                                                       std::string_view a_expectedProjectId,
+                                                       StaticRuntimeTrustMode a_expectedTrustMode,
+                                                       std::string_view a_expectedPublisherKeyId,
+                                                       const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        auto executable = executable_path(a_assertContext);
+        if (!executable)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*executable.try_error()));
+        }
+        const std::filesystem::path root = executable.try_value()->parent_path();
+        const std::string rootUtf8 = path_to_utf8(root);
+        auto filesystem = create_windows_filesystem_root(rootUtf8, a_assertContext);
+        if (!filesystem)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*filesystem.try_error()));
+        }
+        auto manifestPath = RelativePath::parse("CuePackage.json", a_assertContext);
+        if (!manifestPath)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*manifestPath.try_error()));
+        }
+        auto manifestBytes =
+            filesystem.try_value()->get()->read_file(*manifestPath.try_value(), package::k_maximumPackageManifestBytes);
+        if (!manifestBytes)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*manifestBytes.try_error()));
+        }
+        auto manifest = package::parse_package_manifest(text_view(*manifestBytes.try_value()), a_assertContext);
+        if (!manifest)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*manifest.try_error()));
+        }
+        const std::optional<std::string_view> applicationExecutable = manifest.try_value()->application_executable();
+        const std::optional<ShippingTrustMode> trustMode = manifest.try_value()->trust_mode();
+        const std::optional<std::string_view> publisherKeyId = manifest.try_value()->publisher_key_id();
+        const ShippingTrustMode expectedManifestTrustMode = a_expectedTrustMode == StaticRuntimeTrustMode::UnsignedLocal
+                                                                ? ShippingTrustMode::UnsignedLocal
+                                                                : ShippingTrustMode::PublisherSigned;
+        const bool publisherMatches = a_expectedTrustMode == StaticRuntimeTrustMode::UnsignedLocal
+                                          ? a_expectedPublisherKeyId.empty() && !publisherKeyId.has_value()
+                                          : !a_expectedPublisherKeyId.empty() && publisherKeyId.has_value() &&
+                                                *publisherKeyId == a_expectedPublisherKeyId;
+        if (manifest.try_value()->schema_version() != package::k_monolithicPackageManifestSchemaVersion ||
+            manifest.try_value()->execution_model() != package::PackageExecutionModel::Monolithic ||
+            manifest.try_value()->engine_version() != k_engineVersion ||
+            manifest.try_value()->configuration() != BuildConfiguration::Release ||
+            manifest.try_value()->configuration() != host_configuration() ||
+            manifest.try_value()->project_id() != a_expectedProjectId || !applicationExecutable.has_value() ||
+            !trustMode.has_value() || *trustMode != expectedManifestTrustMode || !publisherMatches)
+        {
+            return Result<RuntimeHostStartup>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Monolithic Package identity, execution model, or trust policy differs from the Product"));
+        }
+        if (path_to_utf8(executable.try_value()->filename()) != *applicationExecutable)
+        {
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackagePath,
+                              "Running Product executable does not match the Manifest application executable"));
+        }
+
+        const package::PackageFileEntry *applicationEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::ApplicationExecutable);
+        const package::PackageFileEntry *projectEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::ProjectRuntimeData);
+        const package::PackageFileEntry *sceneEntry =
+            find_role(*manifest.try_value(), package::PackageFileRole::StartupSceneRuntimeData);
+        if (applicationEntry == nullptr || projectEntry == nullptr || sceneEntry == nullptr ||
+            applicationEntry->relative_path() != *applicationExecutable ||
+            projectEntry->byte_size() > package::k_maximumRuntimeProjectDataBytes ||
+            sceneEntry->byte_size() > package::k_maximumRuntimeSceneDataBytes)
+        {
+            return Result<RuntimeHostStartup>::failure(
+                package_error(a_assertContext, package::PackageError::InvalidPackageManifest,
+                              "Monolithic Package is missing a valid required Runtime role"));
+        }
+        auto inventory = package::verify_package_manifest_files(rootUtf8, *manifest.try_value(), a_assertContext);
+        if (!inventory)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*inventory.try_error()));
+        }
+        auto projectBytes = read_manifest_file(**filesystem.try_value(), *projectEntry, a_assertContext);
+        auto sceneBytes = read_manifest_file(**filesystem.try_value(), *sceneEntry, a_assertContext);
+        if (!projectBytes || !sceneBytes)
+        {
+            return Result<RuntimeHostStartup>::failure(!projectBytes ? std::move(*projectBytes.try_error())
+                                                                     : std::move(*sceneBytes.try_error()));
+        }
+        auto project = parse_runtime_project(text_view(*projectBytes.try_value()), a_assertContext);
+        if (!project || project.try_value()->projectId != manifest.try_value()->project_id() ||
+            project.try_value()->startupSceneAssetId != manifest.try_value()->startup_scene_asset_id())
+        {
+            return Result<RuntimeHostStartup>::failure(
+                project ? package_error(a_assertContext, package::PackageError::InvalidRuntimeData,
+                                        "Runtime Project identity differs from the Monolithic Manifest")
+                        : std::move(*project.try_error()));
+        }
+        auto startupScene = parse_runtime_scene(text_view(*sceneBytes.try_value()),
+                                                manifest.try_value()->startup_scene_asset_id(), a_assertContext);
+        if (!startupScene)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*startupScene.try_error()));
+        }
+        auto canonicalRuntimeData = validate_canonical_runtime_data(
+            *project.try_value(), *startupScene.try_value(), text_view(*projectBytes.try_value()),
+            text_view(*sceneBytes.try_value()), a_assertContext);
+        if (!canonicalRuntimeData)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*canonicalRuntimeData.try_error()));
+        }
+
+        auto provider = create_static_game_module_query_provider(a_query, a_assertContext);
+        if (!provider)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*provider.try_error()));
+        }
+        auto schemaIdentitySource = std::make_unique<schema::SchemaRegistryIdentitySource>();
+        Result<PreparedGameModule> prepared =
+            connect_game_module(**provider.try_value(), manifest.try_value()->project_id(),
+                                std::move(schemaIdentitySource), a_assertContext);
+        if (!prepared)
+        {
+            return Result<RuntimeHostStartup>::failure(std::move(*prepared.try_error()));
+        }
+        return Result<RuntimeHostStartup>::success(
+            RuntimeHostStartup(std::move(*prepared.try_value()), std::move(*startupScene.try_value())));
+    }
+    catch (...)
+    {
+        terminate_package_exception(a_assertContext);
+    }
+}
+#endif
 } // namespace cue::runtime_host

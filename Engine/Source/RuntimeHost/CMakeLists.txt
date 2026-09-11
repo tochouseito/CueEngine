@@ -61,8 +61,29 @@ target_link_libraries(
 target_include_directories(Cue.RuntimeHost.Core PUBLIC Public)
 cue_configure_runtime_host_library(Cue.RuntimeHost.Core)
 
-add_library(Cue.RuntimeHost.Static STATIC StaticGameModuleQueryProvider.cpp)
-target_link_libraries(Cue.RuntimeHost.Static PUBLIC Cue.RuntimeHost.Core)
+add_library(Cue.RuntimeHost.Static STATIC)
+target_sources(
+    Cue.RuntimeHost.Static
+    PRIVATE
+        RuntimePackage.cpp
+        RuntimePackage.h
+        RuntimePath.h
+        StaticGameModuleQueryProvider.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS Public
+        FILES
+            Public/Cue/RuntimeHost/StaticRuntimePackage.h
+)
+target_link_libraries(
+    Cue.RuntimeHost.Static
+    PUBLIC
+        Cue.RuntimeHost.Core
+    PRIVATE
+        Cue.IO.Windows
+        Cue.Package
+)
+target_compile_definitions(Cue.RuntimeHost.Static PRIVATE CUE_RUNTIME_PACKAGE_STATIC=1)
 cue_configure_runtime_host_library(Cue.RuntimeHost.Static)
 
 if(NOT DEFINED CUE_RUNTIME_HOST_BUILD_DYNAMIC)
@@ -88,6 +109,7 @@ if(CUE_RUNTIME_HOST_BUILD_DYNAMIC)
             Cue.IO.Windows
             Cue.Package
     )
+    target_compile_definitions(Cue.RuntimeHost.Dynamic.Windows PRIVATE CUE_RUNTIME_PACKAGE_DYNAMIC=1)
     cue_configure_runtime_host_library(Cue.RuntimeHost.Dynamic.Windows)
 
     add_executable(CueRuntimeHost Main.cpp)

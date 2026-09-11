@@ -6,11 +6,16 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <span>
 #include <thread>
 #include <utility>
+
+#if defined(_WIN32)
+#include <Windows.h>
+#endif
 
 namespace
 {
@@ -44,6 +49,212 @@ enum class WorkflowError : std::int64_t
     cue::ErrorCode code = cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Package.Workflow",
                                                  static_cast<std::int64_t>(a_code));
     return cue::Error::create(a_assertContext.fatal_handler(), std::move(code), a_summary);
+}
+
+/// @brief Run前検証からProcess終了までPackage TreeのWrite／Deleteを拒否する所有Guard
+class PackageRunGuard final
+{
+  public:
+    /// @brief 無効Guardを構築する
+    PackageRunGuard() noexcept = default;
+    /// @brief Guardの共有所有を禁止する
+    PackageRunGuard(const PackageRunGuard &) = delete;
+    /// @brief Guardの共有所有を禁止する
+    PackageRunGuard &operator=(const PackageRunGuard &) = delete;
+    /// @brief 全Native Handleの所有権を移動する
+    PackageRunGuard(PackageRunGuard &&a_other) noexcept : m_handles(std::move(a_other.m_handles))
+    {
+        a_other.m_handles.clear();
+    }
+    /// @brief 既存Guardを解放して全Native Handleの所有権を移動する
+    PackageRunGuard &operator=(PackageRunGuard &&a_other) noexcept
+    {
+        if (this != &a_other)
+        {
+            reset();
+            m_handles = std::move(a_other.m_handles);
+            a_other.m_handles.clear();
+        }
+        return *this;
+    }
+    /// @brief Package Treeの置換Guardを解放する
+    ~PackageRunGuard() noexcept
+    {
+        reset();
+    }
+
+#if defined(_WIN32)
+    /// @brief 検証対象Native Handleの所有権を追加する
+    void add_handle(HANDLE a_handle)
+    {
+        m_handles.push_back(a_handle);
+    }
+#endif
+
+  private:
+    /// @brief 所有中の全Native Handleを逆順に閉じる
+    void reset() noexcept
+    {
+#if defined(_WIN32)
+        for (auto handle = m_handles.rbegin(); handle != m_handles.rend(); ++handle)
+        {
+            if (*handle != nullptr && *handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(*handle);
+            }
+        }
+        m_handles.clear();
+#endif
+    }
+
+#if defined(_WIN32)
+    std::vector<HANDLE> m_handles;
+#else
+    std::vector<std::byte> m_handles;
+#endif
+};
+
+/// @brief UTF-8 PathをWindows filesystem Pathへ変換する
+[[nodiscard]] std::filesystem::path native_path(std::string_view a_path)
+{
+#if defined(_WIN32)
+    std::u8string pathBytes;
+    pathBytes.reserve(a_path.size());
+    for (const char byte : a_path)
+    {
+        pathBytes.push_back(static_cast<char8_t>(byte));
+    }
+    return std::filesystem::path(std::move(pathBytes));
+#else
+    return std::filesystem::path(a_path);
+#endif
+}
+
+#if defined(_WIN32)
+/// @brief Absolute Windows PathをProcess Manifest非依存のExtended-length形式へ変換する
+[[nodiscard]] std::filesystem::path extended_native_path(const std::filesystem::path &a_path)
+{
+    std::wstring native = a_path.native();
+    std::replace(native.begin(), native.end(), L'/', L'\\');
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return std::filesystem::path(std::move(native));
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+}
+
+/// @brief Absolute Directory Chainを非Reparse Handleで固定する
+[[nodiscard]] bool lock_directory_chain(const std::filesystem::path &a_directory, PackageRunGuard &a_guard,
+                                        std::vector<std::wstring> &a_lockedDirectories)
+{
+    if (!a_directory.is_absolute())
+    {
+        return false;
+    }
+    std::filesystem::path current = a_directory.root_path();
+    for (const std::filesystem::path &segment : a_directory.relative_path())
+    {
+        current /= segment;
+        const std::wstring currentText = current.native();
+        const bool alreadyLocked = std::ranges::any_of(
+            a_lockedDirectories,
+            [&currentText](const std::wstring &a_locked)
+            {
+                return a_locked.size() == currentText.size() &&
+                       CompareStringOrdinal(a_locked.data(), static_cast<int>(a_locked.size()), currentText.data(),
+                                            static_cast<int>(currentText.size()), TRUE) == CSTR_EQUAL;
+            });
+        if (alreadyLocked)
+        {
+            continue;
+        }
+        HANDLE handle =
+            CreateFileW(extended_native_path(current).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        if (GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            CloseHandle(handle);
+            return false;
+        }
+        a_guard.add_handle(handle);
+        a_lockedDirectories.push_back(currentText);
+    }
+    return !a_lockedDirectories.empty();
+}
+
+/// @brief Package Fileを非Reparse Handleで固定する
+[[nodiscard]] bool lock_regular_file(const std::filesystem::path &a_path, PackageRunGuard &a_guard)
+{
+    HANDLE handle =
+        CreateFileW(extended_native_path(a_path).c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr,
+                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) == FALSE ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U || GetFileType(handle) != FILE_TYPE_DISK)
+    {
+        CloseHandle(handle);
+        return false;
+    }
+    a_guard.add_handle(handle);
+    return true;
+}
+#endif
+
+/// @brief Package Root、Manifest、全Payloadを固定しWrite／Delete共有を拒否する
+[[nodiscard]] cue::Result<PackageRunGuard> acquire_package_run_guard(std::string_view a_packageRoot,
+                                                                     const cue::package::PackageManifest &a_manifest,
+                                                                     const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        PackageRunGuard guard;
+#if defined(_WIN32)
+        const std::filesystem::path root = native_path(a_packageRoot);
+        std::vector<std::wstring> lockedDirectories;
+        if (!lock_directory_chain(root, guard, lockedDirectories) ||
+            !lock_regular_file(root / L"CuePackage.json", guard))
+        {
+            return cue::Result<PackageRunGuard>::failure(
+                make_workflow_error(a_assertContext, WorkflowError::ArtifactMismatch,
+                                    "Published Package root or manifest could not be locked for validated execution"));
+        }
+        for (const cue::package::PackageFileEntry &entry : a_manifest.files())
+        {
+            const std::filesystem::path relative = native_path(entry.relative_path());
+            if (!lock_directory_chain(root / relative.parent_path(), guard, lockedDirectories) ||
+                !lock_regular_file(root / relative, guard))
+            {
+                return cue::Result<PackageRunGuard>::failure(
+                    make_workflow_error(a_assertContext, WorkflowError::ArtifactMismatch,
+                                        "Published Package file could not be locked for validated execution"));
+            }
+        }
+#else
+        static_cast<void>(a_packageRoot);
+        static_cast<void>(a_manifest);
+#endif
+        return cue::Result<PackageRunGuard>::success(std::move(guard));
+    }
+    catch (...)
+    {
+        terminate_workflow_exception(a_assertContext);
+    }
 }
 
 /// @brief Build ConfigurationをCMakeおよびPackage Pathと同じ固定名へ変換する
@@ -120,10 +331,41 @@ enum class WorkflowError : std::int64_t
     return locator.substr(root.size());
 }
 
-/// @brief Error Domain、Code、SummaryをUI向け一行Messageへ平坦化する
-[[nodiscard]] std::string error_message(const cue::Error &a_error)
+/// @brief Package File InventoryがRole、Path、Size、Hashまで完全一致するか判定する
+[[nodiscard]] bool package_files_match(std::span<const cue::package::PackageFileEntry> a_expected,
+                                       std::span<const cue::package::PackageFileEntry> a_actual) noexcept
 {
-    std::string message(a_error.root_code().domain());
+    return a_expected.size() == a_actual.size() &&
+           std::equal(
+               a_expected.begin(), a_expected.end(), a_actual.begin(),
+               [](const cue::package::PackageFileEntry &a_left, const cue::package::PackageFileEntry &a_right) noexcept
+               {
+                   return a_left.role() == a_right.role() && a_left.relative_path() == a_right.relative_path() &&
+                          a_left.byte_size() == a_right.byte_size() && a_left.sha256() == a_right.sha256();
+               });
+}
+
+/// @brief 再読込Manifestが公開完了時Snapshotと全Identity・Inventoryで一致するか判定する
+[[nodiscard]] bool package_manifest_matches_summary(const cue::package::PackageManifest &a_manifest,
+                                                    const cue::package::PackageManifestSummary &a_expected) noexcept
+{
+    return a_manifest.project_id() == a_expected.projectId && a_manifest.engine_version() == a_expected.engineVersion &&
+           a_manifest.configuration() == a_expected.configuration &&
+           a_manifest.execution_model() == a_expected.executionModel &&
+           a_manifest.startup_scene_asset_id() == a_expected.startupSceneAssetId &&
+           a_manifest.application_executable() == a_expected.applicationExecutable &&
+           a_manifest.trust_mode() == a_expected.trustMode &&
+           a_manifest.publisher_key_id() == a_expected.publisherKeyId &&
+           a_manifest.files().size() == a_expected.fileCount &&
+           package_files_match(a_expected.files, a_manifest.files());
+}
+
+/// @brief 日本語の失敗段階とError Domain、Code、SummaryをUI向け一行Messageへ平坦化する
+[[nodiscard]] std::string error_message(std::string_view a_context, const cue::Error &a_error)
+{
+    std::string message(a_context);
+    message.append(": ");
+    message.append(a_error.root_code().domain());
     message.push_back('/');
     message.append(std::to_string(a_error.root_code().value()));
     message.push_back(' ');
@@ -230,6 +472,109 @@ struct GamePackageWorkflowService::Impl final
                                           *assertContext);
     }
 
+    /// @brief Publisher ReportをWorkflow Snapshotまたは保持可能な失敗診断へ変換する
+    [[nodiscard]] Result<PublishedRuntimePackageSnapshot> complete_publication(
+        PackagePublishReport a_report, const BuildArtifactInventory &a_artifact, std::string_view a_operationId,
+        std::string_view a_executableName, std::optional<PackagePublishDiagnosticSnapshot> &a_diagnostic) noexcept
+    {
+        if (!a_report.succeeded())
+        {
+            a_diagnostic = PackagePublishDiagnosticSnapshot{
+                a_report.stage, a_report.outcome, std::move(a_report.destination), std::move(a_report.manifest)};
+            Error primary = a_report.error
+                                ? std::move(*a_report.error)
+                                : make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
+                                                      "Package publication failed without a diagnostic");
+            if (a_report.recoveryStaging)
+            {
+                recoveryStaging = std::move(a_report.recoveryStaging);
+                Result<void> rollback = retry_staging_recovery();
+                if (!rollback)
+                {
+                    primary.append_secondary_diagnostics(*assertContext, *rollback.try_error(),
+                                                         "Package staging recovery retry failed", "Rollback");
+                }
+            }
+            return Result<PublishedRuntimePackageSnapshot>::failure(std::move(primary));
+        }
+        const std::string packageRoot = join_absolute(projectRoot, a_report.destination);
+        return Result<PublishedRuntimePackageSnapshot>::success(
+            {std::string(a_operationId), std::string(a_artifact.artifact_id()), std::move(a_report.destination),
+             join_absolute(packageRoot, a_executableName), std::move(a_report.manifest)});
+    }
+
+    /// @brief SnapshotのPackageをManifestと完全Inventoryへ再照合し固定Executable名を返す
+    [[nodiscard]] Result<PackageRunGuard> validate_package_for_run(
+        const PublishedRuntimePackageSnapshot &a_package) noexcept
+    {
+        Result<RelativePath> manifestPath =
+            RelativePath::parse(join_relative(a_package.destination, "CuePackage.json"), *assertContext);
+        if (!manifestPath)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*manifestPath.try_error()));
+        }
+        Result<std::vector<std::byte>> manifestBytes =
+            projectFilesystem->read_file(*manifestPath.try_value(), k_maximumPackageManifestBytes);
+        if (!manifestBytes)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*manifestBytes.try_error()));
+        }
+        const std::string_view manifestText(reinterpret_cast<const char *>(manifestBytes.try_value()->data()),
+                                            manifestBytes.try_value()->size());
+        Result<PackageManifest> manifest = parse_package_manifest(manifestText, *assertContext);
+        if (!manifest)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*manifest.try_error()));
+        }
+        const PackageManifestSummary &expected = a_package.manifest;
+        if (!package_manifest_matches_summary(*manifest.try_value(), expected))
+        {
+            return Result<PackageRunGuard>::failure(
+                make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                    "Published Package Manifest differs from the completed workflow snapshot"));
+        }
+        const std::string executableName = manifest.try_value()->execution_model() == PackageExecutionModel::Monolithic
+                                               ? std::string(*manifest.try_value()->application_executable())
+                                               : std::string("CueRuntimeHost.exe");
+        const std::string packageRoot = join_absolute(projectRoot, a_package.destination);
+        if (a_package.executable != join_absolute(packageRoot, executableName))
+        {
+            return Result<PackageRunGuard>::failure(
+                make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                    "Published Package executable is outside the validated Package root"));
+        }
+        Result<PackageRunGuard> packageGuard =
+            acquire_package_run_guard(packageRoot, *manifest.try_value(), *assertContext);
+        if (!packageGuard)
+        {
+            return packageGuard;
+        }
+        manifestBytes = projectFilesystem->read_file(*manifestPath.try_value(), k_maximumPackageManifestBytes);
+        if (!manifestBytes)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*manifestBytes.try_error()));
+        }
+        const std::string_view lockedManifestText(reinterpret_cast<const char *>(manifestBytes.try_value()->data()),
+                                                  manifestBytes.try_value()->size());
+        Result<PackageManifest> lockedManifest = parse_package_manifest(lockedManifestText, *assertContext);
+        if (!lockedManifest)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*lockedManifest.try_error()));
+        }
+        if (!package_manifest_matches_summary(*lockedManifest.try_value(), expected))
+        {
+            return Result<PackageRunGuard>::failure(
+                make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                    "Locked Package Manifest differs from the completed workflow snapshot"));
+        }
+        Result<void> verified = verify_package_manifest_files(packageRoot, *lockedManifest.try_value(), *assertContext);
+        if (!verified)
+        {
+            return Result<PackageRunGuard>::failure(std::move(*verified.try_error()));
+        }
+        return packageGuard;
+    }
+
     /// @brief Build ArtifactとRuntime Dataから不変Packageを一度だけ公開する
     [[nodiscard]] Result<PublishedRuntimePackageSnapshot> publish_package(
         const BuildArtifactInventory &a_artifact, const PackageInputs &a_inputs, std::string_view a_operationId,
@@ -243,6 +588,39 @@ struct GamePackageWorkflowService::Impl final
             {
                 return Result<PublishedRuntimePackageSnapshot>::failure(make_workflow_error(
                     *assertContext, WorkflowError::InvalidInput, "Package Build Configuration is invalid"));
+            }
+            if (a_artifact.profile().target() == BuildTarget::ShippingProduct)
+            {
+                if (a_artifact.configuration() != BuildConfiguration::Release ||
+                    a_inputs.projectId != a_inputs.runtimeData.project_id())
+                {
+                    return Result<PublishedRuntimePackageSnapshot>::failure(
+                        make_workflow_error(*assertContext, WorkflowError::ArtifactMismatch,
+                                            "Shipping Package requires Release and matching Project Runtime Data"));
+                }
+                const std::string packageParent = "Generated/Packages/Shipping/Release";
+                Result<RelativePath> parent = RelativePath::parse(packageParent, *assertContext);
+                Result<RelativePath> destination =
+                    RelativePath::parse(join_relative(packageParent, a_operationId), *assertContext);
+                if (!parent || !destination)
+                {
+                    return Result<PublishedRuntimePackageSnapshot>::failure(parent ? std::move(*destination.try_error())
+                                                                                   : std::move(*parent.try_error()));
+                }
+                Result<void> directory = projectFilesystem->create_directories(*parent.try_value());
+                if (!directory)
+                {
+                    return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*directory.try_error()));
+                }
+                Result<PackagePublishReport> published = publish_monolithic_runtime_package(
+                    *projectFilesystem, projectRoot, *artifactReader, a_artifact, a_inputs.engineVersion,
+                    a_inputs.runtimeData, *destination.try_value(), a_cancellation, *assertContext);
+                if (!published)
+                {
+                    return Result<PublishedRuntimePackageSnapshot>::failure(std::move(*published.try_error()));
+                }
+                return complete_publication(std::move(*published.try_value()), a_artifact, a_operationId,
+                                            "CueGameProduct.exe", a_diagnostic);
             }
             Result<void> runtimePeMemoryContract =
                 validate_runtime_pe_memory_contract(a_artifact.files(), *assertContext);
@@ -422,31 +800,8 @@ struct GamePackageWorkflowService::Impl final
             PackagePublishReport report =
                 publish_runtime_package(*projectFilesystem, *destination.try_value(), *manifest.try_value(), payloads,
                                         a_cancellation, *assertContext);
-            if (!report.succeeded())
-            {
-                a_diagnostic = PackagePublishDiagnosticSnapshot{
-                    report.stage, report.outcome, std::move(report.destination), std::move(report.manifest)};
-                Error primary = report.error
-                                    ? std::move(*report.error)
-                                    : make_workflow_error(*assertContext, WorkflowError::PackagePublicationFailed,
-                                                          "Package publication failed without a diagnostic");
-                if (report.recoveryStaging)
-                {
-                    recoveryStaging = std::move(report.recoveryStaging);
-                    Result<void> rollback = retry_staging_recovery();
-                    if (!rollback)
-                    {
-                        primary.append_secondary_diagnostics(*assertContext, *rollback.try_error(),
-                                                             "Package staging recovery retry failed", "Rollback");
-                    }
-                }
-                return Result<PublishedRuntimePackageSnapshot>::failure(std::move(primary));
-            }
-            const std::string packageRoot = join_absolute(projectRoot, destination.try_value()->text());
-            return Result<PublishedRuntimePackageSnapshot>::success(
-                {std::string(a_operationId), std::string(a_artifact.artifact_id()),
-                 std::string(destination.try_value()->text()), join_absolute(packageRoot, "CueRuntimeHost.exe"),
-                 std::move(report.manifest)});
+            return complete_publication(std::move(report), a_artifact, a_operationId, "CueRuntimeHost.exe",
+                                        a_diagnostic);
         }
         catch (...)
         {
@@ -539,6 +894,7 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
 {
     try
     {
+        const bool monolithicShipping = a_buildRequest.profile.target() == BuildTarget::ShippingProduct;
         if (!m_impl->is_owner_thread())
         {
             return Result<void>::failure(make_workflow_error(*m_impl->assertContext,
@@ -580,7 +936,8 @@ Result<void> GamePackageWorkflowService::start(BuildRequest a_buildRequest, CMak
             m_impl->current.publicationDiagnostic.reset();
             m_impl->current.recoveryStagingLocator.reset();
             m_impl->current.runOutput.clear();
-            m_impl->current.message = "Game Module Buildを開始しました。";
+            m_impl->current.message = monolithicShipping ? "Release Monolithic Shipping ProductのBuildを開始しました。"
+                                                         : "Game Module Buildを開始しました。";
         }
         return Result<void>::success();
     }
@@ -692,7 +1049,10 @@ void GamePackageWorkflowService::advance() noexcept
                         m_impl->current.build = build;
                         m_impl->current.state = PackageWorkflowState::Packaging;
                         m_impl->current.activeStage = PackageWorkflowStage::Package;
-                        m_impl->current.message = "Runtime DataとStandalone Packageを公開しています。";
+                        m_impl->current.message =
+                            build.artifact->profile().target() == BuildTarget::ShippingProduct
+                                ? "Runtime DataとMonolithic Shipping Packageを検証・公開しています。"
+                                : "Runtime DataとModular Standalone Packageを検証・公開しています。";
                     }
                     if (!inputs)
                     {
@@ -727,14 +1087,18 @@ void GamePackageWorkflowService::advance() noexcept
                                     impl->current.state = cancellation->is_cancel_requested()
                                                               ? PackageWorkflowState::Cancelled
                                                               : PackageWorkflowState::Failed;
-                                    impl->current.message = error_message(*published.try_error());
+                                    impl->current.message =
+                                        error_message("Packageの検証または公開に失敗しました", *published.try_error());
                                     return;
                                 }
                                 impl->current.state = PackageWorkflowState::PackageReady;
                                 impl->current.recoveryStagingLocator.reset();
                                 impl->current.package = *published.try_value();
                                 impl->current.latestSuccessfulPackage = std::move(*published.try_value());
-                                impl->current.message = "Standalone Packageを公開しました。";
+                                impl->current.message =
+                                    artifact.profile().target() == BuildTarget::ShippingProduct
+                                        ? "Monolithic Shipping Packageを公開しました。ローカル実行専用です。"
+                                        : "Modular Standalone Packageを公開しました。";
                             });
                     }
                 }
@@ -841,11 +1205,27 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
                                                                  WorkflowError::NoPublishedPackage,
                                                                  "Published Package snapshot is missing"));
             }
+        }
+        Result<PackageRunGuard> packageValidation = m_impl->validate_package_for_run(*package);
+        if (!packageValidation)
+        {
+            Error error = std::move(*packageValidation.try_error());
+            const std::string message = error_message("Packageの実行前検証に失敗しました", error);
+            std::scoped_lock lock(m_impl->mutex);
+            m_impl->current.state = PackageWorkflowState::Failed;
+            m_impl->current.activeStage = PackageWorkflowStage::None;
+            m_impl->current.message = message;
+            return Result<void>::failure(std::move(error));
+        }
+        const bool monolithic = package->manifest.executionModel == PackageExecutionModel::Monolithic;
+        {
+            std::scoped_lock lock(m_impl->mutex);
             m_impl->processCancellation = cancellation;
             m_impl->current.state = PackageWorkflowState::Running;
             m_impl->current.activeStage = PackageWorkflowStage::Run;
             m_impl->current.runOutput.clear();
-            m_impl->current.message = "Standalone Runtimeを起動しました。";
+            m_impl->current.message = monolithic ? "Monolithic Shipping Productを起動しました。"
+                                                 : "Modular Standalone Runtimeを起動しました。";
         }
         const std::string workingDirectory = join_absolute(m_impl->projectRoot, package->destination);
         const std::vector<std::string> arguments{a_mode == PackageRunMode::SmokeTest ? "--package-smoke-test"
@@ -853,8 +1233,10 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
         ChildProcessRequest request(package->executable, arguments, workingDirectory, m_impl->runEnvironment,
                                     std::nullopt, k_maximumRuntimeOutputBytes);
         m_impl->worker = std::thread(
-            [impl = m_impl.get(), request = std::move(request), cancellation]()
+            [impl = m_impl.get(), request = std::move(request), cancellation, monolithic,
+             packageGuard = std::move(*packageValidation.try_value())]()
             {
+                static_cast<void>(packageGuard);
                 Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
                 std::scoped_lock lock(impl->mutex);
                 impl->processCancellation.reset();
@@ -863,25 +1245,29 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
                 if (!runResult)
                 {
                     impl->current.state = PackageWorkflowState::Failed;
-                    impl->current.message = error_message(*runResult.try_error());
+                    impl->current.message =
+                        error_message("Product Processの起動または監視に失敗しました", *runResult.try_error());
                     return;
                 }
                 impl->current.runOutput = runResult.try_value()->output();
                 if (runResult.try_value()->outcome() == ChildProcessOutcome::Cancelled)
                 {
                     impl->current.state = PackageWorkflowState::PackageReady;
-                    impl->current.message = "Standalone Runtimeを停止しました。";
+                    impl->current.message = monolithic ? "Monolithic Shipping Productを停止しました。"
+                                                       : "Modular Standalone Runtimeを停止しました。";
                     return;
                 }
                 if (runResult.try_value()->outcome() == ChildProcessOutcome::Exited &&
                     runResult.try_value()->exit_code() == std::optional<std::uint32_t>(0U))
                 {
                     impl->current.state = PackageWorkflowState::RunSucceeded;
-                    impl->current.message = "Standalone Runtimeが正常終了しました。";
+                    impl->current.message = monolithic ? "Monolithic Shipping Productが正常終了しました。"
+                                                       : "Modular Standalone Runtimeが正常終了しました。";
                     return;
                 }
                 impl->current.state = PackageWorkflowState::Failed;
-                impl->current.message = "Standalone Runtimeが異常終了しました。";
+                impl->current.message = monolithic ? "Monolithic Shipping Productが異常終了しました。"
+                                                   : "Modular Standalone Runtimeが異常終了しました。";
             });
         return Result<void>::success();
     }

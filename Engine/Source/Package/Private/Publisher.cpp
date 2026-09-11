@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -213,12 +214,23 @@ class DirectoryHandle final
     {
         inventoryBytes += file.byte_size();
     }
-    return {std::string(a_manifest.project_id()),
-            a_manifest.engine_version(),
-            a_manifest.configuration(),
-            std::string(a_manifest.startup_scene_asset_id()),
-            a_manifest.files().size(),
-            inventoryBytes};
+    const std::optional<std::string_view> applicationExecutable = a_manifest.application_executable();
+    const std::optional<std::string_view> publisherKeyId = a_manifest.publisher_key_id();
+    const std::span<const cue::package::PackageFileEntry> manifestFiles = a_manifest.files();
+    return {
+        std::string(a_manifest.project_id()),
+        a_manifest.engine_version(),
+        a_manifest.configuration(),
+        a_manifest.execution_model(),
+        std::string(a_manifest.startup_scene_asset_id()),
+        applicationExecutable ? std::optional<std::string>(std::string(*applicationExecutable)) : std::nullopt,
+        a_manifest.trust_mode(),
+        publisherKeyId ? std::optional<std::string>(std::string(*publisherKeyId)) : std::nullopt,
+        false,
+        std::vector<cue::package::PackageFileEntry>(manifestFiles.begin(), manifestFiles.end()),
+        a_manifest.files().size(),
+        inventoryBytes,
+    };
 }
 
 /// @brief StageとOutcomeに対応する所有Reportを構築する

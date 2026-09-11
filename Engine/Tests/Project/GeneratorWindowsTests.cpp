@@ -22,8 +22,7 @@
 
 namespace
 {
-#if !defined(CUE_TEST_CMAKE_COMMAND) || !defined(CUE_TEST_ENGINE_ROOT) || \
-    !defined(CUE_TEST_BUILD_CONFIGURATION)
+#if !defined(CUE_TEST_CMAKE_COMMAND) || !defined(CUE_TEST_ENGINE_ROOT) || !defined(CUE_TEST_BUILD_CONFIGURATION)
 #error Generator workspace tests require CMake command and Engine root definitions
 #endif
 
@@ -56,8 +55,7 @@ class TestDirectory final
             return;
         }
         m_path = temporary.data();
-        m_path += L"CueGen-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                  std::to_wstring(GetTickCount64());
+        m_path += L"CueGen-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
         m_isCreated = CreateDirectoryW(m_path.c_str(), nullptr) != FALSE;
     }
 
@@ -189,23 +187,24 @@ class TestDirectory final
                                         std::wstring(a_target) + L" --parallel");
 }
 
-/// @brief Release Monolithic ProductをWARP一Frameで実行する
-[[nodiscard]] bool run_product_smoke(const std::wstring &a_projectRoot, const std::wstring &a_product)
+/// @brief Package外のRelease Monolithic Productが通常起動を拒否することを確認する
+[[nodiscard]] bool reject_product_smoke_without_package(const std::wstring &a_projectRoot,
+                                                        const std::wstring &a_product)
 {
     const std::filesystem::path productPath(a_product);
-    return run_cmake(a_projectRoot, L"-E chdir \"" + productPath.parent_path().native() + L"\" \"" +
-                                        productPath.native() + L"\" --package-smoke-test");
+    return !run_cmake(a_projectRoot, L"-E chdir \"" + productPath.parent_path().native() + L"\" \"" +
+                                         productPath.native() + L"\" --package-smoke-test");
 }
 
 /// @brief Release Monolithic ProductのArtifact Probe Protocolと固定Markerを検証する
-[[nodiscard]] bool run_product_artifact_probe(const std::wstring &a_projectRoot,
-                                              const std::wstring &a_product)
+[[nodiscard]] bool run_product_artifact_probe(const std::wstring &a_projectRoot, const std::wstring &a_product)
 {
     const std::filesystem::path productPath(a_product);
     const std::filesystem::path marker = productPath.parent_path() / L".probe-complete";
     DeleteFileW(marker.c_str());
     if (!run_cmake(a_projectRoot, L"-E chdir \"" + productPath.parent_path().native() + L"\" \"" +
-                                      productPath.native() + L"\" --cue-artifact-probe Release "
+                                      productPath.native() +
+                                      L"\" --cue-artifact-probe Release "
                                       L"12345678-1234-4abc-8def-1234567890ab"))
     {
         return false;
@@ -293,7 +292,7 @@ class TestDirectory final
         !is_file(productPath) || CreateDirectoryW(isolatedDirectory.c_str(), nullptr) == FALSE ||
         CopyFileW(productPath.c_str(), isolatedProduct.c_str(), TRUE) == FALSE ||
         !run_product_artifact_probe(projectRootPath, isolatedProduct) ||
-        !run_product_smoke(projectRootPath, isolatedProduct))
+        !reject_product_smoke_without_package(projectRootPath, isolatedProduct))
     {
         return false;
     }

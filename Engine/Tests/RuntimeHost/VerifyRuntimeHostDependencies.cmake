@@ -13,10 +13,10 @@ foreach(
     IN ITEMS
         "CueRuntimeHost LINK_LIBRARIES: Cue.RuntimeHost.Core;Cue.RuntimeHost.Dynamic.Windows"
         "Cue.RuntimeHost.Core LINK_LIBRARIES: Cue.Foundation;Cue.GameCore;Cue.GameModule.Abi;Cue.Input.Windows;Cue.Platform.Windows;Cue.RHI.D3D12.Windows;Cue.Runtime;Cue.Scene;Cue.Schema;Cue.Platform.Windows.TestSupport"
-        "Cue.RuntimeHost.Static LINK_LIBRARIES: Cue.RuntimeHost.Core"
+        "Cue.RuntimeHost.Static LINK_LIBRARIES: Cue.RuntimeHost.Core;Cue.IO.Windows;Cue.Package"
         "Cue.RuntimeHost.Dynamic.Windows LINK_LIBRARIES: Cue.RuntimeHost.Core;Cue.IO.Windows;Cue.Package"
         "Core must not link: Cue.RuntimeHost.Dynamic.Windows;Cue.IO.Windows;Cue.Package"
-        "Static must link only: Cue.RuntimeHost.Core"
+        "Static package loader dependencies: Cue.RuntimeHost.Core;Cue.IO.Windows;Cue.Package"
         "Process implementation target: Cue.RuntimeHost.Core"
         "Testing-only Core dependency: Cue.Platform.Windows.TestSupport"
         "Forbidden source dependencies: D3D12NativeTypes;Renderer;Editor;ProjectFiles;ECS"

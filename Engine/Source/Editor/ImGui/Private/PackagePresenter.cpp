@@ -70,6 +70,18 @@ namespace
     return "Unknown";
 }
 
+/// @brief Package Execution ModelをUI表示名へ変換する
+[[nodiscard]] const char *execution_model_label(cue::package::PackageExecutionModel a_model) noexcept
+{
+    return a_model == cue::package::PackageExecutionModel::Monolithic ? "Monolithic Shipping" : "Modular Standalone";
+}
+
+/// @brief Shipping Trust ModeをUI表示名へ変換する
+[[nodiscard]] const char *trust_mode_label(cue::ShippingTrustMode a_mode) noexcept
+{
+    return a_mode == cue::ShippingTrustMode::PublisherSigned ? "Publisher Signed" : "Unsigned Local";
+}
+
 /// @brief Package公開StageをUI表示名へ変換する
 [[nodiscard]] const char *publish_stage_label(cue::package::PackagePublishStage a_stage) noexcept
 {
@@ -261,7 +273,10 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
             else
             {
                 Result<BuildProfile> profile =
-                    BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
+                    a_command == EditorPackageCommand::StartShipping
+                        ? BuildProfile::create_shipping_product(BuildConfiguration::Release,
+                                                                ShippingTrustMode::UnsignedLocal, {}, *m_assertContext)
+                        : BuildProfile::create(m_configuration, BuildTarget::GameModule, *m_assertContext);
                 if (!profile)
                 {
                     set_error(*profile.try_error(), "Build Profileの作成");
@@ -284,19 +299,28 @@ bool PackagePresenter::submit(EditorPackageCommand a_command) noexcept
         switch (a_command)
         {
         case EditorPackageCommand::Start:
-            set_status("BuildからStandalone Package公開までを開始しました。");
+            set_status("Modular StandaloneのBuildとPackage公開を開始しました。");
+            break;
+        case EditorPackageCommand::StartShipping:
+            set_status("Release Monolithic Shipping ProductのBuildとPackage公開を開始しました。ローカル実行専用です。");
             break;
         case EditorPackageCommand::Cancel:
             set_status("進行中Workflowへキャンセルを要求しました。");
             break;
         case EditorPackageCommand::Retry:
-            set_status("BuildからStandalone Package公開までを再実行しました。");
+            set_status("前回TargetのBuildとPackage公開を再実行しました。");
             break;
         case EditorPackageCommand::Run:
-            set_status("Standalone Runtimeを起動しました。");
+            set_status(m_current.package &&
+                               m_current.package->manifest.executionModel == package::PackageExecutionModel::Monolithic
+                           ? "Monolithic Shipping Productを起動しました。"
+                           : "Modular Standalone Runtimeを起動しました。");
             break;
         case EditorPackageCommand::Stop:
-            set_status("Standalone Runtimeへ停止を要求しました。");
+            set_status(m_current.package &&
+                               m_current.package->manifest.executionModel == package::PackageExecutionModel::Monolithic
+                           ? "Monolithic Shipping Productへ停止を要求しました。"
+                           : "Modular Standalone Runtimeへ停止を要求しました。");
             break;
         }
         return true;
@@ -470,7 +494,7 @@ void PackagePresenter::draw_toolbar() noexcept
     {
         ImGui::BeginDisabled();
     }
-    if (ImGui::BeginCombo("Configuration", configuration_label(m_configuration)))
+    if (ImGui::BeginCombo("Modular Configuration", configuration_label(m_configuration)))
     {
         constexpr BuildConfiguration configurations[] = {BuildConfiguration::Debug, BuildConfiguration::Development,
                                                          BuildConfiguration::Release};
@@ -489,9 +513,14 @@ void PackagePresenter::draw_toolbar() noexcept
         ImGui::EndCombo();
     }
     ImGui::Checkbox("Force Configure", &m_forceConfigure);
-    if (ImGui::Button("Build & Package"))
+    if (ImGui::Button("Build Modular Package"))
     {
         static_cast<void>(submit(EditorPackageCommand::Start));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Build Monolithic Shipping (Release)"))
+    {
+        static_cast<void>(submit(EditorPackageCommand::StartShipping));
     }
     if (!enabled)
     {
@@ -592,6 +621,14 @@ void PackagePresenter::draw_result() noexcept
         ImGui::Text("Outcome: %s", publish_outcome_label(diagnostic.outcome));
         ImGui::Text("Project: %s", diagnostic.manifest.projectId.c_str());
         ImGui::Text("Configuration: %s", configuration_label(diagnostic.manifest.configuration));
+        ImGui::Text("Execution: %s", execution_model_label(diagnostic.manifest.executionModel));
+        if (diagnostic.manifest.trustMode)
+        {
+            ImGui::Text("Trust: %s", trust_mode_label(*diagnostic.manifest.trustMode));
+            ImGui::TextUnformatted(diagnostic.manifest.publicDistributionReady
+                                       ? "Distribution: Public Ready"
+                                       : "Distribution: Local Execution Only / Not Publishable");
+        }
         ImGui::Text("Files: %zu", diagnostic.manifest.fileCount);
         ImGui::Text("Bytes: %llu", static_cast<unsigned long long>(diagnostic.manifest.inventoryBytes));
         ImGui::TextWrapped("Destination: %s", diagnostic.destination.c_str());
@@ -604,6 +641,14 @@ void PackagePresenter::draw_result() noexcept
         ImGui::Text("Artifact: %s", shown->artifactId.c_str());
         ImGui::Text("Project: %s", shown->manifest.projectId.c_str());
         ImGui::Text("Configuration: %s", configuration_label(shown->manifest.configuration));
+        ImGui::Text("Execution: %s", execution_model_label(shown->manifest.executionModel));
+        if (shown->manifest.trustMode)
+        {
+            ImGui::Text("Trust: %s", trust_mode_label(*shown->manifest.trustMode));
+            ImGui::TextUnformatted(shown->manifest.publicDistributionReady
+                                       ? "Distribution: Public Ready"
+                                       : "Distribution: Local Execution Only / Not Publishable");
+        }
         ImGui::Text("Files: %zu", shown->manifest.fileCount);
         ImGui::Text("Bytes: %llu", static_cast<unsigned long long>(shown->manifest.inventoryBytes));
         ImGui::TextWrapped("Output: %s", shown->destination.c_str());

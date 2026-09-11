@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <source_location>
 #include <span>
 #include <string>
@@ -99,6 +100,9 @@ struct RunnerState final
     std::atomic<std::uint32_t> calls = 0U;
     std::atomic<std::size_t> maximumCapturedOutputBytes = 0U;
     std::atomic<bool> active = false;
+    std::atomic<bool> probePackageMutation = false;
+    std::atomic<bool> packageMutationBlocked = false;
+    std::vector<std::string> mutationProbeRelativePaths;
 };
 
 /// @brief BuildまたはRuntimeの成功、失敗、取消待機をProcessなしで再現する
@@ -117,6 +121,26 @@ class ControlledRunner final : public cue::ChildProcessRunner
     {
         m_state->maximumCapturedOutputBytes.store(a_request.maximum_captured_output_bytes().value_or(0U),
                                                   std::memory_order_release);
+        if (m_state->probePackageMutation.load(std::memory_order_acquire))
+        {
+            bool allBlocked = true;
+            const std::filesystem::path root(a_request.working_directory());
+            for (const std::string &relativePath : m_state->mutationProbeRelativePaths)
+            {
+                const std::filesystem::path path = relativePath.empty() ? std::filesystem::path(a_request.executable())
+                                                                        : root / std::filesystem::path(relativePath);
+                HANDLE mutation = CreateFileW(path.c_str(), GENERIC_WRITE | DELETE,
+                                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                const DWORD code = mutation == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+                if (mutation != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(mutation);
+                }
+                allBlocked = allBlocked && mutation == INVALID_HANDLE_VALUE && code == ERROR_SHARING_VIOLATION;
+            }
+            m_state->packageMutationBlocked.store(allBlocked, std::memory_order_release);
+        }
         m_state->active.store(true, std::memory_order_release);
         const std::uint32_t call = m_state->calls.fetch_add(1U, std::memory_order_relaxed);
         while (m_state->mode.load(std::memory_order_acquire) == RunnerMode::BlockUntilCancelled &&
@@ -328,6 +352,37 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     return a_condition;
 }
 
+/// @brief Test Fileを所有Byte Snapshotとして読む
+[[nodiscard]] std::optional<std::vector<std::byte>> read_binary_file(const std::filesystem::path &a_path)
+{
+    std::ifstream stream(a_path, std::ios::binary | std::ios::ate);
+    if (!stream)
+    {
+        return std::nullopt;
+    }
+    const std::streampos end = stream.tellg();
+    if (end < 0)
+    {
+        return std::nullopt;
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    stream.seekg(0, std::ios::beg);
+    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream && !bytes.empty())
+    {
+        return std::nullopt;
+    }
+    return bytes;
+}
+
+/// @brief Test Fileを指定Byte列へ置換する
+[[nodiscard]] bool write_binary_file(const std::filesystem::path &a_path, std::span<const std::byte> a_bytes)
+{
+    std::ofstream stream(a_path, std::ios::binary | std::ios::trunc);
+    stream.write(reinterpret_cast<const char *>(a_bytes.data()), static_cast<std::streamsize>(a_bytes.size()));
+    return stream.good();
+}
+
 /// @brief Test PEへLittle-endian 16-bit値を書き込む
 void write_u16(std::vector<std::byte> &a_bytes, std::size_t a_offset, std::uint16_t a_value) noexcept
 {
@@ -413,6 +468,10 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
             return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(std::nullopt);
         }
         m_state->calls.fetch_add(1U, std::memory_order_relaxed);
+        if (a_plan.profile().target() == cue::BuildTarget::ShippingProduct)
+        {
+            return publish_shipping_product(a_plan);
+        }
         const std::vector<std::byte> moduleBytes = m_state->invalidPortableExecutable.load(std::memory_order_acquire)
                                                        ? text_bytes("test-game-module")
                                                        : make_test_pe();
@@ -473,6 +532,52 @@ class MaterializingPublisher final : public cue::BuildArtifactPublisher
     }
 
   private:
+    /// @brief Release Shipping Productの最小ArtifactをVersion DirectoryへMaterializeする
+    [[nodiscard]] cue::Result<std::optional<cue::BuildArtifactInventory>> publish_shipping_product(
+        const cue::BuildPlan &a_plan) noexcept
+    {
+        const std::vector<std::byte> executableBytes = text_bytes("test-monolithic-product");
+        const std::vector<std::byte> metadataBytes = text_bytes("{\"schemaVersion\":2}\n");
+        auto executablePayload =
+            cue::package::PackageFilePayload::create(cue::package::PackageFileRole::ApplicationExecutable,
+                                                     "CueGameProduct.exe", executableBytes, *m_assertContext);
+        auto metadataPayload =
+            cue::package::PackageFilePayload::create(cue::package::PackageFileRole::GameModuleMetadata,
+                                                     "CueGameProduct.metadata.json", metadataBytes, *m_assertContext);
+        if (!executablePayload || !metadataPayload)
+        {
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                executablePayload ? std::move(*metadataPayload.try_error())
+                                  : std::move(*executablePayload.try_error()));
+        }
+        const std::string artifactId(a_plan.operation_id());
+        const std::filesystem::path versionDirectory = std::filesystem::path(a_plan.project_root()) /
+                                                       std::filesystem::path(a_plan.artifact_store_directory()) /
+                                                       L"Versions" / std::filesystem::path(artifactId);
+        std::error_code error;
+        std::filesystem::create_directories(versionDirectory, error);
+        if (error || !write_file(versionDirectory / L"CueGameProduct.exe", executableBytes) ||
+            !write_file(versionDirectory / L"CueGameProduct.metadata.json", metadataBytes))
+        {
+            cue::ErrorCode code = cue::ErrorCode::create(m_assertContext->fatal_handler(), "Cue.Package.Test", 2);
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(cue::Error::create(
+                m_assertContext->fatal_handler(), std::move(code), "Shipping artifact materialization failed"));
+        }
+        std::vector<cue::BuildArtifactFile> files = {
+            {"CueGameProduct.exe", executableBytes.size(),
+             std::string(executablePayload.try_value()->entry().sha256())},
+            {"CueGameProduct.metadata.json", metadataBytes.size(),
+             std::string(metadataPayload.try_value()->entry().sha256())},
+        };
+        auto inventory = cue::BuildArtifactInventory::create(a_plan, artifactId, std::move(files), *m_assertContext);
+        if (!inventory)
+        {
+            return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(*inventory.try_error()));
+        }
+        return cue::Result<std::optional<cue::BuildArtifactInventory>>::success(
+            std::optional<cue::BuildArtifactInventory>(std::move(*inventory.try_value())));
+    }
+
     /// @brief ASCII Test入力を所有Byte列へ変換する
     [[nodiscard]] static std::vector<std::byte> text_bytes(std::string_view a_text)
     {
@@ -560,6 +665,15 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 {
     auto profile =
         cue::BuildProfile::create(cue::BuildConfiguration::Debug, cue::BuildTarget::GameModule, a_assertContext);
+    return {std::move(a_projectRoot), *profile.try_value(), std::move(a_operationId), k_workspaceCompatibility};
+}
+
+/// @brief Release UnsignedLocal Shipping Product用Build Requestを作る
+[[nodiscard]] cue::BuildRequest make_shipping_request(std::string a_projectRoot, std::string a_operationId,
+                                                      const cue::AssertContext &a_assertContext)
+{
+    auto profile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext);
     return {std::move(a_projectRoot), *profile.try_value(), std::move(a_operationId), k_workspaceCompatibility};
 }
 
@@ -781,6 +895,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     }
     cue::package::PackageWorkflowSnapshot packageFailed = service->snapshot();
     if (!require(packageFailed.state == cue::package::PackageWorkflowState::Failed && !packageFailed.package &&
+                 packageFailed.message.starts_with("Packageの検証または公開に失敗しました") &&
                  packageFailed.latestSuccessfulPackage &&
                  packageFailed.latestSuccessfulPackage->destination == firstDestination))
     {
@@ -888,6 +1003,165 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
                    runRunner.lastCancellationMode.load(std::memory_order_acquire) ==
                        cue::ChildProcessCancellationMode::Immediate);
 }
+
+/// @brief Release Monolithic Shippingの公開、Run前再検証、Process実行を検証する
+[[nodiscard]] bool test_shipping_workflow(const cue::AssertContext &a_assertContext)
+{
+    if (!require(!cue::BuildProfile::create_shipping_product(
+                     cue::BuildConfiguration::Debug, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext) &&
+                 !cue::BuildProfile::create_shipping_product(
+                     cue::BuildConfiguration::Development, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext)))
+    {
+        return false;
+    }
+
+    TestDirectory directory;
+    const std::filesystem::path projectRoot = directory.path() / L"ShippingProject";
+    const std::filesystem::path engineRoot = directory.path() / L"Engine";
+    std::filesystem::create_directories(projectRoot);
+    std::filesystem::create_directories(engineRoot);
+
+    RunnerState buildRunner;
+    RunnerState runRunner;
+    PublisherState publisher;
+    RecoveryFilesystemState recoveryFilesystem;
+    auto build = cue::GameBuildService::create(make_settings(), std::make_unique<ControlledRunner>(buildRunner),
+                                               std::make_unique<MaterializingPublisher>(publisher, a_assertContext),
+                                               a_assertContext);
+    auto projectFilesystem = cue::create_windows_filesystem_root(projectRoot.generic_string(), a_assertContext);
+    auto engineFilesystem = cue::create_windows_filesystem_root(engineRoot.generic_string(), a_assertContext);
+    if (!require(build && projectFilesystem && engineFilesystem))
+    {
+        return false;
+    }
+    auto guardedProjectFilesystem = std::make_unique<RecoveryFilesystemRoot>(
+        std::move(*projectFilesystem.try_value()), recoveryFilesystem, publisher, a_assertContext);
+    auto workflow = cue::package::GamePackageWorkflowService::create(
+        std::move(*build.try_value()), std::make_unique<MaterializingArtifactReader>(publisher),
+        std::move(guardedProjectFilesystem), std::move(*engineFilesystem.try_value()),
+        std::make_unique<ControlledRunner>(runRunner), projectRoot.generic_string(), {}, a_assertContext);
+    auto runtimeData = make_runtime_data(a_assertContext);
+    if (!require(workflow && runtimeData))
+    {
+        return false;
+    }
+    std::unique_ptr<cue::package::GamePackageWorkflowService> service = std::move(*workflow.try_value());
+    constexpr std::string_view firstOperation = "41234567-89ab-4cde-8f01-23456789abcd";
+    if (!require(service->start(
+                     make_shipping_request(projectRoot.generic_string(), std::string(firstOperation), a_assertContext),
+                     cue::CMakeConfigureMode::Required, {1U, 0U, 0U}, std::string(k_projectId),
+                     *runtimeData.try_value()) &&
+                 service->wait_for_package()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot first = service->snapshot();
+    if (!require(first.state == cue::package::PackageWorkflowState::PackageReady && first.package &&
+                 first.package->manifest.configuration == cue::BuildConfiguration::Release &&
+                 first.package->manifest.executionModel == cue::package::PackageExecutionModel::Monolithic &&
+                 first.package->manifest.trustMode == cue::ShippingTrustMode::UnsignedLocal &&
+                 !first.package->manifest.publicDistributionReady && first.package->manifest.fileCount == 3U &&
+                 first.package->destination ==
+                     std::string("Generated/Packages/Shipping/Release/") + std::string(firstOperation) &&
+                 first.package->executable.ends_with("/CueGameProduct.exe") &&
+                 std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
+                                         L"CueGameProduct.exe") &&
+                 !std::filesystem::exists(projectRoot / std::filesystem::path(first.package->destination) /
+                                          L"CueGameModule.dll") &&
+                 runRunner.calls.load(std::memory_order_acquire) == 0U))
+    {
+        return false;
+    }
+
+    const std::filesystem::path packageRoot = projectRoot / std::filesystem::path(first.package->destination);
+    const std::filesystem::path manifestPath = packageRoot / L"CuePackage.json";
+    const std::filesystem::path tamperedScene =
+        packageRoot / std::filesystem::path(runtimeData.try_value()->startup_scene_data().relative_path());
+    std::optional<std::vector<std::byte>> manifestBytes = read_binary_file(manifestPath);
+    std::optional<std::vector<std::byte>> sceneBytes = read_binary_file(tamperedScene);
+    if (!require(manifestBytes && sceneBytes))
+    {
+        return false;
+    }
+    auto manifest = cue::package::parse_package_manifest(
+        {reinterpret_cast<const char *>(manifestBytes->data()), manifestBytes->size()}, a_assertContext);
+    sceneBytes->push_back(static_cast<std::byte>('\n'));
+    auto replacementScene =
+        manifest ? cue::package::PackageFilePayload::create(
+                       cue::package::PackageFileRole::StartupSceneRuntimeData,
+                       std::string(runtimeData.try_value()->startup_scene_data().relative_path()),
+                       std::move(*sceneBytes), a_assertContext)
+                 : cue::Result<cue::package::PackageFilePayload>::failure(std::move(*manifest.try_error()));
+    if (!require(manifest && replacementScene))
+    {
+        return false;
+    }
+    std::vector<cue::package::PackageFileEntry> replacementEntries;
+    replacementEntries.reserve(manifest.try_value()->files().size());
+    for (const cue::package::PackageFileEntry &entry : manifest.try_value()->files())
+    {
+        replacementEntries.push_back(entry.role() == cue::package::PackageFileRole::StartupSceneRuntimeData
+                                         ? replacementScene.try_value()->entry()
+                                         : entry);
+    }
+    const std::optional<std::string_view> publisherKeyId = manifest.try_value()->publisher_key_id();
+    const std::optional<std::string_view> signaturePath = manifest.try_value()->manifest_signature_path();
+    auto replacementManifest = cue::package::PackageManifest::create_monolithic(
+        std::string(manifest.try_value()->project_id()), manifest.try_value()->engine_version(),
+        manifest.try_value()->configuration(), std::string(manifest.try_value()->startup_scene_asset_id()),
+        std::string(manifest.try_value()->startup_scene_runtime_data_path()), *manifest.try_value()->trust_mode(),
+        publisherKeyId ? std::optional<std::string>(std::string(*publisherKeyId)) : std::nullopt,
+        signaturePath ? std::optional<std::string>(std::string(*signaturePath)) : std::nullopt,
+        std::move(replacementEntries), a_assertContext);
+    auto replacementManifestText =
+        replacementManifest
+            ? cue::package::serialize_package_manifest(*replacementManifest.try_value(), a_assertContext)
+            : cue::Result<std::string>::failure(std::move(*replacementManifest.try_error()));
+    const std::span<const char> replacementManifestCharacters(
+        replacementManifestText ? replacementManifestText.try_value()->data() : nullptr,
+        replacementManifestText ? replacementManifestText.try_value()->size() : 0U);
+    if (!require(replacementManifestText && write_binary_file(tamperedScene, replacementScene.try_value()->bytes()) &&
+                 write_binary_file(manifestPath, std::as_bytes(replacementManifestCharacters))))
+    {
+        return false;
+    }
+    if (!require(!service->run(cue::package::PackageRunMode::SmokeTest) &&
+                 service->snapshot().state == cue::package::PackageWorkflowState::Failed &&
+                 service->snapshot().message.starts_with("Packageの実行前検証に失敗しました") &&
+                 runRunner.calls.load(std::memory_order_acquire) == 0U))
+    {
+        return false;
+    }
+
+    constexpr std::string_view retryOperation = "51234567-89ab-4cde-8f01-23456789abcd";
+    if (!require(service->retry(std::string(retryOperation), {1U, 0U, 0U}, std::string(k_projectId),
+                                *runtimeData.try_value()) &&
+                 service->wait_for_package()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot ready = service->snapshot();
+    if (!require(ready.package.has_value()))
+    {
+        return false;
+    }
+    runRunner.mutationProbeRelativePaths = {"CuePackage.json"};
+    for (const cue::package::PackageFileEntry &entry : ready.package->manifest.files)
+    {
+        runRunner.mutationProbeRelativePaths.emplace_back(entry.relative_path());
+    }
+    runRunner.probePackageMutation.store(true, std::memory_order_release);
+    if (!require(service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot completed = service->snapshot();
+    return require(completed.state == cue::package::PackageWorkflowState::RunSucceeded && completed.package &&
+                   completed.package->operationId == retryOperation &&
+                   completed.package->manifest.executionModel == cue::package::PackageExecutionModel::Monolithic &&
+                   runRunner.calls.load(std::memory_order_acquire) == 1U &&
+                   runRunner.packageMutationBlocked.load(std::memory_order_acquire));
+}
 } // namespace
 
 /// @brief Build・Package・Run CoordinatorをUIなしで検証する
@@ -897,5 +1171,5 @@ int main()
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
-    return test_workflow(assertContext) ? 0 : 1;
+    return test_workflow(assertContext) && test_shipping_workflow(assertContext) ? 0 : 1;
 }
