@@ -766,6 +766,35 @@ void mismatch_cet_data_rva(std::vector<std::byte> &a_bytes)
     return {descriptor.Name, lookupThunk, descriptor.FirstThunk, static_cast<std::uint32_t>(thunk.u1.AddressOfData)};
 }
 
+/// @brief 最初のImport DescriptorをBound Importとして改変する
+void set_first_import_timestamp(std::vector<std::byte> &a_bytes, DWORD a_timestamp)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    const std::size_t descriptorOffset =
+        section_rva_offset(directory.VirtualAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR), sections, a_bytes);
+    IMAGE_IMPORT_DESCRIPTOR descriptor{};
+    std::memcpy(&descriptor, a_bytes.data() + descriptorOffset, sizeof(descriptor));
+    require(descriptor.Name != 0U && descriptor.FirstThunk != 0U);
+    descriptor.TimeDateStamp = a_timestamp;
+    std::memcpy(a_bytes.data() + descriptorOffset, &descriptor, sizeof(descriptor));
+}
+
+/// @brief Bound Import Data Directoryを既存Import Directoryへ改変する
+void set_bound_import_directory(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const IMAGE_DATA_DIRECTORY &importDirectory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    require(importDirectory.VirtualAddress != 0U && importDirectory.Size != 0U);
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT] = importDirectory;
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
 /// @brief CET Evidenceに使うDebug DescriptorとExtended DLL Characteristics DataのRVAを返す
 [[nodiscard]] std::array<std::uint32_t, 2U> cet_metadata_rvas(std::span<const std::byte> a_bytes)
 {
@@ -849,6 +878,11 @@ void test_trust_status_classification()
 {
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE, ERROR_SUCCESS) ==
             cue::WindowsProductSignatureStatus::Unsigned);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE,
+                                                               static_cast<std::uint32_t>(TRUST_E_NOSIGNATURE)) ==
+            cue::WindowsProductSignatureStatus::Unsigned);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE, ERROR_ACCESS_DENIED) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE,
                                                                static_cast<std::uint32_t>(TRUST_E_PROVIDER_UNKNOWN)) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
@@ -967,6 +1001,20 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     require(!cue::validate_windows_shipping_product_security(unknownImport.generic_string(), localProfile,
                                                              a_assertContext));
 
+    bytes = read_bytes(a_validProduct);
+    set_first_import_timestamp(bytes, 1U);
+    const std::filesystem::path boundImportDescriptor = directory / "BoundImportDescriptor.exe";
+    write_bytes(boundImportDescriptor, bytes);
+    require(!cue::validate_windows_shipping_product_security(boundImportDescriptor.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    set_bound_import_directory(bytes);
+    const std::filesystem::path boundImportDirectory = directory / "BoundImportDirectory.exe";
+    write_bytes(boundImportDirectory, bytes);
+    require(!cue::validate_windows_shipping_product_security(boundImportDirectory.generic_string(), localProfile,
+                                                             a_assertContext));
+
     std::error_code error;
     bytes = read_bytes(a_validProduct);
     clear_load_configuration_rva(bytes);
@@ -1054,10 +1102,49 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const ULONGLONG guardDispatch =
         load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    const ULONGLONG guardFunctionTable =
+        load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
     constexpr ULONGLONG msvcX64DefaultSecurityCookie = 0x00002B992DDFA232ULL;
     require(image_va_value(bytes, securityCookie) == msvcX64DefaultSecurityCookie);
     const ULONGLONG guardCheckTarget = image_va_value(bytes, guardCheck);
     const ULONGLONG guardDispatchTarget = image_va_value(bytes, guardDispatch);
+
+    constexpr std::array<std::size_t, 2U> unsupportedGuardTableOffsets = {
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryTable),
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetTable)};
+    for (std::size_t index = 0U; index < unsupportedGuardTableOffsets.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        set_load_configuration_pointer(bytes, unsupportedGuardTableOffsets[index], guardFunctionTable);
+        const std::filesystem::path unsupportedGuardTable =
+            directory / ("UnsupportedGuardTable-" + std::to_string(index) + ".exe");
+        write_bytes(unsupportedGuardTable, bytes);
+        require(!cue::validate_windows_shipping_product_security(unsupportedGuardTable.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 auxiliaryGuardOptional{};
+    std::memcpy(&auxiliaryGuardOptional, bytes.data() + optional_header_offset(bytes), sizeof(auxiliaryGuardOptional));
+    const IMAGE_DATA_DIRECTORY &auxiliaryLoadDirectory =
+        auxiliaryGuardOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    constexpr std::array<std::size_t, 2U> unsupportedGuardCountOffsets = {
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryCount),
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetCount)};
+    for (std::size_t index = 0U; index < unsupportedGuardCountOffsets.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        set_load_configuration_ulonglong(bytes, unsupportedGuardCountOffsets[index], auxiliaryGuardOptional.ImageBase);
+        require(unsupportedGuardCountOffsets[index] <=
+                std::numeric_limits<std::uint32_t>::max() - auxiliaryLoadDirectory.VirtualAddress);
+        append_dir64_relocation(bytes, auxiliaryLoadDirectory.VirtualAddress +
+                                           static_cast<std::uint32_t>(unsupportedGuardCountOffsets[index]));
+        const std::filesystem::path unsupportedGuardCount =
+            directory / ("UnsupportedGuardCount-" + std::to_string(index) + ".exe");
+        write_bytes(unsupportedGuardCount, bytes);
+        require(!cue::validate_windows_shipping_product_security(unsupportedGuardCount.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
 
     bytes = read_bytes(a_validProduct);
     set_image_va_value(bytes, securityCookie, msvcX64DefaultSecurityCookie + 2U);

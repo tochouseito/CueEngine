@@ -766,6 +766,12 @@ template <typename Value>
         {
             break;
         }
+        if (descriptor->TimeDateStamp != 0U)
+        {
+            return cue::Result<std::vector<std::string>>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product bound import descriptors are not allowed by the M17 policy"));
+        }
         if (descriptor->OriginalFirstThunk == 0U && descriptor->FirstThunk == 0U && descriptor->Name == 0U)
         {
             std::ranges::sort(imports);
@@ -937,7 +943,11 @@ template <typename Value>
                   offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer) + sizeof(ULONGLONG),
                   offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable) + sizeof(ULONGLONG),
                   offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount) + sizeof(ULONGLONG),
-                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)});
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryTable) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryCount) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetTable) + sizeof(ULONGLONG),
+                  offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetCount) + sizeof(ULONGLONG)});
     const std::optional<std::size_t> loadOffset =
         loadDirectory.VirtualAddress != 0U && loadDirectory.Size >= sizeof(DWORD)
             ? rva_to_offset(loadDirectory.VirtualAddress, sizeof(DWORD), *optional, sections, bytes.size())
@@ -973,6 +983,14 @@ template <typename Value>
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount));
     const std::optional<DWORD> guardFlags =
         read_value<DWORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+    const std::optional<ULONGLONG> guardAddressTakenIatEntryTable = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryTable));
+    const std::optional<ULONGLONG> guardAddressTakenIatEntryCount = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryCount));
+    const std::optional<ULONGLONG> guardLongJumpTargetTable = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetTable));
+    const std::optional<ULONGLONG> guardLongJumpTargetCount = read_value<ULONGLONG>(
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetCount));
     const std::optional<WORD> dependentLoadFlags =
         read_value<WORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
     const std::optional<MappedImageFileRange> securityCookieRange =
@@ -1059,6 +1077,10 @@ template <typename Value>
                                     IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE) &&
         has_valid_guard_function_entries(bytes, *guardFunctionTableRange, static_cast<std::size_t>(*guardFunctionCount),
                                          guardFunctionTableStride, *optional, sections);
+    const bool hasNoUnsupportedAuxiliaryGuardTables =
+        guardAddressTakenIatEntryTable && *guardAddressTakenIatEntryTable == 0U && guardAddressTakenIatEntryCount &&
+        *guardAddressTakenIatEntryCount == 0U && guardLongJumpTargetTable && *guardLongJumpTargetTable == 0U &&
+        guardLongJumpTargetCount && *guardLongJumpTargetCount == 0U;
     const std::array<std::uint64_t, 6U> requiredRelocations = {
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
@@ -1080,7 +1102,7 @@ template <typename Value>
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
     if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasUnrelocatedLoadConfigurationControls ||
-        !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+        !hasMappedGuardCheck || !hasMappedGuardDispatch || !hasNoUnsupportedAuxiliaryGuardTables || !guardFlags ||
         (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
@@ -1095,6 +1117,13 @@ template <typename Value>
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product delay imports are not allowed by the M17 policy"));
+    }
+    if (optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress != 0U ||
+        optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size != 0U)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product bound imports are not allowed by the M17 policy"));
     }
     cue::Result<std::vector<std::string>> imports =
         validate_imports(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
@@ -1149,8 +1178,7 @@ class WinTrustState final
     case ERROR_SUCCESS:
         return cue::WindowsProductSignatureStatus::Trusted;
     case TRUST_E_NOSIGNATURE:
-        if (a_lastError == static_cast<DWORD>(TRUST_E_PROVIDER_UNKNOWN) ||
-            a_lastError == static_cast<DWORD>(TRUST_E_SUBJECT_FORM_UNKNOWN))
+        if (a_lastError != ERROR_SUCCESS && a_lastError != static_cast<DWORD>(TRUST_E_NOSIGNATURE))
         {
             return cue::WindowsProductSignatureStatus::VerificationUnavailable;
         }
