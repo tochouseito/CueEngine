@@ -67,12 +67,22 @@ class BuildArtifactReadLease
     BuildArtifactReadLease() noexcept = default;
 };
 
-/// @brief Artifact Version Directory内の一FileをHash付きで識別する
+/// @brief Artifact Fileを配布、Runtime Metadata、開発Symbolへ分類する
+enum class BuildArtifactFilePurpose : std::uint8_t
+{
+    Unspecified,
+    DistributionPayload,
+    RuntimeMetadata,
+    DevelopmentSymbol
+};
+
+/// @brief Artifact Version Directory内の一FileをHashと用途付きで識別する
 struct BuildArtifactFile final
 {
     std::string relativePath;
     std::uint64_t byteSize = 0U;
     std::string contentHash;
+    BuildArtifactFilePurpose purpose = BuildArtifactFilePurpose::Unspecified;
 };
 
 /// @brief 一つのBuild WorkspaceをProcess間で排他的に保護するRAII Token
@@ -91,7 +101,7 @@ class BuildWorkspaceLease
     BuildWorkspaceLease() noexcept = default;
 };
 
-/// @brief Publish済み不変Game Module Artifact集合
+/// @brief Publish済み不変Build Target Artifact集合
 class BuildArtifactInventory final
 {
   public:
@@ -101,7 +111,8 @@ class BuildArtifactInventory final
     /// @brief Planと検証済みFile一覧からPublish済みInventoryを構築する
     ///
     /// PlanとAssertContextは呼出中だけ借用し、Artifact IDとFile一覧は返却Inventoryへ移動する。File一覧はPath昇順へ
-    /// 正規化する。ID、相対Path、Hash、Size、重複、必須DLL／Metadataが不正な場合はInvalidArtifactを返す。
+    /// 正規化する。ID、相対Path、Hash、Size、用途、重複、Target別必須Payload／Metadataが不正な場合は
+    /// InvalidArtifactを返す。
     /// 共有状態を変更しないため別入力から同時に呼べる。Allocation等の回復不能例外はFatalHandlerへ渡す。
     [[nodiscard]] static Result<BuildArtifactInventory> create(const BuildPlan &a_plan, std::string a_artifactId,
                                                                std::vector<BuildArtifactFile> a_files,
@@ -119,6 +130,8 @@ class BuildArtifactInventory final
     [[nodiscard]] std::string_view artifact_id() const noexcept;
     /// @brief Build時のConfigurationを返す
     [[nodiscard]] BuildConfiguration configuration() const noexcept;
+    /// @brief Target、Configuration、Trust Identityを含むBuild Profileを返す
+    [[nodiscard]] const BuildProfile &profile() const noexcept;
     /// @brief Project Root内の不変Version Directoryを返す
     [[nodiscard]] std::string_view version_directory() const noexcept;
     /// @brief Path昇順のFile Inventoryを返す
@@ -126,19 +139,20 @@ class BuildArtifactInventory final
 
   private:
     /// @brief 検証済みArtifact情報の所有権を取得してInventoryを構築する
-    BuildArtifactInventory(std::string a_artifactId, BuildConfiguration a_configuration, std::string a_versionDirectory,
+    BuildArtifactInventory(std::string a_artifactId, BuildProfile a_profile, std::string a_versionDirectory,
                            std::vector<BuildArtifactFile> a_files) noexcept;
 
     std::string m_artifactId;
-    BuildConfiguration m_configuration;
+    BuildProfile m_profile;
     std::string m_versionDirectory;
     std::vector<BuildArtifactFile> m_files;
 };
 
-/// @brief Current Manifest v1が期待Artifact Inventoryを意味的に選択しているか検証する
+/// @brief Current Manifest v1／v2が期待Artifact Inventoryを意味的に選択しているか検証する
 ///
 /// JSONとInventoryとAssertContextは呼出中だけ借用する。Member順と意味を持たない空白には依存せず、未知／重複／欠落Member、
-/// 型不一致、未知Schema、末尾Data、Inventory不一致をInvalidArtifactとして拒否する。共有状態を変更しないため同時に呼べる。
+/// 型不一致、未知Schema、末尾Data、Profile／Inventory不一致をInvalidArtifactとして拒否する。v1はGameModuleだけに許可し、
+/// v2はTarget、Trust Identity、File用途も照合する。共有状態を変更しないため同時に呼べる。
 [[nodiscard]] Result<void> validate_build_artifact_current_manifest(
     std::string_view a_json, const BuildArtifactInventory &a_expected,
     const AssertContext &a_assertContext) noexcept;
@@ -193,7 +207,7 @@ class BuildArtifactPublisher
     /// Workerから直列に呼ばれ、返却Inventoryが
     /// 全値を所有する。取消要求は不可逆なCurrent更新前まで監視し、公開せず成功のnulloptを返す。
     /// Inventory返却後の取消は確定済みArtifactを巻き戻さない。DeadlineはArtifact Mutation
-    /// Lock待機とGame Module Probeを制限し、到達時は対応するBuildArtifactPublisherErrorを返す。回復可能な
+    /// Lock待機とArtifact Probeを制限し、到達時は対応するBuildArtifactPublisherErrorを返す。回復可能な
     /// 検証・IO失敗はErrorを返し、例外を境界外へ送出しない。
     [[nodiscard]] virtual Result<std::optional<BuildArtifactInventory>> publish(
         const BuildPlan &a_plan, const ChildProcessCancellation &a_cancellation,

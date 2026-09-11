@@ -10,7 +10,12 @@ function(cue_escape_cpp_string output input)
 endfunction()
 
 cue_escape_cpp_string(cueBuildCMakeCommand "${CMAKE_COMMAND}")
+cue_escape_cpp_string(cueBuildCMakeVersion "${CMAKE_VERSION}")
+cue_escape_cpp_string(cueBuildCMakeGenerator "${CMAKE_GENERATOR}")
 cue_escape_cpp_string(cueBuildCMakeMinimumVersion "${CMAKE_MINIMUM_REQUIRED_VERSION}")
+
+find_package(Git REQUIRED)
+cue_escape_cpp_string(cueBuildGitCommand "${GIT_EXECUTABLE}")
 
 file(TO_CMAKE_PATH "${CMAKE_VS_MSBUILD_COMMAND}" cueBuildVisualStudioMsbuildValue)
 if(

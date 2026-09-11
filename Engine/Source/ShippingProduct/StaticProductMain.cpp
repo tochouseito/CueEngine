@@ -1,5 +1,6 @@
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
+#include <Cue/Foundation/Log.h>
 #include <Cue/GameModule/GameModuleAbi.h>
 #include <Cue/RuntimeHost/GameModuleQueryProvider.h>
 #include <Cue/RuntimeHost/RuntimeHostProcess.h>
@@ -8,10 +9,14 @@
 #include <Cue/Scene/SceneDocument.h>
 #include <Cue/Schema/Registry.h>
 
+#include <Windows.h>
+
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #ifndef CUE_GAME_PRODUCT_PROJECT_ID
 #error CUE_GAME_PRODUCT_PROJECT_ID must identify the linked Game Module
@@ -20,6 +25,7 @@
 namespace
 {
 constexpr std::string_view k_startupSceneAssetId = "70000000-0000-4000-8000-000000000001";
+constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe:v1\n";
 
 /// @brief Product Startup中の予期しない例外をProcess Fatal境界へ渡す
 [[noreturn]] void terminate_product_startup(const cue::AssertContext &a_assertContext) noexcept
@@ -81,11 +87,79 @@ constexpr std::string_view k_startupSceneAssetId = "70000000-0000-4000-8000-0000
         terminate_product_startup(a_assertContext);
     }
 }
+
+/// @brief UTF-16 ArgumentがASCII Project IDと一致するか判定する
+[[nodiscard]] bool matches_project_id(std::wstring_view a_value) noexcept
+{
+    constexpr std::string_view expected = CUE_GAME_PRODUCT_PROJECT_ID;
+    if (a_value.size() != expected.size())
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < expected.size(); ++index)
+    {
+        if (a_value[index] != static_cast<wchar_t>(expected[index]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// @brief Static StartupとProject／Configuration一致を検証し固定Markerを耐久書込みする
+[[nodiscard]] int run_artifact_probe(int a_argumentCount, wchar_t **a_arguments) noexcept
+{
+    if (a_argumentCount != 4 || std::wstring_view(a_arguments[2]) != L"Release" ||
+        !matches_project_id(a_arguments[3]))
+    {
+        return 1;
+    }
+    cue::AbortFatalHandler fatalHandler;
+    try
+    {
+        std::vector<std::unique_ptr<cue::LogSink>> sinks;
+        sinks.push_back(std::make_unique<cue::ConsoleLogSink>());
+        cue::Logger logger(fatalHandler, std::move(sinks));
+        cue::AssertContext assertContext(logger, fatalHandler);
+        {
+            cue::Result<cue::runtime_host::RuntimeHostStartup> startup = make_product_startup(assertContext);
+            if (!startup)
+            {
+                return 2;
+            }
+        }
+
+        HANDLE marker = CreateFileW(L".probe-complete", GENERIC_WRITE, 0U, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (marker == INVALID_HANDLE_VALUE)
+        {
+            return 3;
+        }
+        DWORD written = 0U;
+        const BOOL writeSucceeded =
+            WriteFile(marker, k_productProbeCompletionMarker.data(),
+                      static_cast<DWORD>(k_productProbeCompletionMarker.size()), &written, nullptr);
+        const BOOL flushSucceeded = writeSucceeded != FALSE ? FlushFileBuffers(marker) : FALSE;
+        const BOOL closeSucceeded = CloseHandle(marker);
+        return writeSucceeded != FALSE && written == k_productProbeCompletionMarker.size() &&
+                       flushSucceeded != FALSE && closeSucceeded != FALSE
+                   ? 0
+                   : 4;
+    }
+    catch (...)
+    {
+        fatalHandler.terminate("Static Game Product probe allocation failed");
+    }
+}
 } // namespace
 
 /// @brief Static Game Moduleを選択して共通Runtime Host Processを開始する
 int wmain(int a_argumentCount, wchar_t **a_arguments)
 {
+    if (a_argumentCount >= 2 && std::wstring_view(a_arguments[1]) == L"--cue-artifact-probe")
+    {
+        return run_artifact_probe(a_argumentCount, a_arguments);
+    }
     const cue::runtime_host::RuntimeHostProcessDescriptor descriptor = {
         &make_product_startup,
         true,

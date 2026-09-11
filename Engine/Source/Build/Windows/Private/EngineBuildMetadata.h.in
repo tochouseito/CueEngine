@@ -6,7 +6,11 @@
 namespace cue::build_metadata
 {
 inline constexpr std::string_view k_cmakeCommand = "@cueBuildCMakeCommand@";
+inline constexpr std::string_view k_cmakeVersion = "@cueBuildCMakeVersion@";
+inline constexpr std::string_view k_cmakeGenerator = "@cueBuildCMakeGenerator@";
 inline constexpr std::string_view k_cmakeMinimumVersion = "@cueBuildCMakeMinimumVersion@";
+inline constexpr std::string_view k_gitCommand = "@cueBuildGitCommand@";
+inline constexpr std::string_view k_engineVersion = "1.0.0";
 inline constexpr std::string_view k_visualStudioRoot = "@cueBuildVisualStudioRoot@";
 inline constexpr std::string_view k_visualStudioMsbuild = "@cueBuildVisualStudioMsbuild@";
 inline constexpr std::uint32_t k_visualStudioMajor = @cueBuildVisualStudioMajor@U;

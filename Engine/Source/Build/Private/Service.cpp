@@ -171,7 +171,55 @@ constexpr std::uint64_t k_maximumArtifactByteSize = 9007199254740991ULL;
     return {};
 }
 
-/// @brief Current Manifest v1を意味的に読む上限付きJSON Cursor
+/// @brief Current Manifest用のTarget文字列を返す
+[[nodiscard]] std::string_view current_target_name(cue::BuildTarget a_target) noexcept
+{
+    switch (a_target)
+    {
+    case cue::BuildTarget::GameModule:
+        return "GameModule";
+    case cue::BuildTarget::ShippingProduct:
+        return "ShippingProduct";
+    }
+    return {};
+}
+
+/// @brief Current Manifest用のTrust Mode文字列を返す
+[[nodiscard]] std::string_view current_trust_mode_name(cue::ShippingTrustMode a_mode) noexcept
+{
+    switch (a_mode)
+    {
+    case cue::ShippingTrustMode::UnsignedLocal:
+        return "UnsignedLocal";
+    case cue::ShippingTrustMode::PublisherSigned:
+        return "PublisherSigned";
+    }
+    return {};
+}
+
+/// @brief Manifest文字列をArtifact File用途へ厳格に変換する
+[[nodiscard]] bool parse_file_purpose(std::string_view a_text,
+                                      cue::BuildArtifactFilePurpose &a_output) noexcept
+{
+    if (a_text == "DistributionPayload")
+    {
+        a_output = cue::BuildArtifactFilePurpose::DistributionPayload;
+        return true;
+    }
+    if (a_text == "RuntimeMetadata")
+    {
+        a_output = cue::BuildArtifactFilePurpose::RuntimeMetadata;
+        return true;
+    }
+    if (a_text == "DevelopmentSymbol")
+    {
+        a_output = cue::BuildArtifactFilePurpose::DevelopmentSymbol;
+        return true;
+    }
+    return false;
+}
+
+/// @brief Current Manifest v1／v2を意味的に読む上限付きJSON Cursor
 class CurrentManifestReader final
 {
   public:
@@ -314,6 +362,19 @@ class CurrentManifestReader final
         return true;
     }
 
+    /// @brief JSON nullを厳格に消費する
+    [[nodiscard]] bool read_null() noexcept
+    {
+        skip_space();
+        constexpr std::string_view value = "null";
+        if (m_input.substr(m_cursor, value.size()) != value)
+        {
+            return false;
+        }
+        m_cursor += value.size();
+        return true;
+    }
+
     /// @brief 意味を持たない末尾空白以外が残っていないか返す
     [[nodiscard]] bool at_end() noexcept
     {
@@ -398,7 +459,7 @@ class CurrentManifestReader final
     std::size_t m_cursor = 0U;
 };
 
-/// @brief Current Manifest v1の一File Entryを厳格に読む
+/// @brief Current Manifest v1／v2の一File Entryを厳格に読む
 [[nodiscard]] bool read_current_file(CurrentManifestReader &a_reader, cue::BuildArtifactFile &a_output)
 {
     if (!a_reader.consume('{'))
@@ -409,12 +470,22 @@ class CurrentManifestReader final
     bool hasSize = false;
     bool hasAlgorithm = false;
     bool hasHash = false;
+    bool hasPurpose = false;
     std::string algorithm;
-    for (std::size_t memberIndex = 0U; memberIndex < 4U; ++memberIndex)
+    bool closed = false;
+    for (std::size_t memberIndex = 0U; memberIndex < 5U; ++memberIndex)
     {
-        if (memberIndex != 0U && !a_reader.consume(','))
+        if (memberIndex != 0U)
         {
-            return false;
+            if (a_reader.consume('}'))
+            {
+                closed = true;
+                break;
+            }
+            if (!a_reader.consume(','))
+            {
+                return false;
+            }
         }
         std::string name;
         if (!a_reader.read_string(name) || !a_reader.consume(':'))
@@ -437,22 +508,32 @@ class CurrentManifestReader final
         {
             hasHash = a_reader.read_string(a_output.contentHash);
         }
+        else if (name == "purpose" && !hasPurpose)
+        {
+            std::string purpose;
+            hasPurpose = a_reader.read_string(purpose) && parse_file_purpose(purpose, a_output.purpose);
+        }
         else
         {
             return false;
         }
         if ((!hasPath && name == "path") || (!hasSize && name == "sizeBytes") ||
-            (!hasAlgorithm && name == "hashAlgorithm") || (!hasHash && name == "contentHash"))
+            (!hasAlgorithm && name == "hashAlgorithm") || (!hasHash && name == "contentHash") ||
+            (!hasPurpose && name == "purpose"))
         {
             return false;
         }
     }
-    return hasPath && hasSize && hasAlgorithm && hasHash && algorithm == "sha256" && a_reader.consume('}');
+    if (!closed)
+    {
+        closed = a_reader.consume('}');
+    }
+    return closed && hasPath && hasSize && hasAlgorithm && hasHash && algorithm == "sha256";
 }
 
-/// @brief Current Manifest v1のFile配列を順序を保持して読む
+/// @brief Current Manifest v1／v2のFile配列を順序を保持して読む
 [[nodiscard]] bool read_current_files(CurrentManifestReader &a_reader,
-                                      std::vector<cue::BuildArtifactFile> &a_output)
+                                       std::vector<cue::BuildArtifactFile> &a_output)
 {
     if (!a_reader.consume('['))
     {
@@ -483,6 +564,24 @@ class CurrentManifestReader final
             return false;
         }
     }
+}
+
+/// @brief JSON Stringまたはnullを所有Optionalへ読む
+[[nodiscard]] bool read_nullable_string(CurrentManifestReader &a_reader,
+                                        std::optional<std::string> &a_output)
+{
+    std::string value;
+    if (a_reader.read_string(value))
+    {
+        a_output.emplace(std::move(value));
+        return true;
+    }
+    if (!a_reader.read_null())
+    {
+        return false;
+    }
+    a_output.reset();
+    return true;
 }
 
 /// @brief Native ErrorがあればUI再表示可能な所有Snapshotへ変換する
@@ -525,10 +624,10 @@ class CurrentManifestReader final
 
 namespace cue
 {
-BuildArtifactInventory::BuildArtifactInventory(std::string a_artifactId, BuildConfiguration a_configuration,
+BuildArtifactInventory::BuildArtifactInventory(std::string a_artifactId, BuildProfile a_profile,
                                                std::string a_versionDirectory,
                                                std::vector<BuildArtifactFile> a_files) noexcept
-    : m_artifactId(std::move(a_artifactId)), m_configuration(a_configuration),
+    : m_artifactId(std::move(a_artifactId)), m_profile(std::move(a_profile)),
       m_versionDirectory(std::move(a_versionDirectory)), m_files(std::move(a_files))
 {
 }
@@ -546,11 +645,12 @@ Result<BuildArtifactInventory> BuildArtifactInventory::create(const BuildPlan &a
                                    "Build artifact identity or file count is invalid"));
         }
         std::sort(a_files.begin(), a_files.end(), artifact_path_less);
-        bool hasModule = false;
+        const BuildTarget target = a_plan.profile().target();
+        bool hasPayload = false;
         bool hasMetadata = false;
         for (std::size_t index = 0U; index < a_files.size(); ++index)
         {
-            const BuildArtifactFile &file = a_files[index];
+            BuildArtifactFile &file = a_files[index];
             bool duplicatePath = false;
             for (std::size_t previous = 0U; previous < index; ++previous)
             {
@@ -564,16 +664,57 @@ Result<BuildArtifactInventory> BuildArtifactInventory::create(const BuildPlan &a
                     make_service_error(a_assertContext, GameBuildServiceError::InvalidArtifact,
                                        "Build artifact file inventory is invalid"));
             }
-            if (file.relativePath == "CueGameModule.dll")
+            std::optional<BuildArtifactFilePurpose> requiredPurpose;
+            if (target == BuildTarget::GameModule && file.relativePath == "CueGameModule.dll")
             {
-                hasModule = file.byteSize > 0U;
+                requiredPurpose = BuildArtifactFilePurpose::DistributionPayload;
+                hasPayload = file.byteSize > 0U;
             }
-            else if (file.relativePath == "CueGameModule.metadata.json")
+            else if (target == BuildTarget::GameModule && file.relativePath == "CueGameModule.metadata.json")
             {
+                requiredPurpose = BuildArtifactFilePurpose::RuntimeMetadata;
                 hasMetadata = file.byteSize > 0U;
             }
+            else if (target == BuildTarget::GameModule && file.relativePath == "CueGameModule.pdb")
+            {
+                requiredPurpose = BuildArtifactFilePurpose::DevelopmentSymbol;
+            }
+            else if (target == BuildTarget::ShippingProduct && file.relativePath == "CueGameProduct.exe")
+            {
+                requiredPurpose = BuildArtifactFilePurpose::DistributionPayload;
+                hasPayload = file.byteSize > 0U;
+            }
+            else if (target == BuildTarget::ShippingProduct && file.relativePath == "CueGameProduct.metadata.json")
+            {
+                requiredPurpose = BuildArtifactFilePurpose::RuntimeMetadata;
+                hasMetadata = file.byteSize > 0U;
+            }
+            else if (target == BuildTarget::ShippingProduct && file.relativePath == "CueGameProduct.pdb")
+            {
+                requiredPurpose = BuildArtifactFilePurpose::DevelopmentSymbol;
+            }
+            else if (target == BuildTarget::ShippingProduct)
+            {
+                return Result<BuildArtifactInventory>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact,
+                    "Shipping Product artifact contains an unexpected file"));
+            }
+            else
+            {
+                requiredPurpose = BuildArtifactFilePurpose::DistributionPayload;
+            }
+            if (file.purpose == BuildArtifactFilePurpose::Unspecified)
+            {
+                file.purpose = *requiredPurpose;
+            }
+            else if (file.purpose != *requiredPurpose)
+            {
+                return Result<BuildArtifactInventory>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact,
+                    "Build artifact file purpose does not match its target contract"));
+            }
         }
-        if (!hasModule || !hasMetadata)
+        if (!hasPayload || !hasMetadata)
         {
             return Result<BuildArtifactInventory>::failure(make_service_error(
                 a_assertContext, GameBuildServiceError::InvalidArtifact, "Build artifact is missing required files"));
@@ -582,8 +723,8 @@ Result<BuildArtifactInventory> BuildArtifactInventory::create(const BuildPlan &a
         versionDirectory.append("/Versions/");
         versionDirectory.append(a_artifactId);
         return Result<BuildArtifactInventory>::success(
-            BuildArtifactInventory(std::move(a_artifactId), a_plan.profile().configuration(),
-                                   std::move(versionDirectory), std::move(a_files)));
+            BuildArtifactInventory(std::move(a_artifactId), a_plan.profile(),
+                                    std::move(versionDirectory), std::move(a_files)));
     }
     catch (...)
     {
@@ -635,7 +776,12 @@ std::string_view BuildArtifactInventory::artifact_id() const noexcept
 
 BuildConfiguration BuildArtifactInventory::configuration() const noexcept
 {
-    return m_configuration;
+    return m_profile.configuration();
+}
+
+const BuildProfile &BuildArtifactInventory::profile() const noexcept
+{
+    return m_profile;
 }
 
 std::string_view BuildArtifactInventory::version_directory() const noexcept
@@ -663,15 +809,23 @@ Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
         bool hasSchema = false;
         bool hasArtifactId = false;
         bool hasConfiguration = false;
+        bool hasTarget = false;
+        bool hasMinimumTrustMode = false;
+        bool hasPublisherKeyId = false;
         bool hasFiles = false;
         std::uint64_t schemaVersion = 0U;
         std::string artifactId;
         std::string configuration;
+        std::string target;
+        std::optional<std::string> minimumTrustMode;
+        std::optional<std::string> publisherKeyId;
         std::vector<BuildArtifactFile> files;
         files.reserve(a_expected.files().size());
-        for (std::size_t memberIndex = 0U; memberIndex < 4U; ++memberIndex)
+        std::size_t memberCount = 0U;
+        bool closed = false;
+        while (memberCount < 7U)
         {
-            if (memberIndex != 0U && !reader.consume(','))
+            if (memberCount != 0U && !reader.consume(','))
             {
                 return Result<void>::failure(make_service_error(
                     a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
@@ -698,6 +852,21 @@ Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
                 hasConfiguration = reader.read_string(configuration);
                 memberValid = hasConfiguration;
             }
+            else if (name == "target" && !hasTarget)
+            {
+                hasTarget = reader.read_string(target);
+                memberValid = hasTarget;
+            }
+            else if (name == "minimumTrustMode" && !hasMinimumTrustMode)
+            {
+                hasMinimumTrustMode = read_nullable_string(reader, minimumTrustMode);
+                memberValid = hasMinimumTrustMode;
+            }
+            else if (name == "publisherKeyId" && !hasPublisherKeyId)
+            {
+                hasPublisherKeyId = read_nullable_string(reader, publisherKeyId);
+                memberValid = hasPublisherKeyId;
+            }
             else if (name == "files" && !hasFiles)
             {
                 hasFiles = read_current_files(reader, files);
@@ -708,9 +877,15 @@ Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
                 return Result<void>::failure(make_service_error(
                     a_assertContext, GameBuildServiceError::InvalidArtifact, "Current artifact manifest is invalid"));
             }
+            ++memberCount;
+            if (reader.consume('}'))
+            {
+                closed = true;
+                break;
+            }
         }
-        if (!hasSchema || !hasArtifactId || !hasConfiguration || !hasFiles || !reader.consume('}') ||
-            !reader.at_end() || schemaVersion != 1U || artifactId != a_expected.artifact_id() ||
+        if (!closed || !reader.at_end() || !hasSchema || !hasArtifactId || !hasConfiguration || !hasFiles ||
+            artifactId != a_expected.artifact_id() ||
             configuration != current_configuration_name(a_expected.configuration()) ||
             files.size() != a_expected.files().size())
         {
@@ -718,12 +893,49 @@ Result<void> validate_build_artifact_current_manifest(std::string_view a_json,
                 a_assertContext, GameBuildServiceError::InvalidArtifact,
                 "Current artifact manifest does not select the expected inventory"));
         }
+        if (schemaVersion == 1U)
+        {
+            if (memberCount != 4U || hasTarget || hasMinimumTrustMode || hasPublisherKeyId ||
+                a_expected.profile().target() != BuildTarget::GameModule)
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact,
+                    "Legacy Current artifact manifest is not valid for the expected profile"));
+            }
+        }
+        else if (schemaVersion == 2U)
+        {
+            const std::optional<ShippingTrustMode> expectedTrust = a_expected.profile().minimum_trust_mode();
+            const bool trustMatches =
+                (!expectedTrust && !minimumTrustMode) ||
+                (expectedTrust && minimumTrustMode &&
+                 *minimumTrustMode == current_trust_mode_name(*expectedTrust));
+            const std::string_view expectedPublisher = a_expected.profile().publisher_key_id();
+            const bool publisherMatches =
+                (expectedPublisher.empty() && !publisherKeyId) ||
+                (!expectedPublisher.empty() && publisherKeyId && *publisherKeyId == expectedPublisher);
+            if (memberCount != 7U || !hasTarget || !hasMinimumTrustMode || !hasPublisherKeyId ||
+                target != current_target_name(a_expected.profile().target()) || !trustMatches || !publisherMatches)
+            {
+                return Result<void>::failure(make_service_error(
+                    a_assertContext, GameBuildServiceError::InvalidArtifact,
+                    "Current artifact manifest profile does not match the expected inventory"));
+            }
+        }
+        else
+        {
+            return Result<void>::failure(make_service_error(
+                a_assertContext, GameBuildServiceError::InvalidArtifact,
+                "Current artifact manifest schema is unsupported"));
+        }
         for (std::size_t index = 0U; index < files.size(); ++index)
         {
             const BuildArtifactFile &actual = files[index];
             const BuildArtifactFile &expected = a_expected.files()[index];
             if (actual.relativePath != expected.relativePath || actual.byteSize != expected.byteSize ||
-                actual.contentHash != expected.contentHash)
+                actual.contentHash != expected.contentHash ||
+                (schemaVersion == 1U && actual.purpose != BuildArtifactFilePurpose::Unspecified) ||
+                (schemaVersion == 2U && actual.purpose != expected.purpose))
             {
                 return Result<void>::failure(make_service_error(
                     a_assertContext, GameBuildServiceError::InvalidArtifact,
