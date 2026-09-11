@@ -236,7 +236,8 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
 /// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
 void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
                                        std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
-                                       std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET)
+                                       std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET,
+                                       std::string_view a_engineRoot = CUE_TEST_ENGINE_ROOT)
 {
     const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
     const std::size_t firstDot = cmakeVersion.find('.');
@@ -256,7 +257,9 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     cache.append(CUE_TEST_CMAKE_GENERATOR);
     cache.append("\nCMAKE_GENERATOR_INSTANCE:INTERNAL=");
     cache.append(CUE_TEST_CMAKE_GENERATOR_INSTANCE);
-    cache.append("\nCMAKE_GENERATOR_PLATFORM:INTERNAL=x64\n");
+    cache.append("\nCMAKE_GENERATOR_PLATFORM:INTERNAL=x64\nCUE_ENGINE_ROOT:UNINITIALIZED=");
+    cache.append(a_engineRoot);
+    cache.push_back('\n');
     write_text(a_binary / "CMakeCache.txt", cache);
 
     const std::filesystem::path compilerDirectory = a_binary / "CMakeFiles" / cmakeVersion;
@@ -792,6 +795,18 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, "v999");
     require(!publisher
                  ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedPlatformToolsetLease),
+                           std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
+    auto mismatchedEngineRootLease = take_value(
+        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedEngineRootLease.has_value());
+    write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
+                                      generic_path(projectRoot));
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedEngineRootLease),
                            std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&

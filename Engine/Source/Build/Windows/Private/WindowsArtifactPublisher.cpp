@@ -1192,6 +1192,41 @@ template <typename Cancellation>
     return value;
 }
 
+/// @brief 一意なCMake Cache Entryの型に依存せず値を返す
+[[nodiscard]] std::optional<std::string> unique_cmake_cache_value(std::string_view a_text,
+                                                                  std::string_view a_name)
+{
+    std::string prefix(a_name);
+    prefix.push_back(':');
+    std::optional<std::string> value;
+    std::size_t cursor = 0U;
+    while (cursor <= a_text.size())
+    {
+        const std::size_t end = a_text.find('\n', cursor);
+        std::string_view line = a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor
+                                                                                   : end - cursor);
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.remove_suffix(1U);
+        }
+        if (line.starts_with(prefix))
+        {
+            const std::size_t separator = line.find('=', prefix.size());
+            if (value || separator == std::string_view::npos || separator + 1U == line.size())
+            {
+                return std::nullopt;
+            }
+            value.emplace(line.substr(separator + 1U));
+        }
+        if (end == std::string_view::npos)
+        {
+            break;
+        }
+        cursor = end + 1U;
+    }
+    return value;
+}
+
 /// @brief CMake Compiler設定の一意なquoted set値を返す
 [[nodiscard]] std::optional<std::string> unique_cmake_quoted_value(std::string_view a_text,
                                                                    std::string_view a_variable)
@@ -1281,8 +1316,10 @@ template <typename Cancellation>
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_INSTANCE:INTERNAL=");
     const std::optional<std::string> generatorPlatform =
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_PLATFORM:INTERNAL=");
+    const std::optional<std::string> engineRoot =
+        unique_cmake_cache_value(*cache.try_value(), "CUE_ENGINE_ROOT");
     if (!cmakeCommand || !cmakeMajor || !cmakeMinor || !cmakePatch || !generator || !generatorInstance ||
-        !generatorPlatform)
+        !generatorPlatform || !engineRoot)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
             a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
@@ -1290,11 +1327,14 @@ template <typename Cancellation>
     }
     const std::optional<std::filesystem::path> cmakePath = to_path(*cmakeCommand);
     const std::optional<std::filesystem::path> visualStudioPath = to_path(*generatorInstance);
+    const std::optional<std::filesystem::path> engineSourcePath = to_path(*engineRoot);
     std::string cmakeVersion = *cmakeMajor + "." + *cmakeMinor + "." + *cmakePatch;
-    if (!cmakePath || !visualStudioPath || cmakeVersion != cue::build_metadata::k_cmakeVersion ||
+    if (!cmakePath || !visualStudioPath || !engineSourcePath ||
+        cmakeVersion != cue::build_metadata::k_cmakeVersion ||
         *generator != cue::build_metadata::k_cmakeGenerator || *generatorPlatform != "x64" ||
         !same_root(*cmakePath, cue::build_metadata::k_cmakeCommand) ||
-        !same_root(*visualStudioPath, cue::build_metadata::k_visualStudioRoot))
+        !same_root(*visualStudioPath, cue::build_metadata::k_visualStudioRoot) ||
+        !same_root(*engineSourcePath, cue::build_metadata::k_engineSourceRoot))
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
             a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,

@@ -250,7 +250,7 @@ Machine絶対Path、User名、Environment全体、Credentialは記録しない�
 
 Shipping PublisherはMetadataをEngine構成時の定数だけから組み立てない。Project Binary Treeの`CMakeCache.txt`、
 `CMakeFiles/<CMakeVersion>/CMakeCXXCompiler.cmake`、生成済み`CueGameProduct.vcxproj`を上限付きで読み、実際に選択された
-CMake実行File／Version／Generator／Visual Studio Instance、C++ Compiler／Version／Architecture、`PlatformToolset`、
+CMake実行File／Version／Generator／Visual Studio Instance／`CUE_ENGINE_ROOT`、C++ Compiler／Version／Architecture、`PlatformToolset`、
 Windows SDK VersionをBuild PlanおよびEngine構成時の信頼済みIdentityと照合する。Compiler実体のSHA-256を含む照合済みの値だけを
 Metadataへ記録し、絶対Pathは記録しない。不一致、重複値、欠落、未知ArchitectureはArtifact公開前に拒否する。
 
