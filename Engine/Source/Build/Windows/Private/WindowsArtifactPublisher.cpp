@@ -14,8 +14,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -35,6 +35,7 @@ constexpr std::size_t k_maximumSourceInventoryFiles = 8192U;
 constexpr std::size_t k_maximumSourceInventoryBytes = 32U * 1024U * 1024U;
 constexpr std::uint64_t k_maximumSourceInputBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t k_maximumToolchainEvidenceBytes = 2ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t k_maximumRuntimeMetadataBytes = 2ULL * 1024ULL * 1024ULL;
 /// @brief WindowsのExtended-length Path上限で128 Entryを直列化しても超えないCurrent読込上限
 constexpr std::uint64_t k_maximumCurrentManifestBytes = 32U * 1024U * 1024U;
 constexpr DWORD k_lockRetryMilliseconds = 10U;
@@ -149,7 +150,7 @@ struct ShippingToolchainIdentity final
 
 /// @brief Artifact ProbeのTimeoutをServiceが識別できるErrorへ変換する
 [[nodiscard]] cue::Error make_artifact_probe_timeout_error(const cue::AssertContext &a_assertContext,
-                                                            std::string_view a_summary) noexcept
+                                                           std::string_view a_summary) noexcept
 {
     cue::ErrorCode code =
         cue::ErrorCode::create(a_assertContext.fatal_handler(), "Cue.Build.Publisher",
@@ -445,9 +446,9 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 }
 
 /// @brief Artifact DirectoryがTarget別許可File集合と完全一致するか検証する
-[[nodiscard]] cue::Result<void> validate_artifact_directory_contents(
-    const std::filesystem::path &a_directory, const ArtifactLayout &a_layout, bool a_hasSymbol,
-    const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_artifact_directory_contents(const std::filesystem::path &a_directory,
+                                                                     const ArtifactLayout &a_layout, bool a_hasSymbol,
+                                                                     const cue::AssertContext &a_assertContext) noexcept
 {
     std::error_code iteratorError;
     std::size_t fileCount = 0U;
@@ -458,23 +459,23 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         std::error_code statusError;
         const std::filesystem::file_status status = entry.symlink_status(statusError);
         const std::string name = path_to_utf8(entry.path().filename());
-        const bool allowedName = name == a_layout.payload || name == a_layout.metadata ||
-                                 (a_hasSymbol && name == a_layout.symbol);
+        const bool allowedName =
+            name == a_layout.payload || name == a_layout.metadata || (a_hasSymbol && name == a_layout.symbol);
         if (statusError || !std::filesystem::is_regular_file(status) || !allowedName)
         {
-            return cue::Result<void>::failure(make_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                "Artifact directory contains an unexpected or non-regular entry"));
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                           "Artifact directory contains an unexpected or non-regular entry"));
         }
         ++fileCount;
     }
     const std::size_t expectedCount = a_hasSymbol ? 3U : 2U;
     if (iteratorError || fileCount != expectedCount)
     {
-        return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            iteratorError ? static_cast<DWORD>(iteratorError.value()) : ERROR_FILE_INVALID,
-            "Artifact directory file inventory is incomplete or could not be enumerated"));
+        return cue::Result<void>::failure(
+            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               iteratorError ? static_cast<DWORD>(iteratorError.value()) : ERROR_FILE_INVALID,
+                               "Artifact directory file inventory is incomplete or could not be enumerated"));
     }
     return cue::Result<void>::success();
 }
@@ -523,12 +524,12 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
     {
         return cue::Result<bool>::failure(make_windows_error(a_assertContext, a_code, GetLastError(),
-                                                              "Artifact directory attributes could not be read"));
+                                                             "Artifact directory attributes could not be read"));
     }
     if ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
     {
-        return cue::Result<bool>::failure(make_windows_error(
-            a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH, "Artifact directory contains a reparse point"));
+        return cue::Result<bool>::failure(make_windows_error(a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH,
+                                                             "Artifact directory contains a reparse point"));
     }
     if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U)
     {
@@ -611,17 +612,16 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     const auto openComponent = [&](const std::filesystem::path &a_path, bool a_isLeaf) -> cue::Result<void>
     {
         const std::filesystem::path inspected = native_path(a_path);
-        const DWORD desiredAccess = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
-                                    (a_requestLeafDeleteAccess && a_isLeaf ? DELETE : 0U);
+        const DWORD desiredAccess =
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | (a_requestLeafDeleteAccess && a_isLeaf ? DELETE : 0U);
         const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
                             (a_requestLeafDeleteAccess && a_isLeaf ? FILE_FLAG_WRITE_THROUGH : 0U);
-        UniqueHandle handle(CreateFileW(inspected.c_str(), desiredAccess,
-                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                        flags, nullptr));
+        UniqueHandle handle(CreateFileW(inspected.c_str(), desiredAccess, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                        OPEN_EXISTING, flags, nullptr));
         if (!handle.is_valid())
         {
-            return cue::Result<void>::failure(make_windows_error(
-                a_assertContext, a_code, GetLastError(), "Artifact directory guard could not be acquired"));
+            return cue::Result<void>::failure(make_windows_error(a_assertContext, a_code, GetLastError(),
+                                                                 "Artifact directory guard could not be acquired"));
         }
         BY_HANDLE_FILE_INFORMATION information{};
         if (GetFileInformationByHandle(handle.get(), &information) == FALSE)
@@ -631,13 +631,13 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         }
         if ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
         {
-            return cue::Result<void>::failure(make_windows_error(
-                a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH, "Artifact directory guard found a reparse point"));
+            return cue::Result<void>::failure(make_windows_error(a_assertContext, a_code, ERROR_REPARSE_TAG_MISMATCH,
+                                                                 "Artifact directory guard found a reparse point"));
         }
         if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U)
         {
-            return cue::Result<void>::failure(make_windows_error(
-                a_assertContext, a_code, ERROR_DIRECTORY, "Artifact directory guard found a non-directory"));
+            return cue::Result<void>::failure(make_windows_error(a_assertContext, a_code, ERROR_DIRECTORY,
+                                                                 "Artifact directory guard found a non-directory"));
         }
         handles.push_back(std::move(handle));
         return cue::Result<void>::success();
@@ -674,8 +674,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 {
     BY_HANDLE_FILE_INFORMATION left{};
     BY_HANDLE_FILE_INFORMATION right{};
-    return GetFileInformationByHandle(a_left, &left) != FALSE &&
-           GetFileInformationByHandle(a_right, &right) != FALSE &&
+    return GetFileInformationByHandle(a_left, &left) != FALSE && GetFileInformationByHandle(a_right, &right) != FALSE &&
            left.dwVolumeSerialNumber == right.dwVolumeSerialNumber && left.nFileIndexHigh == right.nFileIndexHigh &&
            left.nFileIndexLow == right.nFileIndexLow;
 }
@@ -692,8 +691,7 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
         const std::size_t fileNameBytes = destination.size() * sizeof(wchar_t);
         // FileNameLengthからは除外するが、可変長Bufferには明示的なNUL終端領域を確保する。
         const std::size_t byteSize = offsetof(FILE_RENAME_INFO, FileName) + fileNameBytes + sizeof(wchar_t);
-        std::vector<std::uint64_t> storage(
-            (byteSize + sizeof(std::uint64_t) - 1U) / sizeof(std::uint64_t), 0U);
+        std::vector<std::uint64_t> storage((byteSize + sizeof(std::uint64_t) - 1U) / sizeof(std::uint64_t), 0U);
         auto *information = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
         information->ReplaceIfExists = FALSE;
         information->RootDirectory = nullptr;
@@ -703,22 +701,23 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
                                        static_cast<DWORD>(byteSize)) == FALSE)
         {
             const DWORD renameCode = GetLastError();
-            UniqueHandle destinationVisible(CreateFileW(
-                destination.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            UniqueHandle destinationVisible(
+                CreateFileW(destination.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
             const std::wstring source = native_path(a_source).native();
-            UniqueHandle sourceVisible(CreateFileW(
-                source.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+            UniqueHandle sourceVisible(CreateFileW(source.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                                   OPEN_EXISTING,
+                                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
             const bool isDestinationIdentity = destinationVisible.is_valid() &&
                                                has_same_file_identity(a_guard.leaf_handle(), destinationVisible.get());
             const bool isSourceIdentity =
                 sourceVisible.is_valid() && has_same_file_identity(a_guard.leaf_handle(), sourceVisible.get());
             const cue::WindowsBuildArtifactError error =
-                isSourceIdentity && !isDestinationIdentity ? cue::WindowsBuildArtifactError::CandidateInvalid
-                                                           : cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown;
+                isSourceIdentity && !isDestinationIdentity
+                    ? cue::WindowsBuildArtifactError::CandidateInvalid
+                    : cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown;
             return cue::Result<void>::failure(make_windows_error(
                 a_assertContext, error, renameCode,
                 error == cue::WindowsBuildArtifactError::ArtifactVersionDurabilityUnknown
@@ -745,17 +744,17 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     {
         if (++entryCount > 16U)
         {
-            return cue::Result<void>::failure(make_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                "Unpublished Candidate contains too many entries for guarded rollback"));
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                           "Unpublished Candidate contains too many entries for guarded rollback"));
         }
         std::error_code statusError;
         const std::filesystem::file_status status = iterator->symlink_status(statusError);
         if (statusError || !std::filesystem::is_regular_file(status))
         {
-            return cue::Result<void>::failure(make_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                "Unpublished Candidate contains an entry that cannot be removed safely"));
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                           "Unpublished Candidate contains an entry that cannot be removed safely"));
         }
         const std::filesystem::path path = native_path(iterator->path());
         if (DeleteFileW(path.c_str()) == FALSE)
@@ -763,9 +762,9 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
             const DWORD code = GetLastError();
             if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND)
             {
-                return cue::Result<void>::failure(make_windows_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, code,
-                    "Unpublished Candidate file could not be removed"));
+                return cue::Result<void>::failure(
+                    make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, code,
+                                       "Unpublished Candidate file could not be removed"));
             }
         }
     }
@@ -777,12 +776,12 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
     }
     FILE_DISPOSITION_INFO disposition{};
     disposition.DeleteFile = TRUE;
-    if (SetFileInformationByHandle(a_guard.leaf_handle(), FileDispositionInfo, &disposition,
-                                   sizeof(disposition)) == FALSE)
+    if (SetFileInformationByHandle(a_guard.leaf_handle(), FileDispositionInfo, &disposition, sizeof(disposition)) ==
+        FALSE)
     {
-        return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
-            "Unpublished Candidate directory could not be removed through its guarded handle"));
+        return cue::Result<void>::failure(
+            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, GetLastError(),
+                               "Unpublished Candidate directory could not be removed through its guarded handle"));
     }
     return cue::Result<void>::success();
 }
@@ -880,9 +879,8 @@ class WindowsBuildWorkspaceLease final : public cue::BuildWorkspaceLease, public
 /// @brief Lock Fileを作成して取消可能なSharedまたはExclusive Byte Range Lockを取得する
 template <typename Cancellation>
 [[nodiscard]] cue::Result<std::optional<GuardedByteRangeLock>> acquire_byte_range_lock(
-    const std::filesystem::path &a_root, const std::filesystem::path &a_path,
-    const Cancellation &a_cancellation, cue::BuildArtifactLockDeadline a_deadline,
-    cue::WindowsBuildArtifactError a_code, bool a_isExclusive,
+    const std::filesystem::path &a_root, const std::filesystem::path &a_path, const Cancellation &a_cancellation,
+    cue::BuildArtifactLockDeadline a_deadline, cue::WindowsBuildArtifactError a_code, bool a_isExclusive,
     const cue::AssertContext &a_assertContext) noexcept
 {
     cue::Result<void> parent = ensure_directory(a_root, a_path.parent_path(), a_code, a_assertContext);
@@ -897,9 +895,9 @@ template <typename Cancellation>
         return cue::Result<std::optional<GuardedByteRangeLock>>::failure(std::move(*parentGuard.try_error()));
     }
     const std::filesystem::path lockPath = native_path(a_path);
-    UniqueHandle handle(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    UniqueHandle handle(CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                                    nullptr));
     if (!handle.is_valid())
     {
         return cue::Result<std::optional<GuardedByteRangeLock>>::failure(
@@ -975,9 +973,9 @@ template <typename Cancellation>
 
 /// @brief Regular FileをSHA-256でStreaming HashしSizeとDigestを返す
 [[nodiscard]] cue::Result<cue::BuildArtifactFile> hash_file(const std::filesystem::path &a_path,
-                                                             std::string a_relativePath,
-                                                             cue::BuildArtifactFilePurpose a_purpose,
-                                                             const cue::AssertContext &a_assertContext) noexcept
+                                                            std::string a_relativePath,
+                                                            cue::BuildArtifactFilePurpose a_purpose,
+                                                            const cue::AssertContext &a_assertContext) noexcept
 {
     std::error_code statusError;
     const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, statusError);
@@ -1093,17 +1091,17 @@ template <typename Cancellation>
 {
     if (a_bytes.size() > static_cast<std::size_t>(UINT32_MAX))
     {
-        return cue::Result<std::string>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Source inventory canonical bytes exceed the hashing limit"));
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Source inventory canonical bytes exceed the hashing limit"));
     }
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     const NTSTATUS openStatus = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0U);
     if (openStatus < 0)
     {
-        return cue::Result<std::string>::failure(make_nt_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, openStatus,
-            "Source inventory SHA-256 provider failed"));
+        return cue::Result<std::string>::failure(make_nt_error(a_assertContext,
+                                                               cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                               openStatus, "Source inventory SHA-256 provider failed"));
     }
     const auto closeAlgorithm = [](BCRYPT_ALG_HANDLE *a_algorithm) noexcept
     {
@@ -1114,15 +1112,14 @@ template <typename Cancellation>
     };
     std::unique_ptr<BCRYPT_ALG_HANDLE, decltype(closeAlgorithm)> algorithmOwner(&algorithm, closeAlgorithm);
     std::array<std::uint8_t, k_sha256Bytes> digest{};
-    const NTSTATUS hashStatus = BCryptHash(
-        algorithm, nullptr, 0U,
-        reinterpret_cast<PUCHAR>(const_cast<char *>(a_bytes.data())), static_cast<ULONG>(a_bytes.size()),
-        digest.data(), static_cast<ULONG>(digest.size()));
+    const NTSTATUS hashStatus =
+        BCryptHash(algorithm, nullptr, 0U, reinterpret_cast<PUCHAR>(const_cast<char *>(a_bytes.data())),
+                   static_cast<ULONG>(a_bytes.size()), digest.data(), static_cast<ULONG>(digest.size()));
     if (hashStatus < 0)
     {
-        return cue::Result<std::string>::failure(make_nt_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, hashStatus,
-            "Source inventory SHA-256 calculation failed"));
+        return cue::Result<std::string>::failure(
+            make_nt_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid, hashStatus,
+                          "Source inventory SHA-256 calculation failed"));
     }
     constexpr std::string_view digits = "0123456789abcdef";
     std::string hashText;
@@ -1136,8 +1133,8 @@ template <typename Cancellation>
 }
 
 /// @brief Provenance検証用の小さいRegular Text Fileを上限付きで読む
-[[nodiscard]] cue::Result<std::string> read_toolchain_evidence_file(
-    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<std::string> read_toolchain_evidence_file(const std::filesystem::path &a_path,
+                                                                    const cue::AssertContext &a_assertContext) noexcept
 {
     std::error_code statusError;
     const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, statusError);
@@ -1146,33 +1143,32 @@ template <typename Cancellation>
     if (statusError || sizeError || !std::filesystem::is_regular_file(status) || byteSize == 0U ||
         byteSize > k_maximumToolchainEvidenceBytes)
     {
-        return cue::Result<std::string>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping toolchain evidence is unavailable or outside the supported limit"));
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping toolchain evidence is unavailable or outside the supported limit"));
     }
     std::ifstream input(a_path, std::ios::binary);
     std::string bytes(static_cast<std::size_t>(byteSize), '\0');
     input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     if (!input || input.peek() != std::char_traits<char>::eof() || bytes.find('\0') != std::string::npos)
     {
-        return cue::Result<std::string>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping toolchain evidence could not be read as bounded text"));
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping toolchain evidence could not be read as bounded text"));
     }
     return cue::Result<std::string>::success(std::move(bytes));
 }
 
 /// @brief 一意な行Prefixに続く値を返す
-[[nodiscard]] std::optional<std::string> unique_line_value(std::string_view a_text,
-                                                           std::string_view a_prefix)
+[[nodiscard]] std::optional<std::string> unique_line_value(std::string_view a_text, std::string_view a_prefix)
 {
     std::optional<std::string> value;
     std::size_t cursor = 0U;
     while (cursor <= a_text.size())
     {
         const std::size_t end = a_text.find('\n', cursor);
-        std::string_view line = a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor
-                                                                                   : end - cursor);
+        std::string_view line =
+            a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor : end - cursor);
         if (!line.empty() && line.back() == '\r')
         {
             line.remove_suffix(1U);
@@ -1194,9 +1190,47 @@ template <typename Cancellation>
     return value;
 }
 
+/// @brief 一意なCanonical JSON String行からEscapeなしの値を取得する
+[[nodiscard]] std::optional<std::string> unique_metadata_string_value(std::string_view a_text,
+                                                                      std::string_view a_prefix)
+{
+    std::optional<std::string> value = unique_line_value(a_text, a_prefix);
+    if (!value || value->size() < 2U || !value->ends_with("\","))
+    {
+        return std::nullopt;
+    }
+    value->resize(value->size() - 2U);
+    if (value->find('"') != std::string::npos || value->find('\\') != std::string::npos)
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// @brief Publisher生成Metadata v1のArtifactとProject Identityを厳格に取得する
+[[nodiscard]] std::optional<std::string> parse_runtime_metadata_project_id(
+    std::string_view a_text, const cue::BuildArtifactInventory &a_inventory)
+{
+    const std::optional<std::string> schema = unique_line_value(a_text, "    \"schemaVersion\": ");
+    const std::optional<std::string> artifact = unique_metadata_string_value(a_text, "    \"artifactId\": \"");
+    std::optional<std::string> project = unique_metadata_string_value(a_text, "    \"projectId\": \"");
+    if (!schema || *schema != "1," || !artifact || *artifact != a_inventory.artifact_id() || !project)
+    {
+        return std::nullopt;
+    }
+    if (a_inventory.profile().target() == cue::BuildTarget::ShippingProduct)
+    {
+        const std::optional<std::string> target = unique_metadata_string_value(a_text, "    \"target\": \"");
+        if (!target || *target != "ShippingProduct")
+        {
+            return std::nullopt;
+        }
+    }
+    return project;
+}
+
 /// @brief 一意なCMake Cache Entryの型に依存せず値を返す
-[[nodiscard]] std::optional<std::string> unique_cmake_cache_value(std::string_view a_text,
-                                                                  std::string_view a_name)
+[[nodiscard]] std::optional<std::string> unique_cmake_cache_value(std::string_view a_text, std::string_view a_name)
 {
     std::string prefix(a_name);
     prefix.push_back(':');
@@ -1205,8 +1239,8 @@ template <typename Cancellation>
     while (cursor <= a_text.size())
     {
         const std::size_t end = a_text.find('\n', cursor);
-        std::string_view line = a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor
-                                                                                   : end - cursor);
+        std::string_view line =
+            a_text.substr(cursor, end == std::string_view::npos ? a_text.size() - cursor : end - cursor);
         if (!line.empty() && line.back() == '\r')
         {
             line.remove_suffix(1U);
@@ -1230,8 +1264,7 @@ template <typename Cancellation>
 }
 
 /// @brief CMake Compiler設定の一意なquoted set値を返す
-[[nodiscard]] std::optional<std::string> unique_cmake_quoted_value(std::string_view a_text,
-                                                                   std::string_view a_variable)
+[[nodiscard]] std::optional<std::string> unique_cmake_quoted_value(std::string_view a_text, std::string_view a_variable)
 {
     std::string prefix("set(");
     prefix.append(a_variable);
@@ -1247,8 +1280,7 @@ template <typename Cancellation>
 }
 
 /// @brief XML内に一回以上現れる同一Tag値だけを返す
-[[nodiscard]] std::optional<std::string> uniform_xml_tag_value(std::string_view a_text,
-                                                               std::string_view a_tag)
+[[nodiscard]] std::optional<std::string> uniform_xml_tag_value(std::string_view a_text, std::string_view a_tag)
 {
     std::string opening("<");
     opening.append(a_tag);
@@ -1376,56 +1408,49 @@ template <typename Cancellation>
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*cache.try_error()));
     }
-    const std::optional<std::string> cmakeCommand =
-        unique_line_value(*cache.try_value(), "CMAKE_COMMAND:INTERNAL=");
+    const std::optional<std::string> cmakeCommand = unique_line_value(*cache.try_value(), "CMAKE_COMMAND:INTERNAL=");
     const std::optional<std::string> cmakeMajor =
         unique_line_value(*cache.try_value(), "CMAKE_CACHE_MAJOR_VERSION:INTERNAL=");
     const std::optional<std::string> cmakeMinor =
         unique_line_value(*cache.try_value(), "CMAKE_CACHE_MINOR_VERSION:INTERNAL=");
     const std::optional<std::string> cmakePatch =
         unique_line_value(*cache.try_value(), "CMAKE_CACHE_PATCH_VERSION:INTERNAL=");
-    const std::optional<std::string> generator =
-        unique_line_value(*cache.try_value(), "CMAKE_GENERATOR:INTERNAL=");
+    const std::optional<std::string> generator = unique_line_value(*cache.try_value(), "CMAKE_GENERATOR:INTERNAL=");
     const std::optional<std::string> generatorInstance =
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_INSTANCE:INTERNAL=");
     const std::optional<std::string> generatorPlatform =
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_PLATFORM:INTERNAL=");
     const std::optional<std::string> generatorToolset =
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_TOOLSET:INTERNAL=");
-    const std::optional<std::string> engineRoot =
-        unique_cmake_cache_value(*cache.try_value(), "CUE_ENGINE_ROOT");
+    const std::optional<std::string> engineRoot = unique_cmake_cache_value(*cache.try_value(), "CUE_ENGINE_ROOT");
     if (!cmakeCommand || !cmakeMajor || !cmakeMinor || !cmakePatch || !generator || !generatorInstance ||
         !generatorPlatform || !generatorToolset || !engineRoot)
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping CMake cache is missing required toolchain identity"));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping CMake cache is missing required toolchain identity"));
     }
     const std::optional<std::filesystem::path> cmakePath = to_path(*cmakeCommand);
     const std::optional<std::filesystem::path> visualStudioPath = to_path(*generatorInstance);
     const std::optional<std::filesystem::path> engineSourcePath = to_path(*engineRoot);
     std::string cmakeVersion = *cmakeMajor + "." + *cmakeMinor + "." + *cmakePatch;
-    const std::string expectedGeneratorToolset =
-        "version=" + std::string(cue::build_metadata::k_msvcToolsetVersion);
-    if (!cmakePath || !visualStudioPath || !engineSourcePath ||
-        cmakeVersion != cue::build_metadata::k_cmakeVersion ||
+    const std::string expectedGeneratorToolset = "version=" + std::string(cue::build_metadata::k_msvcToolsetVersion);
+    if (!cmakePath || !visualStudioPath || !engineSourcePath || cmakeVersion != cue::build_metadata::k_cmakeVersion ||
         *generator != cue::build_metadata::k_cmakeGenerator || *generatorPlatform != "x64" ||
-        *generatorToolset != expectedGeneratorToolset ||
-        !same_root(*cmakePath, cue::build_metadata::k_cmakeCommand) ||
+        *generatorToolset != expectedGeneratorToolset || !same_root(*cmakePath, cue::build_metadata::k_cmakeCommand) ||
         !same_root(*visualStudioPath, cue::build_metadata::k_visualStudioRoot) ||
         !same_root(*engineSourcePath, cue::build_metadata::k_engineSourceRoot))
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping CMake selection differs from the Engine Build Plan"));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping CMake selection differs from the Engine Build Plan"));
     }
 
     cue::Result<std::string> compilerEvidence = read_toolchain_evidence_file(
         a_binary / "CMakeFiles" / cmakeVersion / "CMakeCXXCompiler.cmake", a_assertContext);
     if (!compilerEvidence)
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
-            std::move(*compilerEvidence.try_error()));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*compilerEvidence.try_error()));
     }
     const std::optional<std::string> compiler =
         unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER");
@@ -1440,9 +1465,9 @@ template <typename Cancellation>
         !(*parsedCompilerVersion == a_plan.workspace_compatibility().toolsetVersion) ||
         !same_root(*compilerPath, cue::build_metadata::k_msvcCompiler))
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping MSVC compiler differs from the Build Plan"));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping MSVC compiler differs from the Build Plan"));
     }
 
     cue::Result<std::string> project =
@@ -1451,41 +1476,39 @@ template <typename Cancellation>
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*project.try_error()));
     }
-    const std::optional<std::string> platformToolset =
-        uniform_xml_tag_value(*project.try_value(), "PlatformToolset");
+    const std::optional<std::string> platformToolset = uniform_xml_tag_value(*project.try_value(), "PlatformToolset");
     const std::optional<std::string> windowsSdkVersion =
         uniform_xml_tag_value(*project.try_value(), "WindowsTargetPlatformVersion");
-    const std::optional<std::string> vcToolsVersion =
-        uniform_xml_tag_value(*project.try_value(), "VCToolsVersion");
-    const bool validPlatformToolset = platformToolset && platformToolset->size() <= 32U &&
-                                      std::all_of(platformToolset->begin(), platformToolset->end(), [](char a_value)
-                                                  { return (a_value >= '0' && a_value <= '9') ||
-                                                           (a_value >= 'A' && a_value <= 'Z') ||
-                                                           (a_value >= 'a' && a_value <= 'z') || a_value == '.' ||
-                                                           a_value == '_' || a_value == '-'; });
+    const std::optional<std::string> vcToolsVersion = uniform_xml_tag_value(*project.try_value(), "VCToolsVersion");
+    const bool validPlatformToolset =
+        platformToolset && platformToolset->size() <= 32U &&
+        std::all_of(platformToolset->begin(), platformToolset->end(),
+                    [](char a_value)
+                    {
+                        return (a_value >= '0' && a_value <= '9') || (a_value >= 'A' && a_value <= 'Z') ||
+                               (a_value >= 'a' && a_value <= 'z') || a_value == '.' || a_value == '_' || a_value == '-';
+                    });
     if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset || !vcToolsVersion ||
         *vcToolsVersion != cue::build_metadata::k_msvcToolsetVersion || !windowsSdkVersion ||
         *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping Visual Studio project differs from the selected Windows toolchain"));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping Visual Studio project differs from the selected Windows toolchain"));
     }
     const std::wstring compilerPathUtf16 = compilerPath->generic_wstring();
-    const std::optional<cue::BuildToolVersion> compilerFileVersion =
-        read_binary_file_version(compilerPathUtf16);
+    const std::optional<cue::BuildToolVersion> compilerFileVersion = read_binary_file_version(compilerPathUtf16);
     if (!compilerFileVersion || !(*compilerFileVersion == *parsedCompilerVersion))
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Shipping MSVC compiler binary differs from the CMake compiler version"));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Shipping MSVC compiler binary differs from the CMake compiler version"));
     }
     cue::Result<cue::BuildArtifactFile> compilerHash =
         hash_file(*compilerPath, "cl.exe", cue::BuildArtifactFilePurpose::Unspecified, a_assertContext);
     if (!compilerHash)
     {
-        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
-            std::move(*compilerHash.try_error()));
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*compilerHash.try_error()));
     }
     if (a_cancellation.is_cancel_requested())
     {
@@ -1515,9 +1538,9 @@ template <typename Cancellation>
         const std::filesystem::path root = std::filesystem::weakly_canonical(a_root, rootError);
         if (rootError || !root.is_absolute())
         {
-            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                "Source inventory root is unavailable"));
+            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                           "Source inventory root is unavailable"));
         }
         std::vector<std::filesystem::path> inputFiles;
         for (const std::filesystem::path &relativeDirectory : a_directories)
@@ -1528,9 +1551,9 @@ template <typename Cancellation>
                 std::filesystem::symlink_status(directory, statusError);
             if (statusError || !std::filesystem::is_directory(directoryStatus))
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    "Required source inventory directory is unavailable or is a reparse point"));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               "Required source inventory directory is unavailable or is a reparse point"));
             }
             std::error_code iteratorError;
             for (std::filesystem::recursive_directory_iterator iterator(directory, iteratorError), end;
@@ -1542,12 +1565,12 @@ template <typename Cancellation>
                 }
                 std::error_code entryError;
                 const std::filesystem::file_status entryStatus = iterator->symlink_status(entryError);
-                if (entryError || (!std::filesystem::is_directory(entryStatus) &&
-                                   !std::filesystem::is_regular_file(entryStatus)))
+                if (entryError ||
+                    (!std::filesystem::is_directory(entryStatus) && !std::filesystem::is_regular_file(entryStatus)))
                 {
-                    return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                        a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                        "Source inventory contains an unsupported or reparse entry"));
+                    return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                        make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                                   "Source inventory contains an unsupported or reparse entry"));
                 }
                 if (std::filesystem::is_regular_file(entryStatus))
                 {
@@ -1568,22 +1591,22 @@ template <typename Cancellation>
             const std::filesystem::file_status status = std::filesystem::symlink_status(file, statusError);
             if (statusError || !std::filesystem::is_regular_file(status))
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    "Required source inventory file is unavailable or is a reparse point"));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               "Required source inventory file is unavailable or is a reparse point"));
             }
             inputFiles.push_back(file);
         }
         if (inputFiles.empty() || inputFiles.size() > k_maximumSourceInventoryFiles)
         {
-            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                "Source inventory file count is outside the supported limit"));
+            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                           "Source inventory file count is outside the supported limit"));
         }
-        std::sort(inputFiles.begin(), inputFiles.end(), [&root](const std::filesystem::path &a_left,
-                                                               const std::filesystem::path &a_right)
-                  { return path_to_utf8(a_left.lexically_relative(root)) <
-                           path_to_utf8(a_right.lexically_relative(root)); });
+        std::sort(
+            inputFiles.begin(), inputFiles.end(),
+            [&root](const std::filesystem::path &a_left, const std::filesystem::path &a_right)
+            { return path_to_utf8(a_left.lexically_relative(root)) < path_to_utf8(a_right.lexically_relative(root)); });
 
         std::string canonical;
         canonical.reserve(std::min(k_maximumSourceInventoryBytes, inputFiles.size() * 160U));
@@ -1600,22 +1623,21 @@ template <typename Cancellation>
             if (relative.empty() || relative.is_absolute() || relativeText.empty() || relativeText == previousPath ||
                 relativeText.starts_with("../") || relativeText.find("/../") != std::string::npos)
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    "Source inventory contains an unsafe or duplicate path"));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               "Source inventory contains an unsafe or duplicate path"));
             }
             cue::Result<cue::BuildArtifactFile> identity =
                 hash_file(file, relativeText, cue::BuildArtifactFilePurpose::Unspecified, a_assertContext);
             if (!identity)
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
-                    std::move(*identity.try_error()));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(std::move(*identity.try_error()));
             }
             if (identity.try_value()->byteSize > k_maximumSourceInputBytes - totalBytes)
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    "Source inventory content exceeds the supported limit"));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               "Source inventory content exceeds the supported limit"));
             }
             totalBytes += identity.try_value()->byteSize;
             canonical.append(relativeText);
@@ -1626,21 +1648,19 @@ template <typename Cancellation>
             canonical.push_back('\n');
             if (canonical.size() > k_maximumSourceInventoryBytes)
             {
-                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(make_error(
-                    a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                    "Source inventory canonical form exceeds the supported limit"));
+                return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                               "Source inventory canonical form exceeds the supported limit"));
             }
             previousPath = relativeText;
         }
         cue::Result<std::string> inventoryHash = hash_bytes(canonical, a_assertContext);
         if (!inventoryHash)
         {
-            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(
-                std::move(*inventoryHash.try_error()));
+            return cue::Result<std::optional<SourceInventoryIdentity>>::failure(std::move(*inventoryHash.try_error()));
         }
-        return cue::Result<std::optional<SourceInventoryIdentity>>::success(
-            std::optional<SourceInventoryIdentity>(
-                SourceInventoryIdentity{inputFiles.size(), std::move(*inventoryHash.try_value())}));
+        return cue::Result<std::optional<SourceInventoryIdentity>>::success(std::optional<SourceInventoryIdentity>(
+            SourceInventoryIdentity{inputFiles.size(), std::move(*inventoryHash.try_value())}));
     }
     catch (...)
     {
@@ -1809,27 +1829,24 @@ template <typename Cancellation>
 }
 
 /// @brief Candidate Productがx64 PE ExecutableかHeader範囲を検証して確認する
-[[nodiscard]] cue::Result<void> validate_x64_product_image(
-    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<void> validate_x64_product_image(const std::filesystem::path &a_path,
+                                                           const cue::AssertContext &a_assertContext) noexcept
 {
     std::error_code sizeError;
     const std::uintmax_t size = std::filesystem::file_size(a_path, sizeError);
     if (sizeError || size < sizeof(IMAGE_DOS_HEADER) + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER))
     {
-        return cue::Result<void>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Game Product PE image is incomplete"));
+        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                     "Game Product PE image is incomplete"));
     }
     std::ifstream input(a_path, std::ios::binary);
     IMAGE_DOS_HEADER dos{};
     input.read(reinterpret_cast<char *>(&dos), sizeof(dos));
     const std::uint64_t headerOffset = dos.e_lfanew < 0 ? size : static_cast<std::uint64_t>(dos.e_lfanew);
-    if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE ||
-        headerOffset > size - sizeof(DWORD) - sizeof(IMAGE_FILE_HEADER))
+    if (!input || dos.e_magic != IMAGE_DOS_SIGNATURE || headerOffset > size - sizeof(DWORD) - sizeof(IMAGE_FILE_HEADER))
     {
-        return cue::Result<void>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Game Product DOS or PE header is invalid"));
+        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                     "Game Product DOS or PE header is invalid"));
     }
     input.seekg(static_cast<std::streamoff>(headerOffset));
     DWORD signature = 0U;
@@ -1840,9 +1857,8 @@ template <typename Cancellation>
         (fileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) == 0U ||
         (fileHeader.Characteristics & IMAGE_FILE_DLL) != 0U)
     {
-        return cue::Result<void>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Game Product must be an x64 PE executable"));
+        return cue::Result<void>::failure(make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                                                     "Game Product must be an x64 PE executable"));
     }
     return cue::Result<void>::success();
 }
@@ -1880,8 +1896,8 @@ enum class ArtifactProbeStatus : std::uint8_t
     const std::optional<std::chrono::milliseconds> timeout = remaining_timeout(a_deadline);
     if (timeout && timeout->count() <= 0)
     {
-        return cue::Result<std::optional<std::string>>::failure(make_lock_timeout_error(
-            a_assertContext, "Shipping provenance collection timed out"));
+        return cue::Result<std::optional<std::string>>::failure(
+            make_lock_timeout_error(a_assertContext, "Shipping provenance collection timed out"));
     }
     std::vector<std::string> arguments = {"-c", "safe.directory=" + path_to_utf8(a_engineRoot), "-C",
                                           path_to_utf8(a_engineRoot)};
@@ -1900,14 +1916,14 @@ enum class ArtifactProbeStatus : std::uint8_t
     }
     if (process.try_value()->outcome() == cue::ChildProcessOutcome::TimedOut)
     {
-        return cue::Result<std::optional<std::string>>::failure(make_lock_timeout_error(
-            a_assertContext, "Shipping provenance collection timed out"));
+        return cue::Result<std::optional<std::string>>::failure(
+            make_lock_timeout_error(a_assertContext, "Shipping provenance collection timed out"));
     }
     if (!process.try_value()->exit_code() || *process.try_value()->exit_code() != 0U)
     {
-        return cue::Result<std::optional<std::string>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Engine Git provenance could not be collected"));
+        return cue::Result<std::optional<std::string>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Engine Git provenance could not be collected"));
     }
     std::string output;
     for (const cue::ChildProcessOutputChunk &chunk : process.try_value()->output())
@@ -1921,8 +1937,7 @@ enum class ArtifactProbeStatus : std::uint8_t
     {
         output.pop_back();
     }
-    return cue::Result<std::optional<std::string>>::success(
-        std::optional<std::string>(std::move(output)));
+    return cue::Result<std::optional<std::string>>::success(std::optional<std::string>(std::move(output)));
 }
 
 /// @brief Shipping BuildのEngine／Game入力とToolchain由来情報を採取する
@@ -1934,13 +1949,12 @@ enum class ArtifactProbeStatus : std::uint8_t
     const std::optional<std::filesystem::path> engineRoot = to_path(cue::build_metadata::k_engineSourceRoot);
     if (!engineRoot || !engineRoot->is_absolute())
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
-            "Engine source root for Shipping provenance is unavailable"));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                       "Engine source root for Shipping provenance is unavailable"));
     }
     cue::Result<std::optional<std::string>> commit = read_git_output(
-        a_processRunner, *engineRoot, {"rev-parse", "--verify", "HEAD"}, a_cancellation, a_deadline,
-        a_assertContext);
+        a_processRunner, *engineRoot, {"rev-parse", "--verify", "HEAD"}, a_cancellation, a_deadline, a_assertContext);
     if (!commit)
     {
         return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*commit.try_error()));
@@ -1950,22 +1964,22 @@ enum class ArtifactProbeStatus : std::uint8_t
         return cue::Result<std::optional<ShippingBuildProvenance>>::success(std::nullopt);
     }
     const std::string &commitText = **commit.try_value();
-    const bool validCommit = (commitText.size() == 40U || commitText.size() == 64U) &&
-                             std::all_of(commitText.begin(), commitText.end(), [](char a_value)
-                                         { return (a_value >= '0' && a_value <= '9') ||
-                                                  (a_value >= 'a' && a_value <= 'f'); });
+    const bool validCommit =
+        (commitText.size() == 40U || commitText.size() == 64U) &&
+        std::all_of(commitText.begin(), commitText.end(), [](char a_value)
+                    { return (a_value >= '0' && a_value <= '9') || (a_value >= 'a' && a_value <= 'f'); });
     if (!validCommit)
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(make_error(
-            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-            "Engine Git commit provenance is invalid"));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                       "Engine Git commit provenance is invalid"));
     }
-    cue::Result<std::optional<std::string>> status = read_git_output(
-        a_processRunner, *engineRoot,
-        {"status", "--porcelain=v1", "--untracked-files=all", "--", "Engine/Source", "CMake",
-         "CMakeLists.txt", "CMakePresets.json", "ThirdParty/vcpkg.json",
-         "ThirdParty/vcpkg-configuration.json", "ThirdParty/vcpkg-tool.json"},
-        a_cancellation, a_deadline, a_assertContext);
+    cue::Result<std::optional<std::string>> status =
+        read_git_output(a_processRunner, *engineRoot,
+                        {"status", "--porcelain=v1", "--untracked-files=all", "--", "Engine/Source", "CMake",
+                         "CMakeLists.txt", "CMakePresets.json", "ThirdParty/vcpkg.json",
+                         "ThirdParty/vcpkg-configuration.json", "ThirdParty/vcpkg-tool.json"},
+                        a_cancellation, a_deadline, a_assertContext);
     if (!status)
     {
         return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*status.try_error()));
@@ -1977,28 +1991,25 @@ enum class ArtifactProbeStatus : std::uint8_t
 
     const std::array<std::filesystem::path, 2U> engineDirectories = {"Engine/Source", "CMake"};
     const std::array<std::filesystem::path, 5U> engineFiles = {
-        "CMakeLists.txt", "CMakePresets.json", "ThirdParty/vcpkg.json",
-        "ThirdParty/vcpkg-configuration.json", "ThirdParty/vcpkg-tool.json"};
+        "CMakeLists.txt", "CMakePresets.json", "ThirdParty/vcpkg.json", "ThirdParty/vcpkg-configuration.json",
+        "ThirdParty/vcpkg-tool.json"};
     const std::array<std::filesystem::path, 1U> gameDirectories = {"Source/Game"};
-    const std::array<std::filesystem::path, 3U> gameFiles = {
-        "CMakeLists.txt", "CMakePresets.json", "CueProject.json"};
-    cue::Result<std::optional<SourceInventoryIdentity>> engineSource = collect_source_inventory(
-        *engineRoot, engineDirectories, engineFiles, a_cancellation, a_assertContext);
+    const std::array<std::filesystem::path, 3U> gameFiles = {"CMakeLists.txt", "CMakePresets.json", "CueProject.json"};
+    cue::Result<std::optional<SourceInventoryIdentity>> engineSource =
+        collect_source_inventory(*engineRoot, engineDirectories, engineFiles, a_cancellation, a_assertContext);
     if (!engineSource)
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
-            std::move(*engineSource.try_error()));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*engineSource.try_error()));
     }
     if (!engineSource.try_value()->has_value())
     {
         return cue::Result<std::optional<ShippingBuildProvenance>>::success(std::nullopt);
     }
-    cue::Result<std::optional<SourceInventoryIdentity>> gameSource = collect_source_inventory(
-        a_projectRoot, gameDirectories, gameFiles, a_cancellation, a_assertContext);
+    cue::Result<std::optional<SourceInventoryIdentity>> gameSource =
+        collect_source_inventory(a_projectRoot, gameDirectories, gameFiles, a_cancellation, a_assertContext);
     if (!gameSource)
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
-            std::move(*gameSource.try_error()));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*gameSource.try_error()));
     }
     if (!gameSource.try_value()->has_value())
     {
@@ -2012,13 +2023,11 @@ enum class ArtifactProbeStatus : std::uint8_t
                   cue::BuildArtifactFilePurpose::Unspecified, a_assertContext);
     if (!vcpkgManifest)
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
-            std::move(*vcpkgManifest.try_error()));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*vcpkgManifest.try_error()));
     }
     if (!vcpkgBaseline)
     {
-        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(
-            std::move(*vcpkgBaseline.try_error()));
+        return cue::Result<std::optional<ShippingBuildProvenance>>::failure(std::move(*vcpkgBaseline.try_error()));
     }
     if (a_cancellation.is_cancel_requested())
     {
@@ -2044,15 +2053,14 @@ enum class ArtifactProbeStatus : std::uint8_t
     if (error)
     {
         return cue::Result<void>::failure(make_windows_error(
-            a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch,
-            static_cast<DWORD>(error.value()), "Artifact probe completion marker could not be removed"));
+            a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, static_cast<DWORD>(error.value()),
+            "Artifact probe completion marker could not be removed"));
     }
     return cue::Result<void>::success();
 }
 
 /// @brief Probeが全検証後に作成した固定内容のRegular Fileだけを完了通知として認める
-[[nodiscard]] bool probe_marker_matches(const std::filesystem::path &a_path,
-                                        std::string_view a_expected) noexcept
+[[nodiscard]] bool probe_marker_matches(const std::filesystem::path &a_path, std::string_view a_expected) noexcept
 {
     std::error_code statusError;
     const std::filesystem::file_status status = std::filesystem::symlink_status(a_path, statusError);
@@ -2072,14 +2080,11 @@ enum class ArtifactProbeStatus : std::uint8_t
 }
 
 /// @brief Candidate DLLの公開ABIを取消／Timeout可能な別Processで検証する
-[[nodiscard]] cue::Result<ArtifactProbeStatus> validate_module(const std::filesystem::path &a_path,
-                                                             const cue::BuildPlan &a_plan, std::string_view a_projectId,
-                                                             const std::filesystem::path &a_markerDirectory,
-                                                             std::string_view a_probeExecutable,
-                                                             cue::ChildProcessRunner &a_processRunner,
-                                                             const cue::ChildProcessCancellation &a_cancellation,
-                                                             cue::BuildArtifactLockDeadline a_deadline,
-                                                             const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<ArtifactProbeStatus> validate_module(
+    const std::filesystem::path &a_path, const cue::BuildPlan &a_plan, std::string_view a_projectId,
+    const std::filesystem::path &a_markerDirectory, std::string_view a_probeExecutable,
+    cue::ChildProcessRunner &a_processRunner, const cue::ChildProcessCancellation &a_cancellation,
+    cue::BuildArtifactLockDeadline a_deadline, const cue::AssertContext &a_assertContext) noexcept
 {
     const std::optional<std::chrono::milliseconds> timeout = remaining_timeout(a_deadline);
     if (timeout && timeout->count() <= 0)
@@ -2138,8 +2143,7 @@ enum class ArtifactProbeStatus : std::uint8_t
             summary.append(" with exit code ");
             summary.append(std::to_string(*process.try_value()->exit_code()));
         }
-        return failProbe(
-            make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
+        return failProbe(make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
     }
     const bool isComplete = probe_marker_matches(marker, k_moduleProbeCompletionMarker);
     cue::Result<void> markerRemoved = remove_probe_marker(marker, a_assertContext);
@@ -2163,10 +2167,9 @@ enum class ArtifactProbeStatus : std::uint8_t
 
 /// @brief Candidate ProductのStatic Startup契約を取消／Timeout可能な別Processで検証する
 [[nodiscard]] cue::Result<ArtifactProbeStatus> validate_product(
-    const std::filesystem::path &a_path, std::string_view a_projectId,
-    const std::filesystem::path &a_markerDirectory, cue::ChildProcessRunner &a_processRunner,
-    const cue::ChildProcessCancellation &a_cancellation, cue::BuildArtifactLockDeadline a_deadline,
-    const cue::AssertContext &a_assertContext) noexcept
+    const std::filesystem::path &a_path, std::string_view a_projectId, const std::filesystem::path &a_markerDirectory,
+    cue::ChildProcessRunner &a_processRunner, const cue::ChildProcessCancellation &a_cancellation,
+    cue::BuildArtifactLockDeadline a_deadline, const cue::AssertContext &a_assertContext) noexcept
 {
     const std::optional<std::chrono::milliseconds> timeout = remaining_timeout(a_deadline);
     if (timeout && timeout->count() <= 0)
@@ -2222,8 +2225,7 @@ enum class ArtifactProbeStatus : std::uint8_t
             summary.append(" with exit code ");
             summary.append(std::to_string(*process.try_value()->exit_code()));
         }
-        return failProbe(
-            make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
+        return failProbe(make_error(a_assertContext, cue::WindowsBuildArtifactError::ModuleContractMismatch, summary));
     }
     const bool isComplete = probe_marker_matches(marker, k_productProbeCompletionMarker);
     cue::Result<void> markerRemoved = remove_probe_marker(marker, a_assertContext);
@@ -2292,17 +2294,18 @@ enum class ArtifactProbeStatus : std::uint8_t
 }
 
 /// @brief Shipping Product Metadata v1をBuild由来情報とPayload Hashから決定的に直列化する
-[[nodiscard]] std::string serialize_product_metadata(
-    std::string_view a_artifactId, std::string_view a_projectId,
-    const cue::EngineCompatibility &a_compatibility, const cue::BuildPlan &a_plan,
-    const ShippingBuildProvenance &a_provenance, const ShippingToolchainIdentity &a_toolchain,
-    const cue::BuildArtifactFile &a_product, const std::optional<cue::BuildArtifactFile> &a_symbol)
+[[nodiscard]] std::string serialize_product_metadata(std::string_view a_artifactId, std::string_view a_projectId,
+                                                     const cue::EngineCompatibility &a_compatibility,
+                                                     const cue::BuildPlan &a_plan,
+                                                     const ShippingBuildProvenance &a_provenance,
+                                                     const ShippingToolchainIdentity &a_toolchain,
+                                                     const cue::BuildArtifactFile &a_product,
+                                                     const std::optional<cue::BuildArtifactFile> &a_symbol)
 {
     const cue::BuildToolVersion &toolsetVersion = a_plan.workspace_compatibility().toolsetVersion;
     const std::uint64_t compilerVersion =
         static_cast<std::uint64_t>(toolsetVersion.major) * 100U + static_cast<std::uint64_t>(toolsetVersion.minor);
-    const std::uint64_t fullVersion =
-        compilerVersion * 100000U + static_cast<std::uint64_t>(toolsetVersion.patch);
+    const std::uint64_t fullVersion = compilerVersion * 100000U + static_cast<std::uint64_t>(toolsetVersion.patch);
     std::string output;
     output.reserve(2200U);
     output.append("{\n    \"schemaVersion\": 1,\n    \"artifactId\": \"");
@@ -2454,9 +2457,16 @@ enum class ArtifactProbeStatus : std::uint8_t
     return output;
 }
 
-/// @brief Current ManifestをRegular File Handleから上限付きで未変換読込する
-[[nodiscard]] cue::Result<std::string> read_current_manifest(
-    const std::filesystem::path &a_path, const cue::AssertContext &a_assertContext) noexcept
+enum class ArtifactTextKind : std::uint8_t
+{
+    CurrentManifest,
+    RuntimeMetadata
+};
+
+/// @brief Artifact Text FileをRegular File Handleから種別別上限付きで未変換読込する
+[[nodiscard]] cue::Result<std::string> read_guarded_artifact_text(const std::filesystem::path &a_path,
+                                                                  std::uint64_t a_maximumBytes, ArtifactTextKind a_kind,
+                                                                  const cue::AssertContext &a_assertContext) noexcept
 {
     UniqueHandle file(CreateFileW(native_path(a_path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
@@ -2465,33 +2475,38 @@ enum class ArtifactProbeStatus : std::uint8_t
     {
         return cue::Result<std::string>::failure(make_windows_error(
             a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-            "Current artifact manifest could not be opened"));
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest could not be opened"
+                                                        : "Runtime Metadata could not be opened"));
     }
     BY_HANDLE_FILE_INFORMATION information{};
     if (GetFileInformationByHandle(file.get(), &information) == FALSE)
     {
         return cue::Result<std::string>::failure(make_windows_error(
             a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-            "Current artifact manifest attributes could not be read"));
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest attributes could not be read"
+                                                        : "Runtime Metadata attributes could not be read"));
     }
     if ((information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U)
     {
         return cue::Result<std::string>::failure(make_windows_error(
             a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_INVALID,
-            "Current artifact manifest is not a regular file"));
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest is not a regular file"
+                                                        : "Runtime Metadata is not a regular file"));
     }
     LARGE_INTEGER size{};
     if (GetFileSizeEx(file.get(), &size) == FALSE)
     {
         return cue::Result<std::string>::failure(make_windows_error(
             a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-            "Current artifact manifest size could not be read"));
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest size could not be read"
+                                                        : "Runtime Metadata size could not be read"));
     }
-    if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > k_maximumCurrentManifestBytes)
+    if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > a_maximumBytes)
     {
         return cue::Result<std::string>::failure(make_windows_error(
             a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, ERROR_FILE_TOO_LARGE,
-            "Current artifact manifest size is invalid"));
+            a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest size is invalid"
+                                                        : "Runtime Metadata size is invalid"));
     }
     std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
     std::size_t offset = 0U;
@@ -2504,11 +2519,85 @@ enum class ArtifactProbeStatus : std::uint8_t
             const DWORD code = read == 0U ? ERROR_HANDLE_EOF : GetLastError();
             return cue::Result<std::string>::failure(make_windows_error(
                 a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, code,
-                "Current artifact manifest could not be read"));
+                a_kind == ArtifactTextKind::CurrentManifest ? "Current artifact manifest could not be read"
+                                                            : "Runtime Metadata could not be read"));
         }
         offset += read;
     }
     return cue::Result<std::string>::success(std::move(bytes));
+}
+
+/// @brief Current Manifestを上限付きで未変換読込する
+[[nodiscard]] cue::Result<std::string> read_current_manifest(const std::filesystem::path &a_path,
+                                                             const cue::AssertContext &a_assertContext) noexcept
+{
+    return read_guarded_artifact_text(a_path, k_maximumCurrentManifestBytes, ArtifactTextKind::CurrentManifest,
+                                      a_assertContext);
+}
+
+/// @brief Runtime Metadataの検証済みByte列からProject IDを取得する
+[[nodiscard]] cue::Result<std::string> read_runtime_metadata_project_id(
+    const std::filesystem::path &a_version, const cue::BuildArtifactInventory &a_inventory,
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    const cue::BuildArtifactFile *metadata = nullptr;
+    for (const cue::BuildArtifactFile &file : a_inventory.files())
+    {
+        if (file.purpose != cue::BuildArtifactFilePurpose::RuntimeMetadata)
+        {
+            continue;
+        }
+        if (metadata != nullptr)
+        {
+            return cue::Result<std::string>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                           "Visible artifact contains multiple Runtime Metadata files"));
+        }
+        metadata = &file;
+    }
+    const std::optional<std::filesystem::path> relative =
+        metadata == nullptr ? std::nullopt : to_path(metadata->relativePath);
+    if (metadata == nullptr || !relative || metadata->byteSize == 0U ||
+        metadata->byteSize > k_maximumRuntimeMetadataBytes)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata is unavailable or outside the supported limit"));
+    }
+
+    cue::Result<std::string> bytes = read_guarded_artifact_text(a_version / *relative, k_maximumRuntimeMetadataBytes,
+                                                                ArtifactTextKind::RuntimeMetadata, a_assertContext);
+    if (!bytes)
+    {
+        return cue::Result<std::string>::failure(std::move(*bytes.try_error()));
+    }
+    cue::Result<std::string> hash = hash_bytes(*bytes.try_value(), a_assertContext);
+    if (!hash)
+    {
+        return cue::Result<std::string>::failure(std::move(*hash.try_error()));
+    }
+    if (bytes.try_value()->size() != metadata->byteSize || *hash.try_value() != metadata->contentHash)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata differs from its inventory"));
+    }
+
+    std::optional<std::string> projectId = parse_runtime_metadata_project_id(*bytes.try_value(), a_inventory);
+    if (!projectId)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata has no unique top-level Project identity"));
+    }
+    cue::Result<cue::ProjectId> parsed = cue::ProjectId::parse(*projectId, a_assertContext);
+    if (!parsed)
+    {
+        return cue::Result<std::string>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                       "Visible artifact Runtime Metadata Project identity is invalid"));
+    }
+    return cue::Result<std::string>::success(std::string(parsed.try_value()->text()));
 }
 
 /// @brief Current.jsonをSibling Temporary FileからAtomic Replaceする
@@ -2529,9 +2618,9 @@ enum class ArtifactProbeStatus : std::uint8_t
     {
         if (DeleteFileW(temporary.c_str()) == FALSE)
         {
-            return cue::Result<bool>::failure(make_windows_error(
-                a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed, GetLastError(),
-                "Cancelled Current artifact temporary manifest rollback failed"));
+            return cue::Result<bool>::failure(
+                make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::CurrentManifestFailed,
+                                   GetLastError(), "Cancelled Current artifact temporary manifest rollback failed"));
         }
         return cue::Result<bool>::success(false);
     }
@@ -2572,15 +2661,22 @@ enum class ArtifactProbeStatus : std::uint8_t
 class WindowsBuildArtifactReadLease final : public cue::BuildArtifactReadLease
 {
   public:
-    /// @brief Shared Lockの一意所有権を取得する
-    explicit WindowsBuildArtifactReadLease(GuardedByteRangeLock a_lock) noexcept : m_lease(std::move(a_lock))
+    /// @brief Shared LockとStoreへBindingされたProject Identityの所有権を取得する
+    WindowsBuildArtifactReadLease(GuardedByteRangeLock a_lock, std::string a_projectId) noexcept
+        : m_lease(std::move(a_lock)), m_projectId(std::move(a_projectId))
     {
     }
     /// @brief Shared Byte Range Lockを解放する
     ~WindowsBuildArtifactReadLease() override = default;
+    /// @brief Lease発行元StoreのProject Identityを返す
+    [[nodiscard]] std::string_view project_id() const noexcept override
+    {
+        return m_projectId;
+    }
 
   private:
     ByteRangeLease m_lease;
+    std::string m_projectId;
 };
 
 /// @brief Current Artifactを同じShared Read Lease内で再検証するWindows Reader
@@ -2598,10 +2694,9 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
     ~WindowsBuildArtifactReader() override = default;
 
     /// @brief Current再読込からInventory再検証までShared Lockを保持してLeaseを返す
-    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>
-    acquire_current_read_lease(const cue::BuildArtifactInventory &a_expected,
-                               const cue::BuildArtifactReadCancellation &a_cancellation,
-                               cue::BuildArtifactLockDeadline a_deadline) noexcept override
+    [[nodiscard]] cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>> acquire_current_read_lease(
+        const cue::BuildArtifactInventory &a_expected, const cue::BuildArtifactReadCancellation &a_cancellation,
+        cue::BuildArtifactLockDeadline a_deadline) noexcept override
     {
         try
         {
@@ -2619,17 +2714,16 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
             const bool usesCurrentStore = versionPath && normalizedVersion == currentVersion;
             const bool usesLegacyStore = versionPath && a_expected.profile().target() == cue::BuildTarget::GameModule &&
                                          normalizedVersion == legacyVersion;
-            if (m_projectId.empty() || configuration.empty() || !versionPath ||
-                (!usesCurrentStore && !usesLegacyStore))
+            if (m_projectId.empty() || configuration.empty() || !versionPath || (!usesCurrentStore && !usesLegacyStore))
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
                     make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
                                "Artifact Read Lease input is not bound to this Project store"));
             }
             const std::filesystem::path &store = usesCurrentStore ? currentStore : legacyStore;
-            cue::Result<std::optional<GuardedByteRangeLock>> lock = acquire_shared_lock(
-                m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
-                cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
+            cue::Result<std::optional<GuardedByteRangeLock>> lock =
+                acquire_shared_lock(m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
+                                    cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!lock)
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
@@ -2637,8 +2731,7 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
             }
             if (!lock.try_value()->has_value())
             {
-                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
-                    std::nullopt);
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(std::nullopt);
             }
             cue::Result<std::string> current = read_current_manifest(store / "Current.json", *m_assertContext);
             if (!current)
@@ -2659,8 +2752,21 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
                     std::move(*verified.try_error()));
             }
-            std::unique_ptr<cue::BuildArtifactReadLease> lease =
-                std::make_unique<WindowsBuildArtifactReadLease>(std::move(**lock.try_value()));
+            cue::Result<std::string> artifactProjectId =
+                read_runtime_metadata_project_id(normalizedVersion, a_expected, *m_assertContext);
+            if (!artifactProjectId)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    std::move(*artifactProjectId.try_error()));
+            }
+            if (*artifactProjectId.try_value() != m_projectId)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Visible artifact Project identity does not match the reader Project"));
+            }
+            std::unique_ptr<cue::BuildArtifactReadLease> lease = std::make_unique<WindowsBuildArtifactReadLease>(
+                std::move(**lock.try_value()), std::move(*artifactProjectId.try_value()));
             return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::success(
                 std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>(std::move(lease)));
         }
@@ -2764,8 +2870,7 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
                 if (!collected.try_value()->has_value())
                 {
-                    return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(
-                        std::nullopt);
+                    return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::success(std::nullopt);
                 }
                 shippingProvenance.emplace(std::move(**collected.try_value()));
             }
@@ -2798,9 +2903,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             if (a_plan.profile().target() == cue::BuildTarget::ShippingProduct &&
                 a_plan.profile().minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned)
             {
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_error(
-                    *m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
-                    "PublisherSigned artifact publication requires the #304 trust verifier"));
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "PublisherSigned artifact publication requires the #304 trust verifier"));
             }
             auto *windowsLease = dynamic_cast<WindowsBuildWorkspaceLease *>(a_buildLease.get());
             if (windowsLease == nullptr || !windowsLease->matches(a_plan.workspace_key()) ||
@@ -2826,9 +2931,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 if (!windowsLease->shipping_provenance() ||
                     *windowsLease->shipping_provenance() != **currentProvenance.try_value())
                 {
-                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(make_error(
-                        *m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
-                        "Shipping source inputs changed while the Build operation was running"));
+                    return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
+                        make_error(*m_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+                                   "Shipping source inputs changed while the Build operation was running"));
                 }
             }
             const std::string configuration(configuration_name(a_plan.profile().configuration()));
@@ -2846,11 +2951,12 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             const std::filesystem::path source = *binary / "bin" / configuration / std::string(layout.payload);
             const std::filesystem::path sourcePdb = *binary / "bin" / configuration / std::string(layout.symbol);
             const std::filesystem::path candidate = *candidatePath;
-            cue::Result<void> sourceChain = validate_directory_chain(
-                m_projectRoot, source.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
-            cue::Result<void> candidateChain = validate_directory_chain(
-                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
-                *m_assertContext);
+            cue::Result<void> sourceChain =
+                validate_directory_chain(m_projectRoot, source.parent_path(),
+                                         cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+            cue::Result<void> candidateChain =
+                validate_directory_chain(m_projectRoot, candidate.parent_path(),
+                                         cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
             cue::Result<void> storeChain = validate_directory_chain(
                 m_projectRoot, *storePath, cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!sourceChain)
@@ -2884,20 +2990,20 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
                 shippingToolchain.emplace(std::move(**collectedToolchain.try_value()));
             }
-            cue::Result<void> candidateParentCreated = ensure_directory(
-                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
-                *m_assertContext);
+            cue::Result<void> candidateParentCreated =
+                ensure_directory(m_projectRoot, candidate.parent_path(),
+                                 cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
             if (!candidateParentCreated)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*candidateParentCreated.try_error()));
             }
-            cue::Result<DirectoryChainGuard> sourceGuard = acquire_directory_chain_guard(
-                m_projectRoot, source.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
-                *m_assertContext);
-            cue::Result<DirectoryChainGuard> candidateParentGuard = acquire_directory_chain_guard(
-                m_projectRoot, candidate.parent_path(), cue::WindowsBuildArtifactError::CandidateInvalid,
-                *m_assertContext);
+            cue::Result<DirectoryChainGuard> sourceGuard =
+                acquire_directory_chain_guard(m_projectRoot, source.parent_path(),
+                                              cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
+            cue::Result<DirectoryChainGuard> candidateParentGuard =
+                acquire_directory_chain_guard(m_projectRoot, candidate.parent_path(),
+                                              cue::WindowsBuildArtifactError::CandidateInvalid, *m_assertContext);
             if (!sourceGuard)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
@@ -2970,11 +3076,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                             "Rollback");
                     }
                 }
-                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
-                    std::move(acquisitionError));
+                return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(std::move(acquisitionError));
             }
-            std::optional<DirectoryChainGuard> candidateGuard(
-                std::move(*candidateGuardResult.try_value()));
+            std::optional<DirectoryChainGuard> candidateGuard(std::move(*candidateGuardResult.try_value()));
             using PublishResult = cue::Result<std::optional<cue::BuildArtifactInventory>>;
             /// @brief Primary Errorを保持したまま未公開CandidateをRollbackする
             const auto failCandidate = [&](cue::Error a_error) -> PublishResult
@@ -3023,11 +3127,10 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
             }
             cue::Result<ArtifactProbeStatus> validated =
-                isShippingProduct
-                    ? validate_product(candidatePayload, m_projectId, candidate, *m_processRunner, a_cancellation,
-                                       a_deadline, *m_assertContext)
-                    : validate_module(candidatePayload, a_plan, m_projectId, candidate, m_probeExecutable,
-                                      *m_processRunner, a_cancellation, a_deadline, *m_assertContext);
+                isShippingProduct ? validate_product(candidatePayload, m_projectId, candidate, *m_processRunner,
+                                                     a_cancellation, a_deadline, *m_assertContext)
+                                  : validate_module(candidatePayload, a_plan, m_projectId, candidate, m_probeExecutable,
+                                                    *m_processRunner, a_cancellation, a_deadline, *m_assertContext);
             if (!validated)
             {
                 return failCandidate(std::move(*validated.try_error()));
@@ -3036,9 +3139,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return cancelCandidate();
             }
-            auto candidatePayloadHash =
-                hash_file(candidatePayload, std::string(layout.payload),
-                          cue::BuildArtifactFilePurpose::DistributionPayload, *m_assertContext);
+            auto candidatePayloadHash = hash_file(candidatePayload, std::string(layout.payload),
+                                                  cue::BuildArtifactFilePurpose::DistributionPayload, *m_assertContext);
             if (!candidatePayloadHash)
             {
                 return failCandidate(std::move(*candidatePayloadHash.try_error()));
@@ -3075,10 +3177,9 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             {
                 return failCandidate(std::move(*candidateContents.try_error()));
             }
-            auto candidateMetadataHash = hash_file(candidate / std::string(layout.metadata),
-                                                   std::string(layout.metadata),
-                                                   cue::BuildArtifactFilePurpose::RuntimeMetadata,
-                                                   *m_assertContext);
+            auto candidateMetadataHash =
+                hash_file(candidate / std::string(layout.metadata), std::string(layout.metadata),
+                          cue::BuildArtifactFilePurpose::RuntimeMetadata, *m_assertContext);
             if (!candidateMetadataHash)
             {
                 return failCandidate(std::move(*candidateMetadataHash.try_error()));
@@ -3090,16 +3191,16 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
             }
 
             const std::filesystem::path store = *storePath;
-            cue::Result<void> storeCreated = ensure_directory(
-                m_projectRoot, store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed,
-                *m_assertContext);
+            cue::Result<void> storeCreated =
+                ensure_directory(m_projectRoot, store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed,
+                                 *m_assertContext);
             if (!storeCreated)
             {
                 return failCandidate(std::move(*storeCreated.try_error()));
             }
-            cue::Result<DirectoryChainGuard> storeGuard = acquire_directory_chain_guard(
-                m_projectRoot, store / "Versions", cue::WindowsBuildArtifactError::ArtifactLockFailed,
-                *m_assertContext);
+            cue::Result<DirectoryChainGuard> storeGuard =
+                acquire_directory_chain_guard(m_projectRoot, store / "Versions",
+                                              cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
             if (!storeGuard)
             {
                 return failCandidate(std::move(*storeGuard.try_error()));
@@ -3145,9 +3246,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
                     std::move(*versionContents.try_error()));
             }
-            auto versionPayloadHash =
-                hash_file(version / std::string(layout.payload), std::string(layout.payload),
-                          cue::BuildArtifactFilePurpose::DistributionPayload, *m_assertContext);
+            auto versionPayloadHash = hash_file(version / std::string(layout.payload), std::string(layout.payload),
+                                                cue::BuildArtifactFilePurpose::DistributionPayload, *m_assertContext);
             std::optional<cue::BuildArtifactFile> versionPdbHash;
             if (hasPdb)
             {
@@ -3160,10 +3260,8 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                 }
                 versionPdbHash.emplace(std::move(*hashed.try_value()));
             }
-            auto versionMetadataHash = hash_file(version / std::string(layout.metadata),
-                                                 std::string(layout.metadata),
-                                                 cue::BuildArtifactFilePurpose::RuntimeMetadata,
-                                                 *m_assertContext);
+            auto versionMetadataHash = hash_file(version / std::string(layout.metadata), std::string(layout.metadata),
+                                                 cue::BuildArtifactFilePurpose::RuntimeMetadata, *m_assertContext);
             if (!versionPayloadHash)
             {
                 return cue::Result<std::optional<cue::BuildArtifactInventory>>::failure(
@@ -3295,8 +3393,7 @@ Result<std::unique_ptr<BuildArtifactPublisher>> create_windows_build_artifact_pu
             validate_directory_chain(*root, *root, WindowsBuildArtifactError::InvalidSettings, a_assertContext);
         if (!rootValidated)
         {
-            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(
-                std::move(*rootValidated.try_error()));
+            return Result<std::unique_ptr<BuildArtifactPublisher>>::failure(std::move(*rootValidated.try_error()));
         }
         const EngineCompatibility &compatibility = a_descriptor.engine_compatibility();
         const std::optional<std::filesystem::path> processDirectory = current_process_directory();

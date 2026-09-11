@@ -304,9 +304,10 @@ std::string_view RuntimeDataFile::sha256() const noexcept
 
 MinimalRuntimeDataPublication::MinimalRuntimeDataPublication(RuntimeDataFile a_projectData,
                                                              RuntimeDataFile a_startupSceneData,
+                                                             std::string a_projectId,
                                                              std::string a_startupSceneAssetId) noexcept
     : m_projectData(std::move(a_projectData)), m_startupSceneData(std::move(a_startupSceneData)),
-      m_startupSceneAssetId(std::move(a_startupSceneAssetId))
+      m_projectId(std::move(a_projectId)), m_startupSceneAssetId(std::move(a_startupSceneAssetId))
 {
 }
 
@@ -318,6 +319,11 @@ const RuntimeDataFile &MinimalRuntimeDataPublication::project_data() const noexc
 const RuntimeDataFile &MinimalRuntimeDataPublication::startup_scene_data() const noexcept
 {
     return m_startupSceneData;
+}
+
+std::string_view MinimalRuntimeDataPublication::project_id() const noexcept
+{
+    return m_projectId;
 }
 
 std::string_view MinimalRuntimeDataPublication::startup_scene_asset_id() const noexcept
@@ -371,8 +377,9 @@ Result<MinimalRuntimeDataPublication> publish_minimal_runtime_data(const Project
         RuntimeDataFile projectFile("Data/CueProject.runtime.json", std::move(projectData), std::move(projectHash));
         std::string sceneHash = make_sha256(*sceneData.try_value());
         RuntimeDataFile sceneFile(std::move(scenePath), std::move(*sceneData.try_value()), std::move(sceneHash));
-        return Result<MinimalRuntimeDataPublication>::success(
-            MinimalRuntimeDataPublication(std::move(projectFile), std::move(sceneFile), std::move(sceneAssetId)));
+        std::string projectId(a_descriptor.project_id().text());
+        return Result<MinimalRuntimeDataPublication>::success(MinimalRuntimeDataPublication(
+            std::move(projectFile), std::move(sceneFile), std::move(projectId), std::move(sceneAssetId)));
     }
     catch (...)
     {

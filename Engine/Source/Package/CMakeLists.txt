@@ -5,8 +5,10 @@ target_sources(
     PRIVATE
         Private/Error.cpp
         Private/Manifest.cpp
+        Private/ManifestVerification.h
         Private/PeDependency.cpp
         Private/Publisher.cpp
+        Private/PublisherPath.h
         Private/RuntimeData.cpp
         Private/Sha256.cpp
         Private/Sha256.h
@@ -24,6 +26,10 @@ target_sources(
 
 target_compile_features(Cue.Package PUBLIC cxx_std_20)
 target_link_libraries(Cue.Package PUBLIC Cue.Build Cue.Foundation Cue.IO Cue.Project Cue.Scene)
+if(WIN32)
+    target_link_libraries(Cue.Package PRIVATE Cue.IO.Windows)
+    target_compile_definitions(Cue.Package PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 target_include_directories(Cue.Package PUBLIC Public)
 
 set_target_properties(
@@ -51,10 +57,17 @@ endif()
 get_target_property(cuePackageLinks Cue.Package LINK_LIBRARIES)
 get_target_property(cuePackageInterfaceLinks Cue.Package INTERFACE_LINK_LIBRARIES)
 
-if(NOT "${cuePackageLinks}" STREQUAL "Cue.Build;Cue.Foundation;Cue.IO;Cue.Project;Cue.Scene")
-    message(FATAL_ERROR "Cue.Package must directly link only Cue.Build, Cue.Foundation, Cue.IO, Cue.Project, and Cue.Scene: ${cuePackageLinks}")
+set(cuePackageExpectedLinks Cue.Build Cue.Foundation Cue.IO Cue.Project Cue.Scene)
+set(cuePackageExpectedInterfaceLinks Cue.Build Cue.Foundation Cue.IO Cue.Project Cue.Scene)
+if(WIN32)
+    list(APPEND cuePackageExpectedLinks Cue.IO.Windows)
+    list(APPEND cuePackageExpectedInterfaceLinks "$<LINK_ONLY:Cue.IO.Windows>")
 endif()
 
-if(NOT "${cuePackageInterfaceLinks}" STREQUAL "Cue.Build;Cue.Foundation;Cue.IO;Cue.Project;Cue.Scene")
+if(NOT "${cuePackageLinks}" STREQUAL "${cuePackageExpectedLinks}")
+    message(FATAL_ERROR "Cue.Package has unexpected direct dependencies: ${cuePackageLinks}")
+endif()
+
+if(NOT "${cuePackageInterfaceLinks}" STREQUAL "${cuePackageExpectedInterfaceLinks}")
     message(FATAL_ERROR "Cue.Package must expose only Cue.Build, Cue.Foundation, Cue.IO, Cue.Project, and Cue.Scene: ${cuePackageInterfaceLinks}")
 endif()

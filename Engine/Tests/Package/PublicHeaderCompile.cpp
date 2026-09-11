@@ -7,10 +7,10 @@
 int main()
 {
     return cue::package::k_packageManifestSchemaVersion == 1U &&
+                   cue::package::k_monolithicPackageManifestSchemaVersion == 2U &&
                    cue::package::k_runtimeProjectDataSchemaVersion == 1U &&
                    cue::package::k_runtimeSceneDataSchemaVersion == 1U &&
-                   cue::package::PackagePublishOutcome::Committed !=
-                       cue::package::PackagePublishOutcome::NotPublished
+                   cue::package::PackagePublishOutcome::Committed != cue::package::PackagePublishOutcome::NotPublished
                ? 0
                : 1;
 }

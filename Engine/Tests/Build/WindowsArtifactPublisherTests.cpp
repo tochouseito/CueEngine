@@ -29,6 +29,7 @@
 namespace
 {
 constexpr std::string_view k_projectId = "41234567-89ab-4cde-8f01-23456789abcd";
+constexpr std::string_view k_otherProjectId = "61234567-89ab-4cde-8f01-23456789abcd";
 constexpr cue::BuildToolVersion k_currentCompilerVersion{
     static_cast<std::uint32_t>(_MSC_VER / 100), static_cast<std::uint32_t>(_MSC_VER % 100),
     static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
@@ -237,13 +238,20 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
     return json;
 }
 
-/// @brief Test Project契約を満たすDescriptorを構築する
-[[nodiscard]] cue::ProjectDescriptor make_descriptor(const cue::AssertContext &a_assertContext)
+/// @brief 指定IdentityでTest Project契約を満たすDescriptorを構築する
+[[nodiscard]] cue::ProjectDescriptor make_descriptor(std::string_view a_projectId,
+                                                     const cue::AssertContext &a_assertContext)
 {
-    cue::ProjectId projectId = take_value(cue::ProjectId::parse(k_projectId, a_assertContext));
+    cue::ProjectId projectId = take_value(cue::ProjectId::parse(a_projectId, a_assertContext));
     return take_value(cue::create_blank_project_descriptor(projectId, "Artifact Publisher Test",
                                                            {{1U, 0U, 0U}, std::nullopt},
                                                            "00000000-0000-4000-8000-000000000099", a_assertContext));
+}
+
+/// @brief 既定IdentityでTest Project契約を満たすDescriptorを構築する
+[[nodiscard]] cue::ProjectDescriptor make_descriptor(const cue::AssertContext &a_assertContext)
+{
+    return make_descriptor(k_projectId, a_assertContext);
 }
 
 /// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
@@ -491,13 +499,20 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     require(current.find("sha256") != std::string::npos);
     require(current.find("CueGameModule.pdb") != std::string::npos);
 
-    std::unique_ptr<cue::BuildArtifactReader> reader = take_value(
-        cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
+    std::unique_ptr<cue::BuildArtifactReader> reader =
+        take_value(cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
     TestArtifactReadCancellation readCancellation;
-    auto currentV2ReadLease = take_value(
-        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
-    require(currentV2ReadLease.has_value());
+    auto currentV2ReadLease =
+        take_value(reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    require(currentV2ReadLease.has_value() && (*currentV2ReadLease)->project_id() == k_projectId);
     currentV2ReadLease.reset();
+    cue::ProjectDescriptor otherDescriptor = make_descriptor(k_otherProjectId, a_assertContext);
+    std::unique_ptr<cue::BuildArtifactReader> otherProjectReader = take_value(
+        cue::create_windows_build_artifact_reader(generic_path(projectRoot), otherDescriptor, a_assertContext));
+    auto otherProjectRead = otherProjectReader->acquire_current_read_lease(*published, readCancellation, std::nullopt);
+    require(!otherProjectRead && otherProjectRead.try_error()->root_code().domain() == "Cue.Build.Windows.Artifact" &&
+            otherProjectRead.try_error()->root_code().value() ==
+                static_cast<std::int64_t>(cue::WindowsBuildArtifactError::InvalidSettings));
     std::vector<cue::BuildArtifactFile> legacyFiles(published->files().begin(), published->files().end());
     cue::BuildArtifactInventory legacyInventory =
         take_value(cue::BuildArtifactInventory::create_legacy_game_module(
@@ -606,22 +621,28 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
         [&]()
         {
             cancelledResult = std::make_unique<PublishResult>(
-                publisher->publish(cancelledPlan, probeCancellation, std::move(*cancelledLease),
-                                   std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+                publisher->publish(cancelledPlan, probeCancellation, std::move(*cancelledLease), std::nullopt));
         });
     const std::filesystem::path cancelledCandidate(cancelledPlan.candidate_directory());
-    for (std::size_t attempt = 0U; attempt < 50U && !std::filesystem::exists(cancelledCandidate); ++attempt)
+    const std::filesystem::path cancelledPayload = cancelledCandidate / "CueGameModule.dll";
+    for (std::size_t attempt = 0U; attempt < 50U && !std::filesystem::exists(cancelledPayload); ++attempt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    require(std::filesystem::exists(cancelledCandidate));
+    require(std::filesystem::exists(cancelledPayload));
     const std::filesystem::path displacedOutput = outputDirectory.parent_path() / "DisplacedOutput";
     const std::filesystem::path candidateParent = cancelledCandidate.parent_path();
     const std::filesystem::path displacedCandidate = candidateParent / "DisplacedCandidate";
     const std::filesystem::path displacedCandidates = candidateParent.parent_path() / "DisplacedCandidates";
     require(MoveFileExW(outputDirectory.c_str(), displacedOutput.c_str(), 0U) == FALSE);
+    const DWORD outputRenameError = GetLastError();
+    require(outputRenameError == ERROR_ACCESS_DENIED || outputRenameError == ERROR_SHARING_VIOLATION);
     require(MoveFileExW(cancelledCandidate.c_str(), displacedCandidate.c_str(), 0U) == FALSE);
+    const DWORD candidateRenameError = GetLastError();
+    require(candidateRenameError == ERROR_ACCESS_DENIED || candidateRenameError == ERROR_SHARING_VIOLATION);
     require(MoveFileExW(candidateParent.c_str(), displacedCandidates.c_str(), 0U) == FALSE);
+    const DWORD parentRenameError = GetLastError();
+    require(parentRenameError == ERROR_ACCESS_DENIED || parentRenameError == ERROR_SHARING_VIOLATION);
     probeCancellation.request_cancel();
     probeThread.join();
     require(cancelledResult != nullptr && cancelledResult->has_value() && !cancelledResult->try_value()->has_value());
@@ -725,13 +746,19 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
              metadata.find("\"vcpkgBaselineSha256\": \"") != std::string::npos &&
              metadata.find(published->files()[0].contentHash) != std::string::npos);
 
-    std::unique_ptr<cue::BuildArtifactReader> reader = take_value(
-        cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
+    std::unique_ptr<cue::BuildArtifactReader> reader =
+        take_value(cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
     TestArtifactReadCancellation readCancellation;
-    auto initialRead = take_value(
-        reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
-    require(initialRead.has_value());
+    auto initialRead = take_value(reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));
+    require(initialRead.has_value() && (*initialRead)->project_id() == k_projectId);
     initialRead.reset();
+    cue::ProjectDescriptor otherDescriptor = make_descriptor(k_otherProjectId, a_assertContext);
+    std::unique_ptr<cue::BuildArtifactReader> otherProjectReader = take_value(
+        cue::create_windows_build_artifact_reader(generic_path(projectRoot), otherDescriptor, a_assertContext));
+    auto otherProjectRead = otherProjectReader->acquire_current_read_lease(*published, readCancellation, std::nullopt);
+    require(!otherProjectRead && otherProjectRead.try_error()->root_code().domain() == "Cue.Build.Windows.Artifact" &&
+            otherProjectRead.try_error()->root_code().value() ==
+                static_cast<std::int64_t>(cue::WindowsBuildArtifactError::InvalidSettings));
 
     cue::BuildPlan acquireCancelledPlan =
         make_shipping_plan(projectRoot, "71234567-89ab-4cde-8f01-23456789abcd", a_assertContext);

@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,6 +20,7 @@ class AssertContext;
 namespace cue::package
 {
 inline constexpr std::uint32_t k_packageManifestSchemaVersion = 1U;
+inline constexpr std::uint32_t k_monolithicPackageManifestSchemaVersion = 2U;
 inline constexpr std::size_t k_maximumPackageManifestBytes = 1024U * 1024U;
 inline constexpr std::size_t k_maximumPackageManifestStringBytes = 64U * 1024U;
 inline constexpr std::size_t k_maximumPackageFileEntries = 256U;
@@ -29,6 +31,10 @@ inline constexpr std::uint64_t k_maximumPackagedFileBytes = 8ULL * 1024ULL * 102
 inline constexpr std::uint64_t k_maximumPackageInventoryBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t k_maximumRuntimePeImageBytes = 128ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t k_maximumRuntimePeInventoryBytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumMonolithicExecutableBytes = 512ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumMonolithicProjectDataBytes = 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumMonolithicSceneDataBytes = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t k_maximumMonolithicSignatureBytes = 256ULL * 1024ULL;
 inline constexpr std::string_view k_windowsSystemImportAllowlistVersion = "windows-10-1903-x64-v1";
 
 /// @brief Package Manifestで一Fileの用途を固定するRole
@@ -39,7 +45,15 @@ enum class PackageFileRole : std::uint8_t
     GameModuleMetadata,
     ProjectRuntimeData,
     StartupSceneRuntimeData,
-    RuntimeDependency
+    RuntimeDependency,
+    ApplicationExecutable
+};
+
+/// @brief Package内の実行境界をModular HostまたはMonolithic Productへ固定する
+enum class PackageExecutionModel : std::uint8_t
+{
+    Modular = 1,
+    Monolithic
 };
 
 /// @brief Package Root相対Pathと検証用Content Identityを所有する一Entry
@@ -149,6 +163,13 @@ class PackageManifest final
                                                         std::vector<PackageFileEntry> a_files,
                                                         const AssertContext &a_assertContext) noexcept;
 
+    /// @brief Release Monolithic Identity、Trust、三つの必須Roleを検証してManifest v2を構築する
+    [[nodiscard]] static Result<PackageManifest> create_monolithic(
+        std::string a_projectId, EngineVersion a_engineVersion, BuildConfiguration a_configuration,
+        std::string a_startupSceneAssetId, std::string a_startupSceneRuntimeDataPath, ShippingTrustMode a_trustMode,
+        std::optional<std::string> a_publisherKeyId, std::optional<std::string> a_manifestSignaturePath,
+        std::vector<PackageFileEntry> a_files, const AssertContext &a_assertContext) noexcept;
+
     /// @brief Manifest Wire Schema Versionを返す
     [[nodiscard]] std::uint32_t schema_version() const noexcept;
     /// @brief Packageが属するlowercase Project UUIDを返す
@@ -157,24 +178,43 @@ class PackageManifest final
     [[nodiscard]] const EngineVersion &engine_version() const noexcept;
     /// @brief Package全体で固定したBuild Configurationを返す
     [[nodiscard]] BuildConfiguration configuration() const noexcept;
+    /// @brief Runtime Host方式または単一Executable方式の実行Modelを返す
+    [[nodiscard]] PackageExecutionModel execution_model() const noexcept;
     /// @brief Startup Sceneのlowercase UUIDを返す
     [[nodiscard]] std::string_view startup_scene_asset_id() const noexcept;
     /// @brief Startup Scene Runtime DataのPackage相対Pathを返す
     [[nodiscard]] std::string_view startup_scene_runtime_data_path() const noexcept;
+    /// @brief Monolithic Manifestの固定Executable名を返し、v1 Modularではnulloptを返す
+    [[nodiscard]] std::optional<std::string_view> application_executable() const noexcept;
+    /// @brief Monolithic Manifestの最低Trust Modeを返し、v1 Modularではnulloptを返す
+    [[nodiscard]] std::optional<ShippingTrustMode> trust_mode() const noexcept;
+    /// @brief PublisherSigned ManifestのPublisher Key IDを返す
+    [[nodiscard]] std::optional<std::string_view> publisher_key_id() const noexcept;
+    /// @brief PublisherSigned ManifestのDetached Signature相対Pathを返す
+    [[nodiscard]] std::optional<std::string_view> manifest_signature_path() const noexcept;
     /// @brief Package相対PathのUTF-8 Byte昇順に固定した全File Entryを返す
     [[nodiscard]] std::span<const PackageFileEntry> files() const noexcept;
 
   private:
     /// @brief 検証済みManifest値を所有する
-    PackageManifest(std::string a_projectId, EngineVersion a_engineVersion, BuildConfiguration a_configuration,
+    PackageManifest(std::uint32_t a_schemaVersion, std::string a_projectId, EngineVersion a_engineVersion,
+                    BuildConfiguration a_configuration, PackageExecutionModel a_executionModel,
                     std::string a_startupSceneAssetId, std::string a_startupSceneRuntimeDataPath,
+                    std::optional<std::string> a_applicationExecutable, std::optional<ShippingTrustMode> a_trustMode,
+                    std::optional<std::string> a_publisherKeyId, std::optional<std::string> a_manifestSignaturePath,
                     std::vector<PackageFileEntry> a_files) noexcept;
 
+    std::uint32_t m_schemaVersion;
     std::string m_projectId;
     EngineVersion m_engineVersion;
     BuildConfiguration m_configuration;
+    PackageExecutionModel m_executionModel;
     std::string m_startupSceneAssetId;
     std::string m_startupSceneRuntimeDataPath;
+    std::optional<std::string> m_applicationExecutable;
+    std::optional<ShippingTrustMode> m_trustMode;
+    std::optional<std::string> m_publisherKeyId;
+    std::optional<std::string> m_manifestSignaturePath;
     std::vector<PackageFileEntry> m_files;
 };
 
@@ -191,9 +231,10 @@ class PackageManifest final
                                                      std::span<const std::byte> a_bytes,
                                                      const AssertContext &a_assertContext) noexcept;
 
-/// @brief Package Rootの列挙FileをManifestのSizeとSHA-256へ照合する
+/// @brief Package RootのFileをManifestのSizeとSHA-256へ照合する
 ///
-/// Package RootとManifestは呼出中だけ借用する。Manifest外Fileは探索せず、各Entryを一度だけ開いて検証する。
+/// Package RootとManifestは呼出中だけ借用する。v1はManifest Entryだけを検証する。v2はRootを完全列挙し、
+/// Manifest、Payload、任意の署名以外のFile、未知または空のDirectory、間接Pathも拒否する。
 [[nodiscard]] Result<void> verify_package_manifest_files(std::string_view a_packageRoot,
                                                          const PackageManifest &a_manifest,
                                                          const AssertContext &a_assertContext) noexcept;
