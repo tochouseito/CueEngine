@@ -33,6 +33,9 @@ namespace
 constexpr std::size_t k_maximumJsonNodes = 4096U;
 constexpr std::size_t k_hashBufferBytes = 64U * 1024U;
 
+/// @brief Native API検査用に長Path Prefixを付与する
+[[nodiscard]] std::filesystem::path native_inspection_path(const std::filesystem::path &a_path);
+
 #if defined(_WIN32)
 class UniqueHandle final
 {
@@ -97,6 +100,130 @@ class UniqueHandle final
     }
 
     HANDLE m_handle = INVALID_HANDLE_VALUE;
+};
+
+enum class DirectoryChangeResult
+{
+    Unchanged,
+    Changed,
+    Unavailable
+};
+
+class DirectoryChangeGuard final
+{
+  public:
+    /// @brief Package RootのDirectory変更監視を開始して所有する
+    DirectoryChangeGuard() noexcept = default;
+
+    /// @brief Directory変更監視の共有所有を禁止する
+    DirectoryChangeGuard(const DirectoryChangeGuard &) = delete;
+
+    /// @brief Directory変更監視の共有所有を禁止する
+    DirectoryChangeGuard &operator=(const DirectoryChangeGuard &) = delete;
+
+    /// @brief 未完了のDirectory変更監視を取り消してNative資源を解放する
+    ~DirectoryChangeGuard() noexcept
+    {
+        static_cast<void>(finish());
+    }
+
+    /// @brief Package Root以下の変更を非同期で監視し始める
+    [[nodiscard]] bool start(const std::filesystem::path &a_root) noexcept
+    {
+        m_event = UniqueHandle(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!m_event.is_valid())
+        {
+            m_error = GetLastError();
+            return false;
+        }
+        m_directory = UniqueHandle(
+            CreateFileW(native_inspection_path(a_root).c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED, nullptr));
+        if (!m_directory.is_valid())
+        {
+            m_error = GetLastError();
+            return false;
+        }
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        const BOOL informationRead =
+            GetFileInformationByHandleEx(m_directory.get(), FileAttributeTagInfo, &attributes, sizeof(attributes));
+        if (informationRead == FALSE || (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            m_error = informationRead == FALSE ? GetLastError() : ERROR_INVALID_DATA;
+            return false;
+        }
+        m_overlapped.hEvent = m_event.get();
+        // File内容は検証Handleで固定する。ここでは列挙Snapshotを変えるNamespace変更だけを監視する。
+        constexpr DWORD filters = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
+        DWORD immediateBytes = 0U;
+        if (!ReadDirectoryChangesW(m_directory.get(), m_buffer.data(), static_cast<DWORD>(m_buffer.size()), TRUE,
+                                   filters, &immediateBytes, &m_overlapped, nullptr))
+        {
+            m_error = GetLastError();
+            return false;
+        }
+        m_pending = true;
+        return true;
+    }
+
+    /// @brief 監視開始失敗時のWin32 Errorを返す
+    [[nodiscard]] DWORD error() const noexcept
+    {
+        return m_error;
+    }
+
+    /// @brief 監視開始後にDirectory Treeが変更されたかFail-closedで確定する
+    [[nodiscard]] DirectoryChangeResult finish() noexcept
+    {
+        if (!m_pending)
+        {
+            return DirectoryChangeResult::Unavailable;
+        }
+        DWORD transferred = 0U;
+        if (GetOverlappedResult(m_directory.get(), &m_overlapped, &transferred, FALSE) != FALSE)
+        {
+            m_pending = false;
+            return DirectoryChangeResult::Changed;
+        }
+        DWORD completionError = GetLastError();
+        if (completionError != ERROR_IO_INCOMPLETE)
+        {
+            m_pending = false;
+            return completionError == ERROR_NOTIFY_ENUM_DIR ? DirectoryChangeResult::Changed
+                                                            : DirectoryChangeResult::Unavailable;
+        }
+
+        const bool cancellationSucceeded = CancelIoEx(m_directory.get(), &m_overlapped) != FALSE;
+        const DWORD cancellationError = cancellationSucceeded ? ERROR_SUCCESS : GetLastError();
+        const bool cancellationUnavailable = !cancellationSucceeded && cancellationError != ERROR_NOT_FOUND;
+        const BOOL completed = GetOverlappedResult(m_directory.get(), &m_overlapped, &transferred, TRUE);
+        completionError = completed != FALSE ? ERROR_SUCCESS : GetLastError();
+        m_pending = false;
+        if (cancellationUnavailable)
+        {
+            return DirectoryChangeResult::Unavailable;
+        }
+        if (completed != FALSE || completionError == ERROR_NOTIFY_ENUM_DIR)
+        {
+            return DirectoryChangeResult::Changed;
+        }
+        if (completionError == ERROR_OPERATION_ABORTED && cancellationSucceeded)
+        {
+            return DirectoryChangeResult::Unchanged;
+        }
+        return DirectoryChangeResult::Unavailable;
+    }
+
+  private:
+    static constexpr std::size_t k_bufferBytes = 64U * 1024U;
+    UniqueHandle m_event;
+    UniqueHandle m_directory;
+    OVERLAPPED m_overlapped{};
+    alignas(DWORD) std::array<std::byte, k_bufferBytes> m_buffer{};
+    bool m_pending = false;
+    DWORD m_error = ERROR_SUCCESS;
 };
 #endif
 
@@ -1112,6 +1239,17 @@ void collect_monolithic_package_tree(const cue::package::PackageManifest &a_mani
                                                          "Monolithic Package Root is unavailable or indirect"));
     }
 
+#if defined(_WIN32)
+    DirectoryChangeGuard directoryChanges;
+    if (!directoryChanges.start(a_root))
+    {
+        const std::string summary = "Monolithic Package Root changes could not be monitored (Win32 " +
+                                    std::to_string(directoryChanges.error()) + ')';
+        return cue::Result<void>::failure(
+            manifest_error(a_assertContext, cue::package::PackageError::InvalidPackagePath, summary));
+    }
+#endif
+
     const std::filesystem::path inspectionRoot = native_inspection_path(a_root);
     error.clear();
     std::filesystem::recursive_directory_iterator iterator(inspectionRoot, std::filesystem::directory_options::none,
@@ -1206,6 +1344,21 @@ void collect_monolithic_package_tree(const cue::package::PackageManifest &a_mani
                                                          cue::package::PackageError::PackageFileMismatch,
                                                          "Monolithic Package filesystem inventory is incomplete"));
     }
+#if defined(_WIN32)
+    const DirectoryChangeResult changeResult = directoryChanges.finish();
+    if (changeResult == DirectoryChangeResult::Changed)
+    {
+        return cue::Result<void>::failure(
+            manifest_error(a_assertContext, cue::package::PackageError::PackageFileMismatch,
+                           "Monolithic Package filesystem inventory changed during verification"));
+    }
+    if (changeResult == DirectoryChangeResult::Unavailable)
+    {
+        return cue::Result<void>::failure(manifest_error(a_assertContext,
+                                                         cue::package::PackageError::InvalidPackagePath,
+                                                         "Monolithic Package Root change monitoring did not complete"));
+    }
+#endif
     return cue::Result<void>::success();
 }
 
