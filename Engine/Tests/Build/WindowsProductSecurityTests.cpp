@@ -816,6 +816,62 @@ void set_bound_import_directory(std::vector<std::byte> &a_bytes)
     std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
 }
 
+/// @brief 最初の Import Descriptor の FirstThunk を指定 RVA へ改変する
+void set_first_import_first_thunk(std::vector<std::byte> &a_bytes, DWORD a_firstThunkRva)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    const std::size_t descriptorOffset =
+        section_rva_offset(directory.VirtualAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR), sections, a_bytes);
+    IMAGE_IMPORT_DESCRIPTOR descriptor{};
+    std::memcpy(&descriptor, a_bytes.data() + descriptorOffset, sizeof(descriptor));
+    require(descriptor.Name != 0U && descriptor.FirstThunk != 0U);
+    descriptor.FirstThunk = a_firstThunkRva;
+    std::memcpy(a_bytes.data() + descriptorOffset, &descriptor, sizeof(descriptor));
+}
+
+/// @brief 最初の Import Descriptor の OriginalFirstThunk を指定 RVA へ改変する
+void set_first_import_original_thunk(std::vector<std::byte> &a_bytes, DWORD a_originalThunkRva)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    const std::size_t descriptorOffset =
+        section_rva_offset(directory.VirtualAddress, sizeof(IMAGE_IMPORT_DESCRIPTOR), sections, a_bytes);
+    IMAGE_IMPORT_DESCRIPTOR descriptor{};
+    std::memcpy(&descriptor, a_bytes.data() + descriptorOffset, sizeof(descriptor));
+    require(descriptor.Name != 0U && descriptor.OriginalFirstThunk != 0U && descriptor.FirstThunk != 0U);
+    descriptor.OriginalFirstThunk = a_originalThunkRva;
+    std::memcpy(a_bytes.data() + descriptorOffset, &descriptor, sizeof(descriptor));
+}
+
+/// @brief IAT Data Directory を指定範囲へ改変する
+void set_iat_directory(std::vector<std::byte> &a_bytes, DWORD a_rva, DWORD a_size)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT] = {a_rva, a_size};
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
+/// @brief Debug Directory を M17 Resource Limit 超過へ改変する
+void exceed_debug_directory_limit(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    constexpr DWORD maximumDebugDirectoryEntries = 4096U;
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size =
+        (maximumDebugDirectoryEntries + 1U) * sizeof(IMAGE_DEBUG_DIRECTORY);
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
 /// @brief CET Evidenceに使うDebug DescriptorとExtended DLL Characteristics DataのRVAを返す
 [[nodiscard]] std::array<std::uint32_t, 2U> cet_metadata_rvas(std::span<const std::byte> a_bytes)
 {
@@ -1198,6 +1254,97 @@ void test_product_security(const std::filesystem::path &a_validProduct,
             securityCookie - securityCookieOptional.ImageBase <= std::numeric_limits<std::uint32_t>::max());
     const std::uint32_t securityCookieRva =
         static_cast<std::uint32_t>(securityCookie - securityCookieOptional.ImageBase);
+
+    bytes = read_bytes(a_validProduct);
+    set_first_import_first_thunk(bytes, securityCookieRva);
+    const std::filesystem::path firstThunkOutsideIat = directory / "FirstThunkOutsideIat.exe";
+    write_bytes(firstThunkOutsideIat, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> firstThunkOutsideIatResult =
+        cue::validate_windows_shipping_product_security(firstThunkOutsideIat.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!firstThunkOutsideIatResult &&
+            firstThunkOutsideIatResult.try_error()->summary() ==
+                "Shipping Product import FirstThunk is outside the declared IAT directory");
+
+    bytes = read_bytes(a_validProduct);
+    set_first_import_first_thunk(bytes, securityCookieRva);
+    set_iat_directory(bytes, securityCookieRva, sizeof(IMAGE_THUNK_DATA64));
+    const std::filesystem::path iatOverlapsSecurityCookie = directory / "IatOverlapsSecurityCookie.exe";
+    write_bytes(iatOverlapsSecurityCookie, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> iatOverlapsSecurityCookieResult =
+        cue::validate_windows_shipping_product_security(iatOverlapsSecurityCookie.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!iatOverlapsSecurityCookieResult &&
+            iatOverlapsSecurityCookieResult.try_error()->summary() ==
+                "Shipping Product IAT directory overlaps security or loader metadata");
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 iatOptional{};
+    std::memcpy(&iatOptional, bytes.data() + optional_header_offset(bytes), sizeof(iatOptional));
+    const IMAGE_DATA_DIRECTORY &importDirectoryForIat = iatOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    set_iat_directory(bytes, importDirectoryForIat.VirtualAddress, importDirectoryForIat.Size);
+    const std::filesystem::path iatOverlapsImportDirectory = directory / "IatOverlapsImportDirectory.exe";
+    write_bytes(iatOverlapsImportDirectory, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> iatOverlapsImportDirectoryResult =
+        cue::validate_windows_shipping_product_security(iatOverlapsImportDirectory.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!iatOverlapsImportDirectoryResult &&
+            iatOverlapsImportDirectoryResult.try_error()->summary() ==
+                "Shipping Product IAT directory overlaps security or loader metadata");
+
+    bytes = read_bytes(a_validProduct);
+    set_iat_directory(bytes, iatOptional.AddressOfEntryPoint, sizeof(IMAGE_THUNK_DATA64));
+    const std::filesystem::path executableIat = directory / "ExecutableIat.exe";
+    write_bytes(executableIat, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> executableIatResult =
+        cue::validate_windows_shipping_product_security(executableIat.generic_string(), localProfile, a_assertContext);
+    require(!executableIatResult &&
+            executableIatResult.try_error()->summary() == "Shipping Product IAT directory is invalid");
+
+    bytes = read_bytes(a_validProduct);
+    const std::array<std::uint32_t, 4U> iatImportMetadataRvas = first_import_metadata_rvas(bytes);
+    set_first_import_first_thunk(bytes, iatImportMetadataRvas[3U]);
+    set_iat_directory(bytes, iatImportMetadataRvas[3U], sizeof(IMAGE_THUNK_DATA64));
+    const std::filesystem::path iatOverlapsImportName = directory / "IatOverlapsImportName.exe";
+    write_bytes(iatOverlapsImportName, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> iatOverlapsImportNameResult =
+        cue::validate_windows_shipping_product_security(iatOverlapsImportName.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!iatOverlapsImportNameResult && iatOverlapsImportNameResult.try_error()->summary() ==
+                                                "Shipping Product IAT directory overlaps import loader metadata");
+
+    bytes = read_bytes(a_validProduct);
+    const std::array<std::uint32_t, 4U> iatLookupMetadataRvas = first_import_metadata_rvas(bytes);
+    require(iatLookupMetadataRvas[2U] <= std::numeric_limits<std::uint32_t>::max() - sizeof(IMAGE_THUNK_DATA64));
+    set_first_import_original_thunk(bytes, iatLookupMetadataRvas[2U] + static_cast<DWORD>(sizeof(IMAGE_THUNK_DATA64)));
+    const std::filesystem::path iatOverlapsLookupThunk = directory / "IatOverlapsLookupThunk.exe";
+    write_bytes(iatOverlapsLookupThunk, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> iatOverlapsLookupThunkResult =
+        cue::validate_windows_shipping_product_security(iatOverlapsLookupThunk.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!iatOverlapsLookupThunkResult && iatOverlapsLookupThunkResult.try_error()->summary() ==
+                                                 "Shipping Product IAT directory overlaps import loader metadata");
+
+    bytes = read_bytes(a_validProduct);
+    const std::array<std::uint32_t, 4U> iatLibraryMetadataRvas = first_import_metadata_rvas(bytes);
+    set_iat_directory(bytes, iatLibraryMetadataRvas[0U], sizeof(IMAGE_THUNK_DATA64));
+    const std::filesystem::path iatOverlapsLibraryName = directory / "IatOverlapsLibraryName.exe";
+    write_bytes(iatOverlapsLibraryName, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> iatOverlapsLibraryNameResult =
+        cue::validate_windows_shipping_product_security(iatOverlapsLibraryName.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!iatOverlapsLibraryNameResult && iatOverlapsLibraryNameResult.try_error()->summary() ==
+                                                 "Shipping Product IAT directory overlaps import loader metadata");
+
+    bytes = read_bytes(a_validProduct);
+    set_first_import_original_thunk(bytes, 0U);
+    const std::filesystem::path importLookupUsesIat = directory / "ImportLookupUsesIat.exe";
+    write_bytes(importLookupUsesIat, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> importLookupUsesIatResult =
+        cue::validate_windows_shipping_product_security(importLookupUsesIat.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(importLookupUsesIatResult.has_value());
+
     for (std::uint16_t offset = 0U; offset <= 7U; ++offset)
     {
         bytes = read_bytes(a_validProduct);
@@ -1442,8 +1589,11 @@ void test_product_security(const std::filesystem::path &a_validProduct,
                                      std::numeric_limits<ULONGLONG>::max());
     const std::filesystem::path functionTableOverrun = directory / "FunctionTableOverrun.exe";
     write_bytes(functionTableOverrun, bytes);
-    require(!cue::validate_windows_shipping_product_security(functionTableOverrun.generic_string(), localProfile,
-                                                             a_assertContext));
+    cue::Result<cue::WindowsProductSecurityValidation> functionTableOverrunResult =
+        cue::validate_windows_shipping_product_security(functionTableOverrun.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!functionTableOverrunResult && functionTableOverrunResult.try_error()->summary() ==
+                                               "Shipping Product CFG function table exceeds the M17 resource limit");
 
     bytes = read_bytes(a_validProduct);
     mark_guard_function_table_section_executable(bytes);
@@ -1505,6 +1655,16 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(mismatchedCetData, bytes);
     require(!cue::validate_windows_shipping_product_security(mismatchedCetData.generic_string(), localProfile,
                                                              a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    exceed_debug_directory_limit(bytes);
+    const std::filesystem::path oversizedDebugDirectory = directory / "OversizedDebugDirectory.exe";
+    write_bytes(oversizedDebugDirectory, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> oversizedDebugDirectoryResult =
+        cue::validate_windows_shipping_product_security(oversizedDebugDirectory.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!oversizedDebugDirectoryResult && oversizedDebugDirectoryResult.try_error()->summary() ==
+                                                  "Shipping Product debug directory exceeds the M17 resource limit");
 
     const std::filesystem::path oversizedProduct = directory / "OversizedProduct.exe";
     write_bytes(oversizedProduct, std::span<const std::byte>{});
