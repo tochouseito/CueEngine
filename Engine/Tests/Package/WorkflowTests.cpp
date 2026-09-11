@@ -545,7 +545,8 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
 /// @brief Processを起動しないBuild Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
-    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5)};
+    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5),
+            "14.51.36231"};
 }
 
 /// @brief Debug Game Module用Build Requestを作る

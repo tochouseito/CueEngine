@@ -11,7 +11,7 @@ namespace cue
 class AssertContext;
 class ProjectDescriptor;
 
-/// @brief Windows Game Module Artifact公開の安定した失敗分類
+/// @brief Windows Build Artifact公開の安定した失敗分類
 enum class WindowsBuildArtifactError : std::int64_t
 {
     InvalidSettings = 1,

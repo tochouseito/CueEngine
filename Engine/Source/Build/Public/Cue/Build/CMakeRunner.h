@@ -41,6 +41,8 @@ struct CMakeRunnerSettings final
     std::optional<std::chrono::milliseconds> configureTimeout;
     /// @brief Build Stageの任意Timeout
     std::optional<std::chrono::milliseconds> buildTimeout;
+    /// @brief CMake ConfigureとMSBuildへ固定するVisual Studio minor Toolset Version
+    std::string visualStudioToolsetVersion;
 };
 
 /// @brief 完了StageとCapture済みLogを一つの所有値へ束ねる
@@ -113,7 +115,8 @@ class CMakeStageObserver
 /// Plan、Settings、Cancellation、Observer、AssertContextは呼出中だけ借用し、参照を保持しない。Observerは呼出Threadだけで呼ぶ。
 /// Process Runnerの`run`も直列に呼び、同じInstanceの並行利用は行わない。正常なProcess非0終了、Cancel、Timeoutは
 /// 成功Result内のStage Recordとして返す。SettingsまたはConfigure Mode不正はInvalidSettings、Process境界自体の失敗は
-/// ProcessExecutionFailedまたは下位Errorを返す。Allocation等の予期しない例外はFatalHandlerへ渡す。
+/// ProcessExecutionFailedまたは下位Errorを返す。Visual Studio minor ToolsetはConfigureとBuildの両方へ固定する。
+/// Allocation等の予期しない例外はFatalHandlerへ渡す。
 [[nodiscard]] Result<CMakeBuildResult> run_cmake_build(const BuildPlan &a_plan, const CMakeRunnerSettings &a_settings,
                                                        CMakeConfigureMode a_configureMode,
                                                        ChildProcessRunner &a_processRunner,

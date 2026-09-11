@@ -62,7 +62,8 @@ class Observer final : public cue::CMakeStageObserver
                                       std::filesystem::current_path().string(),
                                       {},
                                       std::chrono::seconds(5),
-                                      std::chrono::seconds(5)};
+                                      std::chrono::seconds(5),
+                                      "14.51.36231"};
     cue::ChildProcessCancellation cancellation;
     Observer observer;
     auto result = cue::run_cmake_build(*plan.try_value(), settings, cue::CMakeConfigureMode::Required, a_runner,

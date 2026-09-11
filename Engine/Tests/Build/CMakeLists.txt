@@ -93,6 +93,43 @@ if(WIN32)
     add_executable(CueBuildCMakeRunnerProbe CMakeRunnerProbe.cpp)
     target_compile_features(CueBuildCMakeRunnerProbe PRIVATE cxx_std_20)
 
+    add_executable(CueBuildShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+    )
+
+    add_executable(CueBuildWrongProjectShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildWrongProjectShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildWrongProjectShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="51234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+    )
+
+    add_executable(CueBuildWrongConfigurationShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildWrongConfigurationShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildWrongConfigurationShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Development"
+    )
+
+    add_executable(CueBuildExtraFileShippingProductProbe ShippingProductProbe.cpp)
+    target_compile_features(CueBuildExtraFileShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildExtraFileShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+            CUE_TEST_PRODUCT_EXTRA_FILE=1
+    )
+
     add_executable(CueBuildCMakeRunnerProcessTests CMakeRunnerProcessTests.cpp)
     target_link_libraries(CueBuildCMakeRunnerProcessTests PRIVATE Cue.Build Cue.Platform.Windows)
     target_compile_features(CueBuildCMakeRunnerProcessTests PRIVATE cxx_std_20)
@@ -105,6 +142,12 @@ if(WIN32)
     target_link_libraries(CueBuildWindowsPublicHeaderTest PRIVATE Cue.Build.Windows)
     target_compile_features(CueBuildWindowsPublicHeaderTest PRIVATE cxx_std_20)
 
+    get_filename_component(cueTestMsvcArchitectureRoot "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(cueTestMsvcHostRoot "${cueTestMsvcArchitectureRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcBinRoot "${cueTestMsvcHostRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcToolsetRoot "${cueTestMsvcBinRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcToolsetVersion "${cueTestMsvcToolsetRoot}" NAME)
+
     add_executable(CueBuildWindowsArtifactPublisherTests WindowsArtifactPublisherTests.cpp)
     target_link_libraries(CueBuildWindowsArtifactPublisherTests PRIVATE Cue.Build.Windows Cue.Project)
     target_compile_features(CueBuildWindowsArtifactPublisherTests PRIVATE cxx_std_20)
@@ -114,11 +157,24 @@ if(WIN32)
             $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
             $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
             $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
+            CUE_TEST_CMAKE_COMMAND="${CMAKE_COMMAND}"
+            CUE_TEST_CMAKE_VERSION="${CMAKE_VERSION}"
+            CUE_TEST_CMAKE_GENERATOR="${CMAKE_GENERATOR}"
+            CUE_TEST_CMAKE_GENERATOR_INSTANCE="${CMAKE_GENERATOR_INSTANCE}"
+            CUE_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+            CUE_TEST_ENGINE_ROOT="${CMAKE_SOURCE_DIR}"
+            CUE_TEST_PLATFORM_TOOLSET="${CMAKE_VS_PLATFORM_TOOLSET}"
+            CUE_TEST_MSVC_TOOLSET_VERSION="${cueTestMsvcToolsetVersion}"
+            CUE_TEST_WINDOWS_SDK_VERSION="${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}"
     )
     list(
         APPEND
         cueBuildTestTargets
         CueBuildCMakeRunnerProbe
+        CueBuildShippingProductProbe
+        CueBuildWrongProjectShippingProductProbe
+        CueBuildWrongConfigurationShippingProductProbe
+        CueBuildExtraFileShippingProductProbe
         CueBuildCMakeRunnerProcessTests
         CueBuildWindowsToolchainTests
         CueBuildWindowsPublicHeaderTest
@@ -188,6 +244,10 @@ if(WIN32)
     add_test(NAME Cue.Build.Windows.ArtifactPublisher
              COMMAND CueBuildWindowsArtifactPublisherTests $<TARGET_FILE:CueBuildArtifactProbe>
                      $<TARGET_FILE:CueBuildInvalidArtifactProbe> $<TARGET_FILE:CueBuildCrashingArtifactProbe>
-                     $<TARGET_FILE:CueBuildHangingArtifactProbe> $<TARGET_FILE:CueBuildZeroExitArtifactProbe>)
-    set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
+                     $<TARGET_FILE:CueBuildHangingArtifactProbe> $<TARGET_FILE:CueBuildZeroExitArtifactProbe>
+                     $<TARGET_FILE:CueBuildShippingProductProbe>
+                     $<TARGET_FILE:CueBuildWrongProjectShippingProductProbe>
+                     $<TARGET_FILE:CueBuildWrongConfigurationShippingProductProbe>
+                     $<TARGET_FILE:CueBuildExtraFileShippingProductProbe>)
+    set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 60)
 endif()

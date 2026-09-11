@@ -10,7 +10,12 @@ function(cue_escape_cpp_string output input)
 endfunction()
 
 cue_escape_cpp_string(cueBuildCMakeCommand "${CMAKE_COMMAND}")
+cue_escape_cpp_string(cueBuildCMakeVersion "${CMAKE_VERSION}")
+cue_escape_cpp_string(cueBuildCMakeGenerator "${CMAKE_GENERATOR}")
 cue_escape_cpp_string(cueBuildCMakeMinimumVersion "${CMAKE_MINIMUM_REQUIRED_VERSION}")
+
+find_package(Git REQUIRED)
+cue_escape_cpp_string(cueBuildGitCommand "${GIT_EXECUTABLE}")
 
 file(TO_CMAKE_PATH "${CMAKE_VS_MSBUILD_COMMAND}" cueBuildVisualStudioMsbuildValue)
 if(
@@ -23,7 +28,18 @@ set(cueBuildVisualStudioRootValue "${CMAKE_MATCH_1}")
 cue_escape_cpp_string(cueBuildVisualStudioRoot "${cueBuildVisualStudioRootValue}")
 cue_escape_cpp_string(cueBuildVisualStudioMsbuild "${cueBuildVisualStudioMsbuildValue}")
 cue_escape_cpp_string(cueBuildMsvcCompiler "${CMAKE_CXX_COMPILER}")
+cue_escape_cpp_string(cueBuildPlatformToolset "${CMAKE_VS_PLATFORM_TOOLSET}")
 cue_escape_cpp_string(cueBuildWindowsSdkVersion "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+
+get_filename_component(cueBuildMsvcArchitectureRoot "${CMAKE_CXX_COMPILER}" DIRECTORY)
+get_filename_component(cueBuildMsvcHostRoot "${cueBuildMsvcArchitectureRoot}" DIRECTORY)
+get_filename_component(cueBuildMsvcBinRoot "${cueBuildMsvcHostRoot}" DIRECTORY)
+get_filename_component(cueBuildMsvcToolsetRoot "${cueBuildMsvcBinRoot}" DIRECTORY)
+get_filename_component(cueBuildMsvcToolsetVersionValue "${cueBuildMsvcToolsetRoot}" NAME)
+if(NOT cueBuildMsvcToolsetVersionValue MATCHES "^[0-9]+\\.[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?$")
+    message(FATAL_ERROR "The selected MSVC minor toolset version could not be recorded")
+endif()
+cue_escape_cpp_string(cueBuildMsvcToolsetVersion "${cueBuildMsvcToolsetVersionValue}")
 
 if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR} AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
     set(cueBuildWindowsSdkRootValue "$ENV{CMAKE_WINDOWS_KITS_10_DIR}")

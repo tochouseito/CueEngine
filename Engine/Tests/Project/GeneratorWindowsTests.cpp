@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -196,6 +197,26 @@ class TestDirectory final
                                         productPath.native() + L"\" --package-smoke-test");
 }
 
+/// @brief Release Monolithic ProductのArtifact Probe Protocolと固定Markerを検証する
+[[nodiscard]] bool run_product_artifact_probe(const std::wstring &a_projectRoot,
+                                              const std::wstring &a_product)
+{
+    const std::filesystem::path productPath(a_product);
+    const std::filesystem::path marker = productPath.parent_path() / L".probe-complete";
+    DeleteFileW(marker.c_str());
+    if (!run_cmake(a_projectRoot, L"-E chdir \"" + productPath.parent_path().native() + L"\" \"" +
+                                      productPath.native() + L"\" --cue-artifact-probe Release "
+                                      L"12345678-1234-4abc-8def-1234567890ab"))
+    {
+        return false;
+    }
+    std::ifstream input(marker, std::ios::binary);
+    const std::string contents{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    const bool valid = contents == "CueGameProductProbe:v1\n";
+    input.close();
+    return valid && DeleteFileW(marker.c_str()) != FALSE;
+}
+
 /// @brief 実 Windows IO で生成・再 Open・既存先拒否を一連の Process 契約として検証する
 [[nodiscard]] bool test_windows_generation(const cue::AssertContext &a_assertContext)
 {
@@ -271,6 +292,7 @@ class TestDirectory final
             L"SampleProject\\Generated\\Build\\windows-vs2026-x64-release\\lib\\Release\\CueGameModule.Static.lib")) ||
         !is_file(productPath) || CreateDirectoryW(isolatedDirectory.c_str(), nullptr) == FALSE ||
         CopyFileW(productPath.c_str(), isolatedProduct.c_str(), TRUE) == FALSE ||
+        !run_product_artifact_probe(projectRootPath, isolatedProduct) ||
         !run_product_smoke(projectRootPath, isolatedProduct))
     {
         return false;

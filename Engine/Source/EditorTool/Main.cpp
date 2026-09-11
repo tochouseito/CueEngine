@@ -62,7 +62,7 @@ constexpr int k_processTestFailed = 3;
 constexpr std::uint64_t k_firstEditorPlayGeneration = 1U;
 constexpr std::int64_t k_maximumEditorPlayDeltaNanoseconds = 100'000'000;
 constexpr std::size_t k_processTestPlayCycleCount = 12U;
-constexpr std::uint32_t k_engineBuildPolicyVersion = 1U;
+constexpr std::uint32_t k_engineBuildPolicyVersion = 2U;
 
 /// @brief Windows System RNGからBuild Operation用UUID Version 4を発行する
 class WindowsBuildOperationIdSource final : public cue::editor::BuildOperationIdSource
@@ -127,6 +127,30 @@ class WindowsBuildOperationIdSource final : public cue::editor::BuildOperationId
         std::find_if(a_report.selectedTools.begin(), a_report.selectedTools.end(),
                      [a_kind](const cue::BuildToolCandidate &a_tool) noexcept { return a_tool.kind == a_kind; });
     return found == a_report.selectedTools.end() ? nullptr : &*found;
+}
+
+/// @brief Compiler Installation Root末尾からMSBuildへ固定するminor Toolset Versionを返す
+[[nodiscard]] std::optional<std::string> msvc_toolset_version(
+    std::string_view a_installationRoot, const cue::AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        while (!a_installationRoot.empty() &&
+               (a_installationRoot.back() == '/' || a_installationRoot.back() == '\\'))
+        {
+            a_installationRoot.remove_suffix(1U);
+        }
+        const std::size_t separator = a_installationRoot.find_last_of("/\\");
+        const std::string_view version = separator == std::string_view::npos
+                                             ? a_installationRoot
+                                             : a_installationRoot.substr(separator + 1U);
+        return version.empty() ? std::nullopt : std::optional<std::string>(version);
+    }
+    catch (...)
+    {
+        a_assertContext.fatal_handler().terminate("MSVC toolset version allocation failed");
+        std::abort();
+    }
 }
 
 /// @brief Windows DirectoryをChild ProcessのSYSTEMROOT値としてUTF-8で返す
@@ -1360,8 +1384,10 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
         const cue::BuildToolCandidate *cmake = find_tool(environment, cue::BuildToolKind::CMake);
         const cue::BuildToolCandidate *compiler = find_tool(environment, cue::BuildToolKind::MsvcCompiler);
+        const std::optional<std::string> toolsetVersion =
+            compiler != nullptr ? msvc_toolset_version(compiler->installationRoot, *m_assertContext) : std::nullopt;
         const std::optional<std::string> systemRoot = windows_directory(*m_assertContext);
-        if (cmake == nullptr || compiler == nullptr || !compiler->version || !systemRoot)
+        if (cmake == nullptr || compiler == nullptr || !compiler->version || !toolsetVersion || !systemRoot)
         {
             m_buildUnavailableMessage = "Game Buildに必要なToolchain情報を確定できませんでした。";
             return;
@@ -1436,7 +1462,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
         cue::CMakeRunnerSettings runnerSettings{cmake->nativePath, environment.engineSourceRoot,
                                                 std::move(environmentAllowlist), std::chrono::minutes(5),
-                                                std::chrono::minutes(30)};
+                                                std::chrono::minutes(30), *toolsetVersion};
         cue::Result<std::unique_ptr<cue::GameBuildService>> service =
             cue::GameBuildService::create(runnerSettings, std::move(*processRunner.try_value()),
                                           std::move(*artifactPublisher.try_value()), *m_assertContext);

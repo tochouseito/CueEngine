@@ -186,7 +186,8 @@ class TestPublisher final : public cue::BuildArtifactPublisher
 /// @brief Process起動を行わないTest用のAbsolute Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
-    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5)};
+    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5),
+            "14.51.36231"};
 }
 
 /// @brief Current DirectoryをProject Rootとする検証済みBuild Request入力を返す
@@ -253,11 +254,36 @@ class TestPublisher final : public cue::BuildArtifactPublisher
         cue::BuildArtifactInventory::create(*plan.try_value(), "51234567-89ab-4cde-8f01-23456789abcd",
                                             {{"CueGameModule.dll", 9007199254740992ULL, std::string(64U, 'a')},
                                              {"CueGameModule.metadata.json", 10U, std::string(64U, 'b')}},
-                                            a_assertContext);
+                                             a_assertContext);
+    auto shippingProfile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext);
+    cue::BuildRequest shippingRequest{std::filesystem::current_path().generic_string(), *shippingProfile.try_value(),
+                                      "61234567-89ab-4cde-8f01-23456789abcd", k_workspaceCompatibility};
+    auto shippingPlan = cue::create_build_plan(shippingRequest, a_assertContext);
+    auto shipping = cue::BuildArtifactInventory::create(
+        *shippingPlan.try_value(), "71234567-89ab-4cde-8f01-23456789abcd",
+        {{"CueGameProduct.metadata.json", 30U, std::string(64U, 'd'),
+          cue::BuildArtifactFilePurpose::RuntimeMetadata},
+         {"CueGameProduct.exe", 40U, std::string(64U, 'c'),
+          cue::BuildArtifactFilePurpose::DistributionPayload},
+         {"CueGameProduct.pdb", 50U, std::string(64U, 'e'),
+          cue::BuildArtifactFilePurpose::DevelopmentSymbol}},
+        a_assertContext);
+    auto shippingUnexpected = cue::BuildArtifactInventory::create(
+        *shippingPlan.try_value(), "81234567-89ab-4cde-8f01-23456789abcd",
+        {{"CueGameProduct.exe", 40U, std::string(64U, 'c')},
+         {"CueGameProduct.metadata.json", 30U, std::string(64U, 'd')},
+         {"CueGameModule.dll", 20U, std::string(64U, 'a')}},
+        a_assertContext);
     return valid && valid.try_value()->configuration() == cue::BuildConfiguration::Release &&
            valid.try_value()->files()[0].relativePath == "CueGameModule.dll" &&
            valid.try_value()->version_directory().ends_with(valid.try_value()->artifact_id()) && !traversal &&
-           !missing && !emptyMetadata && !oversizedFile;
+           !missing && !emptyMetadata && !oversizedFile && shipping &&
+           shipping.try_value()->profile().target() == cue::BuildTarget::ShippingProduct &&
+           shipping.try_value()->files()[0].purpose == cue::BuildArtifactFilePurpose::DistributionPayload &&
+           shipping.try_value()->files()[1].purpose == cue::BuildArtifactFilePurpose::RuntimeMetadata &&
+           shipping.try_value()->files()[2].purpose == cue::BuildArtifactFilePurpose::DevelopmentSymbol &&
+           !shippingUnexpected;
 }
 
 /// @brief Current Manifest Readerが順序と空白を無視しSchema不一致をFail-closedにするか検証する
@@ -291,11 +317,47 @@ class TestPublisher final : public cue::BuildArtifactPublisher
     const std::string wrongHash = valid.substr(0U, valid.find(std::string(64U, 'a'))) + std::string(64U, 'c') +
                                   valid.substr(valid.find(std::string(64U, 'a')) + 64U);
     const std::string trailing = valid + "null";
+    auto shippingProfile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::PublisherSigned, std::string(64U, 'c'),
+        a_assertContext);
+    cue::BuildRequest shippingRequest{std::filesystem::current_path().generic_string(), *shippingProfile.try_value(),
+                                      "61234567-89ab-4cde-8f01-23456789abcd", k_workspaceCompatibility};
+    auto shippingPlan = cue::create_build_plan(shippingRequest, a_assertContext);
+    auto shippingInventory = cue::BuildArtifactInventory::create(
+        *shippingPlan.try_value(), "71234567-89ab-4cde-8f01-23456789abcd",
+        {{"CueGameProduct.metadata.json", 30U, std::string(64U, 'd')},
+         {"CueGameProduct.exe", 40U, std::string(64U, 'c')}},
+        a_assertContext);
+    const std::string shippingCurrent =
+        "{\"files\":[{\"purpose\":\"DistributionPayload\",\"path\":\"CueGameProduct.exe\","
+        "\"sizeBytes\":40,\"contentHash\":\"" + std::string(64U, 'c') +
+        "\",\"hashAlgorithm\":\"sha256\"},{\"hashAlgorithm\":\"sha256\","
+        "\"contentHash\":\"" + std::string(64U, 'd') +
+        "\",\"sizeBytes\":30,\"path\":\"CueGameProduct.metadata.json\","
+        "\"purpose\":\"RuntimeMetadata\"}],\"publisherKeyId\":\"" + std::string(64U, 'c') +
+        "\",\"target\":\"ShippingProduct\",\"schemaVersion\":2,"
+        "\"minimumTrustMode\":\"PublisherSigned\",\"configuration\":\"Release\","
+        "\"artifactId\":\"71234567-89ab-4cde-8f01-23456789abcd\"}";
+    std::string wrongPublisher = shippingCurrent;
+    wrongPublisher.replace(wrongPublisher.find(std::string(64U, 'c'),
+                                               wrongPublisher.find("publisherKeyId")),
+                           64U, std::string(64U, 'e'));
+    std::string wrongPurpose = shippingCurrent;
+    wrongPurpose.replace(wrongPurpose.find("DistributionPayload"), std::string_view("DistributionPayload").size(),
+                         "DevelopmentSymbol");
     return cue::validate_build_artifact_current_manifest(valid, *inventory.try_value(), a_assertContext) &&
            !cue::validate_build_artifact_current_manifest(unknown, *inventory.try_value(), a_assertContext) &&
            !cue::validate_build_artifact_current_manifest(duplicate, *inventory.try_value(), a_assertContext) &&
            !cue::validate_build_artifact_current_manifest(wrongHash, *inventory.try_value(), a_assertContext) &&
-           !cue::validate_build_artifact_current_manifest(trailing, *inventory.try_value(), a_assertContext);
+           !cue::validate_build_artifact_current_manifest(trailing, *inventory.try_value(), a_assertContext) &&
+           shippingInventory &&
+           cue::validate_build_artifact_current_manifest(shippingCurrent, *shippingInventory.try_value(),
+                                                         a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(valid, *shippingInventory.try_value(), a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(wrongPublisher, *shippingInventory.try_value(),
+                                                          a_assertContext) &&
+           !cue::validate_build_artifact_current_manifest(wrongPurpose, *shippingInventory.try_value(),
+                                                          a_assertContext);
 }
 
 /// @brief 単一Active、Cancel、Retry、Latest成功Artifact保全をHeadless検証する

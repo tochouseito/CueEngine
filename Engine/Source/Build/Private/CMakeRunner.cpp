@@ -162,10 +162,43 @@ constexpr std::size_t k_maxWindowsEnvironmentLength = 32767U;
     }
 }
 
+/// @brief CMakeとMSBuildへ渡せる2から4要素のVisual Studio Toolset Versionか検証する
+[[nodiscard]] bool is_visual_studio_toolset_version(std::string_view a_version) noexcept
+{
+    if (a_version.size() < 3U || a_version.size() > 48U || a_version.front() == '.' || a_version.back() == '.')
+    {
+        return false;
+    }
+    std::size_t componentCount = 1U;
+    bool previousWasDot = false;
+    for (const char value : a_version)
+    {
+        if (value == '.')
+        {
+            if (previousWasDot)
+            {
+                return false;
+            }
+            previousWasDot = true;
+            ++componentCount;
+        }
+        else if (value >= '0' && value <= '9')
+        {
+            previousWasDot = false;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return componentCount >= 2U && componentCount <= 4U;
+}
+
 /// @brief 設定値、Absolute Path、予約Environment名の衝突を検証する
 [[nodiscard]] bool valid_settings(const cue::CMakeRunnerSettings &a_settings)
 {
     if (!is_absolute_utf8_path(a_settings.cmakeExecutable) || !is_absolute_utf8_path(a_settings.engineSourceRoot) ||
+        !is_visual_studio_toolset_version(a_settings.visualStudioToolsetVersion) ||
         (a_settings.configureTimeout && a_settings.configureTimeout->count() <= 0) ||
         (a_settings.buildTimeout && a_settings.buildTimeout->count() <= 0))
     {
@@ -301,7 +334,8 @@ Result<CMakeBuildResult> run_cmake_build(const BuildPlan &a_plan, const CMakeRun
         if (a_configureMode == CMakeConfigureMode::Required)
         {
             std::vector<std::string> configureArguments = {"--preset", std::string(a_plan.preset_name()), "-B",
-                                                           std::string(a_plan.binary_directory())};
+                                                           std::string(a_plan.binary_directory()), "-T",
+                                                           "version=" + a_settings.visualStudioToolsetVersion};
             auto configured =
                 run_stage(BuildStage::Configure, std::move(configureArguments), a_settings.configureTimeout, a_plan,
                           a_settings, a_processRunner, a_cancellation, a_observer, a_assertContext);
@@ -319,7 +353,8 @@ Result<CMakeBuildResult> run_cmake_build(const BuildPlan &a_plan, const CMakeRun
         std::vector<std::string> buildArguments = {
             "--build",  std::string(a_plan.binary_directory()),
             "--config", std::string(configuration_name(a_plan.profile().configuration())),
-            "--target", std::string(a_plan.cmake_target_name())};
+            "--target", std::string(a_plan.cmake_target_name()),
+            "--",       "/p:VCToolsVersion=" + a_settings.visualStudioToolsetVersion};
         auto built = run_stage(BuildStage::Build, std::move(buildArguments), a_settings.buildTimeout, a_plan,
                                a_settings, a_processRunner, a_cancellation, a_observer, a_assertContext);
         if (!built)
