@@ -12,10 +12,18 @@ namespace cue
 {
 class AssertContext;
 
-/// @brief M15でBuild可能なProject Target
+/// @brief Project Buildが生成するArtifact種別
 enum class BuildTarget : std::uint8_t
 {
-    GameModule
+    GameModule,
+    ShippingProduct
+};
+
+/// @brief Shipping Productが要求する最小Trust Policy
+enum class ShippingTrustMode : std::uint8_t
+{
+    UnsignedLocal,
+    PublisherSigned
 };
 
 /// @brief M15 Project Buildが使用するCMake Generator
@@ -46,23 +54,32 @@ enum class BuildPlanError : std::int64_t
     InvalidStageResult
 };
 
-/// @brief 再利用可能なConfigurationとTargetだけを保持する永続Build Profile
+/// @brief 再利用可能なConfiguration、Target、Trust Identityを保持する永続Build Profile
 class BuildProfile final
 {
   public:
     BuildProfile() = delete;
-    BuildProfile(const BuildProfile &) noexcept = default;
-    BuildProfile &operator=(const BuildProfile &) noexcept = default;
+    BuildProfile(const BuildProfile &) = default;
+    BuildProfile &operator=(const BuildProfile &) = default;
     BuildProfile(BuildProfile &&) noexcept = default;
     BuildProfile &operator=(BuildProfile &&) noexcept = default;
     ~BuildProfile() = default;
 
-    /// @brief 型付きConfigurationとTargetを検証して所有Profileを構築する
+    /// @brief GameModule用ConfigurationとTargetを検証して所有Profileを構築する
     ///
     /// AssertContextは呼出中だけ借用し保持しない。不正な列挙値はInvalidProfileを返す。
-    /// 共有状態を変更しないため、呼出中有効な別入力から同時に使用できる。
+    /// ShippingProductはTrust入力が必要なため拒否する。共有状態を変更しないため、呼出中有効な別入力から同時に使用できる。
     [[nodiscard]] static Result<BuildProfile> create(BuildConfiguration a_configuration, BuildTarget a_target,
                                                      const AssertContext &a_assertContext) noexcept;
+
+    /// @brief Release Shipping Product用Trust入力を検証して所有Profileを構築する
+    ///
+    /// UnsignedLocalは空Publisher Key、PublisherSignedはDER SubjectPublicKeyInfoのlowercase SHA-256を要求する。
+    /// AssertContextは呼出中だけ借用し保持しない。共有状態を変更しないため別入力から同時に使用できる。
+    [[nodiscard]] static Result<BuildProfile> create_shipping_product(BuildConfiguration a_configuration,
+                                                                      ShippingTrustMode a_minimumTrustMode,
+                                                                      std::string a_publisherKeyId,
+                                                                      const AssertContext &a_assertContext) noexcept;
 
     /// @brief Profile Wire形式のVersionを返す
     [[nodiscard]] std::uint32_t schema_version() const noexcept;
@@ -70,15 +87,26 @@ class BuildProfile final
     [[nodiscard]] BuildConfiguration configuration() const noexcept;
     /// @brief Build Targetを返す
     [[nodiscard]] BuildTarget target() const noexcept;
+    /// @brief Shipping Productの最小Trust Modeを返す
+    ///
+    /// GameModuleではnulloptを返す。
+    [[nodiscard]] std::optional<ShippingTrustMode> minimum_trust_mode() const noexcept;
+    /// @brief Publisher Public KeyのDER SubjectPublicKeyInfo SHA-256を返す
+    ///
+    /// GameModuleとUnsignedLocalでは空文字列を返す。返却ViewはProfileの寿命を超えて保持しない。
+    [[nodiscard]] std::string_view publisher_key_id() const noexcept;
 
     /// @brief 全Profile値が一致するか比較する
     [[nodiscard]] bool operator==(const BuildProfile &) const noexcept = default;
 
   private:
-    BuildProfile(BuildConfiguration a_configuration, BuildTarget a_target) noexcept;
+    BuildProfile(BuildConfiguration a_configuration, BuildTarget a_target,
+                 std::optional<ShippingTrustMode> a_minimumTrustMode, std::string a_publisherKeyId) noexcept;
 
     BuildConfiguration m_configuration;
     BuildTarget m_target;
+    std::optional<ShippingTrustMode> m_minimumTrustMode;
+    std::string m_publisherKeyId;
 };
 
 /// @brief UIから受け取る未検証Project Build要求
@@ -115,6 +143,8 @@ class BuildPlan final
     [[nodiscard]] std::string_view workspace_key() const noexcept;
     /// @brief Workspace Keyの生成に使用した互換入力を返す
     [[nodiscard]] const BuildWorkspaceCompatibility &workspace_compatibility() const noexcept;
+    /// @brief Plan固有Build WorkspaceのProcess間Lock Fileを返す
+    [[nodiscard]] std::string_view workspace_lock_file() const noexcept;
     /// @brief Project Root内のCMake Binary Tree正本を返す
     ///
     /// RunnerはConfigure Presetの既定binaryDirを使用せず、このPathを-Bで明示する。BuildもBuild Presetではなく
@@ -124,7 +154,7 @@ class BuildPlan final
     [[nodiscard]] std::string_view candidate_directory() const noexcept;
     /// @brief Operation固有の診断保存Directoryを返す
     [[nodiscard]] std::string_view operation_directory() const noexcept;
-    /// @brief Configuration別の公開Artifact Store Rootを返す
+    /// @brief Target、Configuration、Trust Identity別の公開Artifact Store Rootを返す
     [[nodiscard]] std::string_view artifact_store_directory() const noexcept;
     /// @brief CMakeへ渡す固定Target名を返す
     [[nodiscard]] std::string_view cmake_target_name() const noexcept;
@@ -137,8 +167,8 @@ class BuildPlan final
 
     BuildPlan(std::string a_projectRoot, BuildProfile a_profile, std::string a_operationId, std::string a_presetName,
               std::string a_workspaceKey, BuildWorkspaceCompatibility a_workspaceCompatibility,
-              std::string a_binaryDirectory, std::string a_candidateDirectory, std::string a_operationDirectory,
-              std::string a_artifactStoreDirectory) noexcept;
+              std::string a_workspaceLockFile, std::string a_binaryDirectory, std::string a_candidateDirectory,
+              std::string a_operationDirectory, std::string a_artifactStoreDirectory) noexcept;
 
     std::string m_projectRoot;
     BuildProfile m_profile;
@@ -146,6 +176,7 @@ class BuildPlan final
     std::string m_presetName;
     std::string m_workspaceKey;
     BuildWorkspaceCompatibility m_workspaceCompatibility;
+    std::string m_workspaceLockFile;
     std::string m_binaryDirectory;
     std::string m_candidateDirectory;
     std::string m_operationDirectory;
@@ -211,7 +242,7 @@ class BuildStageResult final
 [[nodiscard]] Result<std::string> serialize_build_profile(const BuildProfile &a_profile,
                                                           const AssertContext &a_assertContext) noexcept;
 
-/// @brief Strict schemaVersion 1 JSONを検証済みBuild Profileへ変換する
+/// @brief Strict schemaVersion 1／2 JSONを検証済みBuild Profileへ変換する
 ///
 /// JSONとAssertContextは呼出中だけ借用し、返却Profileが値を所有する。上限超過、未知Schema、重複または不正Memberは
 /// InvalidProfileを返す。共有状態を変更しないため別入力から同時に使用できる。Allocation等の回復不能例外は

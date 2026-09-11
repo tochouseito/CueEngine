@@ -145,10 +145,14 @@ struct MountPointReparseBuffer final
            plan.operation_id() == request.operationId && plan.preset_name() == a_preset &&
            plan.workspace_key() == "windows-vs2026-x64-msvc-19.51.0.0-policy-1-" + std::string(a_binaryDirectoryName) &&
            plan.workspace_compatibility() == k_workspaceCompatibility && plan.cmake_target_name() == "CueGameModule" &&
-           plan.binary_directory() == root + "/Generated/Build/" + std::string(plan.workspace_key()) &&
-           plan.candidate_directory() == root + "/Generated/Build/Candidates/01234567-89ab-4cde-8f01-23456789abcd" &&
+           plan.workspace_lock_file() ==
+               root + "/Generated/Build/Locks/GameModule/" + std::string(plan.workspace_key()) + ".lock" &&
+           plan.binary_directory() == root + "/Generated/Build/GameModule/" + std::string(plan.workspace_key()) &&
+           plan.candidate_directory() ==
+               root + "/Generated/Build/Candidates/GameModule/01234567-89ab-4cde-8f01-23456789abcd" &&
            plan.operation_directory() == root + "/Saved/Build/Operations/01234567-89ab-4cde-8f01-23456789abcd" &&
-           plan.artifact_store_directory() == root + "/Generated/Artifacts/" + std::string(a_configurationName);
+           plan.artifact_store_directory() ==
+               root + "/Generated/Artifacts/GameModule/" + std::string(a_configurationName) + "/modular";
 }
 
 /// @brief Project Root内外を指す既存Link経由のOutputを拒否する
@@ -325,17 +329,92 @@ struct MountPointReparseBuffer final
         return false;
     }
     auto roundTrip = cue::parse_build_profile(*serialized.try_value(), a_assertContext);
-    auto reordered = cue::parse_build_profile(
+    auto legacy = cue::parse_build_profile(
         R"json({"target":"GameModule","schemaVersion":1,"configuration":"Release"})json", a_assertContext);
+    auto reordered = cue::parse_build_profile(
+        R"json({"publisherKeyId":null,"target":"GameModule","schemaVersion":2,"minimumTrustMode":null,"configuration":"Release"})json",
+        a_assertContext);
+    auto unsignedShipping = cue::parse_build_profile(
+        R"json({"schemaVersion":2,"configuration":"Release","target":"ShippingProduct","minimumTrustMode":"UnsignedLocal","publisherKeyId":null})json",
+        a_assertContext);
+    auto signedShipping = cue::parse_build_profile(
+        R"json({"schemaVersion":2,"configuration":"Release","target":"ShippingProduct","minimumTrustMode":"PublisherSigned","publisherKeyId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})json",
+        a_assertContext);
     auto unknownVersion = cue::parse_build_profile(
-        R"json({"schemaVersion":2,"configuration":"Debug","target":"GameModule"})json", a_assertContext);
+        R"json({"schemaVersion":3,"configuration":"Debug","target":"GameModule","minimumTrustMode":null,"publisherKeyId":null})json",
+        a_assertContext);
     auto unknownMember = cue::parse_build_profile(
         R"json({"schemaVersion":1,"configuration":"Debug","unexpected":"GameModule"})json", a_assertContext);
     auto duplicate = cue::parse_build_profile(
         R"json({"schemaVersion":1,"configuration":"Debug","configuration":"Release"})json", a_assertContext);
-    return roundTrip && *roundTrip.try_value() == *profile.try_value() && reordered &&
-           reordered.try_value()->configuration() == cue::BuildConfiguration::Release && !unknownVersion &&
-           !unknownMember && !duplicate;
+    auto downgraded = cue::parse_build_profile(
+        R"json({"schemaVersion":2,"configuration":"Release","target":"ShippingProduct","minimumTrustMode":"UnsignedLocal","publisherKeyId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})json",
+        a_assertContext);
+    return profile.try_value()->schema_version() == 2U &&
+           serialized.try_value()->find("\"schemaVersion\": 2") != std::string::npos && roundTrip &&
+           *roundTrip.try_value() == *profile.try_value() && legacy &&
+           legacy.try_value()->configuration() == cue::BuildConfiguration::Release && reordered &&
+           reordered.try_value()->configuration() == cue::BuildConfiguration::Release && unsignedShipping &&
+           unsignedShipping.try_value()->minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal &&
+           unsignedShipping.try_value()->publisher_key_id().empty() && signedShipping &&
+           signedShipping.try_value()->minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned &&
+           signedShipping.try_value()->publisher_key_id() == std::string(64U, 'a') && !unknownVersion &&
+           !unknownMember && !duplicate && !downgraded;
+}
+
+/// @brief Release Shipping ProductがTrust IdentityごとにBuild出力を分離するか検証する
+[[nodiscard]] bool test_shipping_product(std::string_view a_projectRoot, const cue::AssertContext &a_assertContext)
+{
+    auto unsignedProfile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext);
+    const std::string publisherKey(64U, 'a');
+    auto signedProfile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::PublisherSigned, publisherKey, a_assertContext);
+    auto invalidConfiguration = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Development, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext);
+    auto missingPublisher = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::PublisherSigned, {}, a_assertContext);
+    auto unexpectedPublisher = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, publisherKey, a_assertContext);
+    auto missingTrust =
+        cue::BuildProfile::create(cue::BuildConfiguration::Release, cue::BuildTarget::ShippingProduct, a_assertContext);
+    if (!unsignedProfile || !signedProfile || invalidConfiguration || missingPublisher || unexpectedPublisher ||
+        missingTrust)
+    {
+        return false;
+    }
+
+    cue::BuildRequest unsignedRequest{std::string(a_projectRoot), *unsignedProfile.try_value(),
+                                      "21234567-89ab-4cde-8f01-23456789abcd", k_workspaceCompatibility};
+    cue::BuildRequest signedRequest{std::string(a_projectRoot), *signedProfile.try_value(),
+                                    "31234567-89ab-4cde-8f01-23456789abcd", k_workspaceCompatibility};
+    auto unsignedPlan = cue::create_build_plan(unsignedRequest, a_assertContext);
+    auto signedPlan = cue::create_build_plan(signedRequest, a_assertContext);
+    if (!unsignedPlan || !signedPlan)
+    {
+        return false;
+    }
+
+    const std::string root(a_projectRoot);
+    const cue::BuildPlan &unsignedValue = *unsignedPlan.try_value();
+    const cue::BuildPlan &signedValue = *signedPlan.try_value();
+    return unsignedValue.cmake_target_name() == "CueGameProduct" &&
+           unsignedValue.profile().target() == cue::BuildTarget::ShippingProduct &&
+           unsignedValue.workspace_key().ends_with("-release-trust-unsigned-local") &&
+           unsignedValue.binary_directory() ==
+               root + "/Generated/Build/ShippingProduct/" + std::string(unsignedValue.workspace_key()) &&
+           unsignedValue.workspace_lock_file() == root + "/Generated/Build/Locks/ShippingProduct/" +
+                                                      std::string(unsignedValue.workspace_key()) + ".lock" &&
+           unsignedValue.candidate_directory() ==
+               root + "/Generated/Build/Candidates/ShippingProduct/21234567-89ab-4cde-8f01-23456789abcd" &&
+           unsignedValue.artifact_store_directory() ==
+               root + "/Generated/Artifacts/ShippingProduct/Release/unsigned-local" &&
+           signedValue.workspace_key().ends_with("-release-trust-publisher-" + publisherKey) &&
+           signedValue.artifact_store_directory() ==
+               root + "/Generated/Artifacts/ShippingProduct/Release/publisher-aaaaaaaaaaaaaaaa" &&
+           signedValue.workspace_key() != unsignedValue.workspace_key() &&
+           signedValue.binary_directory() != unsignedValue.binary_directory() &&
+           signedValue.artifact_store_directory() != unsignedValue.artifact_store_directory();
 }
 
 /// @brief 不正Target、相対Root、Root形式Operation IDをPlan生成前に拒否するか検証する
@@ -478,8 +557,9 @@ int main(int a_argumentCount, char **a_arguments)
                            "development", projectRoot, assertContext) &&
         test_configuration(cue::BuildConfiguration::Release, "Release", "windows-vs2026-release", "release",
                            projectRoot, assertContext) &&
-        test_profile_persistence(assertContext) && test_invalid_request(projectRoot, assertContext) &&
-        test_workspace_compatibility(projectRoot, assertContext) && test_stage_results(assertContext);
+        test_profile_persistence(assertContext) && test_shipping_product(projectRoot, assertContext) &&
+        test_invalid_request(projectRoot, assertContext) && test_workspace_compatibility(projectRoot, assertContext) &&
+        test_stage_results(assertContext);
     const bool reparseSucceeded = test_reparse_output_rejection(a_arguments[1], assertContext);
     const bool danglingReparseSucceeded = test_dangling_reparse_output_rejection(a_arguments[1], assertContext);
     const bool longPathSucceeded = test_long_project_root(a_arguments[1], assertContext);

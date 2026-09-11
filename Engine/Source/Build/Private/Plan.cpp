@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -17,7 +18,7 @@
 
 namespace
 {
-constexpr std::uint32_t k_profileSchemaVersion = 1U;
+constexpr std::uint32_t k_profileSchemaVersion = 2U;
 constexpr std::size_t k_maximumProfileBytes = 4096U;
 
 /// @brief Build Plan処理中の予期しない例外をFatal境界へ渡す
@@ -47,7 +48,43 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
 /// @brief Build Target列挙値が公開契約内か判定する
 [[nodiscard]] bool is_valid_target(cue::BuildTarget a_target) noexcept
 {
-    return a_target == cue::BuildTarget::GameModule;
+    return a_target == cue::BuildTarget::GameModule || a_target == cue::BuildTarget::ShippingProduct;
+}
+
+/// @brief Shipping Trust Mode列挙値が公開契約内か判定する
+[[nodiscard]] bool is_valid_trust_mode(cue::ShippingTrustMode a_mode) noexcept
+{
+    return a_mode == cue::ShippingTrustMode::UnsignedLocal || a_mode == cue::ShippingTrustMode::PublisherSigned;
+}
+
+/// @brief Publisher Key IDがlowercase SHA-256か判定する
+[[nodiscard]] bool is_publisher_key_id(std::string_view a_text) noexcept
+{
+    return a_text.size() == 64U &&
+           std::ranges::all_of(a_text, [](char a_value) noexcept
+                               { return (a_value >= '0' && a_value <= '9') || (a_value >= 'a' && a_value <= 'f'); });
+}
+
+/// @brief ProfileのTarget、Configuration、Trust入力が一つの有効な組合せか判定する
+[[nodiscard]] bool is_valid_profile(const cue::BuildProfile &a_profile) noexcept
+{
+    if (!is_valid_configuration(a_profile.configuration()) || !is_valid_target(a_profile.target()))
+    {
+        return false;
+    }
+    if (a_profile.target() == cue::BuildTarget::GameModule)
+    {
+        return !a_profile.minimum_trust_mode() && a_profile.publisher_key_id().empty();
+    }
+    if (a_profile.configuration() != cue::BuildConfiguration::Release || !a_profile.minimum_trust_mode() ||
+        !is_valid_trust_mode(*a_profile.minimum_trust_mode()))
+    {
+        return false;
+    }
+    return (*a_profile.minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal &&
+            a_profile.publisher_key_id().empty()) ||
+           (*a_profile.minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned &&
+            is_publisher_key_id(a_profile.publisher_key_id()));
 }
 
 /// @brief Build Stage列挙値が公開契約内か判定する
@@ -108,6 +145,48 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
     return {};
 }
 
+/// @brief Targetの永続名とFilesystem Directory名を返す
+[[nodiscard]] std::string_view target_name(cue::BuildTarget a_target) noexcept
+{
+    switch (a_target)
+    {
+    case cue::BuildTarget::GameModule:
+        return "GameModule";
+    case cue::BuildTarget::ShippingProduct:
+        return "ShippingProduct";
+    }
+    return {};
+}
+
+/// @brief Shipping Trust Modeの永続名を返す
+[[nodiscard]] std::string_view trust_mode_name(cue::ShippingTrustMode a_mode) noexcept
+{
+    switch (a_mode)
+    {
+    case cue::ShippingTrustMode::UnsignedLocal:
+        return "UnsignedLocal";
+    case cue::ShippingTrustMode::PublisherSigned:
+        return "PublisherSigned";
+    }
+    return {};
+}
+
+/// @brief Artifact StoreをTrust Policyごとに分離する安全なVariant Keyを返す
+[[nodiscard]] std::string artifact_variant_key(const cue::BuildProfile &a_profile)
+{
+    if (a_profile.target() == cue::BuildTarget::GameModule)
+    {
+        return "modular";
+    }
+    if (a_profile.minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal)
+    {
+        return "unsigned-local";
+    }
+    std::string key = "publisher-";
+    key.append(a_profile.publisher_key_id().substr(0U, 16U));
+    return key;
+}
+
 /// @brief Workspace互換入力が初期Windows Build契約内か判定する
 [[nodiscard]] bool is_valid_workspace_compatibility(const cue::BuildWorkspaceCompatibility &a_compatibility) noexcept
 {
@@ -118,7 +197,7 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
 }
 
 /// @brief Generator、Architecture、Toolset、Engine PolicyからFilesystem安全な決定的Keyを作る
-[[nodiscard]] std::string make_workspace_key(cue::BuildConfiguration a_configuration,
+[[nodiscard]] std::string make_workspace_key(const cue::BuildProfile &a_profile,
                                              const cue::BuildWorkspaceCompatibility &a_compatibility)
 {
     const cue::BuildToolVersion &version = a_compatibility.toolsetVersion;
@@ -133,7 +212,20 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
     key.append("-policy-");
     key.append(std::to_string(a_compatibility.engineBuildPolicyVersion));
     key.push_back('-');
-    key.append(configuration_key_name(a_configuration));
+    key.append(configuration_key_name(a_profile.configuration()));
+    if (a_profile.target() == cue::BuildTarget::ShippingProduct)
+    {
+        key.append("-trust-");
+        if (a_profile.minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal)
+        {
+            key.append("unsigned-local");
+        }
+        else
+        {
+            key.append("publisher-");
+            key.append(a_profile.publisher_key_id());
+        }
+    }
     return key;
 }
 
@@ -344,23 +436,49 @@ class ProfileReader final
         return true;
     }
 
-    /// @brief schemaVersionの固定整数1を読む
-    [[nodiscard]] bool read_schema_version() noexcept
+    /// @brief 符号、小数、指数、先頭Zeroを許さず符号なし整数を読む
+    [[nodiscard]] bool read_unsigned(std::uint32_t &a_output) noexcept
     {
         skip_space();
-        if (m_cursor >= m_input.size() || m_input[m_cursor] != '1')
+        if (m_cursor >= m_input.size() || m_input[m_cursor] < '0' || m_input[m_cursor] > '9')
         {
             return false;
         }
-        ++m_cursor;
-        if (m_cursor < m_input.size())
+        if (m_input[m_cursor] == '0' && m_cursor + 1U < m_input.size() && m_input[m_cursor + 1U] >= '0' &&
+            m_input[m_cursor + 1U] <= '9')
         {
-            const char next = m_input[m_cursor];
-            if ((next >= '0' && next <= '9') || next == '.' || next == 'e' || next == 'E')
+            return false;
+        }
+        std::uint32_t value = 0U;
+        do
+        {
+            const std::uint32_t digit = static_cast<std::uint32_t>(m_input[m_cursor] - '0');
+            if (value > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U)
             {
                 return false;
             }
+            value = value * 10U + digit;
+            ++m_cursor;
+        } while (m_cursor < m_input.size() && m_input[m_cursor] >= '0' && m_input[m_cursor] <= '9');
+        if (m_cursor < m_input.size() &&
+            (m_input[m_cursor] == '.' || m_input[m_cursor] == 'e' || m_input[m_cursor] == 'E'))
+        {
+            return false;
         }
+        a_output = value;
+        return true;
+    }
+
+    /// @brief JSON nullを完全一致で読む
+    [[nodiscard]] bool read_null() noexcept
+    {
+        skip_space();
+        constexpr std::string_view value = "null";
+        if (m_input.substr(m_cursor, value.size()) != value)
+        {
+            return false;
+        }
+        m_cursor += value.size();
         return true;
     }
 
@@ -379,20 +497,38 @@ class ProfileReader final
 
 namespace cue
 {
-BuildProfile::BuildProfile(BuildConfiguration a_configuration, BuildTarget a_target) noexcept
-    : m_configuration(a_configuration), m_target(a_target)
+BuildProfile::BuildProfile(BuildConfiguration a_configuration, BuildTarget a_target,
+                           std::optional<ShippingTrustMode> a_minimumTrustMode, std::string a_publisherKeyId) noexcept
+    : m_configuration(a_configuration), m_target(a_target), m_minimumTrustMode(a_minimumTrustMode),
+      m_publisherKeyId(std::move(a_publisherKeyId))
 {
 }
 
 Result<BuildProfile> BuildProfile::create(BuildConfiguration a_configuration, BuildTarget a_target,
                                           const AssertContext &a_assertContext) noexcept
 {
-    if (!is_valid_configuration(a_configuration) || !is_valid_target(a_target))
+    if (!is_valid_configuration(a_configuration) || a_target != BuildTarget::GameModule)
     {
         return Result<BuildProfile>::failure(
             make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build profile is invalid"));
     }
-    return Result<BuildProfile>::success(BuildProfile(a_configuration, a_target));
+    return Result<BuildProfile>::success(BuildProfile(a_configuration, a_target, std::nullopt, {}));
+}
+
+Result<BuildProfile> BuildProfile::create_shipping_product(BuildConfiguration a_configuration,
+                                                           ShippingTrustMode a_minimumTrustMode,
+                                                           std::string a_publisherKeyId,
+                                                           const AssertContext &a_assertContext) noexcept
+{
+    if (a_configuration != BuildConfiguration::Release || !is_valid_trust_mode(a_minimumTrustMode) ||
+        (a_minimumTrustMode == ShippingTrustMode::UnsignedLocal && !a_publisherKeyId.empty()) ||
+        (a_minimumTrustMode == ShippingTrustMode::PublisherSigned && !is_publisher_key_id(a_publisherKeyId)))
+    {
+        return Result<BuildProfile>::failure(
+            make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Shipping build profile is invalid"));
+    }
+    return Result<BuildProfile>::success(
+        BuildProfile(a_configuration, BuildTarget::ShippingProduct, a_minimumTrustMode, std::move(a_publisherKeyId)));
 }
 
 std::uint32_t BuildProfile::schema_version() const noexcept
@@ -410,15 +546,26 @@ BuildTarget BuildProfile::target() const noexcept
     return m_target;
 }
 
+std::optional<ShippingTrustMode> BuildProfile::minimum_trust_mode() const noexcept
+{
+    return m_minimumTrustMode;
+}
+
+std::string_view BuildProfile::publisher_key_id() const noexcept
+{
+    return m_publisherKeyId;
+}
+
 BuildPlan::BuildPlan(std::string a_projectRoot, BuildProfile a_profile, std::string a_operationId,
                      std::string a_presetName, std::string a_workspaceKey,
-                     BuildWorkspaceCompatibility a_workspaceCompatibility, std::string a_binaryDirectory,
-                     std::string a_candidateDirectory, std::string a_operationDirectory,
+                     BuildWorkspaceCompatibility a_workspaceCompatibility, std::string a_workspaceLockFile,
+                     std::string a_binaryDirectory, std::string a_candidateDirectory, std::string a_operationDirectory,
                      std::string a_artifactStoreDirectory) noexcept
-    : m_projectRoot(std::move(a_projectRoot)), m_profile(a_profile), m_operationId(std::move(a_operationId)),
+    : m_projectRoot(std::move(a_projectRoot)), m_profile(std::move(a_profile)), m_operationId(std::move(a_operationId)),
       m_presetName(std::move(a_presetName)), m_workspaceKey(std::move(a_workspaceKey)),
-      m_workspaceCompatibility(a_workspaceCompatibility), m_binaryDirectory(std::move(a_binaryDirectory)),
-      m_candidateDirectory(std::move(a_candidateDirectory)), m_operationDirectory(std::move(a_operationDirectory)),
+      m_workspaceCompatibility(a_workspaceCompatibility), m_workspaceLockFile(std::move(a_workspaceLockFile)),
+      m_binaryDirectory(std::move(a_binaryDirectory)), m_candidateDirectory(std::move(a_candidateDirectory)),
+      m_operationDirectory(std::move(a_operationDirectory)),
       m_artifactStoreDirectory(std::move(a_artifactStoreDirectory))
 {
 }
@@ -453,6 +600,11 @@ const BuildWorkspaceCompatibility &BuildPlan::workspace_compatibility() const no
     return m_workspaceCompatibility;
 }
 
+std::string_view BuildPlan::workspace_lock_file() const noexcept
+{
+    return m_workspaceLockFile;
+}
+
 std::string_view BuildPlan::binary_directory() const noexcept
 {
     return m_binaryDirectory;
@@ -475,7 +627,7 @@ std::string_view BuildPlan::artifact_store_directory() const noexcept
 
 std::string_view BuildPlan::cmake_target_name() const noexcept
 {
-    return "CueGameModule";
+    return m_profile.target() == BuildTarget::GameModule ? "CueGameModule" : "CueGameProduct";
 }
 
 bool BuildPlan::equivalent_to(const BuildPlan &a_other) const noexcept
@@ -483,7 +635,8 @@ bool BuildPlan::equivalent_to(const BuildPlan &a_other) const noexcept
     return m_projectRoot == a_other.m_projectRoot && m_profile == a_other.m_profile &&
            m_operationId == a_other.m_operationId && m_presetName == a_other.m_presetName &&
            m_workspaceKey == a_other.m_workspaceKey && m_workspaceCompatibility == a_other.m_workspaceCompatibility &&
-           m_binaryDirectory == a_other.m_binaryDirectory && m_candidateDirectory == a_other.m_candidateDirectory &&
+           m_workspaceLockFile == a_other.m_workspaceLockFile && m_binaryDirectory == a_other.m_binaryDirectory &&
+           m_candidateDirectory == a_other.m_candidateDirectory &&
            m_operationDirectory == a_other.m_operationDirectory &&
            m_artifactStoreDirectory == a_other.m_artifactStoreDirectory;
 }
@@ -530,16 +683,44 @@ Result<std::string> serialize_build_profile(const BuildProfile &a_profile,
 {
     try
     {
-        if (!is_valid_configuration(a_profile.configuration()) || !is_valid_target(a_profile.target()))
+        const bool gameModule = a_profile.target() == BuildTarget::GameModule && !a_profile.minimum_trust_mode() &&
+                                a_profile.publisher_key_id().empty();
+        const bool unsignedShipping = a_profile.target() == BuildTarget::ShippingProduct &&
+                                      a_profile.configuration() == BuildConfiguration::Release &&
+                                      a_profile.minimum_trust_mode() == ShippingTrustMode::UnsignedLocal &&
+                                      a_profile.publisher_key_id().empty();
+        if (!is_valid_profile(a_profile))
         {
             return Result<std::string>::failure(
                 make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build profile is invalid"));
         }
         std::string json;
-        json.reserve(96U);
-        json.append("{\n    \"schemaVersion\": 1,\n    \"configuration\": \"");
+        json.reserve(256U);
+        json.append("{\n    \"schemaVersion\": 2,\n    \"configuration\": \"");
         json.append(configuration_name(a_profile.configuration()));
-        json.append("\",\n    \"target\": \"GameModule\"\n}\n");
+        json.append("\",\n    \"target\": \"");
+        json.append(target_name(a_profile.target()));
+        json.append("\",\n    \"minimumTrustMode\": ");
+        if (gameModule)
+        {
+            json.append("null,\n    \"publisherKeyId\": null\n}\n");
+        }
+        else
+        {
+            json.push_back('"');
+            json.append(trust_mode_name(*a_profile.minimum_trust_mode()));
+            json.append("\",\n    \"publisherKeyId\": ");
+            if (unsignedShipping)
+            {
+                json.append("null\n}\n");
+            }
+            else
+            {
+                json.push_back('"');
+                json.append(a_profile.publisher_key_id());
+                json.append("\"\n}\n");
+            }
+        }
         return Result<std::string>::success(std::move(json));
     }
     catch (...)
@@ -567,9 +748,21 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
         bool foundSchema = false;
         bool foundConfiguration = false;
         bool foundTarget = false;
+        bool foundTrustMode = false;
+        bool foundPublisherKey = false;
+        std::uint32_t schemaVersion = 0U;
         BuildConfiguration configuration = BuildConfiguration::Debug;
-        for (std::size_t memberIndex = 0U; memberIndex < 3U; ++memberIndex)
+        BuildTarget target = BuildTarget::GameModule;
+        std::optional<ShippingTrustMode> trustMode;
+        std::string publisherKeyId;
+        std::size_t memberCount = 0U;
+        while (!reader.read('}'))
         {
+            if (memberCount >= 5U || (memberCount != 0U && !reader.read(',')))
+            {
+                return Result<BuildProfile>::failure(make_plan_error(a_assertContext, BuildPlanError::InvalidProfile,
+                                                                     "Build profile member count is invalid"));
+            }
             std::string_view name;
             if (!reader.read_string(name) || !reader.read(':'))
             {
@@ -578,7 +771,7 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
             }
             if (name == "schemaVersion" && !foundSchema)
             {
-                foundSchema = reader.read_schema_version();
+                foundSchema = reader.read_unsigned(schemaVersion);
             }
             else if (name == "configuration" && !foundConfiguration)
             {
@@ -606,7 +799,55 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
             else if (name == "target" && !foundTarget)
             {
                 std::string_view value;
-                foundTarget = reader.read_string(value) && value == "GameModule";
+                if (reader.read_string(value) && value == "GameModule")
+                {
+                    target = BuildTarget::GameModule;
+                    foundTarget = true;
+                }
+                else if (value == "ShippingProduct")
+                {
+                    target = BuildTarget::ShippingProduct;
+                    foundTarget = true;
+                }
+            }
+            else if (name == "minimumTrustMode" && !foundTrustMode)
+            {
+                if (reader.read_null())
+                {
+                    trustMode.reset();
+                    foundTrustMode = true;
+                }
+                else
+                {
+                    std::string_view value;
+                    if (reader.read_string(value) && value == "UnsignedLocal")
+                    {
+                        trustMode = ShippingTrustMode::UnsignedLocal;
+                        foundTrustMode = true;
+                    }
+                    else if (value == "PublisherSigned")
+                    {
+                        trustMode = ShippingTrustMode::PublisherSigned;
+                        foundTrustMode = true;
+                    }
+                }
+            }
+            else if (name == "publisherKeyId" && !foundPublisherKey)
+            {
+                if (reader.read_null())
+                {
+                    publisherKeyId.clear();
+                    foundPublisherKey = true;
+                }
+                else
+                {
+                    std::string_view value;
+                    if (reader.read_string(value))
+                    {
+                        publisherKeyId.assign(value);
+                        foundPublisherKey = true;
+                    }
+                }
             }
             else
             {
@@ -614,18 +855,45 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
                                                                      "Build profile has unknown or duplicate members"));
             }
             if ((!foundSchema && name == "schemaVersion") || (!foundConfiguration && name == "configuration") ||
-                (!foundTarget && name == "target") || (memberIndex < 2U && !reader.read(',')))
+                (!foundTarget && name == "target") || (!foundTrustMode && name == "minimumTrustMode") ||
+                (!foundPublisherKey && name == "publisherKeyId"))
             {
                 return Result<BuildProfile>::failure(
                     make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build profile value is invalid"));
             }
+            ++memberCount;
         }
-        if (!reader.read('}') || !reader.at_end() || !foundSchema || !foundConfiguration || !foundTarget)
+        if (!reader.at_end() || !foundSchema || !foundConfiguration || !foundTarget)
         {
             return Result<BuildProfile>::failure(
                 make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build profile JSON is invalid"));
         }
-        return BuildProfile::create(configuration, BuildTarget::GameModule, a_assertContext);
+        if (schemaVersion == 1U && memberCount == 3U && target == BuildTarget::GameModule && !foundTrustMode &&
+            !foundPublisherKey)
+        {
+            return BuildProfile::create(configuration, target, a_assertContext);
+        }
+        if (schemaVersion != k_profileSchemaVersion || memberCount != 5U || !foundTrustMode || !foundPublisherKey)
+        {
+            return Result<BuildProfile>::failure(
+                make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build profile schema is invalid"));
+        }
+        if (target == BuildTarget::GameModule)
+        {
+            if (trustMode || !publisherKeyId.empty())
+            {
+                return Result<BuildProfile>::failure(make_plan_error(a_assertContext, BuildPlanError::InvalidProfile,
+                                                                     "Game module profile trust fields are invalid"));
+            }
+            return BuildProfile::create(configuration, target, a_assertContext);
+        }
+        if (!trustMode)
+        {
+            return Result<BuildProfile>::failure(make_plan_error(a_assertContext, BuildPlanError::InvalidProfile,
+                                                                 "Shipping profile trust fields are invalid"));
+        }
+        return BuildProfile::create_shipping_product(configuration, *trustMode, std::move(publisherKeyId),
+                                                     a_assertContext);
     }
     catch (...)
     {
@@ -637,7 +905,7 @@ Result<BuildPlan> create_build_plan(const BuildRequest &a_request, const AssertC
 {
     try
     {
-        if (!is_valid_configuration(a_request.profile.configuration()) || !is_valid_target(a_request.profile.target()))
+        if (!is_valid_profile(a_request.profile))
         {
             return Result<BuildPlan>::failure(
                 make_plan_error(a_assertContext, BuildPlanError::InvalidProfile, "Build request profile is invalid"));
@@ -699,28 +967,33 @@ Result<BuildPlan> create_build_plan(const BuildRequest &a_request, const AssertC
         }
 
         const std::string_view preset = preset_name(a_request.profile.configuration());
-        const std::string workspaceKey =
-            make_workspace_key(a_request.profile.configuration(), a_request.workspaceCompatibility);
-        const std::filesystem::path binary = (root / "Generated" / "Build" / workspaceKey).lexically_normal();
+        const std::string workspaceKey = make_workspace_key(a_request.profile, a_request.workspaceCompatibility);
+        const std::string targetName(target_name(a_request.profile.target()));
+        const std::string variantKey = artifact_variant_key(a_request.profile);
+        const std::filesystem::path workspaceLock =
+            (root / "Generated" / "Build" / "Locks" / targetName / (workspaceKey + ".lock")).lexically_normal();
+        const std::filesystem::path binary =
+            (root / "Generated" / "Build" / targetName / workspaceKey).lexically_normal();
         const std::filesystem::path candidate =
-            (root / "Generated" / "Build" / "Candidates" / a_request.operationId).lexically_normal();
+            (root / "Generated" / "Build" / "Candidates" / targetName / a_request.operationId).lexically_normal();
         const std::filesystem::path operation =
             (root / "Saved" / "Build" / "Operations" / a_request.operationId).lexically_normal();
-        const std::filesystem::path artifact =
-            (root / "Generated" / "Artifacts" / configuration_name(a_request.profile.configuration()))
-                .lexically_normal();
-        if (!is_descendant(root, binary) || !is_descendant(root, candidate) || !is_descendant(root, operation) ||
-            !is_descendant(root, artifact) || !resolves_inside(root, binary) || !resolves_inside(root, candidate) ||
-            !resolves_inside(root, operation) || !resolves_inside(root, artifact))
+        const std::filesystem::path artifact = (root / "Generated" / "Artifacts" / targetName /
+                                                configuration_name(a_request.profile.configuration()) / variantKey)
+                                                   .lexically_normal();
+        if (!is_descendant(root, workspaceLock) || !is_descendant(root, binary) || !is_descendant(root, candidate) ||
+            !is_descendant(root, operation) || !is_descendant(root, artifact) ||
+            !resolves_inside(root, workspaceLock.parent_path()) || !resolves_inside(root, binary) ||
+            !resolves_inside(root, candidate) || !resolves_inside(root, operation) || !resolves_inside(root, artifact))
         {
             return Result<BuildPlan>::failure(make_plan_error(a_assertContext, BuildPlanError::UnsafeOutputPath,
                                                               "Build output escaped the project root"));
         }
 
-        return Result<BuildPlan>::success(BuildPlan(generic_utf8_path(root), a_request.profile, a_request.operationId,
-                                                    std::string(preset), workspaceKey, a_request.workspaceCompatibility,
-                                                    generic_utf8_path(binary), generic_utf8_path(candidate),
-                                                    generic_utf8_path(operation), generic_utf8_path(artifact)));
+        return Result<BuildPlan>::success(BuildPlan(
+            generic_utf8_path(root), a_request.profile, a_request.operationId, std::string(preset), workspaceKey,
+            a_request.workspaceCompatibility, generic_utf8_path(workspaceLock), generic_utf8_path(binary),
+            generic_utf8_path(candidate), generic_utf8_path(operation), generic_utf8_path(artifact)));
     }
     catch (...)
     {

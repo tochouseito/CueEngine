@@ -302,13 +302,14 @@ void test_reparse_revalidation(const std::filesystem::path &a_probe,
     const std::filesystem::path outsideStore = outside / "Store";
     require(std::filesystem::create_directories(outsideStore, error));
     require(!error);
-    require(std::filesystem::create_directories(project / "Generated" / "Artifacts", error));
+    const std::filesystem::path targetStore = project / "Generated" / "Artifacts" / "GameModule";
+    require(std::filesystem::create_directories(targetStore, error));
     require(!error);
-    require(create_directory_link(project / "Generated" / "Artifacts" / k_configurationName, outsideStore));
+    require(create_directory_link(targetStore / k_configurationName, outsideStore));
     require(!publisher->publish(storePlan, cancellation, std::move(*storeLease), std::nullopt).has_value());
     require(std::filesystem::is_empty(outsideStore));
     require(!std::filesystem::exists(std::filesystem::path(storePlan.candidate_directory())));
-    require(std::filesystem::remove(project / "Generated" / "Artifacts" / k_configurationName, error));
+    require(std::filesystem::remove(targetStore / k_configurationName, error));
     require(!error);
 
     std::filesystem::remove_all(parent, error);

@@ -1413,8 +1413,9 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
         {
             const std::string_view configuration = configuration_name(a_expected.configuration());
             const std::optional<std::filesystem::path> versionPath = to_path(a_expected.version_directory());
-            const std::filesystem::path store =
-                (m_projectRoot / "Generated" / "Artifacts" / configuration).lexically_normal();
+            const std::filesystem::path store = (m_projectRoot / "Generated" / "Artifacts" / "GameModule" /
+                                                 configuration / "modular")
+                                                    .lexically_normal();
             const std::filesystem::path expectedVersion =
                 (store / "Versions" / a_expected.artifact_id()).lexically_normal();
             if (m_projectId.empty() || configuration.empty() || !versionPath ||
@@ -1509,10 +1510,15 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
                                "Build Plan belongs to another Project Root"));
             }
-            const std::filesystem::path lock =
-                m_projectRoot / "Generated" / "Build" / "Locks" / (std::string(a_plan.workspace_key()) + ".lock");
+            const std::optional<std::filesystem::path> lock = to_path(a_plan.workspace_lock_file());
+            if (!lock)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Build Workspace lock path could not be converted"));
+            }
             auto acquired =
-                acquire_exclusive_lock(m_projectRoot, lock, a_cancellation, a_deadline,
+                acquire_exclusive_lock(m_projectRoot, *lock, a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
             if (!acquired)
             {
