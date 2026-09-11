@@ -163,6 +163,17 @@ void truncate_relocation_directory(std::vector<std::byte> &a_bytes)
     std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
 }
 
+/// @brief Base Relocation DirectoryをM17 Resource Limit超過へ改変する
+void exceed_relocation_directory_limit(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    constexpr DWORD maximumBaseRelocationDirectoryBytes = 1024U * 1024U;
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = maximumBaseRelocationDirectoryBytes + 1U;
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
 /// @brief PE Section Tableを検証付きでTest所有領域へ読む
 [[nodiscard]] std::vector<IMAGE_SECTION_HEADER> read_sections(std::span<const std::byte> a_bytes)
 {
@@ -1053,6 +1064,17 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(truncatedRelocations, bytes);
     require(!cue::validate_windows_shipping_product_security(truncatedRelocations.generic_string(), localProfile,
                                                              a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    exceed_relocation_directory_limit(bytes);
+    const std::filesystem::path oversizedRelocationDirectory = directory / "OversizedRelocationDirectory.exe";
+    write_bytes(oversizedRelocationDirectory, bytes);
+    cue::Result<cue::WindowsProductSecurityValidation> oversizedRelocationResult =
+        cue::validate_windows_shipping_product_security(oversizedRelocationDirectory.generic_string(), localProfile,
+                                                        a_assertContext);
+    require(!oversizedRelocationResult &&
+            oversizedRelocationResult.try_error()->summary() ==
+                "Shipping Product base relocation directory exceeds the M17 resource limit");
 
     const std::array<std::uint32_t, 6U> requiredRelocations = required_security_relocation_rvas(bytes);
     for (std::size_t index = 0U; index < requiredRelocations.size(); ++index)

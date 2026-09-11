@@ -41,6 +41,7 @@ constexpr DWORD k_writableDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_S
 constexpr DWORD k_readOnlyDataSection = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 constexpr DWORD k_executableCodeSection = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
 constexpr std::uint64_t k_maximumProductBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t k_maximumBaseRelocationDirectoryBytes = 1024U * 1024U;
 constexpr std::size_t k_maximumImportNameBytes = 256U;
 constexpr std::size_t k_maximumImportDescriptors = 256U;
 constexpr std::size_t k_maximumImportsPerLibrary = 65536U;
@@ -497,6 +498,12 @@ template <typename Value>
         return cue::Result<std::vector<std::uint32_t>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product base relocation directory is missing"));
+    }
+    if (directory.Size > k_maximumBaseRelocationDirectoryBytes)
+    {
+        return cue::Result<std::vector<std::uint32_t>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product base relocation directory exceeds the M17 resource limit"));
     }
     const std::optional<std::size_t> directoryOffset =
         rva_to_offset(directory.VirtualAddress, directory.Size, a_optional, a_sections, a_bytes.size());
