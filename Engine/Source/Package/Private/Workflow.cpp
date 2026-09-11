@@ -172,9 +172,9 @@ class PackageRunGuard final
         {
             continue;
         }
-        HANDLE handle =
-            CreateFileW(extended_native_path(current).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        HANDLE handle = CreateFileW(extended_native_path(current).c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (handle == INVALID_HANDLE_VALUE)
         {
             return false;
@@ -1206,17 +1206,6 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
                                                                  "Published Package snapshot is missing"));
             }
         }
-        Result<PackageRunGuard> packageValidation = m_impl->validate_package_for_run(*package);
-        if (!packageValidation)
-        {
-            Error error = std::move(*packageValidation.try_error());
-            const std::string message = error_message("Packageの実行前検証に失敗しました", error);
-            std::scoped_lock lock(m_impl->mutex);
-            m_impl->current.state = PackageWorkflowState::Failed;
-            m_impl->current.activeStage = PackageWorkflowStage::None;
-            m_impl->current.message = message;
-            return Result<void>::failure(std::move(error));
-        }
         const bool monolithic = package->manifest.executionModel == PackageExecutionModel::Monolithic;
         {
             std::scoped_lock lock(m_impl->mutex);
@@ -1224,19 +1213,49 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
             m_impl->current.state = PackageWorkflowState::Running;
             m_impl->current.activeStage = PackageWorkflowStage::Run;
             m_impl->current.runOutput.clear();
-            m_impl->current.message = monolithic ? "Monolithic Shipping Productを起動しました。"
-                                                 : "Modular Standalone Runtimeを起動しました。";
+            m_impl->current.message = monolithic ? "Monolithic Shipping Packageを検証しています。"
+                                                 : "Modular Standalone Packageを検証しています。";
         }
         const std::string workingDirectory = join_absolute(m_impl->projectRoot, package->destination);
         const std::vector<std::string> arguments{a_mode == PackageRunMode::SmokeTest ? "--package-smoke-test"
                                                                                      : "--package"};
         ChildProcessRequest request(package->executable, arguments, workingDirectory, m_impl->runEnvironment,
                                     std::nullopt, k_maximumRuntimeOutputBytes);
+        /// @brief Package検証とProcess監視をOwner Threadから隔離する
         m_impl->worker = std::thread(
             [impl = m_impl.get(), request = std::move(request), cancellation, monolithic,
-             packageGuard = std::move(*packageValidation.try_value())]()
+             package = std::move(*package)]()
             {
-                static_cast<void>(packageGuard);
+                Result<PackageRunGuard> packageValidation = impl->validate_package_for_run(package);
+                if (cancellation->is_cancel_requested())
+                {
+                    std::scoped_lock lock(impl->mutex);
+                    impl->processCancellation.reset();
+                    impl->isCancellationRequested = false;
+                    impl->current.state = PackageWorkflowState::PackageReady;
+                    impl->current.activeStage = PackageWorkflowStage::None;
+                    impl->current.message = monolithic ? "Monolithic Shipping Productを停止しました。"
+                                                       : "Modular Standalone Runtimeを停止しました。";
+                    return;
+                }
+                if (!packageValidation)
+                {
+                    Error error = std::move(*packageValidation.try_error());
+                    const std::string message = error_message("Packageの実行前検証に失敗しました", error);
+                    std::scoped_lock lock(impl->mutex);
+                    impl->processCancellation.reset();
+                    impl->isCancellationRequested = false;
+                    impl->current.state = PackageWorkflowState::Failed;
+                    impl->current.activeStage = PackageWorkflowStage::None;
+                    impl->current.message = message;
+                    return;
+                }
+                PackageRunGuard packageGuard = std::move(*packageValidation.try_value());
+                {
+                    std::scoped_lock lock(impl->mutex);
+                    impl->current.message = monolithic ? "Monolithic Shipping Productを起動しました。"
+                                                       : "Modular Standalone Runtimeを起動しました。";
+                }
                 Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
                 std::scoped_lock lock(impl->mutex);
                 impl->processCancellation.reset();

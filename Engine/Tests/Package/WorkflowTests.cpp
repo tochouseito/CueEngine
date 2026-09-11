@@ -102,7 +102,9 @@ struct RunnerState final
     std::atomic<bool> active = false;
     std::atomic<bool> probePackageMutation = false;
     std::atomic<bool> packageMutationBlocked = false;
+    std::atomic<bool> packageDirectoryRenameBlocked = false;
     std::vector<std::string> mutationProbeRelativePaths;
+    std::vector<std::filesystem::path> mutationProbeDirectories;
 };
 
 /// @brief BuildまたはRuntimeの成功、失敗、取消待機をProcessなしで再現する
@@ -123,7 +125,8 @@ class ControlledRunner final : public cue::ChildProcessRunner
                                                   std::memory_order_release);
         if (m_state->probePackageMutation.load(std::memory_order_acquire))
         {
-            bool allBlocked = true;
+            bool allFilesBlocked = true;
+            bool allDirectoryRenamesBlocked = true;
             const std::filesystem::path root(a_request.working_directory());
             for (const std::string &relativePath : m_state->mutationProbeRelativePaths)
             {
@@ -137,9 +140,23 @@ class ControlledRunner final : public cue::ChildProcessRunner
                 {
                     CloseHandle(mutation);
                 }
-                allBlocked = allBlocked && mutation == INVALID_HANDLE_VALUE && code == ERROR_SHARING_VIOLATION;
+                allFilesBlocked =
+                    allFilesBlocked && mutation == INVALID_HANDLE_VALUE && code == ERROR_SHARING_VIOLATION;
             }
-            m_state->packageMutationBlocked.store(allBlocked, std::memory_order_release);
+            for (const std::filesystem::path &path : m_state->mutationProbeDirectories)
+            {
+                const std::filesystem::path renamed = path.parent_path() / (path.filename().wstring() + L".probe");
+                const BOOL renamedDirectory = MoveFileExW(path.c_str(), renamed.c_str(), MOVEFILE_WRITE_THROUGH);
+                const DWORD renameCode = renamedDirectory == FALSE ? GetLastError() : ERROR_SUCCESS;
+                if (renamedDirectory != FALSE)
+                {
+                    static_cast<void>(MoveFileExW(renamed.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH));
+                }
+                allDirectoryRenamesBlocked = allDirectoryRenamesBlocked && renamedDirectory == FALSE &&
+                                             (renameCode == ERROR_SHARING_VIOLATION || renameCode == ERROR_ACCESS_DENIED);
+            }
+            m_state->packageMutationBlocked.store(allFilesBlocked, std::memory_order_release);
+            m_state->packageDirectoryRenameBlocked.store(allDirectoryRenamesBlocked, std::memory_order_release);
         }
         m_state->active.store(true, std::memory_order_release);
         const std::uint32_t call = m_state->calls.fetch_add(1U, std::memory_order_relaxed);
@@ -183,6 +200,9 @@ struct RecoveryFilesystemState final
     std::atomic<std::uint32_t> durabilityFailuresRemaining = 0U;
     std::atomic<std::uint32_t> rollbackFailuresRemaining = 0U;
     std::atomic<std::uint32_t> rollbackCalls = 0U;
+    std::atomic<bool> blockPackageManifestRead = false;
+    std::atomic<bool> packageManifestReadActive = false;
+    std::atomic<bool> releasePackageManifestRead = false;
 };
 
 /// @brief Package WriteとRollbackの連続失敗を注入し、保持Tokenの再試行を検証するRoot
@@ -216,6 +236,16 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     [[nodiscard]] cue::Result<std::vector<std::byte>> read_file(const cue::RelativePath &a_path,
                                                                 std::size_t a_maxBytes) noexcept override
     {
+        if (m_state->blockPackageManifestRead.load(std::memory_order_acquire) &&
+            a_path.text().starts_with("Generated/Packages/") && a_path.text().ends_with("/CuePackage.json"))
+        {
+            m_state->packageManifestReadActive.store(true, std::memory_order_release);
+            while (!m_state->releasePackageManifestRead.load(std::memory_order_acquire))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            m_state->packageManifestReadActive.store(false, std::memory_order_release);
+        }
         if (a_path.text().starts_with("Generated/Artifacts/") &&
             !m_publisherState->readerLeaseActive.load(std::memory_order_acquire))
         {
@@ -381,6 +411,31 @@ class RecoveryFilesystemRoot final : public cue::FilesystemRoot
     std::ofstream stream(a_path, std::ios::binary | std::ios::trunc);
     stream.write(reinterpret_cast<const char *>(a_bytes.data()), static_cast<std::streamsize>(a_bytes.size()));
     return stream.good();
+}
+
+/// @brief FileのWrite／Delete共有拒否が解放済みか非破壊で確認する
+[[nodiscard]] bool can_open_file_for_mutation(const std::filesystem::path &a_path) noexcept
+{
+    HANDLE handle =
+        CreateFileW(a_path.c_str(), GENERIC_WRITE | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    CloseHandle(handle);
+    return true;
+}
+
+/// @brief Directoryを一時名へ往復RenameしてPath固定Leaseの解放を確認する
+[[nodiscard]] bool can_rename_directory_round_trip(const std::filesystem::path &a_path) noexcept
+{
+    const std::filesystem::path renamed = a_path.parent_path() / (a_path.filename().wstring() + L".lease-release");
+    if (MoveFileExW(a_path.c_str(), renamed.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
+    {
+        return false;
+    }
+    return MoveFileExW(renamed.c_str(), a_path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
 }
 
 /// @brief Test PEへLittle-endian 16-bit値を書き込む
@@ -716,6 +771,20 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     return false;
 }
 
+/// @brief Package Manifest検証がFilesystem境界で待機するまで上限付きで待つ
+[[nodiscard]] bool wait_until_manifest_read(const RecoveryFilesystemState &a_state) noexcept
+{
+    for (std::uint32_t attempt = 0U; attempt < 1000U; ++attempt)
+    {
+        if (a_state.packageManifestReadActive.load(std::memory_order_acquire))
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
 /// @brief 指定回数目のProcessが終了しBuild Serviceへ結果を渡すまで上限付きで待つ
 [[nodiscard]] bool wait_until_completed_call(const RunnerState &a_state, std::uint32_t a_minimumCalls) noexcept
 {
@@ -994,6 +1063,30 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
         return false;
     }
 
+    runRunner.mode.store(RunnerMode::Succeed, std::memory_order_release);
+    recoveryFilesystem.blockPackageManifestRead.store(true, std::memory_order_release);
+    recoveryFilesystem.releasePackageManifestRead.store(false, std::memory_order_release);
+    const std::uint32_t callsBeforeValidationCancellation = runRunner.calls.load(std::memory_order_acquire);
+    if (!require(service->run(cue::package::PackageRunMode::Interactive) &&
+                 wait_until_manifest_read(recoveryFilesystem) && service->stop()))
+    {
+        recoveryFilesystem.releasePackageManifestRead.store(true, std::memory_order_release);
+        static_cast<void>(service->wait_for_run_completion());
+        return false;
+    }
+    recoveryFilesystem.releasePackageManifestRead.store(true, std::memory_order_release);
+    if (!require(static_cast<bool>(service->wait_for_run_completion())))
+    {
+        return false;
+    }
+    recoveryFilesystem.blockPackageManifestRead.store(false, std::memory_order_release);
+    if (!require(service->snapshot().state == cue::package::PackageWorkflowState::PackageReady &&
+                 runRunner.calls.load(std::memory_order_acquire) == callsBeforeValidationCancellation))
+    {
+        return false;
+    }
+
+    runRunner.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
     if (!require(service->run(cue::package::PackageRunMode::Interactive) && wait_until_active(runRunner)))
     {
         return false;
@@ -1125,7 +1218,7 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     {
         return false;
     }
-    if (!require(!service->run(cue::package::PackageRunMode::SmokeTest) &&
+    if (!require(service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion() &&
                  service->snapshot().state == cue::package::PackageWorkflowState::Failed &&
                  service->snapshot().message.starts_with("Packageの実行前検証に失敗しました") &&
                  runRunner.calls.load(std::memory_order_acquire) == 0U))
@@ -1145,10 +1238,24 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     {
         return false;
     }
+    const std::filesystem::path completedRoot = projectRoot / std::filesystem::path(ready.package->destination);
     runRunner.mutationProbeRelativePaths = {"CuePackage.json"};
+    runRunner.mutationProbeDirectories = {
+        completedRoot,
+        completedRoot.parent_path(),
+        completedRoot.parent_path().parent_path(),
+        completedRoot.parent_path().parent_path().parent_path(),
+        completedRoot.parent_path().parent_path().parent_path().parent_path(),
+        projectRoot,
+    };
     for (const cue::package::PackageFileEntry &entry : ready.package->manifest.files)
     {
         runRunner.mutationProbeRelativePaths.emplace_back(entry.relative_path());
+        const std::filesystem::path parent = std::filesystem::path(entry.relative_path()).parent_path();
+        if (!parent.empty())
+        {
+            runRunner.mutationProbeDirectories.emplace_back(completedRoot / parent);
+        }
     }
     runRunner.probePackageMutation.store(true, std::memory_order_release);
     if (!require(service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
@@ -1156,11 +1263,36 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
         return false;
     }
     const cue::package::PackageWorkflowSnapshot completed = service->snapshot();
-    return require(completed.state == cue::package::PackageWorkflowState::RunSucceeded && completed.package &&
-                   completed.package->operationId == retryOperation &&
-                   completed.package->manifest.executionModel == cue::package::PackageExecutionModel::Monolithic &&
-                   runRunner.calls.load(std::memory_order_acquire) == 1U &&
-                   runRunner.packageMutationBlocked.load(std::memory_order_acquire));
+    bool fileLeasesReleased = can_open_file_for_mutation(completedRoot / L"CuePackage.json");
+    for (const cue::package::PackageFileEntry &entry : ready.package->manifest.files)
+    {
+        fileLeasesReleased = fileLeasesReleased &&
+                             can_open_file_for_mutation(completedRoot / std::filesystem::path(entry.relative_path()));
+    }
+    bool renameLeasesReleased = true;
+    for (const std::filesystem::path &path : runRunner.mutationProbeDirectories)
+    {
+        if (path != projectRoot)
+        {
+            renameLeasesReleased = renameLeasesReleased && can_rename_directory_round_trip(path);
+        }
+    }
+    if (!require(completed.state == cue::package::PackageWorkflowState::RunSucceeded && completed.package &&
+                 completed.package->operationId == retryOperation &&
+                 completed.package->manifest.executionModel == cue::package::PackageExecutionModel::Monolithic &&
+                 runRunner.calls.load(std::memory_order_acquire) == 1U))
+    {
+        return false;
+    }
+    if (!require(runRunner.packageMutationBlocked.load(std::memory_order_acquire)))
+    {
+        return false;
+    }
+    if (!require(runRunner.packageDirectoryRenameBlocked.load(std::memory_order_acquire)))
+    {
+        return false;
+    }
+    return require(fileLeasesReleased && renameLeasesReleased);
 }
 } // namespace
 

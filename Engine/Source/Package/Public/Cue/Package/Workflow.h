@@ -118,7 +118,7 @@ class GamePackageWorkflowService final
     void advance() noexcept;
     /// @brief 現在のBuildまたはPackageまたはRuntime Processへ取消を通知する
     [[nodiscard]] Result<void> request_cancel() noexcept;
-    /// @brief 公開済みPackageのRuntime Hostを別Workerで起動する
+    /// @brief 公開済みPackageの完全検証とRuntime Host起動を別Workerで行う
     [[nodiscard]] Result<void> run(PackageRunMode a_mode) noexcept;
     /// @brief 起動中Runtime Processへ正常停止を通知し、応答しない場合だけPlatform境界で強制終了する
     [[nodiscard]] Result<void> stop() noexcept;
