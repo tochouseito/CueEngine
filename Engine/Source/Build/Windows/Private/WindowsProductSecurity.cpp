@@ -911,6 +911,7 @@ template <typename Value>
                        "Shipping Product optional header is invalid"));
     }
     if ((optional->DllCharacteristics & k_requiredDllCharacteristics) != k_requiredDllCharacteristics ||
+        (fileHeader->Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) == 0U ||
         (fileHeader->Characteristics & IMAGE_FILE_RELOCS_STRIPPED) != 0U)
     {
         return cue::Result<PeSecurityEvidence>::failure(
