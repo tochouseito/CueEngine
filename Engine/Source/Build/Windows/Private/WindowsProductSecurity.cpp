@@ -922,8 +922,8 @@ class WinTrustState final
     case CERT_E_CHAINING:
     case CERT_E_UNTRUSTEDROOT:
     case TRUST_E_EXPLICIT_DISTRUST:
-    case CRYPT_E_REVOCATION_OFFLINE:
         return cue::WindowsProductSignatureStatus::ChainInvalid;
+    case CRYPT_E_REVOCATION_OFFLINE:
     case TRUST_E_SUBJECT_FORM_UNKNOWN:
     case TRUST_E_PROVIDER_UNKNOWN:
     default:

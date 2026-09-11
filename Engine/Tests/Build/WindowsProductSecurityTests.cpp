@@ -398,6 +398,8 @@ void test_trust_status_classification()
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
     require(cue::detail::classify_windows_product_trust_status(TRUST_E_SUBJECT_FORM_UNKNOWN) ==
             cue::WindowsProductSignatureStatus::VerificationUnavailable);
+    require(cue::detail::classify_windows_product_trust_status(CRYPT_E_REVOCATION_OFFLINE) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
 }
 
 /// @brief Security Snapshot生存中のWrite／Delete共有拒否と解放を検証する
