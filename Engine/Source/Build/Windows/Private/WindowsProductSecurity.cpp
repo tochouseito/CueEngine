@@ -458,29 +458,28 @@ template <typename Value>
 }
 
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
-[[nodiscard]] cue::Result<void> validate_base_relocations(std::span<const std::byte> a_bytes,
-                                                          const IMAGE_OPTIONAL_HEADER64 &a_optional,
-                                                          std::span<const IMAGE_SECTION_HEADER> a_sections,
-                                                          const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<std::vector<std::uint32_t>> validate_base_relocations(
+    std::span<const std::byte> a_bytes, const IMAGE_OPTIONAL_HEADER64 &a_optional,
+    std::span<const IMAGE_SECTION_HEADER> a_sections, const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     if (directory.VirtualAddress == 0U || directory.Size < sizeof(IMAGE_BASE_RELOCATION))
     {
-        return cue::Result<void>::failure(make_error(a_assertContext,
-                                                     cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                                                     "Shipping Product base relocation directory is missing"));
+        return cue::Result<std::vector<std::uint32_t>>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product base relocation directory is missing"));
     }
     const std::optional<std::size_t> directoryOffset =
         rva_to_offset(directory.VirtualAddress, directory.Size, a_optional, a_sections, a_bytes.size());
     if (!directoryOffset)
     {
-        return cue::Result<void>::failure(
+        return cue::Result<std::vector<std::uint32_t>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product base relocation directory is outside the PE image"));
     }
 
     std::size_t cursor = 0U;
-    bool hasDirectory64Entry = false;
+    std::vector<std::uint32_t> relocatedImagePointers;
     while (cursor < directory.Size)
     {
         const std::size_t remaining = directory.Size - cursor;
@@ -490,9 +489,9 @@ template <typename Value>
             block->SizeOfBlock > remaining ||
             (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) % sizeof(std::uint16_t) != 0U)
         {
-            return cue::Result<void>::failure(make_error(a_assertContext,
-                                                         cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                                                         "Shipping Product base relocation block is malformed"));
+            return cue::Result<std::vector<std::uint32_t>>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product base relocation block is malformed"));
         }
         const std::size_t entryCount = (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(std::uint16_t);
         for (std::size_t entryIndex = 0U; entryIndex < entryCount; ++entryIndex)
@@ -502,9 +501,9 @@ template <typename Value>
                                                        entryIndex * sizeof(std::uint16_t));
             if (!entry)
             {
-                return cue::Result<void>::failure(make_error(a_assertContext,
-                                                             cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                                                             "Shipping Product base relocation entry is truncated"));
+                return cue::Result<std::vector<std::uint32_t>>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                               "Shipping Product base relocation entry is truncated"));
             }
             const std::uint16_t type = *entry >> 12U;
             if (type == IMAGE_REL_BASED_ABSOLUTE)
@@ -513,7 +512,7 @@ template <typename Value>
             }
             if (type != IMAGE_REL_BASED_DIR64)
             {
-                return cue::Result<void>::failure(
+                return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                "Shipping Product uses a base relocation type outside the x64 policy"));
             }
@@ -522,21 +521,24 @@ template <typename Value>
                 !rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional, a_sections,
                                a_bytes.size()))
             {
-                return cue::Result<void>::failure(
+                return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                                "Shipping Product base relocation target is outside the PE image"));
             }
-            hasDirectory64Entry = true;
+            relocatedImagePointers.push_back(static_cast<std::uint32_t>(targetRva));
         }
         cursor += block->SizeOfBlock;
     }
-    if (!hasDirectory64Entry)
+    if (relocatedImagePointers.empty())
     {
-        return cue::Result<void>::failure(
+        return cue::Result<std::vector<std::uint32_t>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product base relocation directory has no x64 relocation entry"));
     }
-    return cue::Result<void>::success();
+    std::ranges::sort(relocatedImagePointers);
+    relocatedImagePointers.erase(std::unique(relocatedImagePointers.begin(), relocatedImagePointers.end()),
+                                 relocatedImagePointers.end());
+    return cue::Result<std::vector<std::uint32_t>>::success(std::move(relocatedImagePointers));
 }
 
 /// @brief Bounded ASCII NUL終端文字列をPE Byte列から借用する
@@ -823,7 +825,8 @@ template <typename Value>
     std::vector<IMAGE_SECTION_HEADER> sections(fileHeader->NumberOfSections);
     std::memcpy(sections.data(), bytes.data() + sectionsOffset, sections.size() * sizeof(IMAGE_SECTION_HEADER));
 
-    cue::Result<void> relocations = validate_base_relocations(bytes, *optional, sections, a_assertContext);
+    cue::Result<std::vector<std::uint32_t>> relocations =
+        validate_base_relocations(bytes, *optional, sections, a_assertContext);
     if (!relocations)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*relocations.try_error()));
@@ -898,9 +901,27 @@ template <typename Value>
     const bool hasMappedGuardDispatch =
         guardDispatchTargetRange &&
         has_section_characteristics(*guardDispatchTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
+    const std::array<std::uint64_t, 5U> requiredRelocations = {
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer),
+        guardCheck && *guardCheck >= optional->ImageBase ? *guardCheck - optional->ImageBase
+                                                         : std::numeric_limits<std::uint64_t>::max(),
+        guardDispatch && *guardDispatch >= optional->ImageBase ? *guardDispatch - optional->ImageBase
+                                                               : std::numeric_limits<std::uint64_t>::max()};
+    const bool hasRequiredRelocations = std::ranges::all_of(
+        requiredRelocations,
+        [&relocations](const std::uint64_t a_rva) noexcept
+        {
+            return a_rva <= std::numeric_limits<std::uint32_t>::max() &&
+                   std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
+        });
     if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
-        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags)
+        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
     {
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,

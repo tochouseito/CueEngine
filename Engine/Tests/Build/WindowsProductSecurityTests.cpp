@@ -231,6 +231,63 @@ void set_load_configuration_pointer(std::vector<std::byte> &a_bytes, std::size_t
     return value;
 }
 
+/// @brief 指定RVAを対象とするDIR64再配置EntryをABSOLUTEへ置換する
+void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    const std::size_t directoryOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    std::size_t cursor = 0U;
+    while (cursor < directory.Size)
+    {
+        IMAGE_BASE_RELOCATION block{};
+        std::memcpy(&block, a_bytes.data() + directoryOffset + cursor, sizeof(block));
+        require(block.SizeOfBlock >= sizeof(block) && block.SizeOfBlock <= directory.Size - cursor);
+        const std::size_t entryCount = (block.SizeOfBlock - sizeof(block)) / sizeof(std::uint16_t);
+        for (std::size_t index = 0U; index < entryCount; ++index)
+        {
+            const std::size_t entryOffset = directoryOffset + cursor + sizeof(block) + index * sizeof(std::uint16_t);
+            std::uint16_t entry = 0U;
+            std::memcpy(&entry, a_bytes.data() + entryOffset, sizeof(entry));
+            const std::uint32_t target = block.VirtualAddress + (entry & 0x0fffU);
+            if ((entry >> 12U) == IMAGE_REL_BASED_DIR64 && target == a_targetRva)
+            {
+                entry = static_cast<std::uint16_t>(entry & 0x0fffU);
+                std::memcpy(a_bytes.data() + entryOffset, &entry, sizeof(entry));
+                return;
+            }
+        }
+        cursor += block.SizeOfBlock;
+    }
+    require(false);
+}
+
+/// @brief Security Evidenceが参照する全絶対VA格納位置のRVAを返す
+[[nodiscard]] std::array<std::uint32_t, 5U> required_security_relocation_rvas(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const IMAGE_DATA_DIRECTORY &loadDirectory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const ULONGLONG guardCheck =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
+    const ULONGLONG guardDispatch =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+    require(guardCheck >= optional.ImageBase && guardCheck - optional.ImageBase <= std::numeric_limits<DWORD>::max());
+    require(guardDispatch >= optional.ImageBase &&
+            guardDispatch - optional.ImageBase <= std::numeric_limits<DWORD>::max());
+    return {loadDirectory.VirtualAddress + static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie)),
+            loadDirectory.VirtualAddress +
+                static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer)),
+            loadDirectory.VirtualAddress +
+                static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer)),
+            static_cast<DWORD>(guardCheck - optional.ImageBase),
+            static_cast<DWORD>(guardDispatch - optional.ImageBase)};
+}
+
 /// @brief Image内VAが指す8Byte値を指定値へ改変する
 void set_image_va_value(std::vector<std::byte> &a_bytes, ULONGLONG a_va, ULONGLONG a_value)
 {
@@ -630,6 +687,18 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(truncatedRelocations, bytes);
     require(!cue::validate_windows_shipping_product_security(truncatedRelocations.generic_string(), localProfile,
                                                              a_assertContext));
+
+    const std::array<std::uint32_t, 5U> requiredRelocations = required_security_relocation_rvas(bytes);
+    for (std::size_t index = 0U; index < requiredRelocations.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        clear_dir64_relocation(bytes, requiredRelocations[index]);
+        const std::filesystem::path missingSecurityRelocation =
+            directory / ("MissingSecurityRelocation-" + std::to_string(index) + ".exe");
+        write_bytes(missingSecurityRelocation, bytes);
+        require(!cue::validate_windows_shipping_product_security(missingSecurityRelocation.generic_string(),
+                                                                 localProfile, a_assertContext));
+    }
 
     bytes = read_bytes(a_validProduct);
     cross_header_boundary_for_load_configuration(bytes);
