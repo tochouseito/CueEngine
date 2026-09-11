@@ -42,6 +42,10 @@ constexpr std::uint32_t k_configuration = CUE_GAME_MODULE_CONFIGURATION_RELEASE;
 
 std::vector<std::string> *g_timeline = nullptr;
 bool g_failSecondState = false;
+bool g_failModuleCreation = false;
+
+constexpr std::string_view k_moduleFailureMessage = "Module diagnostic before destroy";
+constexpr std::string_view k_systemFailureMessage = "System diagnostic before rollback";
 
 void record(std::string a_event)
 {
@@ -50,12 +54,27 @@ void record(std::string a_event)
 
 struct ModuleState final
 {
+    char diagnostic[64]{};
 };
 
 struct SystemState final
 {
     char id;
+    char diagnostic[64]{};
 };
+
+void set_diagnostic(CueGameModuleDiagnosticV1 *a_diagnostic, char *a_storage,
+                    std::string_view a_message) noexcept
+{
+    std::char_traits<char>::copy(a_storage, a_message.data(), a_message.size());
+    a_storage[a_message.size()] = '\0';
+    if (a_diagnostic != nullptr)
+    {
+        a_diagnostic->code = CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
+        a_diagnostic->message = {sizeof(CueGameUtf8ViewV1), CUE_GAME_MODULE_STRUCTURE_VERSION_1,
+                                 a_storage, a_message.size()};
+    }
+}
 
 class TestFatalHandler final : public cue::FatalHandler
 {
@@ -101,15 +120,25 @@ template <typename T> [[nodiscard]] T take_value(cue::Result<T> &&a_result) noex
 }
 
 CueGameModuleResult CUE_GAME_MODULE_CALL create_module(
-    CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *) noexcept
+    CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
     record("createModule");
     if (a_module == nullptr || *a_module != nullptr)
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
     }
-    *a_module = new (std::nothrow) ModuleState{};
-    return *a_module == nullptr ? CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY : CUE_GAME_MODULE_RESULT_SUCCESS;
+    auto *module = new (std::nothrow) ModuleState{};
+    *a_module = module;
+    if (module == nullptr)
+    {
+        return CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY;
+    }
+    if (g_failModuleCreation)
+    {
+        set_diagnostic(a_diagnostic, module->diagnostic, k_moduleFailureMessage);
+        return CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
+    }
+    return CUE_GAME_MODULE_RESULT_SUCCESS;
 }
 
 void CUE_GAME_MODULE_CALL destroy_module(CueGameModuleHandle a_module) noexcept
@@ -133,14 +162,14 @@ CueGameModuleResult CUE_GAME_MODULE_CALL register_components(
 }
 
 template <char Id> CueGameModuleResult CUE_GAME_MODULE_CALL create_system(
-    CueGameModuleHandle, CueGameSystemState *a_state, CueGameModuleDiagnosticV1 *) noexcept
+    CueGameModuleHandle, CueGameSystemState *a_state, CueGameModuleDiagnosticV1 *a_diagnostic) noexcept
 {
     record(std::string("createState.") + Id);
     if (a_state == nullptr || *a_state != nullptr)
     {
         return CUE_GAME_MODULE_RESULT_INVALID_ARGUMENT;
     }
-    *a_state = new (std::nothrow) SystemState{Id};
+    *a_state = new (std::nothrow) SystemState{Id, {}};
     if (*a_state == nullptr)
     {
         return CUE_GAME_MODULE_RESULT_OUT_OF_MEMORY;
@@ -149,6 +178,8 @@ template <char Id> CueGameModuleResult CUE_GAME_MODULE_CALL create_system(
     {
         if (g_failSecondState)
         {
+            auto *state = static_cast<SystemState *>(*a_state);
+            set_diagnostic(a_diagnostic, state->diagnostic, k_systemFailureMessage);
             return CUE_GAME_MODULE_RESULT_LIFECYCLE_FAILED;
         }
     }
@@ -347,6 +378,7 @@ void test_dynamic_provider_and_rollback(const cue::AssertContext &a_assertContex
         a_assertContext);
     g_failSecondState = false;
     require(!failed.has_value());
+    require(failed.try_error()->summary().find(k_systemFailureMessage) != std::string_view::npos);
     const std::vector<std::string> rollback = {
         "resolveDynamic", "query", "createModule", "registerSchemas", "registerComponents", "registerSystems",
         "createState.A", "createState.B", "destroyState.B", "destroyState.A", "destroyModule", "unload"};
@@ -362,6 +394,19 @@ void test_dynamic_provider_and_rollback(const cue::AssertContext &a_assertContex
     const std::vector<std::string> rejectedTimeline = {
         "resolveDynamic", "queryRejected", "classifyQueryContract", "unload"};
     require(timeline == rejectedTimeline);
+
+    timeline.clear();
+    g_failModuleCreation = true;
+    cue::Result<cue::runtime_host::PreparedGameModule> moduleCreationFailure =
+        cue::runtime_host::connect_game_module(
+            provider, k_projectId, std::make_unique<cue::schema::SchemaRegistryIdentitySource>(),
+            a_assertContext);
+    g_failModuleCreation = false;
+    require(!moduleCreationFailure.has_value());
+    require(moduleCreationFailure.try_error()->summary().find(k_moduleFailureMessage) != std::string_view::npos);
+    const std::vector<std::string> moduleCreationFailureTimeline = {
+        "resolveDynamic", "query", "createModule", "destroyModule", "unload"};
+    require(timeline == moduleCreationFailureTimeline);
 }
 } // namespace
 

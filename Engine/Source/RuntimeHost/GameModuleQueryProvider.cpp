@@ -450,6 +450,8 @@ class GameModuleRuntimeSystem final : public cue::game_core::RuntimeSystem
             const CueGameModuleResult result = pending.createState(a_module, &state, &diagnostic);
             if (result != CUE_GAME_MODULE_RESULT_SUCCESS || state == nullptr)
             {
+                cue::Error error = make_module_callback_error(
+                    a_assertContext, result, diagnostic, "Game Module System state creation failed");
                 if (state != nullptr)
                 {
                     pending.destroyState(state);
@@ -459,8 +461,7 @@ class GameModuleRuntimeSystem final : public cue::game_core::RuntimeSystem
                     systems.pop_back();
                 }
                 return cue::Result<std::vector<cue::runtime::RuntimeSystemRegistration>>::failure(
-                    make_module_callback_error(a_assertContext, result, diagnostic,
-                                               "Game Module System state creation failed"));
+                    std::move(error));
             }
             cue::game_core::RuntimeSystemDescriptor descriptor = pending.descriptor;
             auto system = std::make_unique<GameModuleRuntimeSystem>(a_connection, state, std::move(pending));
@@ -571,9 +572,11 @@ Result<PreparedGameModule> connect_game_module(
         }
         if (resolved.try_value()->query == nullptr || !resolved.try_value()->codeLifetime)
         {
-            return Result<PreparedGameModule>::failure(runtime::make_runtime_error(
+            Error error = runtime::make_runtime_error(
                 a_assertContext, runtime::RuntimeError::InvalidApplicationConfiguration,
-                "Game Module Query Provider returned an incomplete code lease"));
+                "Game Module Query Provider returned an incomplete code lease");
+            a_identitySource.reset();
+            return Result<PreparedGameModule>::failure(std::move(error));
         }
         CueGameModuleQueryOutputV1 queryOutput{sizeof(CueGameModuleQueryOutputV1),
                                                CUE_GAME_MODULE_STRUCTURE_VERSION_1, nullptr, {0U, 0U}};
@@ -587,8 +590,10 @@ Result<PreparedGameModule> connect_game_module(
             queryOutput.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 || queryOutput.api == nullptr ||
             queryOutput.reserved[0] != 0U || queryOutput.reserved[1] != 0U)
         {
-            return Result<PreparedGameModule>::failure(a_provider.make_query_contract_error(
-                a_assertContext, "Game Module rejected the RuntimeHost ABI"));
+            Error error = a_provider.make_query_contract_error(
+                a_assertContext, "Game Module rejected the RuntimeHost ABI");
+            a_identitySource.reset();
+            return Result<PreparedGameModule>::failure(std::move(error));
         }
         const CueGameModuleApiV1 &api = *queryOutput.api;
         if (api.structSize < sizeof(CueGameModuleApiV1) || api.version != CUE_GAME_MODULE_STRUCTURE_VERSION_1 ||
@@ -601,20 +606,23 @@ Result<PreparedGameModule> connect_game_module(
             api.registerSchemas == nullptr || api.registerComponents == nullptr || api.registerSystems == nullptr ||
             api.destroyModule == nullptr)
         {
-            return Result<PreparedGameModule>::failure(a_provider.make_query_contract_error(
-                a_assertContext, "Game Module API identity or lifecycle is incompatible"));
+            Error error = a_provider.make_query_contract_error(
+                a_assertContext, "Game Module API identity or lifecycle is incompatible");
+            a_identitySource.reset();
+            return Result<PreparedGameModule>::failure(std::move(error));
         }
         CueGameModuleHandle moduleHandle = nullptr;
         const CueGameModuleResult createModuleResult = api.createModule(&moduleHandle, &diagnostic);
         if (createModuleResult != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
         {
+            Error error = make_module_callback_error(
+                a_assertContext, createModuleResult, diagnostic, "Game Module Project Scope creation failed");
             a_identitySource.reset();
             if (moduleHandle != nullptr)
             {
                 api.destroyModule(moduleHandle);
             }
-            return Result<PreparedGameModule>::failure(make_module_callback_error(
-                a_assertContext, createModuleResult, diagnostic, "Game Module Project Scope creation failed"));
+            return Result<PreparedGameModule>::failure(std::move(error));
         }
         std::shared_ptr<GameModuleConnection> connection = GameModuleConnectionFactory::create(
             std::move(resolved.try_value()->codeLifetime), api, moduleHandle);
