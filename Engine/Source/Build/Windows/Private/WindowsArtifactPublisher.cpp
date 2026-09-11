@@ -80,6 +80,8 @@ struct ShippingToolchainIdentity final
     std::string cmakeVersion;
     std::string cmakeGenerator;
     std::string platformToolset;
+    std::string msvcToolsetVersion;
+    std::string compilerFileVersion;
     std::string compilerSha256;
     std::string windowsSdkVersion;
 };
@@ -1288,6 +1290,78 @@ template <typename Cancellation>
     return output;
 }
 
+/// @brief Dot区切りVersionを最大4要素のVersionへ変換する
+[[nodiscard]] std::optional<cue::BuildToolVersion> parse_build_tool_version(std::string_view a_text) noexcept
+{
+    cue::BuildToolVersion version;
+    std::uint32_t *parts[] = {&version.major, &version.minor, &version.patch, &version.build};
+    std::size_t partIndex = 0U;
+    std::uint64_t value = 0U;
+    bool hasDigit = false;
+    for (std::size_t index = 0U; index <= a_text.size(); ++index)
+    {
+        if (index < a_text.size() && a_text[index] >= '0' && a_text[index] <= '9')
+        {
+            hasDigit = true;
+            const std::uint64_t digit = static_cast<std::uint64_t>(a_text[index] - '0');
+            if (value > (UINT32_MAX - digit) / 10U)
+            {
+                return std::nullopt;
+            }
+            value = value * 10U + digit;
+            continue;
+        }
+        if (!hasDigit || partIndex >= 4U || (index < a_text.size() && a_text[index] != '.'))
+        {
+            return std::nullopt;
+        }
+        *parts[partIndex++] = static_cast<std::uint32_t>(value);
+        value = 0U;
+        hasDigit = false;
+    }
+    if (partIndex < 2U)
+    {
+        return std::nullopt;
+    }
+    while (partIndex < 4U)
+    {
+        *parts[partIndex++] = 0U;
+    }
+    return std::optional<cue::BuildToolVersion>(version);
+}
+
+/// @brief 実ファイルからVersionリソースを取得する
+[[nodiscard]] std::optional<cue::BuildToolVersion> read_binary_file_version(std::wstring_view a_path) noexcept
+{
+    DWORD ignored = 0U;
+    const DWORD size = GetFileVersionInfoSizeW(a_path.data(), &ignored);
+    if (size == 0U)
+    {
+        return std::nullopt;
+    }
+    try
+    {
+        std::vector<std::byte> data(size);
+        if (GetFileVersionInfoW(a_path.data(), 0U, size, data.data()) == FALSE)
+        {
+            return std::nullopt;
+        }
+        VS_FIXEDFILEINFO *info = nullptr;
+        UINT infoSize = 0U;
+        if (VerQueryValueW(data.data(), L"\\", reinterpret_cast<void **>(&info), &infoSize) == FALSE ||
+            info == nullptr || infoSize < sizeof(VS_FIXEDFILEINFO) || info->dwSignature != VS_FFI_SIGNATURE)
+        {
+            return std::nullopt;
+        }
+        return cue::BuildToolVersion{HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
+                                     HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS)};
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+
 /// @brief Project Binary Treeが実際に選択したCMake、MSVC、Windows SDKを検証する
 [[nodiscard]] cue::Result<std::optional<ShippingToolchainIdentity>> collect_shipping_toolchain_identity(
     const std::filesystem::path &a_binary, const cue::BuildPlan &a_plan,
@@ -1316,10 +1390,12 @@ template <typename Cancellation>
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_INSTANCE:INTERNAL=");
     const std::optional<std::string> generatorPlatform =
         unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_PLATFORM:INTERNAL=");
+    const std::optional<std::string> generatorToolset =
+        unique_line_value(*cache.try_value(), "CMAKE_GENERATOR_TOOLSET:INTERNAL=");
     const std::optional<std::string> engineRoot =
         unique_cmake_cache_value(*cache.try_value(), "CUE_ENGINE_ROOT");
     if (!cmakeCommand || !cmakeMajor || !cmakeMinor || !cmakePatch || !generator || !generatorInstance ||
-        !generatorPlatform || !engineRoot)
+        !generatorPlatform || !generatorToolset || !engineRoot)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
             a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
@@ -1329,9 +1405,12 @@ template <typename Cancellation>
     const std::optional<std::filesystem::path> visualStudioPath = to_path(*generatorInstance);
     const std::optional<std::filesystem::path> engineSourcePath = to_path(*engineRoot);
     std::string cmakeVersion = *cmakeMajor + "." + *cmakeMinor + "." + *cmakePatch;
+    const std::string expectedGeneratorToolset =
+        "version=" + std::string(cue::build_metadata::k_msvcToolsetVersion);
     if (!cmakePath || !visualStudioPath || !engineSourcePath ||
         cmakeVersion != cue::build_metadata::k_cmakeVersion ||
         *generator != cue::build_metadata::k_cmakeGenerator || *generatorPlatform != "x64" ||
+        *generatorToolset != expectedGeneratorToolset ||
         !same_root(*cmakePath, cue::build_metadata::k_cmakeCommand) ||
         !same_root(*visualStudioPath, cue::build_metadata::k_visualStudioRoot) ||
         !same_root(*engineSourcePath, cue::build_metadata::k_engineSourceRoot))
@@ -1352,11 +1431,13 @@ template <typename Cancellation>
         unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER");
     const std::optional<std::string> compilerVersion =
         unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER_VERSION");
+    const std::optional<cue::BuildToolVersion> parsedCompilerVersion =
+        compilerVersion ? parse_build_tool_version(*compilerVersion) : std::nullopt;
     const std::optional<std::string> compilerArchitecture =
         unique_cmake_quoted_value(*compilerEvidence.try_value(), "CMAKE_CXX_COMPILER_ARCHITECTURE_ID");
     const std::optional<std::filesystem::path> compilerPath = compiler ? to_path(*compiler) : std::nullopt;
-    if (!compilerPath || !compilerVersion || !compilerArchitecture || *compilerArchitecture != "x64" ||
-        *compilerVersion != build_tool_version_text(a_plan.workspace_compatibility().toolsetVersion) ||
+    if (!compilerPath || !parsedCompilerVersion || !compilerArchitecture || *compilerArchitecture != "x64" ||
+        !(*parsedCompilerVersion == a_plan.workspace_compatibility().toolsetVersion) ||
         !same_root(*compilerPath, cue::build_metadata::k_msvcCompiler))
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
@@ -1374,18 +1455,30 @@ template <typename Cancellation>
         uniform_xml_tag_value(*project.try_value(), "PlatformToolset");
     const std::optional<std::string> windowsSdkVersion =
         uniform_xml_tag_value(*project.try_value(), "WindowsTargetPlatformVersion");
+    const std::optional<std::string> vcToolsVersion =
+        uniform_xml_tag_value(*project.try_value(), "VCToolsVersion");
     const bool validPlatformToolset = platformToolset && platformToolset->size() <= 32U &&
                                       std::all_of(platformToolset->begin(), platformToolset->end(), [](char a_value)
                                                   { return (a_value >= '0' && a_value <= '9') ||
                                                            (a_value >= 'A' && a_value <= 'Z') ||
                                                            (a_value >= 'a' && a_value <= 'z') || a_value == '.' ||
                                                            a_value == '_' || a_value == '-'; });
-    if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset || !windowsSdkVersion ||
+    if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset || !vcToolsVersion ||
+        *vcToolsVersion != cue::build_metadata::k_msvcToolsetVersion || !windowsSdkVersion ||
         *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
             a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
             "Shipping Visual Studio project differs from the selected Windows toolchain"));
+    }
+    const std::wstring compilerPathUtf16 = compilerPath->generic_wstring();
+    const std::optional<cue::BuildToolVersion> compilerFileVersion =
+        read_binary_file_version(compilerPathUtf16);
+    if (!compilerFileVersion || !(*compilerFileVersion == *parsedCompilerVersion))
+    {
+        return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(make_error(
+            a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
+            "Shipping MSVC compiler binary differs from the CMake compiler version"));
     }
     cue::Result<cue::BuildArtifactFile> compilerHash =
         hash_file(*compilerPath, "cl.exe", cue::BuildArtifactFilePurpose::Unspecified, a_assertContext);
@@ -1402,6 +1495,8 @@ template <typename Cancellation>
     identity.cmakeVersion = std::move(cmakeVersion);
     identity.cmakeGenerator = std::move(*generator);
     identity.platformToolset = std::move(*platformToolset);
+    identity.msvcToolsetVersion = std::move(*vcToolsVersion);
+    identity.compilerFileVersion = build_tool_version_text(*compilerFileVersion);
     identity.compilerSha256 = std::move(compilerHash.try_value()->contentHash);
     identity.windowsSdkVersion = std::move(*windowsSdkVersion);
     return cue::Result<std::optional<ShippingToolchainIdentity>>::success(
@@ -2256,8 +2351,12 @@ enum class ArtifactProbeStatus : std::uint8_t
     output.append(std::to_string(toolsetVersion.build));
     output.append("\n        },\n        \"platformToolset\": \"");
     output.append(a_toolchain.platformToolset);
+    output.append("\",\n        \"msvcToolsetVersion\": \"");
+    output.append(a_toolchain.msvcToolsetVersion);
     output.append("\",\n        \"compilerSha256\": \"");
     output.append(a_toolchain.compilerSha256);
+    output.append("\",\n        \"compilerFileVersion\": \"");
+    output.append(a_toolchain.compilerFileVersion);
     output.append("\",\n        \"windowsSdkVersion\": \"");
     output.append(a_toolchain.windowsSdkVersion);
     output.append("\",\n        \"architecture\": \"x64\",\n        \"configuration\": \"Release\",\n"

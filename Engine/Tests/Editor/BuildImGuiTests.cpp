@@ -256,7 +256,8 @@ class TestOperationIdSource final : public cue::editor::BuildOperationIdSource
 /// @brief Process起動を行わないTest用のAbsolute Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
-    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5)};
+    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5),
+            "14.51.36231"};
 }
 
 /// @brief Package Presenter Test用Project Descriptorを作る

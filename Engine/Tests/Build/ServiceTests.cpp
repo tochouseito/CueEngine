@@ -186,7 +186,8 @@ class TestPublisher final : public cue::BuildArtifactPublisher
 /// @brief Process起動を行わないTest用のAbsolute Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
-    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5)};
+    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5),
+            "14.51.36231"};
 }
 
 /// @brief Current DirectoryをProject Rootとする検証済みBuild Request入力を返す

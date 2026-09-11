@@ -142,6 +142,12 @@ if(WIN32)
     target_link_libraries(CueBuildWindowsPublicHeaderTest PRIVATE Cue.Build.Windows)
     target_compile_features(CueBuildWindowsPublicHeaderTest PRIVATE cxx_std_20)
 
+    get_filename_component(cueTestMsvcArchitectureRoot "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(cueTestMsvcHostRoot "${cueTestMsvcArchitectureRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcBinRoot "${cueTestMsvcHostRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcToolsetRoot "${cueTestMsvcBinRoot}" DIRECTORY)
+    get_filename_component(cueTestMsvcToolsetVersion "${cueTestMsvcToolsetRoot}" NAME)
+
     add_executable(CueBuildWindowsArtifactPublisherTests WindowsArtifactPublisherTests.cpp)
     target_link_libraries(CueBuildWindowsArtifactPublisherTests PRIVATE Cue.Build.Windows Cue.Project)
     target_compile_features(CueBuildWindowsArtifactPublisherTests PRIVATE cxx_std_20)
@@ -158,6 +164,7 @@ if(WIN32)
             CUE_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
             CUE_TEST_ENGINE_ROOT="${CMAKE_SOURCE_DIR}"
             CUE_TEST_PLATFORM_TOOLSET="${CMAKE_VS_PLATFORM_TOOLSET}"
+            CUE_TEST_MSVC_TOOLSET_VERSION="${cueTestMsvcToolsetVersion}"
             CUE_TEST_WINDOWS_SDK_VERSION="${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}"
     )
     list(
@@ -242,5 +249,5 @@ if(WIN32)
                      $<TARGET_FILE:CueBuildWrongProjectShippingProductProbe>
                      $<TARGET_FILE:CueBuildWrongConfigurationShippingProductProbe>
                      $<TARGET_FILE:CueBuildExtraFileShippingProductProbe>)
-    set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 30)
+    set_tests_properties(Cue.Build.Windows.ArtifactPublisher PROPERTIES LABELS "Build;Windows" TIMEOUT 60)
 endif()

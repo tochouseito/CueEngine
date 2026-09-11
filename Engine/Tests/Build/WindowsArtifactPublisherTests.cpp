@@ -33,6 +33,19 @@ constexpr cue::BuildToolVersion k_currentCompilerVersion{
     static_cast<std::uint32_t>(_MSC_VER / 100), static_cast<std::uint32_t>(_MSC_VER % 100),
     static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
 
+/// @brief TestをCompileした実MSVCの4要素File Version表現を返す
+[[nodiscard]] std::string current_compiler_version_text()
+{
+    std::string text = std::to_string(k_currentCompilerVersion.major);
+    text.push_back('.');
+    text.append(std::to_string(k_currentCompilerVersion.minor));
+    text.push_back('.');
+    text.append(std::to_string(k_currentCompilerVersion.patch));
+    text.push_back('.');
+    text.append(std::to_string(k_currentCompilerVersion.build));
+    return text;
+}
+
 /// @brief Junction用Mount Point Reparse BufferのNative Layoutを表す
 struct MountPointReparseBuffer final
 {
@@ -237,7 +250,8 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
 void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
                                        std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
                                        std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET,
-                                       std::string_view a_engineRoot = CUE_TEST_ENGINE_ROOT)
+                                       std::string_view a_engineRoot = CUE_TEST_ENGINE_ROOT,
+                                       std::string_view a_msvcToolsetVersion = CUE_TEST_MSVC_TOOLSET_VERSION)
 {
     const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
     const std::size_t firstDot = cmakeVersion.find('.');
@@ -259,6 +273,8 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     cache.append(CUE_TEST_CMAKE_GENERATOR_INSTANCE);
     cache.append("\nCMAKE_GENERATOR_PLATFORM:INTERNAL=x64\nCUE_ENGINE_ROOT:UNINITIALIZED=");
     cache.append(a_engineRoot);
+    cache.append("\nCMAKE_GENERATOR_TOOLSET:INTERNAL=version=");
+    cache.append(a_msvcToolsetVersion);
     cache.push_back('\n');
     write_text(a_binary / "CMakeCache.txt", cache);
 
@@ -268,13 +284,7 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     std::string compilerEvidence("set(CMAKE_CXX_COMPILER \"");
     compilerEvidence.append(CUE_TEST_CXX_COMPILER);
     compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_VERSION \"");
-    compilerEvidence.append(std::to_string(k_currentCompilerVersion.major));
-    compilerEvidence.push_back('.');
-    compilerEvidence.append(std::to_string(k_currentCompilerVersion.minor));
-    compilerEvidence.push_back('.');
-    compilerEvidence.append(std::to_string(k_currentCompilerVersion.patch));
-    compilerEvidence.push_back('.');
-    compilerEvidence.append(std::to_string(k_currentCompilerVersion.build));
+    compilerEvidence.append(current_compiler_version_text());
     compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_ARCHITECTURE_ID \"x64\")\n");
     write_text(compilerDirectory / "CMakeCXXCompiler.cmake", compilerEvidence);
 
@@ -282,7 +292,9 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     project.append(a_windowsSdkVersion);
     project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
     project.append(a_platformToolset);
-    project.append("</PlatformToolset></PropertyGroup></Project>\n");
+    project.append("</PlatformToolset><VCToolsVersion>");
+    project.append(a_msvcToolsetVersion);
+    project.append("</VCToolsVersion></PropertyGroup></Project>\n");
     write_text(a_binary / "CueGameProduct.vcxproj", project);
 }
 
@@ -702,7 +714,11 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
                  std::string::npos &&
              metadata.find("\"platformToolset\": \"" + std::string(CUE_TEST_PLATFORM_TOOLSET) + "\"") !=
                  std::string::npos &&
+             metadata.find("\"msvcToolsetVersion\": \"" + std::string(CUE_TEST_MSVC_TOOLSET_VERSION) + "\"") !=
+                 std::string::npos &&
              metadata.find("\"compilerSha256\": \"") != std::string::npos &&
+             metadata.find("\"compilerFileVersion\": \"" + current_compiler_version_text() + "\"") !=
+                 std::string::npos &&
              metadata.find("\"windowsSdkVersion\": \"" + std::string(CUE_TEST_WINDOWS_SDK_VERSION) + "\"") !=
                  std::string::npos &&
              metadata.find("\"vcpkgManifestSha256\": \"") != std::string::npos &&
@@ -784,6 +800,18 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     write_shipping_toolchain_evidence(binary, "0.0.0.0");
     require(!publisher
                  ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedToolchainLease),
+                           std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
+    auto mismatchedMinorToolsetLease = take_value(
+        publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedMinorToolsetLease.has_value());
+    write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
+                                      CUE_TEST_ENGINE_ROOT, "14.99.99999");
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedMinorToolsetLease),
                            std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&

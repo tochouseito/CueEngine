@@ -122,7 +122,8 @@ class RecordingObserver final : public cue::CMakeStageObserver
             "C:/CueEngine",
             {{"SYSTEMROOT", "C:/Windows"}},
             std::chrono::seconds(30),
-            std::chrono::minutes(5)};
+            std::chrono::minutes(5),
+            "14.51.36231"};
 }
 
 /// @brief 各ConfigurationがPresetと固定TargetをArgument Vectorへ変換するか検証する
@@ -142,10 +143,12 @@ class RecordingObserver final : public cue::CMakeStageObserver
         return false;
     }
     const std::vector<std::string> expectedConfigure = {"--preset", std::string(a_preset), "-B",
-                                                        std::string(plan.binary_directory())};
+                                                        std::string(plan.binary_directory()), "-T",
+                                                        "version=14.51.36231"};
     const std::vector<std::string> expectedBuild = {"--build",  std::string(plan.binary_directory()),
                                                     "--config", std::string(a_configurationName),
-                                                    "--target", "CueGameModule"};
+                                                    "--target", "CueGameModule", "--",
+                                                    "/p:VCToolsVersion=14.51.36231"};
     return runner.m_executables[0] == "C:/Tools/cmake.exe" && runner.m_arguments[0] == expectedConfigure &&
            runner.m_arguments[1] == expectedBuild && runner.m_workingDirectories[0] == plan.project_root() &&
            runner.m_environments[0].size() == 2U && runner.m_environments[0][1].name == "CUE_ENGINE_ROOT" &&
@@ -164,7 +167,8 @@ class RecordingObserver final : public cue::CMakeStageObserver
     auto result = cue::run_cmake_build(plan, make_settings(), cue::CMakeConfigureMode::ReuseCompatibleTree, runner,
                                        cancellation, observer, a_assertContext);
     const std::vector<std::string> expectedBuild = {
-        "--build", std::string(plan.binary_directory()), "--config", "Release", "--target", "CueGameProduct"};
+        "--build", std::string(plan.binary_directory()), "--config", "Release", "--target", "CueGameProduct", "--",
+        "/p:VCToolsVersion=14.51.36231"};
     return result && result.try_value()->succeeded() && runner.m_arguments.size() == 1U &&
            runner.m_arguments[0] == expectedBuild;
 }
@@ -247,9 +251,13 @@ class RecordingObserver final : public cue::CMakeStageObserver
     oversizedEnvironment.environmentAllowlist.push_back({"VALID_NAME", std::string(32767U, 'a')});
     auto invalidEnvironmentLength = cue::run_cmake_build(plan, oversizedEnvironment, cue::CMakeConfigureMode::Required,
                                                          runner, cancellation, observer, a_assertContext);
+    cue::CMakeRunnerSettings invalidToolsetVersion = make_settings();
+    invalidToolsetVersion.visualStudioToolsetVersion = "14.51,36231";
+    auto invalidToolset = cue::run_cmake_build(plan, invalidToolsetVersion, cue::CMakeConfigureMode::Required, runner,
+                                               cancellation, observer, a_assertContext);
     return !invalid && !invalidExecutable && !invalidEngineRoot && !invalidEnvironmentName &&
            !duplicateEnvironmentName && !invalidNonAsciiName && !invalidEnvironmentValue && !invalidEnvironmentLength &&
-           runner.m_arguments.empty() && observer.m_started.empty() && observer.m_completed.empty();
+           !invalidToolset && runner.m_arguments.empty() && observer.m_started.empty() && observer.m_completed.empty();
 }
 } // namespace
 

@@ -254,6 +254,12 @@ CMake実行File／Version／Generator／Visual Studio Instance／`CUE_ENGINE_ROO
 Windows SDK VersionをBuild PlanおよびEngine構成時の信頼済みIdentityと照合する。Compiler実体のSHA-256を含む照合済みの値だけを
 Metadataへ記録し、絶対Pathは記録しない。不一致、重複値、欠落、未知ArchitectureはArtifact公開前に拒否する。
 
+Visual Studioの既定minor Toolset更新で再利用中のBinary Treeが別Compilerへ切り替わらないよう、Engine構成時に選択した
+MSVC Toolset Directory VersionをBuild Runnerの必須入力とする。ConfigureはCMakeへ`-T version=<version>`を渡し、Buildは
+MSBuild Global Property `/p:VCToolsVersion=<version>`を渡して同じVersionを固定する。Publisherは
+`CMAKE_GENERATOR_TOOLSET`、`VCToolsVersion`、CMake Compiler Path／Version、Compiler実体のFile Version／SHA-256を相互照合する。
+この契約導入時はEngine Build Policy Versionを2へ更新し、固定前のBinary Treeを互換再利用しない。
+
 Artifact選択用`Current.json`のschema version 1は、M15のGameModule用旧形式として意味と読取互換性を維持する。
 version 1は`schemaVersion`、`artifactId`、`configuration`、`files`だけを持ち、File Entryに用途を持たない。
 version 2は`schemaVersion`、`artifactId`、`configuration`、`target`、`minimumTrustMode`、`publisherKeyId`、`files`を必須とし、
