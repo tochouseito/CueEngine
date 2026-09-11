@@ -1065,6 +1065,30 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         require(!cue::validate_windows_shipping_product_security(relocatedLoadDirectory.generic_string(), localProfile,
                                                                  a_assertContext));
     }
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 relocationOptional{};
+    std::memcpy(&relocationOptional, bytes.data() + optional_header_offset(bytes), sizeof(relocationOptional));
+    const IMAGE_DATA_DIRECTORY &relocationDirectory = relocationOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    require(relocationDirectory.VirtualAddress >= 7U && relocationDirectory.Size > 1U &&
+            relocationDirectory.Size - 1U <=
+                std::numeric_limits<std::uint32_t>::max() - relocationDirectory.VirtualAddress);
+    const std::array<std::uint32_t, 5U> relocatedRelocationDirectoryRvas = {
+        relocationDirectory.VirtualAddress - 7U, relocationDirectory.VirtualAddress - 1U,
+        relocationDirectory.VirtualAddress,
+        relocationDirectory.VirtualAddress + static_cast<std::uint32_t>(relocationDirectory.Size / 2U),
+        relocationDirectory.VirtualAddress + relocationDirectory.Size - 1U};
+    for (std::size_t index = 0U; index < relocatedRelocationDirectoryRvas.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, relocatedRelocationDirectoryRvas[index]);
+        const std::filesystem::path relocatedRelocationDirectory =
+            directory / ("RelocatedRelocationDirectory-" + std::to_string(index) + ".exe");
+        write_bytes(relocatedRelocationDirectory, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedRelocationDirectory.generic_string(),
+                                                                 localProfile, a_assertContext));
+    }
+
     constexpr std::array<std::pair<std::size_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
         std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size), sizeof(DWORD)},
         std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount), sizeof(ULONGLONG)},

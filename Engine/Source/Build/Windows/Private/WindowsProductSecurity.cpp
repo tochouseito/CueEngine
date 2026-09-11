@@ -506,6 +506,8 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product base relocation directory is outside the PE image"));
     }
+    const std::uint64_t relocationDirectoryStart = directory.VirtualAddress;
+    const std::uint64_t relocationDirectoryEnd = relocationDirectoryStart + directory.Size;
 
     std::size_t cursor = 0U;
     std::vector<std::uint32_t> relocatedImagePointers;
@@ -546,13 +548,17 @@ template <typename Value>
                                "Shipping Product uses a base relocation type outside the x64 policy"));
             }
             const std::uint64_t targetRva = static_cast<std::uint64_t>(block->VirtualAddress) + (*entry & 0x0fffU);
-            if (targetRva < a_optional.SizeOfHeaders || targetRva > std::numeric_limits<std::uint32_t>::max() ||
+            const bool overlapsRelocationDirectory =
+                targetRva < relocationDirectoryEnd && relocationDirectoryStart < targetRva + sizeof(std::uint64_t);
+            if (targetRva < a_optional.SizeOfHeaders || overlapsRelocationDirectory ||
+                targetRva > std::numeric_limits<std::uint32_t>::max() ||
                 !rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional, a_sections,
                                a_bytes.size()))
             {
                 return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                               "Shipping Product base relocation target is inside PE headers or outside the image"));
+                               "Shipping Product base relocation target overlaps protected PE metadata or is outside "
+                               "the image"));
             }
             relocatedImagePointers.push_back(static_cast<std::uint32_t>(targetRva));
         }
