@@ -546,13 +546,13 @@ template <typename Value>
                                "Shipping Product uses a base relocation type outside the x64 policy"));
             }
             const std::uint64_t targetRva = static_cast<std::uint64_t>(block->VirtualAddress) + (*entry & 0x0fffU);
-            if (targetRva > std::numeric_limits<std::uint32_t>::max() ||
+            if (targetRva < a_optional.SizeOfHeaders || targetRva > std::numeric_limits<std::uint32_t>::max() ||
                 !rva_to_offset(static_cast<std::uint32_t>(targetRva), sizeof(std::uint64_t), a_optional, a_sections,
                                a_bytes.size()))
             {
                 return cue::Result<std::vector<std::uint32_t>>::failure(
                     make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                               "Shipping Product base relocation target is outside the PE image"));
+                               "Shipping Product base relocation target is inside PE headers or outside the image"));
             }
             relocatedImagePointers.push_back(static_cast<std::uint32_t>(targetRva));
         }

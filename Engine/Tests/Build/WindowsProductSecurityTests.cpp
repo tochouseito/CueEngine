@@ -1050,6 +1050,21 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     std::memcpy(&loadControlOptional, bytes.data() + optional_header_offset(bytes), sizeof(loadControlOptional));
     const IMAGE_DATA_DIRECTORY &loadControlDirectory =
         loadControlOptional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadDirectoryDescriptorRva = optional_header_offset(bytes) +
+                                                   offsetof(IMAGE_OPTIONAL_HEADER64, DataDirectory) +
+                                                   IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG * sizeof(IMAGE_DATA_DIRECTORY);
+    require(loadDirectoryDescriptorRva <=
+            std::numeric_limits<std::uint32_t>::max() - (sizeof(IMAGE_DATA_DIRECTORY) - 1U));
+    for (std::size_t byteIndex = 0U; byteIndex < sizeof(IMAGE_DATA_DIRECTORY); ++byteIndex)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, static_cast<std::uint32_t>(loadDirectoryDescriptorRva + byteIndex));
+        const std::filesystem::path relocatedLoadDirectory =
+            directory / ("RelocatedLoadDirectory-" + std::to_string(byteIndex) + ".exe");
+        write_bytes(relocatedLoadDirectory, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedLoadDirectory.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
     constexpr std::array<std::pair<std::size_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
         std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size), sizeof(DWORD)},
         std::pair{offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount), sizeof(ULONGLONG)},
