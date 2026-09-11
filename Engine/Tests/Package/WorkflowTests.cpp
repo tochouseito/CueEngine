@@ -103,6 +103,8 @@ struct RunnerState final
     std::atomic<bool> probePackageMutation = false;
     std::atomic<bool> packageMutationBlocked = false;
     std::atomic<bool> packageDirectoryRenameBlocked = false;
+    std::atomic<bool> probePackageEntryCreation = false;
+    std::atomic<bool> packageEntryCreationSucceeded = false;
     std::vector<std::string> mutationProbeRelativePaths;
     std::vector<std::filesystem::path> mutationProbeDirectories;
 };
@@ -152,11 +154,28 @@ class ControlledRunner final : public cue::ChildProcessRunner
                 {
                     static_cast<void>(MoveFileExW(renamed.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH));
                 }
-                allDirectoryRenamesBlocked = allDirectoryRenamesBlocked && renamedDirectory == FALSE &&
-                                             (renameCode == ERROR_SHARING_VIOLATION || renameCode == ERROR_ACCESS_DENIED);
+                allDirectoryRenamesBlocked =
+                    allDirectoryRenamesBlocked && renamedDirectory == FALSE &&
+                    (renameCode == ERROR_SHARING_VIOLATION || renameCode == ERROR_ACCESS_DENIED);
             }
             m_state->packageMutationBlocked.store(allFilesBlocked, std::memory_order_release);
             m_state->packageDirectoryRenameBlocked.store(allDirectoryRenamesBlocked, std::memory_order_release);
+        }
+        if (m_state->probePackageEntryCreation.load(std::memory_order_acquire))
+        {
+            const std::filesystem::path injected =
+                std::filesystem::path(a_request.working_directory()) / L"transient-unlisted.dll";
+            HANDLE created =
+                CreateFileW(injected.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const bool succeeded = created != INVALID_HANDLE_VALUE;
+            if (succeeded)
+            {
+                CloseHandle(created);
+                static_cast<void>(DeleteFileW(injected.c_str()));
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            m_state->packageEntryCreationSucceeded.store(succeeded, std::memory_order_release);
         }
         m_state->active.store(true, std::memory_order_release);
         const std::uint32_t call = m_state->calls.fetch_add(1U, std::memory_order_relaxed);
@@ -1292,7 +1311,25 @@ class MaterializingArtifactReader final : public cue::BuildArtifactReader
     {
         return false;
     }
-    return require(fileLeasesReleased && renameLeasesReleased);
+    if (!require(fileLeasesReleased && renameLeasesReleased))
+    {
+        return false;
+    }
+
+    runRunner.probePackageMutation.store(false, std::memory_order_release);
+    runRunner.probePackageEntryCreation.store(true, std::memory_order_release);
+    runRunner.mode.store(RunnerMode::BlockUntilCancelled, std::memory_order_release);
+    if (!require(service->run(cue::package::PackageRunMode::SmokeTest) && service->wait_for_run_completion()))
+    {
+        return false;
+    }
+    const cue::package::PackageWorkflowSnapshot changedDuringRun = service->snapshot();
+    return require(runRunner.packageEntryCreationSucceeded.load(std::memory_order_acquire) &&
+                   runRunner.lastCancellationMode.load(std::memory_order_acquire) ==
+                       cue::ChildProcessCancellationMode::Immediate &&
+                   changedDuringRun.state == cue::package::PackageWorkflowState::Failed &&
+                   changedDuringRun.message.find("Package Treeの変更") != std::string_view::npos &&
+                   !std::filesystem::exists(completedRoot / L"transient-unlisted.dll"));
 }
 } // namespace
 

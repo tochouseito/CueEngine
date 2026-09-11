@@ -1728,6 +1728,13 @@ Result<RuntimeHostStartup> load_static_runtime_package(GameModuleQueryFunction a
 {
     try
     {
+        if (a_expectedTrustMode != StaticRuntimeTrustMode::UnsignedLocal || !a_expectedPublisherKeyId.empty())
+        {
+            return Result<RuntimeHostStartup>::failure(package_error(
+                a_assertContext, package::PackageError::InvalidPackageManifest,
+                "Only UnsignedLocal Package startup without a Publisher Key is enabled until detached signature "
+                "and external trust anchor verification are implemented"));
+        }
         auto executable = executable_path(a_assertContext);
         if (!executable)
         {
@@ -1759,13 +1766,8 @@ Result<RuntimeHostStartup> load_static_runtime_package(GameModuleQueryFunction a
         const std::optional<std::string_view> applicationExecutable = manifest.try_value()->application_executable();
         const std::optional<ShippingTrustMode> trustMode = manifest.try_value()->trust_mode();
         const std::optional<std::string_view> publisherKeyId = manifest.try_value()->publisher_key_id();
-        const ShippingTrustMode expectedManifestTrustMode = a_expectedTrustMode == StaticRuntimeTrustMode::UnsignedLocal
-                                                                ? ShippingTrustMode::UnsignedLocal
-                                                                : ShippingTrustMode::PublisherSigned;
-        const bool publisherMatches = a_expectedTrustMode == StaticRuntimeTrustMode::UnsignedLocal
-                                          ? a_expectedPublisherKeyId.empty() && !publisherKeyId.has_value()
-                                          : !a_expectedPublisherKeyId.empty() && publisherKeyId.has_value() &&
-                                                *publisherKeyId == a_expectedPublisherKeyId;
+        constexpr ShippingTrustMode expectedManifestTrustMode = ShippingTrustMode::UnsignedLocal;
+        const bool publisherMatches = !publisherKeyId.has_value();
         if (manifest.try_value()->schema_version() != package::k_monolithicPackageManifestSchemaVersion ||
             manifest.try_value()->execution_model() != package::PackageExecutionModel::Monolithic ||
             manifest.try_value()->engine_version() != k_engineVersion ||

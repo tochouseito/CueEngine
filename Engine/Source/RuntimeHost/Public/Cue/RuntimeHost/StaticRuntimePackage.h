@@ -25,6 +25,7 @@ enum class StaticRuntimeTrustMode : std::uint8_t
 ///
 /// Query Entryと期待Identityは呼出中だけ借用する。Manifest v2、完全File Inventory、Runtime Dataの
 /// Canonical表現、Project、Release構成、Execution Model、Trust Policyを検証し、不一致時は起動入力を返さない。
+/// PublisherSignedはDetached Signatureと外部Trust Anchorの検証が実装されるまで常に拒否する。
 [[nodiscard]] Result<RuntimeHostStartup> load_static_runtime_package(GameModuleQueryFunction a_query,
                                                                      std::string_view a_expectedProjectId,
                                                                      StaticRuntimeTrustMode a_expectedTrustMode,

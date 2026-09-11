@@ -4,10 +4,13 @@
 #include <Cue/Package/Error.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <thread>
@@ -54,6 +57,95 @@ enum class WorkflowError : std::int64_t
 /// @brief Run前検証からProcess終了までPackage TreeのWrite／Deleteを拒否する所有Guard
 class PackageRunGuard final
 {
+#if defined(_WIN32)
+    /// @brief 非同期Directory変更通知のBufferとNative Handleを一体所有する
+    struct DirectoryChangeMonitor final
+    {
+        /// @brief 未開始のDirectory変更監視を構築する
+        DirectoryChangeMonitor() noexcept = default;
+        DirectoryChangeMonitor(const DirectoryChangeMonitor &) = delete;
+        DirectoryChangeMonitor &operator=(const DirectoryChangeMonitor &) = delete;
+
+        /// @brief Pending通知と監視Threadを停止してNative Handleを閉じる
+        ~DirectoryChangeMonitor() noexcept
+        {
+            stop_and_wait();
+            if (directory != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(directory);
+            }
+            if (event != nullptr)
+            {
+                CloseHandle(event);
+            }
+        }
+
+        /// @brief 変更または監視異常を即時Process Cancellationへ接続するThreadを開始する
+        [[nodiscard]] bool arm(std::shared_ptr<cue::ChildProcessCancellation> a_cancellation) noexcept
+        {
+            if (!pending.load(std::memory_order_acquire) || watcher.joinable())
+            {
+                return false;
+            }
+            try
+            {
+                watcher = std::thread(
+                    [this, cancellation = std::move(a_cancellation)]()
+                    {
+                        const DWORD waitResult = WaitForSingleObject(event, INFINITE);
+                        DWORD transferred = 0U;
+                        const BOOL completed = waitResult == WAIT_OBJECT_0
+                                                   ? GetOverlappedResult(directory, &overlapped, &transferred, FALSE)
+                                                   : FALSE;
+                        const DWORD error = completed == FALSE ? GetLastError() : ERROR_SUCCESS;
+                        pending.store(false, std::memory_order_release);
+                        const bool expectedShutdownCancellation = completed == FALSE &&
+                                                                  error == ERROR_OPERATION_ABORTED &&
+                                                                  shutdownRequested.load(std::memory_order_acquire);
+                        if (!expectedShutdownCancellation)
+                        {
+                            changed.store(true, std::memory_order_release);
+                            cancellation->request_cancel();
+                        }
+                    });
+                return true;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+        /// @brief Pending通知を取消し監視Threadの完了を待つ
+        void stop_and_wait() noexcept
+        {
+            shutdownRequested.store(true, std::memory_order_release);
+            if (directory != INVALID_HANDLE_VALUE && pending.load(std::memory_order_acquire))
+            {
+                static_cast<void>(CancelIoEx(directory, &overlapped));
+            }
+            if (watcher.joinable())
+            {
+                watcher.join();
+            }
+            else if (directory != INVALID_HANDLE_VALUE && pending.exchange(false, std::memory_order_acq_rel))
+            {
+                DWORD transferred = 0U;
+                static_cast<void>(GetOverlappedResult(directory, &overlapped, &transferred, TRUE));
+            }
+        }
+
+        HANDLE directory = INVALID_HANDLE_VALUE;
+        HANDLE event = nullptr;
+        OVERLAPPED overlapped{};
+        alignas(DWORD) std::array<std::byte, 4096U> buffer{};
+        std::atomic<bool> pending = false;
+        std::atomic<bool> changed = false;
+        std::atomic<bool> shutdownRequested = false;
+        std::thread watcher;
+    };
+#endif
+
   public:
     /// @brief 無効Guardを構築する
     PackageRunGuard() noexcept = default;
@@ -62,7 +154,12 @@ class PackageRunGuard final
     /// @brief Guardの共有所有を禁止する
     PackageRunGuard &operator=(const PackageRunGuard &) = delete;
     /// @brief 全Native Handleの所有権を移動する
-    PackageRunGuard(PackageRunGuard &&a_other) noexcept : m_handles(std::move(a_other.m_handles))
+    PackageRunGuard(PackageRunGuard &&a_other) noexcept
+#if defined(_WIN32)
+        : m_directoryChangeMonitor(std::move(a_other.m_directoryChangeMonitor)), m_handles(std::move(a_other.m_handles))
+#else
+        : m_handles(std::move(a_other.m_handles))
+#endif
     {
         a_other.m_handles.clear();
     }
@@ -72,6 +169,9 @@ class PackageRunGuard final
         if (this != &a_other)
         {
             reset();
+#if defined(_WIN32)
+            m_directoryChangeMonitor = std::move(a_other.m_directoryChangeMonitor);
+#endif
             m_handles = std::move(a_other.m_handles);
             a_other.m_handles.clear();
         }
@@ -84,18 +184,81 @@ class PackageRunGuard final
     }
 
 #if defined(_WIN32)
+    /// @brief Package Root配下の名前またはMetadata変更を一回検知する監視を開始する
+    [[nodiscard]] bool start_directory_change_monitor(const std::filesystem::path &a_root)
+    {
+        std::unique_ptr<DirectoryChangeMonitor> monitor = std::make_unique<DirectoryChangeMonitor>();
+        monitor->directory =
+            CreateFileW(a_root.c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED, nullptr);
+        if (monitor->directory == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        monitor->event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (monitor->event == nullptr)
+        {
+            return false;
+        }
+        monitor->overlapped.hEvent = monitor->event;
+        constexpr DWORD changes = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                                  FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
+                                  FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION |
+                                  FILE_NOTIFY_CHANGE_SECURITY;
+        if (ReadDirectoryChangesW(monitor->directory, monitor->buffer.data(),
+                                  static_cast<DWORD>(monitor->buffer.size()), TRUE, changes, nullptr,
+                                  &monitor->overlapped, nullptr) == FALSE)
+        {
+            return false;
+        }
+        monitor->pending.store(true, std::memory_order_release);
+        m_directoryChangeMonitor = std::move(monitor);
+        return true;
+    }
+
+    /// @brief Package Tree変更を実行中Processの即時Cancellationへ接続する
+    [[nodiscard]] bool arm_directory_change_cancellation(
+        std::shared_ptr<cue::ChildProcessCancellation> a_cancellation) noexcept
+    {
+        return m_directoryChangeMonitor && m_directoryChangeMonitor->arm(std::move(a_cancellation));
+    }
+
     /// @brief 検証対象Native Handleの所有権を追加する
     void add_handle(HANDLE a_handle)
     {
         m_handles.push_back(a_handle);
     }
+#else
+    /// @brief 非WindowsではNative変更監視が不要なため実行継続を許可する
+    [[nodiscard]] bool arm_directory_change_cancellation(
+        std::shared_ptr<cue::ChildProcessCancellation> a_cancellation) noexcept
+    {
+        static_cast<void>(a_cancellation);
+        return true;
+    }
 #endif
+
+    /// @brief 監視を停止しPackage Tree変更または監視異常が発生したかFail-closedで返す
+    [[nodiscard]] bool finish_and_has_directory_change() noexcept
+    {
+#if defined(_WIN32)
+        if (!m_directoryChangeMonitor)
+        {
+            return true;
+        }
+        m_directoryChangeMonitor->stop_and_wait();
+        return m_directoryChangeMonitor->changed.load(std::memory_order_acquire);
+#else
+        return false;
+#endif
+    }
 
   private:
     /// @brief 所有中の全Native Handleを逆順に閉じる
     void reset() noexcept
     {
 #if defined(_WIN32)
+        m_directoryChangeMonitor.reset();
         for (auto handle = m_handles.rbegin(); handle != m_handles.rend(); ++handle)
         {
             if (*handle != nullptr && *handle != INVALID_HANDLE_VALUE)
@@ -108,6 +271,7 @@ class PackageRunGuard final
     }
 
 #if defined(_WIN32)
+    std::unique_ptr<DirectoryChangeMonitor> m_directoryChangeMonitor;
     std::vector<HANDLE> m_handles;
 #else
     std::vector<std::byte> m_handles;
@@ -172,9 +336,9 @@ class PackageRunGuard final
         {
             continue;
         }
-        HANDLE handle = CreateFileW(extended_native_path(current).c_str(), FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        HANDLE handle =
+            CreateFileW(extended_native_path(current).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (handle == INVALID_HANDLE_VALUE)
         {
             return false;
@@ -228,6 +392,7 @@ class PackageRunGuard final
         const std::filesystem::path root = native_path(a_packageRoot);
         std::vector<std::wstring> lockedDirectories;
         if (!lock_directory_chain(root, guard, lockedDirectories) ||
+            !guard.start_directory_change_monitor(extended_native_path(root)) ||
             !lock_regular_file(root / L"CuePackage.json", guard))
         {
             return cue::Result<PackageRunGuard>::failure(
@@ -1251,16 +1416,33 @@ Result<void> GamePackageWorkflowService::run(PackageRunMode a_mode) noexcept
                     return;
                 }
                 PackageRunGuard packageGuard = std::move(*packageValidation.try_value());
+                if (!packageGuard.arm_directory_change_cancellation(cancellation))
+                {
+                    std::scoped_lock lock(impl->mutex);
+                    impl->processCancellation.reset();
+                    impl->isCancellationRequested = false;
+                    impl->current.state = PackageWorkflowState::Failed;
+                    impl->current.activeStage = PackageWorkflowStage::None;
+                    impl->current.message = "Package Treeの実行時監視を開始できませんでした。";
+                    return;
+                }
                 {
                     std::scoped_lock lock(impl->mutex);
                     impl->current.message = monolithic ? "Monolithic Shipping Productを起動しました。"
                                                        : "Modular Standalone Runtimeを起動しました。";
                 }
                 Result<ChildProcessResult> runResult = impl->runProcessRunner->run(request, *cancellation);
+                const bool packageChangedDuringRun = packageGuard.finish_and_has_directory_change();
                 std::scoped_lock lock(impl->mutex);
                 impl->processCancellation.reset();
                 impl->isCancellationRequested = false;
                 impl->current.activeStage = PackageWorkflowStage::None;
+                if (packageChangedDuringRun)
+                {
+                    impl->current.state = PackageWorkflowState::Failed;
+                    impl->current.message = "実行中にPackage Treeの変更を検知したため結果を拒否しました。";
+                    return;
+                }
                 if (!runResult)
                 {
                     impl->current.state = PackageWorkflowState::Failed;
