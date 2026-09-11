@@ -265,9 +265,9 @@ void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_tar
     require(false);
 }
 
-/// @brief 非必須DIR64 Entryを指定必須RVAの重複Entryへ置換する
-void duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva,
-                                std::span<const std::uint32_t> a_requiredRvas)
+/// @brief 非必須DIR64 Entryを指定必須RVA（必要なら+offset）へ置換する
+bool duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva,
+                                std::span<const std::uint32_t> a_requiredRvas, std::uint16_t a_offset = 0U)
 {
     const std::size_t optionalOffset = optional_header_offset(a_bytes);
     IMAGE_OPTIONAL_HEADER64 optional{};
@@ -283,8 +283,14 @@ void duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a
         require(block.SizeOfBlock >= sizeof(block) && block.SizeOfBlock <= directory.Size - cursor);
         if (a_targetRva >= block.VirtualAddress && a_targetRva - block.VirtualAddress <= 0x0fffU)
         {
+            const std::uint16_t baseOffset = static_cast<std::uint16_t>(a_targetRva - block.VirtualAddress);
+            if (a_offset > 0x0fffU - baseOffset)
+            {
+                cursor += block.SizeOfBlock;
+                continue;
+            }
             const std::uint16_t duplicate = static_cast<std::uint16_t>(
-                (IMAGE_REL_BASED_DIR64 << 12U) | static_cast<std::uint16_t>(a_targetRva - block.VirtualAddress));
+                (IMAGE_REL_BASED_DIR64 << 12U) | static_cast<std::uint16_t>(baseOffset + a_offset));
             const std::size_t entryCount = (block.SizeOfBlock - sizeof(block)) / sizeof(std::uint16_t);
             for (std::size_t index = 0U; index < entryCount; ++index)
             {
@@ -297,11 +303,25 @@ void duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a
                 if ((entry >> 12U) == IMAGE_REL_BASED_DIR64 && !required)
                 {
                     std::memcpy(a_bytes.data() + entryOffset, &duplicate, sizeof(duplicate));
-                    return;
+                    return true;
                 }
             }
         }
         cursor += block.SizeOfBlock;
+    }
+    return false;
+}
+
+/// @brief 非必須DIR64 Entryを必須RVA+offsetに置換する
+void overlap_dir64_relocation(std::vector<std::byte> &a_bytes, std::span<const std::uint32_t> a_requiredRvas,
+                              std::uint16_t a_offset)
+{
+    for (const std::uint32_t requiredRva : a_requiredRvas)
+    {
+        if (duplicate_dir64_relocation(a_bytes, requiredRva, a_requiredRvas, a_offset))
+        {
+            return;
+        }
     }
     require(false);
 }
@@ -742,11 +762,22 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     }
 
     bytes = read_bytes(a_validProduct);
-    duplicate_dir64_relocation(bytes, requiredRelocations.front(), requiredRelocations);
+    require(duplicate_dir64_relocation(bytes, requiredRelocations.front(), requiredRelocations));
     const std::filesystem::path duplicateSecurityRelocation = directory / "DuplicateSecurityRelocation.exe";
     write_bytes(duplicateSecurityRelocation, bytes);
     require(!cue::validate_windows_shipping_product_security(duplicateSecurityRelocation.generic_string(), localProfile,
                                                              a_assertContext));
+
+    for (std::uint16_t offset = 1U; offset <= 7U; ++offset)
+    {
+        bytes = read_bytes(a_validProduct);
+        overlap_dir64_relocation(bytes, requiredRelocations, offset);
+        const std::filesystem::path overlappingSecurityRelocation =
+            directory / ("OverlappingSecurityRelocation-Offset" + std::to_string(offset) + ".exe");
+        write_bytes(overlappingSecurityRelocation, bytes);
+        require(!cue::validate_windows_shipping_product_security(overlappingSecurityRelocation.generic_string(),
+                                                                 localProfile, a_assertContext));
+    }
 
     bytes = read_bytes(a_validProduct);
     cross_header_boundary_for_load_configuration(bytes);

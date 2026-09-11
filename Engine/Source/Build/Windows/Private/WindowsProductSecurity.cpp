@@ -536,12 +536,16 @@ template <typename Value>
                        "Shipping Product base relocation directory has no x64 relocation entry"));
     }
     std::ranges::sort(relocatedImagePointers);
-    if (std::adjacent_find(relocatedImagePointers.begin(), relocatedImagePointers.end()) !=
-        relocatedImagePointers.end())
+    for (std::size_t index = 1U; index < relocatedImagePointers.size(); ++index)
     {
-        return cue::Result<std::vector<std::uint32_t>>::failure(
-            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                       "Shipping Product base relocation directory contains a duplicate target"));
+        const std::uint64_t previousTarget = relocatedImagePointers[index - 1U];
+        const std::uint64_t currentTarget = relocatedImagePointers[index];
+        if (currentTarget < previousTarget + sizeof(std::uint64_t))
+        {
+            return cue::Result<std::vector<std::uint32_t>>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product base relocation directory contains overlapping DIR64 targets"));
+        }
     }
     return cue::Result<std::vector<std::uint32_t>>::success(std::move(relocatedImagePointers));
 }
