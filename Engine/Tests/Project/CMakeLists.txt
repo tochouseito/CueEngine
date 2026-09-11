@@ -29,6 +29,9 @@ if(WIN32)
         PRIVATE
             CUE_TEST_CMAKE_COMMAND="${CMAKE_COMMAND}"
             CUE_TEST_ENGINE_ROOT="${CMAKE_SOURCE_DIR}"
+            $<$<CONFIG:Debug>:CUE_TEST_BUILD_CONFIGURATION=1>
+            $<$<CONFIG:Development>:CUE_TEST_BUILD_CONFIGURATION=2>
+            $<$<CONFIG:Release>:CUE_TEST_BUILD_CONFIGURATION=3>
     )
 
     add_executable(CueProjectM09ProcessTests M09ProcessTests.cpp)
@@ -79,7 +82,7 @@ set_tests_properties(Cue.Project.Compatibility PROPERTIES LABELS Project TIMEOUT
 
 if(WIN32)
     add_test(NAME Cue.Project.Generator.Windows COMMAND CueProjectGeneratorWindowsTests)
-    set_tests_properties(Cue.Project.Generator.Windows PROPERTIES LABELS Project TIMEOUT 120)
+    set_tests_properties(Cue.Project.Generator.Windows PROPERTIES LABELS Project TIMEOUT 360)
 
     add_test(NAME Cue.Project.M09.Process COMMAND CueProjectM09ProcessTests)
     set_tests_properties(Cue.Project.M09.Process PROPERTIES LABELS Project TIMEOUT 30)

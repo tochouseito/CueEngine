@@ -12,7 +12,11 @@
 
 #if defined(_WIN32)
 #define CUE_GAME_MODULE_CALL __cdecl
-#if defined(CUE_GAME_MODULE_BUILD)
+#if defined(CUE_GAME_MODULE_BUILD) && defined(CUE_GAME_MODULE_STATIC)
+#error CUE_GAME_MODULE_BUILD and CUE_GAME_MODULE_STATIC are mutually exclusive
+#elif defined(CUE_GAME_MODULE_STATIC)
+#define CUE_GAME_MODULE_EXPORT
+#elif defined(CUE_GAME_MODULE_BUILD)
 #define CUE_GAME_MODULE_EXPORT __declspec(dllexport)
 #else
 #define CUE_GAME_MODULE_EXPORT __declspec(dllimport)
@@ -43,13 +47,13 @@
 #define CUE_GAME_MODULE_SYSTEM_PHASE_POST_UPDATE UINT32_C(3)
 
 typedef uint32_t CueGameModuleResult;
-/// @brief DLL が所有し、同じ DLL の destroyModule で一度だけ破棄する Project Scope Handle
+/// @brief Game Moduleが所有し、同じModuleのdestroyModuleで一度だけ破棄するProject Scope Handle
 ///
-/// Host は Handle の生存中 DLL を Unload せず、生成した Project Scope の Owner Thread 上だけで使用する。
+/// HostはHandleの生存中Module Codeを保持し、生成したProject ScopeのOwner Thread上だけで使用する。
 typedef void *CueGameModuleHandle;
-/// @brief DLL が所有し、対応する CueGameSystemDestroyV1 で一度だけ破棄する System State
+/// @brief Game Moduleが所有し、対応するCueGameSystemDestroyV1で一度だけ破棄するSystem State
 ///
-/// Host は State の生存中 DLL と親 Module を保持し、生成した Project Scope の Owner Thread 上だけで使用する。
+/// HostはStateの生存中Module Codeと親Moduleを保持し、生成したProject ScopeのOwner Thread上だけで使用する。
 typedef void *CueGameSystemState;
 
 typedef struct CueGameUtf8ViewV1
@@ -174,14 +178,14 @@ typedef struct CueGameRegistrationSinkV1
     uint64_t reserved[4];
 } CueGameRegistrationSinkV1;
 
-/// @brief 成功時だけ null の出力を DLL 所有 Module へ置換し、失敗時は null のまま保持する
+/// @brief 成功時だけnullの出力をGame Module所有Handleへ置換し、失敗時はnullのまま保持する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameModuleCreateV1)(
     CueGameModuleHandle *a_module, CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
 /// @brief 借用 Module と Sink を使い、Descriptor を呼出中に Host へ Copy 登録する
 typedef CueGameModuleResult(CUE_GAME_MODULE_CALL *CueGameModuleRegisterV1)(
     CueGameModuleHandle a_module, const CueGameRegistrationSinkV1 *a_sink,
     CueGameModuleDiagnosticV1 *a_diagnostic) CUE_GAME_MODULE_NOEXCEPT;
-/// @brief 同じ DLL と Owner Thread 上で DLL 所有 Module を一度だけ破棄する
+/// @brief 同じGame Module CodeとOwner Thread上でModule Handleを一度だけ破棄する
 typedef void(CUE_GAME_MODULE_CALL *CueGameModuleDestroyV1)(CueGameModuleHandle a_module) CUE_GAME_MODULE_NOEXCEPT;
 
 typedef struct CueGameModuleApiV1
@@ -209,10 +213,10 @@ typedef struct CueGameModuleQueryOutputV1
     uint64_t reserved[2];
 } CueGameModuleQueryOutputV1;
 
-/// @brief Host要求Versionと互換なDLL所有API Tableを借用出力へ返す
+/// @brief Host要求Versionと互換なGame Module所有API Tableを借用出力へ返す
 ///
-/// Host は出力構造体を zero initialize して Size と Version を設定する。成功時の API Table と全 Callback は
-/// DLL を Load している間だけ有効で、Query と全 Callback は同じ Project Scope の Owner Thread 上で呼び出す。
+/// Hostは出力構造体をzero initializeしてSizeとVersionを設定する。成功時のAPI Tableと全Callbackは
+/// Dynamic DLLまたはStatic ProductのModule Codeが有効な間だけ使用し、同じProject Scope Owner Thread上で呼び出す。
 /// C++ 例外は ABI 境界を越えない。
 CUE_GAME_MODULE_EXTERN_C CUE_GAME_MODULE_EXPORT CueGameModuleResult CUE_GAME_MODULE_CALL
 cue_game_module_query(uint32_t a_requestedAbiVersion, CueGameModuleQueryOutputV1 *a_output,
