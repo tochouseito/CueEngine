@@ -958,6 +958,18 @@ template <typename Value>
         has_section_characteristics(*securityCookieRange, k_writableDataSection,
                                     IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED) &&
         read_value<ULONGLONG>(bytes, securityCookieRange->offset) == k_msvcX64DefaultSecurityCookie;
+    const std::uint64_t securityCookieRva = securityCookie && *securityCookie >= optional->ImageBase
+                                                ? *securityCookie - optional->ImageBase
+                                                : std::numeric_limits<std::uint64_t>::max();
+    const bool hasUnrelocatedSecurityCookie =
+        hasMappedSecurityCookie &&
+        std::ranges::none_of(*relocations.try_value(),
+                             [securityCookieRva](const std::uint32_t a_relocationRva) noexcept
+                             {
+                                 const std::uint64_t relocationStart = a_relocationRva;
+                                 return relocationStart < securityCookieRva + sizeof(ULONGLONG) &&
+                                        securityCookieRva < relocationStart + sizeof(ULONGLONG);
+                             });
     const bool hasMappedGuardCheck =
         guardCheckTargetRange &&
         has_section_characteristics(*guardCheckTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
@@ -990,7 +1002,7 @@ template <typename Value>
             return a_rva <= std::numeric_limits<std::uint32_t>::max() &&
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
-    if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+    if (!hasUnrelocatedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
         (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
         !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)

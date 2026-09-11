@@ -403,6 +403,31 @@ bool duplicate_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a
     return false;
 }
 
+/// @brief Relocation Directory末尾へ指定RVAのDIR64 Blockを追加する
+void append_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    constexpr DWORD blockSize = sizeof(IMAGE_BASE_RELOCATION) + 2U * sizeof(std::uint16_t);
+    const std::size_t directoryOffset =
+        section_rva_offset(directory.VirtualAddress, directory.Size + blockSize, sections, a_bytes);
+    IMAGE_BASE_RELOCATION block{};
+    block.VirtualAddress = a_targetRva & ~0x0fffU;
+    block.SizeOfBlock = blockSize;
+    const std::uint16_t entry =
+        static_cast<std::uint16_t>((IMAGE_REL_BASED_DIR64 << 12U) | (a_targetRva - block.VirtualAddress));
+    const std::uint16_t padding = 0U;
+    std::memcpy(a_bytes.data() + directoryOffset + directory.Size, &block, sizeof(block));
+    std::memcpy(a_bytes.data() + directoryOffset + directory.Size + sizeof(block), &entry, sizeof(entry));
+    std::memcpy(a_bytes.data() + directoryOffset + directory.Size + sizeof(block) + sizeof(entry), &padding,
+                sizeof(padding));
+    directory.Size += blockSize;
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
 /// @brief 非必須DIR64 Entryを必須RVA+offsetに置換する
 void overlap_dir64_relocation(std::vector<std::byte> &a_bytes, std::span<const std::uint32_t> a_requiredRvas,
                               std::uint16_t a_offset)
@@ -960,6 +985,23 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     write_bytes(predictableSecurityCookie, bytes);
     require(!cue::validate_windows_shipping_product_security(predictableSecurityCookie.generic_string(), localProfile,
                                                              a_assertContext));
+
+    IMAGE_OPTIONAL_HEADER64 securityCookieOptional{};
+    std::memcpy(&securityCookieOptional, bytes.data() + optional_header_offset(bytes), sizeof(securityCookieOptional));
+    require(securityCookie >= securityCookieOptional.ImageBase &&
+            securityCookie - securityCookieOptional.ImageBase <= std::numeric_limits<std::uint32_t>::max());
+    const std::uint32_t securityCookieRva =
+        static_cast<std::uint32_t>(securityCookie - securityCookieOptional.ImageBase);
+    for (std::uint16_t offset = 0U; offset <= 7U; ++offset)
+    {
+        bytes = read_bytes(a_validProduct);
+        append_dir64_relocation(bytes, securityCookieRva + offset);
+        const std::filesystem::path relocatedSecurityCookie =
+            directory / ("RelocatedSecurityCookie-Offset" + std::to_string(offset) + ".exe");
+        write_bytes(relocatedSecurityCookie, bytes);
+        require(!cue::validate_windows_shipping_product_security(relocatedSecurityCookie.generic_string(), localProfile,
+                                                                 a_assertContext));
+    }
 
     bytes = read_bytes(a_validProduct);
     set_load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie), guardCheck);
