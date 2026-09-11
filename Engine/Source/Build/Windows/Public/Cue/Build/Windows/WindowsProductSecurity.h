@@ -40,6 +40,8 @@ struct WindowsProductTrustEvidence final
 /// @brief 最終PE検証で確定したImport、署名、配布到達点
 struct WindowsProductSecurityValidation final
 {
+    std::uint64_t byteSize = 0U;
+    std::string contentHash;
     std::vector<std::string> importedLibraries;
     WindowsProductTrustEvidence trustEvidence;
     WindowsProductDistributionStatus distributionStatus = WindowsProductDistributionStatus::LocalExecutionOnly;
@@ -67,7 +69,8 @@ struct WindowsProductSecurityValidation final
 /// x64 Executable、ASLR、High Entropy VA、DEP、CFG、CET、Stack Cookie、System32限定Dependent Load、
 /// Version付きImport Allowlist、Game Module Loader不在を検証する。PublisherSignedでは同じRead Handleを用いて
 /// Windows TrustとPublisher Identityも検証する。PathとProfileは呼出中だけ借用し、共有状態を変更しない。
-/// 成功時は正規化済みDirect Import一覧、観測した署名Evidence、Artifact単体の配布到達点を返す。
+/// 成功時は同じRead Handleから計算したSize／SHA-256、正規化済みDirect Import一覧、観測した署名Evidence、
+/// Artifact単体の配布到達点を返す。Size／HashはSecurity Evidenceを同一Byte Snapshotへ結び付ける。
 /// PublicDistributionReadyは外部署名、Online Revocation、Manifest署名、外部Trust Anchorを別途要求する。
 [[nodiscard]] Result<WindowsProductSecurityValidation> validate_windows_shipping_product_security(
     std::string a_absoluteProductPath, const BuildProfile &a_profile, const AssertContext &a_assertContext) noexcept;

@@ -1,5 +1,7 @@
 #include <Cue/Build/Windows/WindowsProductSecurity.h>
 
+#include "WindowsProductSecurityInternal.h"
+
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
@@ -399,6 +401,39 @@ template <typename Value>
     return range && a_size <= range->size ? std::optional<std::size_t>(range->offset) : std::nullopt;
 }
 
+/// @brief PE内VAがImage範囲とFile-backed Sectionの双方へ収まるか判定する
+[[nodiscard]] bool is_mapped_image_va(ULONGLONG a_va, std::size_t a_size, const IMAGE_OPTIONAL_HEADER64 &a_optional,
+                                      std::span<const IMAGE_SECTION_HEADER> a_sections, std::size_t a_fileSize) noexcept
+{
+    if (a_va < a_optional.ImageBase)
+    {
+        return false;
+    }
+    const std::uint64_t rva = a_va - a_optional.ImageBase;
+    if (rva > std::numeric_limits<std::uint32_t>::max() || rva >= a_optional.SizeOfImage ||
+        a_size > static_cast<std::uint64_t>(a_optional.SizeOfImage) - rva)
+    {
+        return false;
+    }
+    for (const IMAGE_SECTION_HEADER &section : a_sections)
+    {
+        const std::uint64_t sectionRva = section.VirtualAddress;
+        const std::uint64_t mappedSize = std::max(section.Misc.VirtualSize, section.SizeOfRawData);
+        if (rva < sectionRva || rva - sectionRva >= mappedSize)
+        {
+            continue;
+        }
+        const std::uint64_t delta = rva - sectionRva;
+        if (delta > section.SizeOfRawData || a_size > static_cast<std::uint64_t>(section.SizeOfRawData) - delta)
+        {
+            return false;
+        }
+        const std::uint64_t offset = static_cast<std::uint64_t>(section.PointerToRawData) + delta;
+        return offset <= a_fileSize && a_size <= static_cast<std::uint64_t>(a_fileSize) - offset;
+    }
+    return false;
+}
+
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
 [[nodiscard]] cue::Result<void> validate_base_relocations(std::span<const std::byte> a_bytes,
                                                           const IMAGE_OPTIONAL_HEADER64 &a_optional,
@@ -768,11 +803,10 @@ template <typename Value>
     }
 
     const IMAGE_DATA_DIRECTORY &loadDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
-    constexpr std::size_t requiredLoadConfigSize =
-        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags) + sizeof(WORD);
+    constexpr std::size_t requiredLoadConfigSize = offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD);
     const std::optional<std::size_t> loadOffset =
-        loadDirectory.VirtualAddress != 0U && loadDirectory.Size >= requiredLoadConfigSize
-            ? rva_to_offset(loadDirectory.VirtualAddress, loadDirectory.Size, *optional, sections, bytes.size())
+        loadDirectory.VirtualAddress != 0U && loadDirectory.Size >= sizeof(DWORD)
+            ? rva_to_offset(loadDirectory.VirtualAddress, sizeof(DWORD), *optional, sections, bytes.size())
             : std::nullopt;
     if (!loadOffset)
     {
@@ -782,20 +816,36 @@ template <typename Value>
     }
     const std::optional<DWORD> loadSize =
         read_value<DWORD>(bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size));
+    const std::optional<std::size_t> validatedLoadOffset =
+        loadSize && *loadSize >= requiredLoadConfigSize && *loadSize <= loadDirectory.Size
+            ? rva_to_offset(loadDirectory.VirtualAddress, static_cast<std::size_t>(*loadSize), *optional, sections,
+                            bytes.size())
+            : std::nullopt;
+    if (!validatedLoadOffset)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product load configuration does not cover the required security fields"));
+    }
     const std::optional<ULONGLONG> securityCookie =
-        read_value<ULONGLONG>(bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie));
+        read_value<ULONGLONG>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie));
     const std::optional<ULONGLONG> guardCheck = read_value<ULONGLONG>(
-        bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer));
     const std::optional<ULONGLONG> guardDispatch = read_value<ULONGLONG>(
-        bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
+        bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer));
     const std::optional<DWORD> guardFlags =
-        read_value<DWORD>(bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+        read_value<DWORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     const std::optional<WORD> dependentLoadFlags =
-        read_value<WORD>(bytes, *loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
-    if (!loadSize || *loadSize < requiredLoadConfigSize || *loadSize > loadDirectory.Size || !securityCookie ||
-        *securityCookie == 0U || !guardCheck || *guardCheck == 0U || !guardDispatch || *guardDispatch == 0U ||
-        !guardFlags || (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || !dependentLoadFlags ||
-        *dependentLoadFlags != k_requiredDependentLoadFlags)
+        read_value<WORD>(bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
+    const bool hasMappedSecurityCookie =
+        securityCookie && is_mapped_image_va(*securityCookie, sizeof(ULONGLONG), *optional, sections, bytes.size());
+    const bool hasMappedGuardCheck =
+        guardCheck && is_mapped_image_va(*guardCheck, sizeof(ULONGLONG), *optional, sections, bytes.size());
+    const bool hasMappedGuardDispatch =
+        guardDispatch && is_mapped_image_va(*guardDispatch, sizeof(ULONGLONG), *optional, sections, bytes.size());
+    if (!hasMappedSecurityCookie || !hasMappedGuardCheck || !hasMappedGuardDispatch || !guardFlags ||
+        (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
+        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags)
     {
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -860,8 +910,6 @@ class WinTrustState final
     case ERROR_SUCCESS:
         return cue::WindowsProductSignatureStatus::Trusted;
     case TRUST_E_NOSIGNATURE:
-    case TRUST_E_SUBJECT_FORM_UNKNOWN:
-    case TRUST_E_PROVIDER_UNKNOWN:
         return cue::WindowsProductSignatureStatus::Unsigned;
     case TRUST_E_BAD_DIGEST:
     case NTE_BAD_SIGNATURE:
@@ -876,14 +924,55 @@ class WinTrustState final
     case TRUST_E_EXPLICIT_DISTRUST:
     case CRYPT_E_REVOCATION_OFFLINE:
         return cue::WindowsProductSignatureStatus::ChainInvalid;
+    case TRUST_E_SUBJECT_FORM_UNKNOWN:
+    case TRUST_E_PROVIDER_UNKNOWN:
     default:
         return cue::WindowsProductSignatureStatus::VerificationUnavailable;
     }
 }
 
+/// @brief Digest Byte列をlowercase Hexへ変換する
+[[nodiscard]] std::string lowercase_hex(std::span<const BYTE> a_digest)
+{
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    result.resize(a_digest.size() * 2U);
+    for (std::size_t index = 0U; index < a_digest.size(); ++index)
+    {
+        result[index * 2U] = digits[a_digest[index] >> 4U];
+        result[index * 2U + 1U] = digits[a_digest[index] & 0x0FU];
+    }
+    return result;
+}
+
+/// @brief 検証中Product Handleの同一Mapped Byte列からSHA-256を計算する
+[[nodiscard]] cue::Result<std::string> product_hash(const MappedProduct &a_product,
+                                                    const cue::AssertContext &a_assertContext)
+{
+    const std::span<const std::byte> bytes = a_product.bytes();
+    if (bytes.size() > std::numeric_limits<DWORD>::max())
+    {
+        return cue::Result<std::string>::failure(make_error(a_assertContext,
+                                                            cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                                                            "Shipping Product exceeds the hash provider input limit"));
+    }
+    std::array<BYTE, 32U> digest{};
+    DWORD digestSize = static_cast<DWORD>(digest.size());
+    const BOOL hashed =
+        CryptHashCertificate2(BCRYPT_SHA256_ALGORITHM, 0U, nullptr, reinterpret_cast<const BYTE *>(bytes.data()),
+                              static_cast<DWORD>(bytes.size()), digest.data(), &digestSize);
+    if (hashed == FALSE || digestSize != digest.size())
+    {
+        return cue::Result<std::string>::failure(
+            make_windows_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation, GetLastError(),
+                               "Shipping Product security snapshot could not be hashed"));
+    }
+    return cue::Result<std::string>::success(lowercase_hex(digest));
+}
+
 /// @brief DER SubjectPublicKeyInfoをlowercase SHA-256 Identityへ変換する
 [[nodiscard]] cue::Result<std::string> publisher_key_id(PCCERT_CONTEXT a_certificate,
-                                                        const cue::AssertContext &a_assertContext) noexcept
+                                                        const cue::AssertContext &a_assertContext)
 {
     BYTE *encoded = nullptr;
     DWORD encodedSize = 0U;
@@ -906,20 +995,12 @@ class WinTrustState final
                                                             cue::WindowsBuildArtifactError::SignatureVerificationFailed,
                                                             "Authenticode signer public key could not be hashed"));
     }
-    constexpr char digits[] = "0123456789abcdef";
-    std::string result;
-    result.resize(digest.size() * 2U);
-    for (std::size_t index = 0U; index < digest.size(); ++index)
-    {
-        result[index * 2U] = digits[digest[index] >> 4U];
-        result[index * 2U + 1U] = digits[digest[index] & 0x0FU];
-    }
-    return cue::Result<std::string>::success(std::move(result));
+    return cue::Result<std::string>::success(lowercase_hex(digest));
 }
 
 /// @brief 保持中Product HandleをWindows Authenticode Policyで検証する
-[[nodiscard]] cue::Result<cue::WindowsProductTrustEvidence> inspect_trust(
-    const MappedProduct &a_product, const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<cue::WindowsProductTrustEvidence> inspect_trust(const MappedProduct &a_product,
+                                                                          const cue::AssertContext &a_assertContext)
 {
     WINTRUST_FILE_INFO file{};
     file.cbStruct = sizeof(file);
@@ -963,6 +1044,95 @@ class WinTrustState final
     return cue::Result<cue::WindowsProductTrustEvidence>::success(std::move(evidence));
 }
 } // namespace
+
+namespace cue::detail
+{
+/// @brief 検証済みProduct MappingとEvidenceを同じ寿命で所有する
+struct WindowsProductSecuritySnapshot::State final
+{
+    /// @brief Product MappingとEvidenceの所有権を取得する
+    State(MappedProduct a_product, WindowsProductSecurityValidation a_validation) noexcept
+        : product(std::move(a_product)), validation(std::move(a_validation))
+    {
+    }
+
+    MappedProduct product;
+    WindowsProductSecurityValidation validation;
+};
+
+WindowsProductSecuritySnapshot::WindowsProductSecuritySnapshot(std::unique_ptr<State> a_state) noexcept
+    : m_state(std::move(a_state))
+{
+}
+
+WindowsProductSecuritySnapshot::WindowsProductSecuritySnapshot(WindowsProductSecuritySnapshot &&a_other) noexcept =
+    default;
+
+WindowsProductSecuritySnapshot &WindowsProductSecuritySnapshot::operator=(
+    WindowsProductSecuritySnapshot &&a_other) noexcept = default;
+
+WindowsProductSecuritySnapshot::~WindowsProductSecuritySnapshot() noexcept = default;
+
+const WindowsProductSecurityValidation &WindowsProductSecuritySnapshot::validation() const noexcept
+{
+    return m_state->validation;
+}
+
+WindowsProductSecurityValidation WindowsProductSecuritySnapshot::take_validation() noexcept
+{
+    return std::move(m_state->validation);
+}
+
+WindowsProductSignatureStatus classify_windows_product_trust_status(std::int32_t a_status) noexcept
+{
+    return classify_trust_status(static_cast<LONG>(a_status));
+}
+
+Result<WindowsProductSecuritySnapshot> validate_windows_shipping_product_security_snapshot(
+    std::string a_absoluteProductPath, const BuildProfile &a_profile, const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        Result<MappedProduct> product = open_product(a_absoluteProductPath, a_assertContext);
+        if (!product)
+        {
+            return Result<WindowsProductSecuritySnapshot>::failure(std::move(*product.try_error()));
+        }
+        Result<PeSecurityEvidence> pe = validate_pe_security(*product.try_value(), a_assertContext);
+        if (!pe)
+        {
+            return Result<WindowsProductSecuritySnapshot>::failure(std::move(*pe.try_error()));
+        }
+        Result<WindowsProductTrustEvidence> inspected = inspect_trust(*product.try_value(), a_assertContext);
+        if (!inspected)
+        {
+            return Result<WindowsProductSecuritySnapshot>::failure(std::move(*inspected.try_error()));
+        }
+        Result<WindowsProductDistributionStatus> distribution =
+            evaluate_windows_product_trust_policy(a_profile, *inspected.try_value(), a_assertContext);
+        if (!distribution)
+        {
+            return Result<WindowsProductSecuritySnapshot>::failure(std::move(*distribution.try_error()));
+        }
+        Result<std::string> hash = product_hash(*product.try_value(), a_assertContext);
+        if (!hash)
+        {
+            return Result<WindowsProductSecuritySnapshot>::failure(std::move(*hash.try_error()));
+        }
+        WindowsProductSecurityValidation validation{
+            static_cast<std::uint64_t>(product.try_value()->bytes().size()), std::move(*hash.try_value()),
+            std::move(pe.try_value()->importedLibraries), std::move(*inspected.try_value()), *distribution.try_value()};
+        std::unique_ptr<WindowsProductSecuritySnapshot::State> state =
+            std::make_unique<WindowsProductSecuritySnapshot::State>(std::move(*product.try_value()),
+                                                                    std::move(validation));
+        return Result<WindowsProductSecuritySnapshot>::success(WindowsProductSecuritySnapshot(std::move(state)));
+    }
+    catch (...)
+    {
+        terminate_security_exception(a_assertContext);
+    }
+}
+} // namespace cue::detail
 
 namespace cue
 {
@@ -1028,30 +1198,15 @@ Result<WindowsProductSecurityValidation> validate_windows_shipping_product_secur
 {
     try
     {
-        Result<MappedProduct> product = open_product(a_absoluteProductPath, a_assertContext);
-        if (!product)
+        Result<detail::WindowsProductSecuritySnapshot> snapshot =
+            detail::validate_windows_shipping_product_security_snapshot(std::move(a_absoluteProductPath), a_profile,
+                                                                        a_assertContext);
+        if (!snapshot)
         {
-            return Result<WindowsProductSecurityValidation>::failure(std::move(*product.try_error()));
+            return Result<WindowsProductSecurityValidation>::failure(std::move(*snapshot.try_error()));
         }
-        Result<PeSecurityEvidence> pe = validate_pe_security(*product.try_value(), a_assertContext);
-        if (!pe)
-        {
-            return Result<WindowsProductSecurityValidation>::failure(std::move(*pe.try_error()));
-        }
-        Result<WindowsProductTrustEvidence> inspected = inspect_trust(*product.try_value(), a_assertContext);
-        if (!inspected)
-        {
-            return Result<WindowsProductSecurityValidation>::failure(std::move(*inspected.try_error()));
-        }
-        Result<WindowsProductDistributionStatus> distribution =
-            evaluate_windows_product_trust_policy(a_profile, *inspected.try_value(), a_assertContext);
-        if (!distribution)
-        {
-            return Result<WindowsProductSecurityValidation>::failure(std::move(*distribution.try_error()));
-        }
-        return Result<WindowsProductSecurityValidation>::success({std::move(pe.try_value()->importedLibraries),
-                                                                  std::move(*inspected.try_value()),
-                                                                  *distribution.try_value()});
+        WindowsProductSecurityValidation validation = snapshot.try_value()->take_validation();
+        return Result<WindowsProductSecurityValidation>::success(std::move(validation));
     }
     catch (...)
     {

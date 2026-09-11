@@ -5,11 +5,14 @@
 #include <Cue/Foundation/Log.h>
 #include <Cue/Project/Descriptor.h>
 
+#include "WindowsProductSecurityInternal.h"
+
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <winioctl.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +36,60 @@ constexpr std::string_view k_otherProjectId = "61234567-89ab-4cde-8f01-23456789a
 constexpr cue::BuildToolVersion k_currentCompilerVersion{static_cast<std::uint32_t>(_MSC_VER / 100),
                                                          static_cast<std::uint32_t>(_MSC_VER % 100),
                                                          static_cast<std::uint32_t>(_MSC_FULL_VER % 100000), 0U};
+
+/// @brief Publisherの各観測点でProduct Write／Delete共有が拒否されることを記録する
+class SecuritySnapshotObserver final : public cue::detail::WindowsProductSecuritySnapshotObserver
+{
+  public:
+    /// @brief Snapshot保持中のProductへWrite／Delete Handleを開けないことを確認する
+    void on_snapshot_held(cue::detail::WindowsProductSecuritySnapshotStage a_stage,
+                          const std::filesystem::path &a_productPath) noexcept override
+    {
+        HANDLE writeHandle =
+            CreateFileW(a_productPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD writeError = writeHandle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        if (writeHandle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(writeHandle);
+        }
+        HANDLE deleteHandle =
+            CreateFileW(a_productPath.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD deleteError = deleteHandle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        if (deleteHandle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(deleteHandle);
+        }
+        const std::size_t index = static_cast<std::size_t>(a_stage);
+        if (index >= m_locked.size())
+        {
+            return;
+        }
+        m_locked[index] = writeHandle == INVALID_HANDLE_VALUE && writeError == ERROR_SHARING_VIOLATION &&
+                          deleteHandle == INVALID_HANDLE_VALUE && deleteError == ERROR_SHARING_VIOLATION;
+        ++m_observations[index];
+    }
+
+    /// @brief 全Stageが一度ずつ観測されWrite／Deleteを拒否したか返す
+    [[nodiscard]] bool all_stages_locked() const noexcept
+    {
+        for (std::size_t index = 0U; index < m_locked.size(); ++index)
+        {
+            if (!m_locked[index] || m_observations[index] != 1U)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+  private:
+    static constexpr std::size_t k_stageCount =
+        static_cast<std::size_t>(cue::detail::WindowsProductSecuritySnapshotStage::Count);
+    std::array<bool, k_stageCount> m_locked{};
+    std::array<std::uint32_t, k_stageCount> m_observations{};
+};
 
 /// @brief TestをCompileした実MSVCの4要素File Version表現を返す
 [[nodiscard]] std::string current_compiler_version_text()
@@ -667,8 +724,10 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     write_text(projectRoot / "Source" / "Game" / "Test.cpp", "int cue_shipping_test = 1;\n");
 
     cue::ProjectDescriptor descriptor = make_descriptor(a_assertContext);
-    std::unique_ptr<cue::BuildArtifactPublisher> publisher = take_value(
-        cue::create_windows_build_artifact_publisher(generic_path(projectRoot), descriptor, a_assertContext));
+    SecuritySnapshotObserver securityObserver;
+    std::unique_ptr<cue::BuildArtifactPublisher> publisher =
+        take_value(cue::detail::create_windows_build_artifact_publisher_for_test(generic_path(projectRoot), descriptor,
+                                                                                 securityObserver, a_assertContext));
     cue::BuildPlan plan = make_shipping_plan(projectRoot, "01234567-89ab-4cde-8f01-23456789abcd", a_assertContext);
     const std::filesystem::path binary(plan.binary_directory());
     const std::filesystem::path output = binary / "bin" / "Release";
@@ -686,7 +745,7 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
     auto published = take_value(publisher->publish(plan, cancellation, std::move(*lease), std::nullopt));
     require(published.has_value() && published->profile().target() == cue::BuildTarget::ShippingProduct &&
             published->profile().minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal &&
-            published->files().size() == 3U);
+            published->files().size() == 3U && securityObserver.all_stages_locked());
     require(published->files()[0].relativePath == "CueGameProduct.exe" &&
             published->files()[0].purpose == cue::BuildArtifactFilePurpose::DistributionPayload);
     require(published->files()[1].relativePath == "CueGameProduct.metadata.json" &&

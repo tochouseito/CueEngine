@@ -101,6 +101,7 @@ target_sources(
     PRIVATE
         Private/WindowsArtifactPublisher.cpp
         Private/WindowsProductSecurity.cpp
+        Private/WindowsProductSecurityInternal.h
         Private/WindowsToolchain.cpp
     PUBLIC
         FILE_SET HEADERS

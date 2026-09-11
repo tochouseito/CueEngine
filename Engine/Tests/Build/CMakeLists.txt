@@ -192,6 +192,11 @@ if(WIN32)
     add_executable(CueBuildWindowsProductSecurityTests WindowsProductSecurityTests.cpp)
     target_link_libraries(CueBuildWindowsProductSecurityTests PRIVATE Cue.Build.Windows)
     target_compile_features(CueBuildWindowsProductSecurityTests PRIVATE cxx_std_20)
+    target_include_directories(
+        CueBuildWindowsProductSecurityTests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/Engine/Source/Build/Windows/Private"
+    )
     add_dependencies(
         CueBuildWindowsProductSecurityTests
         CueBuildShippingProductProbe
@@ -221,6 +226,11 @@ if(WIN32)
     add_executable(CueBuildWindowsArtifactPublisherTests WindowsArtifactPublisherTests.cpp)
     target_link_libraries(CueBuildWindowsArtifactPublisherTests PRIVATE Cue.Build.Windows Cue.Project)
     target_compile_features(CueBuildWindowsArtifactPublisherTests PRIVATE cxx_std_20)
+    target_include_directories(
+        CueBuildWindowsArtifactPublisherTests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/Engine/Source/Build/Windows/Private"
+    )
     target_compile_definitions(
         CueBuildWindowsArtifactPublisherTests
         PRIVATE

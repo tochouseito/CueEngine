@@ -4,6 +4,8 @@
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
 
+#include "WindowsProductSecurityInternal.h"
+
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -201,6 +203,74 @@ void cross_header_boundary_for_load_configuration(std::vector<std::byte> &a_byte
     std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
 }
 
+/// @brief Load Configurationの指定Security Pointerを指定VAへ改変する
+void set_load_configuration_pointer(std::vector<std::byte> &a_bytes, std::size_t a_fieldOffset, ULONGLONG a_value)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    require(a_fieldOffset <= directory.Size && sizeof(a_value) <= directory.Size - a_fieldOffset);
+    std::memcpy(a_bytes.data() + loadOffset + a_fieldOffset, &a_value, sizeof(a_value));
+}
+
+/// @brief Load ConfigurationのSecurity Pointer拒否境界となるVA一覧を作る
+[[nodiscard]] std::vector<ULONGLONG> invalid_load_configuration_pointer_values(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    require(!sections.empty() && sections.front().SizeOfRawData >= sizeof(ULONGLONG));
+    return {1U, optional.ImageBase, optional.ImageBase + optional.SizeOfImage,
+            optional.ImageBase + sections.front().VirtualAddress + sections.front().SizeOfRawData -
+                sizeof(ULONGLONG) / 2U};
+}
+
+/// @brief Load Configuration内部SizeをGuardFlags終端未満へ切り詰める
+void truncate_load_configuration_internal_size(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    constexpr DWORD truncatedSize = static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+    std::memcpy(a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size), &truncatedSize,
+                sizeof(truncatedSize));
+}
+
+/// @brief Load Configuration Data Directory SizeをGuardFlags終端未満へ切り詰める
+void truncate_load_configuration_directory_size(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    constexpr DWORD truncatedSize = static_cast<DWORD>(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size = truncatedSize;
+    std::memcpy(a_bytes.data() + optionalOffset, &optional, sizeof(optional));
+}
+
+/// @brief Load ConfigurationへSecurity Cookie未使用Flagを設定する
+void mark_security_cookie_unused(std::vector<std::byte> &a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    DWORD guardFlags = 0U;
+    std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                sizeof(guardFlags));
+    guardFlags |= IMAGE_GUARD_SECURITY_COOKIE_UNUSED;
+    std::memcpy(a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags), &guardFlags,
+                sizeof(guardFlags));
+}
+
 /// @brief Import Library名を所属Section終端から外へ跨ぐRVAへ改変する
 void cross_section_boundary_for_import_name(std::vector<std::byte> &a_bytes)
 {
@@ -319,6 +389,50 @@ void test_trust_policy(const cue::BuildProfile &a_localProfile, const cue::Build
     require(localResult && *localResult.try_value() == cue::WindowsProductDistributionStatus::LocalExecutionOnly);
 }
 
+/// @brief WinVerifyTrustの署名なしとProvider検証不能を区別する
+void test_trust_status_classification()
+{
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_NOSIGNATURE) ==
+            cue::WindowsProductSignatureStatus::Unsigned);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_PROVIDER_UNKNOWN) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
+    require(cue::detail::classify_windows_product_trust_status(TRUST_E_SUBJECT_FORM_UNKNOWN) ==
+            cue::WindowsProductSignatureStatus::VerificationUnavailable);
+}
+
+/// @brief Security Snapshot生存中のWrite／Delete共有拒否と解放を検証する
+void test_security_snapshot_lease(const std::filesystem::path &a_validProduct, const cue::BuildProfile &a_localProfile,
+                                  const cue::AssertContext &a_assertContext)
+{
+    const std::filesystem::path directory = create_test_directory();
+    const std::filesystem::path product = directory / "SnapshotLease.exe";
+    write_bytes(product, read_bytes(a_validProduct));
+    {
+        cue::Result<cue::detail::WindowsProductSecuritySnapshot> snapshot =
+            cue::detail::validate_windows_shipping_product_security_snapshot(product.generic_string(), a_localProfile,
+                                                                             a_assertContext);
+        require(snapshot.has_value());
+        HANDLE writeHandle =
+            CreateFileW(product.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD writeError = GetLastError();
+        require(writeHandle == INVALID_HANDLE_VALUE && writeError == ERROR_SHARING_VIOLATION);
+        HANDLE deleteHandle =
+            CreateFileW(product.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD deleteError = GetLastError();
+        require(deleteHandle == INVALID_HANDLE_VALUE && deleteError == ERROR_SHARING_VIOLATION);
+    }
+    HANDLE releasedHandle =
+        CreateFileW(product.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(releasedHandle != INVALID_HANDLE_VALUE);
+    require(CloseHandle(releasedHandle) != FALSE);
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+    require(!error);
+}
+
 /// @brief 実PEでHardening、Import、Loader、Unsigned検証を実行する
 void test_product_security(const std::filesystem::path &a_validProduct,
                            const std::filesystem::path &a_unhardenedProduct,
@@ -328,6 +442,8 @@ void test_product_security(const std::filesystem::path &a_validProduct,
 {
     const cue::BuildProfile localProfile = make_profile(cue::ShippingTrustMode::UnsignedLocal, a_assertContext);
     const cue::BuildProfile signedProfile = make_profile(cue::ShippingTrustMode::PublisherSigned, a_assertContext);
+    test_trust_status_classification();
+    test_security_snapshot_lease(a_validProduct, localProfile, a_assertContext);
 
     cue::Result<cue::WindowsProductSecurityValidation> valid =
         cue::validate_windows_shipping_product_security(a_validProduct.generic_string(), localProfile, a_assertContext);
@@ -336,7 +452,8 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         std::fprintf(stderr, "error=%.*s\n", static_cast<int>(valid.try_error()->summary().size()),
                      valid.try_error()->summary().data());
     }
-    require(valid &&
+    require(valid && valid.try_value()->byteSize == std::filesystem::file_size(a_validProduct) &&
+            valid.try_value()->contentHash.size() == 64U &&
             valid.try_value()->distributionStatus == cue::WindowsProductDistributionStatus::LocalExecutionOnly &&
             valid.try_value()->trustEvidence.signatureStatus == cue::WindowsProductSignatureStatus::Unsigned &&
             std::find(valid.try_value()->importedLibraries.begin(), valid.try_value()->importedLibraries.end(),
@@ -396,6 +513,47 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     const std::filesystem::path headerBoundary = directory / "HeaderBoundary.exe";
     write_bytes(headerBoundary, bytes);
     require(!cue::validate_windows_shipping_product_security(headerBoundary.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    constexpr std::array<std::size_t, 3U> loadPointerOffsets = {
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFCheckFunctionPointer),
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer)};
+    const std::vector<ULONGLONG> invalidPointerValues = invalid_load_configuration_pointer_values(bytes);
+    for (std::size_t fieldIndex = 0U; fieldIndex < loadPointerOffsets.size(); ++fieldIndex)
+    {
+        for (std::size_t valueIndex = 0U; valueIndex < invalidPointerValues.size(); ++valueIndex)
+        {
+            bytes = read_bytes(a_validProduct);
+            set_load_configuration_pointer(bytes, loadPointerOffsets[fieldIndex], invalidPointerValues[valueIndex]);
+            const std::filesystem::path invalidLoadPointer =
+                directory /
+                ("InvalidLoadPointer-" + std::to_string(fieldIndex) + "-" + std::to_string(valueIndex) + ".exe");
+            write_bytes(invalidLoadPointer, bytes);
+            require(!cue::validate_windows_shipping_product_security(invalidLoadPointer.generic_string(), localProfile,
+                                                                     a_assertContext));
+        }
+    }
+
+    bytes = read_bytes(a_validProduct);
+    truncate_load_configuration_internal_size(bytes);
+    const std::filesystem::path truncatedInternalLoadSize = directory / "TruncatedInternalLoadSize.exe";
+    write_bytes(truncatedInternalLoadSize, bytes);
+    require(!cue::validate_windows_shipping_product_security(truncatedInternalLoadSize.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    truncate_load_configuration_directory_size(bytes);
+    const std::filesystem::path truncatedDirectoryLoadSize = directory / "TruncatedDirectoryLoadSize.exe";
+    write_bytes(truncatedDirectoryLoadSize, bytes);
+    require(!cue::validate_windows_shipping_product_security(truncatedDirectoryLoadSize.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    mark_security_cookie_unused(bytes);
+    const std::filesystem::path unusedSecurityCookie = directory / "UnusedSecurityCookie.exe";
+    write_bytes(unusedSecurityCookie, bytes);
+    require(!cue::validate_windows_shipping_product_security(unusedSecurityCookie.generic_string(), localProfile,
                                                              a_assertContext));
 
     bytes = read_bytes(a_validProduct);

@@ -396,6 +396,8 @@ ADR更新を伴う明示的Compatibility判断を行う。
 
 M17の実装では、最終PEをWrite／Delete共有なしで開き、x64 Machine、Security Flag、Base Relocation、Load Configuration、
 `/DEPENDENTLOADFLAG:0x800`、Direct Import Allowlist、Delay Import不在、Game Module Loader API不在をFirst-party Validatorで確認する。
+Candidateは同じRead HandleからPE、Trust、Size、SHA-256を確定し、起動確認とPath Hash照合が終わるまでHandleを保持する。
+VersionへRenameした後は最終Pathから再検証し、Candidate Hashとの一致を確認したRead Handleを`Current`公開完了まで保持する。
 成功EvidenceはShipping Artifact Metadataの`securityValidation`へImport一覧、署名状態、Artifact単体の配布到達点とともに記録する。
 
 Authenticode検証は同じFile HandleをWindows Trust Providerへ渡し、SignerのDER SubjectPublicKeyInfo SHA-256を
