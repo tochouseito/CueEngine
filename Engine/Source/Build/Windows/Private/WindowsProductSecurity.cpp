@@ -457,6 +457,34 @@ template <typename Value>
            (a_range.sectionCharacteristics & a_forbidden) == 0U;
 }
 
+/// @brief CFG Function Tableの各RVAが厳密昇順かつ実行可能Code Sectionを指すか検証する
+[[nodiscard]] bool has_valid_guard_function_entries(std::span<const std::byte> a_bytes,
+                                                    const MappedImageFileRange &a_tableRange, std::size_t a_entryCount,
+                                                    std::size_t a_entryStride,
+                                                    const IMAGE_OPTIONAL_HEADER64 &a_optional,
+                                                    std::span<const IMAGE_SECTION_HEADER> a_sections) noexcept
+{
+    std::optional<std::uint32_t> previous;
+    for (std::size_t index = 0U; index < a_entryCount; ++index)
+    {
+        const std::optional<std::uint32_t> targetRva =
+            read_value<std::uint32_t>(a_bytes, a_tableRange.offset + index * a_entryStride);
+        if (!targetRva || *targetRva >= a_optional.SizeOfImage || (previous.has_value() && *targetRva <= *previous) ||
+            *targetRva > std::numeric_limits<std::uint64_t>::max() - a_optional.ImageBase)
+        {
+            return false;
+        }
+        const std::optional<MappedImageFileRange> targetRange =
+            mapped_image_va_range(a_optional.ImageBase + *targetRva, 1U, a_optional, a_sections, a_bytes.size());
+        if (!targetRange || !has_section_characteristics(*targetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE))
+        {
+            return false;
+        }
+        previous = targetRva;
+    }
+    return true;
+}
+
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
 [[nodiscard]] cue::Result<std::vector<std::uint32_t>> validate_base_relocations(
     std::span<const std::byte> a_bytes, const IMAGE_OPTIONAL_HEADER64 &a_optional,
@@ -934,8 +962,11 @@ template <typename Value>
         guardDispatchTargetRange &&
         has_section_characteristics(*guardDispatchTargetRange, k_executableCodeSection, IMAGE_SCN_MEM_WRITE);
     const bool hasMappedFunctionTable =
-        guardFunctionTableRange && has_section_characteristics(*guardFunctionTableRange, k_readOnlyDataSection,
-                                                               IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE);
+        guardFunctionTableRange &&
+        has_section_characteristics(*guardFunctionTableRange, k_readOnlyDataSection,
+                                    IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE) &&
+        has_valid_guard_function_entries(bytes, *guardFunctionTableRange, static_cast<std::size_t>(*guardFunctionCount),
+                                         guardFunctionTableStride, *optional, sections);
     const std::array<std::uint64_t, 6U> requiredRelocations = {
         static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
             offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie),

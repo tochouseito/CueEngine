@@ -261,6 +261,67 @@ void clear_guard_function_table_flag(std::vector<std::byte> &a_bytes)
                 sizeof(guardFlags));
 }
 
+/// @brief Guard Function Tableの指定Entryに対応するFile Offsetを返す
+[[nodiscard]] std::size_t guard_function_table_entry_offset(std::span<const std::byte> a_bytes,
+                                                            std::size_t a_entryIndex)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const IMAGE_DATA_DIRECTORY &directory = optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    const std::size_t loadOffset = section_rva_offset(directory.VirtualAddress, directory.Size, sections, a_bytes);
+    ULONGLONG functionTable = 0U;
+    ULONGLONG functionCount = 0U;
+    DWORD guardFlags = 0U;
+    std::memcpy(&functionTable,
+                a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable),
+                sizeof(functionTable));
+    std::memcpy(&functionCount,
+                a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionCount),
+                sizeof(functionCount));
+    std::memcpy(&guardFlags, a_bytes.data() + loadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
+                sizeof(guardFlags));
+    const std::size_t stride = sizeof(std::uint32_t) + ((guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >>
+                                                        IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT);
+    require(functionTable >= optional.ImageBase &&
+            functionTable - optional.ImageBase <= std::numeric_limits<DWORD>::max() &&
+            functionCount <= std::numeric_limits<std::size_t>::max() / stride && a_entryIndex < functionCount);
+    const std::size_t tableOffset =
+        section_rva_offset(static_cast<std::uint32_t>(functionTable - optional.ImageBase),
+                           static_cast<std::size_t>(functionCount) * stride, sections, a_bytes);
+    return tableOffset + a_entryIndex * stride;
+}
+
+/// @brief Guard Function Tableの指定Entry RVAを読む
+[[nodiscard]] std::uint32_t guard_function_table_entry(std::span<const std::byte> a_bytes, std::size_t a_entryIndex)
+{
+    const std::size_t offset = guard_function_table_entry_offset(a_bytes, a_entryIndex);
+    std::uint32_t value = 0U;
+    std::memcpy(&value, a_bytes.data() + offset, sizeof(value));
+    return value;
+}
+
+/// @brief Guard Function Tableの指定Entry RVAを改変する
+void set_guard_function_table_entry(std::vector<std::byte> &a_bytes, std::size_t a_entryIndex, std::uint32_t a_value)
+{
+    const std::size_t offset = guard_function_table_entry_offset(a_bytes, a_entryIndex);
+    std::memcpy(a_bytes.data() + offset, &a_value, sizeof(a_value));
+}
+
+/// @brief Guard Function Table自体のRVAを返す
+[[nodiscard]] std::uint32_t guard_function_table_rva(std::span<const std::byte> a_bytes)
+{
+    const std::size_t optionalOffset = optional_header_offset(a_bytes);
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    std::memcpy(&optional, a_bytes.data() + optionalOffset, sizeof(optional));
+    const ULONGLONG functionTable =
+        load_configuration_pointer(a_bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable));
+    require(functionTable >= optional.ImageBase &&
+            functionTable - optional.ImageBase <= std::numeric_limits<DWORD>::max());
+    return static_cast<std::uint32_t>(functionTable - optional.ImageBase);
+}
+
 /// @brief 指定RVAを対象とするDIR64再配置EntryをABSOLUTEへ置換する
 void clear_dir64_relocation(std::vector<std::byte> &a_bytes, std::uint32_t a_targetRva)
 {
@@ -972,6 +1033,39 @@ void test_product_security(const std::filesystem::path &a_validProduct,
     const std::filesystem::path executableFunctionTable = directory / "ExecutableFunctionTable.exe";
     write_bytes(executableFunctionTable, bytes);
     require(!cue::validate_windows_shipping_product_security(executableFunctionTable.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 functionTargetOptional{};
+    std::memcpy(&functionTargetOptional, bytes.data() + optional_header_offset(bytes), sizeof(functionTargetOptional));
+    set_guard_function_table_entry(bytes, 0U, functionTargetOptional.SizeOfImage);
+    const std::filesystem::path outOfImageFunctionTarget = directory / "OutOfImageFunctionTarget.exe";
+    write_bytes(outOfImageFunctionTarget, bytes);
+    require(!cue::validate_windows_shipping_product_security(outOfImageFunctionTarget.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    set_guard_function_table_entry(bytes, 0U, guard_function_table_rva(bytes));
+    const std::filesystem::path nonExecutableFunctionTarget = directory / "NonExecutableFunctionTarget.exe";
+    write_bytes(nonExecutableFunctionTarget, bytes);
+    require(!cue::validate_windows_shipping_product_security(nonExecutableFunctionTarget.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    set_guard_function_table_entry(bytes, 1U, guard_function_table_entry(bytes, 0U));
+    const std::filesystem::path duplicateFunctionTarget = directory / "DuplicateFunctionTarget.exe";
+    write_bytes(duplicateFunctionTarget, bytes);
+    require(!cue::validate_windows_shipping_product_security(duplicateFunctionTarget.generic_string(), localProfile,
+                                                             a_assertContext));
+
+    bytes = read_bytes(a_validProduct);
+    const ULONGLONG unalignedFunctionTable =
+        load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable)) + 1U;
+    set_load_configuration_pointer(bytes, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFFunctionTable),
+                                   unalignedFunctionTable);
+    const std::filesystem::path unalignedFunctionTablePath = directory / "UnalignedFunctionTable.exe";
+    write_bytes(unalignedFunctionTablePath, bytes);
+    require(!cue::validate_windows_shipping_product_security(unalignedFunctionTablePath.generic_string(), localProfile,
                                                              a_assertContext));
 
     bytes = read_bytes(a_validProduct);
