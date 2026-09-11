@@ -591,6 +591,43 @@ Result<BuildArtifactInventory> BuildArtifactInventory::create(const BuildPlan &a
     }
 }
 
+Result<BuildArtifactInventory>
+BuildArtifactInventory::create_legacy_game_module(const BuildPlan &a_plan, std::string a_artifactId,
+                                                  std::vector<BuildArtifactFile> a_files,
+                                                  const AssertContext &a_assertContext) noexcept
+{
+    try
+    {
+        if (a_plan.profile().target() != BuildTarget::GameModule)
+        {
+            return Result<BuildArtifactInventory>::failure(
+                make_service_error(a_assertContext, GameBuildServiceError::InvalidArtifact,
+                                   "Legacy artifact inventory requires a GameModule build plan"));
+        }
+        Result<BuildArtifactInventory> inventory =
+            create(a_plan, std::move(a_artifactId), std::move(a_files), a_assertContext);
+        if (!inventory)
+        {
+            return inventory;
+        }
+        std::string versionDirectory(a_plan.project_root());
+        if (!versionDirectory.empty() && versionDirectory.back() != '/')
+        {
+            versionDirectory.push_back('/');
+        }
+        versionDirectory.append("Generated/Artifacts/");
+        versionDirectory.append(current_configuration_name(a_plan.profile().configuration()));
+        versionDirectory.append("/Versions/");
+        versionDirectory.append(inventory.try_value()->artifact_id());
+        inventory.try_value()->m_versionDirectory = std::move(versionDirectory);
+        return inventory;
+    }
+    catch (...)
+    {
+        terminate_service_exception(a_assertContext);
+    }
+}
+
 std::string_view BuildArtifactInventory::artifact_id() const noexcept
 {
     return m_artifactId;

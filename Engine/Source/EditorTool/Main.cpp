@@ -855,8 +855,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             const std::string_view projectLocator = m_session->project_locator();
             const std::filesystem::path projectRoot(
                 std::u8string_view(reinterpret_cast<const char8_t *>(projectLocator.data()), projectLocator.size()));
-            const std::filesystem::path currentPath =
-                projectRoot / "Generated" / "Artifacts" / configuration / "Current.json";
+            const std::filesystem::path currentPath = projectRoot / "Generated" / "Artifacts" / "GameModule" /
+                                                      configuration / "modular" / "Current.json";
             std::ifstream currentStream(currentPath, std::ios::binary);
             const std::string current{std::istreambuf_iterator<char>(currentStream), std::istreambuf_iterator<char>()};
             if (!currentStream.is_open() || currentStream.bad() ||

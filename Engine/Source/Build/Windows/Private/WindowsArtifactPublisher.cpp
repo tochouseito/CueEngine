@@ -1413,17 +1413,27 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
         {
             const std::string_view configuration = configuration_name(a_expected.configuration());
             const std::optional<std::filesystem::path> versionPath = to_path(a_expected.version_directory());
-            const std::filesystem::path store =
+            const std::filesystem::path currentStore =
+                (m_projectRoot / "Generated" / "Artifacts" / "GameModule" / configuration / "modular")
+                    .lexically_normal();
+            const std::filesystem::path legacyStore =
                 (m_projectRoot / "Generated" / "Artifacts" / configuration).lexically_normal();
-            const std::filesystem::path expectedVersion =
-                (store / "Versions" / a_expected.artifact_id()).lexically_normal();
+            const std::filesystem::path currentVersion =
+                (currentStore / "Versions" / a_expected.artifact_id()).lexically_normal();
+            const std::filesystem::path legacyVersion =
+                (legacyStore / "Versions" / a_expected.artifact_id()).lexically_normal();
+            const std::filesystem::path normalizedVersion =
+                versionPath ? versionPath->lexically_normal() : std::filesystem::path{};
+            const bool usesCurrentStore = versionPath && normalizedVersion == currentVersion;
+            const bool usesLegacyStore = versionPath && normalizedVersion == legacyVersion;
             if (m_projectId.empty() || configuration.empty() || !versionPath ||
-                versionPath->lexically_normal() != expectedVersion)
+                (!usesCurrentStore && !usesLegacyStore))
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
                     make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
                                "Artifact Read Lease input is not bound to this Project store"));
             }
+            const std::filesystem::path &store = usesCurrentStore ? currentStore : legacyStore;
             cue::Result<std::optional<GuardedByteRangeLock>> lock = acquire_shared_lock(
                 m_projectRoot, store / "Access.lock", a_cancellation, a_deadline,
                 cue::WindowsBuildArtifactError::ArtifactLockFailed, *m_assertContext);
@@ -1450,7 +1460,7 @@ class WindowsBuildArtifactReader final : public cue::BuildArtifactReader
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
                     std::move(*currentValidated.try_error()));
             }
-            cue::Result<void> verified = verify_inventory_files(expectedVersion, a_expected, *m_assertContext);
+            cue::Result<void> verified = verify_inventory_files(normalizedVersion, a_expected, *m_assertContext);
             if (!verified)
             {
                 return cue::Result<std::optional<std::unique_ptr<cue::BuildArtifactReadLease>>>::failure(
@@ -1509,10 +1519,15 @@ class WindowsBuildArtifactPublisher final : public cue::BuildArtifactPublisher
                     make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
                                "Build Plan belongs to another Project Root"));
             }
-            const std::filesystem::path lock =
-                m_projectRoot / "Generated" / "Build" / "Locks" / (std::string(a_plan.workspace_key()) + ".lock");
+            const std::optional<std::filesystem::path> lock = to_path(a_plan.workspace_lock_file());
+            if (!lock)
+            {
+                return cue::Result<std::optional<std::unique_ptr<cue::BuildWorkspaceLease>>>::failure(
+                    make_error(*m_assertContext, cue::WindowsBuildArtifactError::InvalidSettings,
+                               "Build Workspace lock path could not be converted"));
+            }
             auto acquired =
-                acquire_exclusive_lock(m_projectRoot, lock, a_cancellation, a_deadline,
+                acquire_exclusive_lock(m_projectRoot, *lock, a_cancellation, a_deadline,
                                        cue::WindowsBuildArtifactError::WorkspaceLockFailed, *m_assertContext);
             if (!acquired)
             {

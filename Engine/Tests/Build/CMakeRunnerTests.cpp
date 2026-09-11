@@ -103,6 +103,18 @@ class RecordingObserver final : public cue::CMakeStageObserver
     return std::move(*plan.try_value());
 }
 
+/// @brief Unsigned Local Shipping Product用Runner検証Planを作成する
+[[nodiscard]] cue::BuildPlan make_shipping_plan(const cue::AssertContext &a_assertContext)
+{
+    auto profile = cue::BuildProfile::create_shipping_product(
+        cue::BuildConfiguration::Release, cue::ShippingTrustMode::UnsignedLocal, {}, a_assertContext);
+    const auto projectRoot = std::filesystem::current_path().generic_string();
+    cue::BuildRequest request{projectRoot, *profile.try_value(), "11234567-89ab-4cde-8f01-23456789abcd",
+                              k_workspaceCompatibility};
+    auto plan = cue::create_build_plan(request, a_assertContext);
+    return std::move(*plan.try_value());
+}
+
 /// @brief Processを起動しないTest用のAbsolute Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
@@ -140,6 +152,21 @@ class RecordingObserver final : public cue::CMakeStageObserver
            runner.m_environments[0][1].value == "C:/CueEngine" &&
            result.try_value()->stages()[0].output[0].bytes == "c" &&
            result.try_value()->stages()[1].output[0].bytes == "b";
+}
+
+/// @brief Shipping ProductをReleaseの固定CMake Targetへ変換するか検証する
+[[nodiscard]] bool test_shipping_target(const cue::AssertContext &a_assertContext)
+{
+    cue::BuildPlan plan = make_shipping_plan(a_assertContext);
+    RecordingRunner runner({cue::ChildProcessResult::exited(0U, {})});
+    RecordingObserver observer;
+    cue::ChildProcessCancellation cancellation;
+    auto result = cue::run_cmake_build(plan, make_settings(), cue::CMakeConfigureMode::ReuseCompatibleTree, runner,
+                                       cancellation, observer, a_assertContext);
+    const std::vector<std::string> expectedBuild = {
+        "--build", std::string(plan.binary_directory()), "--config", "Release", "--target", "CueGameProduct"};
+    return result && result.try_value()->succeeded() && runner.m_arguments.size() == 1U &&
+           runner.m_arguments[0] == expectedBuild;
 }
 
 /// @brief Configure失敗時にBuildを開始せず、既存Tree再利用時はBuildだけ実行するか検証する
@@ -238,8 +265,8 @@ int main()
                                       assertContext) &&
                    test_configuration(cue::BuildConfiguration::Release, "windows-vs2026-release", "Release",
                                       assertContext) &&
-                   test_configure_boundaries(assertContext) && test_cancel_retry_timeout(assertContext) &&
-                   test_invalid_settings(assertContext)
+                   test_shipping_target(assertContext) && test_configure_boundaries(assertContext) &&
+                   test_cancel_retry_timeout(assertContext) && test_invalid_settings(assertContext)
                ? 0
                : 1;
 }
