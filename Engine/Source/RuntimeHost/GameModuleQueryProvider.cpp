@@ -608,6 +608,7 @@ Result<PreparedGameModule> connect_game_module(
         const CueGameModuleResult createModuleResult = api.createModule(&moduleHandle, &diagnostic);
         if (createModuleResult != CUE_GAME_MODULE_RESULT_SUCCESS || moduleHandle == nullptr)
         {
+            a_identitySource.reset();
             if (moduleHandle != nullptr)
             {
                 api.destroyModule(moduleHandle);
