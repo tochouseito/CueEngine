@@ -754,7 +754,7 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
         BuildConfiguration configuration = BuildConfiguration::Debug;
         BuildTarget target = BuildTarget::GameModule;
         std::optional<ShippingTrustMode> trustMode;
-        std::string publisherKeyId;
+        std::optional<std::string> publisherKeyId;
         std::size_t memberCount = 0U;
         while (!reader.read('}'))
         {
@@ -836,7 +836,7 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
             {
                 if (reader.read_null())
                 {
-                    publisherKeyId.clear();
+                    publisherKeyId.reset();
                     foundPublisherKey = true;
                 }
                 else
@@ -844,7 +844,7 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
                     std::string_view value;
                     if (reader.read_string(value))
                     {
-                        publisherKeyId.assign(value);
+                        publisherKeyId.emplace(value);
                         foundPublisherKey = true;
                     }
                 }
@@ -880,19 +880,20 @@ Result<BuildProfile> parse_build_profile(std::string_view a_json, const AssertCo
         }
         if (target == BuildTarget::GameModule)
         {
-            if (trustMode || !publisherKeyId.empty())
+            if (trustMode || publisherKeyId)
             {
                 return Result<BuildProfile>::failure(make_plan_error(a_assertContext, BuildPlanError::InvalidProfile,
                                                                      "Game module profile trust fields are invalid"));
             }
             return BuildProfile::create(configuration, target, a_assertContext);
         }
-        if (!trustMode)
+        if (!trustMode || (*trustMode == ShippingTrustMode::UnsignedLocal && publisherKeyId))
         {
             return Result<BuildProfile>::failure(make_plan_error(a_assertContext, BuildPlanError::InvalidProfile,
                                                                  "Shipping profile trust fields are invalid"));
         }
-        return BuildProfile::create_shipping_product(configuration, *trustMode, std::move(publisherKeyId),
+        return BuildProfile::create_shipping_product(configuration, *trustMode,
+                                                     publisherKeyId ? std::move(*publisherKeyId) : std::string{},
                                                      a_assertContext);
     }
     catch (...)

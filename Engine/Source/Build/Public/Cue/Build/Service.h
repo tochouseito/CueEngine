@@ -107,6 +107,14 @@ class BuildArtifactInventory final
                                                                std::vector<BuildArtifactFile> a_files,
                                                                const AssertContext &a_assertContext) noexcept;
 
+    /// @brief M15 Layoutで公開済みのGame Module Artifactを移行期間中の読取Inventoryとして構築する
+    ///
+    /// File検証はcreateと同じ契約を使用し、Version Directoryだけを旧
+    /// `Generated/Artifacts/<Configuration>/Versions/<ArtifactId>`へ設定する。ShippingProductには使用できない。
+    [[nodiscard]] static Result<BuildArtifactInventory>
+    create_legacy_game_module(const BuildPlan &a_plan, std::string a_artifactId,
+                              std::vector<BuildArtifactFile> a_files, const AssertContext &a_assertContext) noexcept;
+
     /// @brief Artifact Versionを識別するlowercase UUID v4を返す
     [[nodiscard]] std::string_view artifact_id() const noexcept;
     /// @brief Build時のConfigurationを返す

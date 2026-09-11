@@ -399,6 +399,22 @@ void test_windows_artifact_publisher(const std::filesystem::path &a_probe, const
     std::unique_ptr<cue::BuildArtifactReader> reader = take_value(
         cue::create_windows_build_artifact_reader(generic_path(projectRoot), descriptor, a_assertContext));
     TestArtifactReadCancellation readCancellation;
+    std::vector<cue::BuildArtifactFile> legacyFiles(published->files().begin(), published->files().end());
+    cue::BuildArtifactInventory legacyInventory =
+        take_value(cue::BuildArtifactInventory::create_legacy_game_module(
+            plan, std::string(published->artifact_id()), std::move(legacyFiles), a_assertContext));
+    const std::filesystem::path legacyVersion(legacyInventory.version_directory());
+    require(std::filesystem::create_directories(legacyVersion));
+    for (const cue::BuildArtifactFile &file : legacyInventory.files())
+    {
+        require(std::filesystem::copy_file(version / file.relativePath, legacyVersion / file.relativePath));
+    }
+    const std::filesystem::path legacyStore = legacyVersion.parent_path().parent_path();
+    write_text(legacyStore / "Current.json", make_reordered_current(legacyInventory));
+    auto legacyReadLease = take_value(
+        reader->acquire_current_read_lease(legacyInventory, readCancellation, std::nullopt));
+    require(legacyReadLease.has_value());
+    legacyReadLease.reset();
     write_text(currentPath, make_reordered_current(*published));
     auto firstReadLease = take_value(
         reader->acquire_current_read_lease(*published, readCancellation, std::nullopt));

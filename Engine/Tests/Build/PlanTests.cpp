@@ -350,6 +350,12 @@ struct MountPointReparseBuffer final
     auto downgraded = cue::parse_build_profile(
         R"json({"schemaVersion":2,"configuration":"Release","target":"ShippingProduct","minimumTrustMode":"UnsignedLocal","publisherKeyId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})json",
         a_assertContext);
+    auto gameModuleEmptyPublisher = cue::parse_build_profile(
+        R"json({"schemaVersion":2,"configuration":"Release","target":"GameModule","minimumTrustMode":null,"publisherKeyId":""})json",
+        a_assertContext);
+    auto unsignedEmptyPublisher = cue::parse_build_profile(
+        R"json({"schemaVersion":2,"configuration":"Release","target":"ShippingProduct","minimumTrustMode":"UnsignedLocal","publisherKeyId":""})json",
+        a_assertContext);
     return profile.try_value()->schema_version() == 2U &&
            serialized.try_value()->find("\"schemaVersion\": 2") != std::string::npos && roundTrip &&
            *roundTrip.try_value() == *profile.try_value() && legacy &&
@@ -359,7 +365,7 @@ struct MountPointReparseBuffer final
            unsignedShipping.try_value()->publisher_key_id().empty() && signedShipping &&
            signedShipping.try_value()->minimum_trust_mode() == cue::ShippingTrustMode::PublisherSigned &&
            signedShipping.try_value()->publisher_key_id() == std::string(64U, 'a') && !unknownVersion &&
-           !unknownMember && !duplicate && !downgraded;
+           !unknownMember && !duplicate && !downgraded && !gameModuleEmptyPublisher && !unsignedEmptyPublisher;
 }
 
 /// @brief Release Shipping ProductがTrust IdentityごとにBuild出力を分離するか検証する
