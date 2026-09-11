@@ -508,6 +508,14 @@ void set_image_va_value(std::vector<std::byte> &a_bytes, ULONGLONG a_va, ULONGLO
     std::memcpy(a_bytes.data() + valueOffset, &a_value, sizeof(a_value));
 }
 
+/// @brief Image内RVAが指す8Byte値を指定値へ改変する
+void set_image_rva_value(std::vector<std::byte> &a_bytes, std::uint32_t a_rva, std::uint64_t a_value)
+{
+    const std::vector<IMAGE_SECTION_HEADER> sections = read_sections(a_bytes);
+    const std::size_t valueOffset = section_rva_offset(a_rva, sizeof(a_value), sections, a_bytes);
+    std::memcpy(a_bytes.data() + valueOffset, &a_value, sizeof(a_value));
+}
+
 /// @brief Image内VAが指す8Byte値を読む
 [[nodiscard]] ULONGLONG image_va_value(std::span<const std::byte> a_bytes, ULONGLONG a_va)
 {
@@ -1135,6 +1143,28 @@ void test_product_security(const std::filesystem::path &a_validProduct,
         write_bytes(relocatedRelocationDirectory, bytes);
         require(!cue::validate_windows_shipping_product_security(relocatedRelocationDirectory.generic_string(),
                                                                  localProfile, a_assertContext));
+    }
+
+    bytes = read_bytes(a_validProduct);
+    IMAGE_OPTIONAL_HEADER64 relocationValueOptional{};
+    std::memcpy(&relocationValueOptional, bytes.data() + optional_header_offset(bytes),
+                sizeof(relocationValueOptional));
+    require(relocationValueOptional.ImageBase > 0U &&
+            relocationValueOptional.ImageBase <=
+                std::numeric_limits<std::uint64_t>::max() - relocationValueOptional.SizeOfImage);
+    const std::array<std::uint64_t, 3U> invalidRelocationValues = {0U, relocationValueOptional.ImageBase - 1U,
+                                                                   relocationValueOptional.ImageBase +
+                                                                       relocationValueOptional.SizeOfImage};
+    for (std::size_t index = 0U; index < invalidRelocationValues.size(); ++index)
+    {
+        bytes = read_bytes(a_validProduct);
+        set_image_rva_value(bytes, relocationValueOptional.AddressOfEntryPoint, invalidRelocationValues[index]);
+        append_dir64_relocation(bytes, relocationValueOptional.AddressOfEntryPoint);
+        const std::filesystem::path invalidRelocationValue =
+            directory / ("InvalidRelocationValue-" + std::to_string(index) + ".exe");
+        write_bytes(invalidRelocationValue, bytes);
+        require(!cue::validate_windows_shipping_product_security(invalidRelocationValue.generic_string(), localProfile,
+                                                                 a_assertContext));
     }
 
     bytes = read_bytes(a_validProduct);
