@@ -15,7 +15,7 @@ Package Tree不変、Staging回収を一続きで検証する。
 | Build環境からの独立 | Pass | Project Sourceを一時的に別名へ移し、Engine Build Rootの絶対Pathを含まない移設Packageを無関係なCurrent Directoryから起動 |
 | Tamper／不正Identity／不正Inventory拒否 | Pass | EXE、Runtime Scene、Project ID、Configuration、Architecture、Role、追加DLLの独立Copyを全て非0終了で拒否 |
 | Package RootへのUser Data書込みなし | Pass | 実行前後の相対Path、Entry種別、全File Byte列が一致し、最終Inventoryも4 Fileだけ |
-| Process／Staging cleanup | Pass | Interactive Stop後にChild Process完了、Active Stageなし、Recovery Stagingなし、Project Tree内のStaging命名なし、Process固有E2E Workspaceの実Path消失を確認 |
+| Process／Staging cleanup | Pass | Interactive Stop後にChild Process完了、Active Stageなし、Recovery Stagingなし、Project Tree内のStaging命名なし、Drive／UNC両形式に対応したProcess固有E2E Workspaceの実Path消失を確認 |
 | Size／Link／Startup Baseline | Pass | 本文の測定条件と数値を記録 |
 
 Manifestの`fileCount`はManifest自身を除く3 Entryで、物理Packageは`CuePackage.json`を含む4 Fileである。

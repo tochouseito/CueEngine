@@ -62,6 +62,34 @@ class TestFatalHandler final : public cue::FatalHandler
     }
 };
 
+/// @brief Absolute Windows PathをLong Path対応表現へ変換する
+[[nodiscard]] std::filesystem::path extended_windows_path(const std::filesystem::path &a_path)
+{
+    const std::wstring native = a_path.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return a_path;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+}
+
+/// @brief Drive PathとUNC PathのLong Path変換規則を検証する
+void test_extended_windows_path_conversion()
+{
+    if (extended_windows_path(L"C:\\Workspace\\Project").native() != L"\\\\?\\C:\\Workspace\\Project" ||
+        extended_windows_path(L"\\\\server\\share\\Project").native() !=
+            L"\\\\?\\UNC\\server\\share\\Project" ||
+        extended_windows_path(L"\\\\?\\C:\\Workspace\\Project").native() !=
+            L"\\\\?\\C:\\Workspace\\Project")
+    {
+        std::_Exit(80);
+    }
+}
+
 /// @brief Process固有Temporary Project Directoryを一意所有する
 class TestDirectory final
 {
@@ -81,7 +109,7 @@ class TestDirectory final
     /// @brief Test所有Directoryだけを終了時に除去する
     ~TestDirectory()
     {
-        const std::filesystem::path cleanupPath(L"\\\\?\\" + m_path.native());
+        const std::filesystem::path cleanupPath = extended_windows_path(m_path);
         for (std::size_t attempt = 0U; attempt < 50U; ++attempt)
         {
             std::error_code removeError;
@@ -1025,6 +1053,7 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(handler, std::move(sinks));
     cue::AssertContext context(logger, handler);
+    test_extended_windows_path_conversion();
     try
     {
         test_process_round_trip(a_arguments[1], a_arguments[2], context);
