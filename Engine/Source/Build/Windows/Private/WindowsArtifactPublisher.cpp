@@ -1348,6 +1348,32 @@ template <typename Cancellation>
     return value;
 }
 
+/// @brief XMLのdouble-quoted Attribute値へ埋め込める表現を末尾へ追加する
+void append_xml_double_quoted_attribute(std::string &a_output, std::string_view a_value)
+{
+    for (const char value : a_value)
+    {
+        switch (value)
+        {
+        case '&':
+            a_output.append("&amp;");
+            break;
+        case '<':
+            a_output.append("&lt;");
+            break;
+        case '>':
+            a_output.append("&gt;");
+            break;
+        case '"':
+            a_output.append("&quot;");
+            break;
+        default:
+            a_output.push_back(value);
+            break;
+        }
+    }
+}
+
 /// @brief Build Tool VersionをCMakeの4要素表現へ変換する
 [[nodiscard]] std::string build_tool_version_text(const cue::BuildToolVersion &a_version)
 {
@@ -1528,7 +1554,7 @@ template <typename Cancellation>
                                               ? std::string_view{}
                                               : msvcToolsetVersion.substr(0U, secondVersionSeparator);
     std::string expectedToolsetImport("Project=\"");
-    expectedToolsetImport.append(cue::build_metadata::k_visualStudioRoot);
+    append_xml_double_quoted_attribute(expectedToolsetImport, cue::build_metadata::k_visualStudioRoot);
     expectedToolsetImport.append("/VC/Auxiliary/Build/");
     expectedToolsetImport.append(propsVersion);
     expectedToolsetImport.append("/Microsoft.VCToolsVersion.");

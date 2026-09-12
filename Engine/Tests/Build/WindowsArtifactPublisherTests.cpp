@@ -310,6 +310,32 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
     return make_descriptor(k_projectId, a_assertContext);
 }
 
+/// @brief XMLのdouble-quoted Attribute値へ埋め込める表現を末尾へ追加する
+void append_xml_double_quoted_attribute(std::string &a_output, std::string_view a_value)
+{
+    for (const char value : a_value)
+    {
+        switch (value)
+        {
+        case '&':
+            a_output.append("&amp;");
+            break;
+        case '<':
+            a_output.append("&lt;");
+            break;
+        case '>':
+            a_output.append("&gt;");
+            break;
+        case '"':
+            a_output.append("&quot;");
+            break;
+        default:
+            a_output.push_back(value);
+            break;
+        }
+    }
+}
+
 /// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
 void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
                                        std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
@@ -370,7 +396,7 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
             : a_msvcToolsetVersion.find('.', firstVersionSeparator + 1U);
     require(secondVersionSeparator != std::string_view::npos);
     const std::string_view propsVersion = a_msvcToolsetVersion.substr(0U, secondVersionSeparator);
-    project.append(CUE_TEST_CMAKE_GENERATOR_INSTANCE);
+    append_xml_double_quoted_attribute(project, CUE_TEST_CMAKE_GENERATOR_INSTANCE);
     project.append("/VC/Auxiliary/Build/");
     project.append(propsVersion);
     project.append("/Microsoft.VCToolsVersion.");

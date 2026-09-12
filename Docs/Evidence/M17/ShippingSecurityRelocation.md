@@ -45,7 +45,7 @@ PE／Load Config／CFGの判定根拠はMicrosoftの
 
 Shipping Toolchain Evidenceは、生成Treeの実配置`Source/Game/CueGameProduct.vcxproj`を読み、明示された
 完全な`VCToolsVersion`、`Microsoft.VCToolsVersion.<major.minor>.props` Import、Build metadataの完全なCompiler File
-Versionを照合する。
+Versionを照合する。Visual Studio配置Pathは、生成ProjectのXML Attribute表現に合わせてEscapeしてから照合する。
 Shipping Workspace Keyは長いSource PathでもWindowsのPath制限内へ収めるため、情報を欠落させず短縮した。
 
 ## Performance Baseline
