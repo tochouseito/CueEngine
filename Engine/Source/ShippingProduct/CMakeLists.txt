@@ -43,8 +43,15 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
     endif()
     string(REGEX MATCH "(^|,)version=([^,]+)" cueShippingToolsetMatch "${CMAKE_GENERATOR_TOOLSET}")
     set(cueShippingToolsetVersion "${CMAKE_MATCH_2}")
-    if(cueShippingToolsetMatch STREQUAL "" OR cueShippingToolsetVersion STREQUAL "")
-        message(FATAL_ERROR "Cue Shipping Product requires an explicit Visual Studio toolset version")
+    file(TO_CMAKE_PATH "${CMAKE_CXX_COMPILER}" cueShippingCompilerPath)
+    string(REGEX MATCH "/VC/Tools/MSVC/([^/]+)/bin/" cueShippingCompilerToolsetMatch "${cueShippingCompilerPath}")
+    set(cueShippingCompilerToolsetVersion "${CMAKE_MATCH_1}")
+    if(cueShippingCompilerToolsetMatch STREQUAL "" OR cueShippingCompilerToolsetVersion STREQUAL "")
+        message(FATAL_ERROR "Cue Shipping Product could not identify the selected Visual Studio toolset version")
+    endif()
+    if(NOT cueShippingToolsetMatch STREQUAL "" AND
+       NOT cueShippingToolsetVersion STREQUAL cueShippingCompilerToolsetVersion)
+        message(FATAL_ERROR "Cue Shipping Product Visual Studio toolset selection is inconsistent")
     endif()
 
     add_executable(
@@ -52,6 +59,7 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
         EXCLUDE_FROM_ALL
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/StaticProductMain.cpp"
     )
+    set_property(TARGET "${targetName}" PROPERTY VS_GLOBAL_VCToolsVersion "${cueShippingCompilerToolsetVersion}")
     target_link_libraries("${targetName}" PRIVATE "${gameModuleTarget}" Cue.RuntimeHost.Static)
     target_compile_features("${targetName}" PRIVATE cxx_std_20)
     target_compile_definitions(
@@ -66,7 +74,6 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
         PROPERTIES
             CXX_EXTENSIONS OFF
             MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
-            VS_GLOBAL_VCToolsVersion "${cueShippingToolsetVersion}"
             OUTPUT_NAME "CueGameProduct"
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
             PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"

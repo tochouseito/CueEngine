@@ -34,6 +34,9 @@ namespace
 constexpr std::string_view k_publisherKeyId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 constexpr std::uintmax_t k_oversizedProductBytes = 512ULL * 1024ULL * 1024ULL + 1ULL;
 constexpr DWORD k_oversizedIatDirectoryBytes = (65536U + 1U) * sizeof(IMAGE_THUNK_DATA64);
+constexpr std::string_view k_guardMetadataStrideReserveBegin = "CueGtStrideBegin";
+constexpr std::string_view k_guardMetadataStrideReserveEnd = "CueGtStrideEnd!!";
+constexpr std::size_t k_guardMetadataStrideReserveBytes = 1024U;
 
 /// @brief Test中のFatalを即時終了へ変換する
 class TestFatalHandler final : public cue::FatalHandler
@@ -522,34 +525,44 @@ void rewrite_guard_tables_with_metadata_stride(std::vector<std::byte> &a_bytes, 
     const std::size_t alignedFunctionBytes = (functionBytes + 3U) & ~std::size_t{3U};
     const std::size_t addressBytes = addressEntries.size() * stride;
     const std::size_t requiredBytes = alignedFunctionBytes + addressBytes;
-    IMAGE_FILE_HEADER fileHeader{};
-    std::memcpy(&fileHeader, a_bytes.data() + file_header_offset(a_bytes), sizeof(fileHeader));
-    const std::size_t sectionsOffset = optionalOffset + fileHeader.SizeOfOptionalHeader;
     std::optional<std::size_t> rewrittenFunctionOffset;
     std::uint32_t rewrittenFunctionRva = 0U;
     std::uint32_t rewrittenAddressRva = 0U;
-    for (std::size_t index = 0U; index < sections.size(); ++index)
+    require(requiredBytes <= k_guardMetadataStrideReserveBytes);
+    for (std::size_t index = 0U;
+         index + k_guardMetadataStrideReserveBegin.size() + k_guardMetadataStrideReserveBytes +
+                 k_guardMetadataStrideReserveEnd.size() <=
+             a_bytes.size();
+         ++index)
     {
-        IMAGE_SECTION_HEADER section = sections[index];
-        const std::uint64_t sectionStart = section.VirtualAddress;
-        const std::uint64_t sectionEnd = sectionStart + std::max(section.Misc.VirtualSize, section.SizeOfRawData);
-        if (functionTable.rva < sectionStart || functionTable.rva >= sectionEnd ||
-            addressTable.rva < sectionStart || addressTable.rva >= sectionEnd)
+        if (std::memcmp(a_bytes.data() + index, k_guardMetadataStrideReserveBegin.data(),
+                        k_guardMetadataStrideReserveBegin.size()) != 0 ||
+            std::memcmp(a_bytes.data() + index + k_guardMetadataStrideReserveBegin.size() +
+                            k_guardMetadataStrideReserveBytes,
+                        k_guardMetadataStrideReserveEnd.data(), k_guardMetadataStrideReserveEnd.size()) != 0)
         {
             continue;
         }
-        const std::size_t destinationDelta =
-            (static_cast<std::size_t>(section.Misc.VirtualSize) + 7U) & ~std::size_t{7U};
-        require(destinationDelta <= section.SizeOfRawData && requiredBytes <= section.SizeOfRawData - destinationDelta);
-        const std::size_t destinationOffset = section.PointerToRawData + destinationDelta;
-        require(destinationOffset <= a_bytes.size() && requiredBytes <= a_bytes.size() - destinationOffset &&
-                std::ranges::all_of(std::span(a_bytes).subspan(destinationOffset, requiredBytes),
-                                    [](std::byte a_value) noexcept { return a_value == std::byte{0U}; }));
-        section.Misc.VirtualSize = static_cast<DWORD>(destinationDelta + requiredBytes);
-        std::memcpy(a_bytes.data() + sectionsOffset + index * sizeof(IMAGE_SECTION_HEADER), &section, sizeof(section));
-        rewrittenFunctionOffset = destinationOffset;
-        rewrittenFunctionRva = section.VirtualAddress + static_cast<std::uint32_t>(destinationDelta);
-        rewrittenAddressRva = rewrittenFunctionRva + static_cast<std::uint32_t>(alignedFunctionBytes);
+        require(!rewrittenFunctionOffset.has_value());
+        const std::size_t destinationOffset = index + k_guardMetadataStrideReserveBegin.size();
+        for (const IMAGE_SECTION_HEADER &section : sections)
+        {
+            const std::size_t sectionStart = section.PointerToRawData;
+            const std::size_t sectionEnd = sectionStart + section.SizeOfRawData;
+            if (destinationOffset < sectionStart || destinationOffset > sectionEnd ||
+                requiredBytes > sectionEnd - destinationOffset)
+            {
+                continue;
+            }
+            require((section.Characteristics & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)) == 0U);
+            const std::size_t destinationDelta = destinationOffset - sectionStart;
+            require(destinationDelta <= std::numeric_limits<std::uint32_t>::max() - section.VirtualAddress);
+            rewrittenFunctionOffset = destinationOffset;
+            rewrittenFunctionRva = section.VirtualAddress + static_cast<std::uint32_t>(destinationDelta);
+            rewrittenAddressRva = rewrittenFunctionRva + static_cast<std::uint32_t>(alignedFunctionBytes);
+            break;
+        }
+        require(rewrittenFunctionOffset.has_value());
         break;
     }
     require(rewrittenFunctionOffset.has_value());

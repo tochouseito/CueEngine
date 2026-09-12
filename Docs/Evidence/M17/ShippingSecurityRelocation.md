@@ -3,7 +3,7 @@
 ## Result
 
 Issue #306のRelease Shipping End-to-Endを2026-09-12に実行し、`Cue.Editor.Workflow.ProcessRoundTrip`が
-94.94秒で成功した。テストはEditorの実CompositionからShipping Productを強制Configureして生成し、
+93.70秒で成功した。テストはEditorの実CompositionからShipping Productを強制Configureして生成し、
 Smoke起動、実Windowを伴うInteractive起動、要求停止、別Directoryへの移設、Source非表示、改ざん拒否、
 Package Tree不変、Staging回収を一続きで検証する。
 
