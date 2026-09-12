@@ -5,6 +5,7 @@
 #include <Cue/RuntimeHost/GameModuleQueryProvider.h>
 #include <Cue/RuntimeHost/RuntimeHostProcess.h>
 #include <Cue/RuntimeHost/RuntimeHostStartup.h>
+#include <Cue/RuntimeHost/StaticRuntimePackage.h>
 #include <Cue/Scene/Instantiation.h>
 #include <Cue/Scene/SceneDocument.h>
 #include <Cue/Schema/Registry.h>
@@ -22,10 +23,27 @@
 #error CUE_GAME_PRODUCT_PROJECT_ID must identify the linked Game Module
 #endif
 
+#ifndef CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE
+#error CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE must identify the embedded Product trust policy
+#endif
+
+#ifndef CUE_GAME_PRODUCT_PUBLISHER_KEY_ID
+#error CUE_GAME_PRODUCT_PUBLISHER_KEY_ID must identify the embedded Product publisher key
+#endif
+
 namespace
 {
 constexpr std::string_view k_startupSceneAssetId = "70000000-0000-4000-8000-000000000001";
 constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe:v1\n";
+#if CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE == 1
+constexpr cue::runtime_host::StaticRuntimeTrustMode k_productMinimumTrustMode =
+    cue::runtime_host::StaticRuntimeTrustMode::UnsignedLocal;
+#elif CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE == 2
+constexpr cue::runtime_host::StaticRuntimeTrustMode k_productMinimumTrustMode =
+    cue::runtime_host::StaticRuntimeTrustMode::PublisherSigned;
+#else
+#error Unsupported CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE value
+#endif
 
 /// @brief Product Startup中の予期しない例外をProcess Fatal境界へ渡す
 [[noreturn]] void terminate_product_startup(const cue::AssertContext &a_assertContext) noexcept
@@ -50,42 +68,45 @@ constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe
 }
 
 /// @brief Link済みQuery EntryからStatic Runtime Host Startupを構築する
-[[nodiscard]] cue::Result<cue::runtime_host::RuntimeHostStartup> make_product_startup(
+[[nodiscard]] cue::Result<cue::runtime_host::RuntimeHostStartup> make_artifact_probe_startup(
     const cue::AssertContext &a_assertContext) noexcept
 {
     try
     {
         cue::Result<std::unique_ptr<cue::runtime_host::GameModuleQueryProvider>> provider =
-            cue::runtime_host::create_static_game_module_query_provider(
-                &cue_game_module_query, a_assertContext);
+            cue::runtime_host::create_static_game_module_query_provider(&cue_game_module_query, a_assertContext);
         if (!provider)
         {
-            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(
-                std::move(*provider.try_error()));
+            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(std::move(*provider.try_error()));
         }
         auto identitySource = std::make_unique<cue::schema::SchemaRegistryIdentitySource>();
-        cue::Result<cue::runtime_host::PreparedGameModule> prepared =
-            cue::runtime_host::connect_game_module(
-                **provider.try_value(), CUE_GAME_PRODUCT_PROJECT_ID, std::move(identitySource), a_assertContext);
+        cue::Result<cue::runtime_host::PreparedGameModule> prepared = cue::runtime_host::connect_game_module(
+            **provider.try_value(), CUE_GAME_PRODUCT_PROJECT_ID, std::move(identitySource), a_assertContext);
         if (!prepared)
         {
-            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(
-                std::move(*prepared.try_error()));
+            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(std::move(*prepared.try_error()));
         }
         cue::Result<cue::scene::SceneSnapshot> scene = make_startup_scene(a_assertContext);
         if (!scene)
         {
-            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(
-                std::move(*scene.try_error()));
+            return cue::Result<cue::runtime_host::RuntimeHostStartup>::failure(std::move(*scene.try_error()));
         }
         return cue::Result<cue::runtime_host::RuntimeHostStartup>::success(
-            cue::runtime_host::RuntimeHostStartup(
-                std::move(*prepared.try_value()), std::move(*scene.try_value())));
+            cue::runtime_host::RuntimeHostStartup(std::move(*prepared.try_value()), std::move(*scene.try_value())));
     }
     catch (...)
     {
         terminate_product_startup(a_assertContext);
     }
+}
+
+/// @brief Product相対Monolithic Packageと埋込みTrust PolicyからRuntime Host Startupを構築する
+[[nodiscard]] cue::Result<cue::runtime_host::RuntimeHostStartup> make_product_startup(
+    const cue::AssertContext &a_assertContext) noexcept
+{
+    return cue::runtime_host::load_static_runtime_package(&cue_game_module_query, CUE_GAME_PRODUCT_PROJECT_ID,
+                                                          k_productMinimumTrustMode, CUE_GAME_PRODUCT_PUBLISHER_KEY_ID,
+                                                          a_assertContext);
 }
 
 /// @brief UTF-16 ArgumentがASCII Project IDと一致するか判定する
@@ -109,8 +130,7 @@ constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe
 /// @brief Static StartupとProject／Configuration一致を検証し固定Markerを耐久書込みする
 [[nodiscard]] int run_artifact_probe(int a_argumentCount, wchar_t **a_arguments) noexcept
 {
-    if (a_argumentCount != 4 || std::wstring_view(a_arguments[2]) != L"Release" ||
-        !matches_project_id(a_arguments[3]))
+    if (a_argumentCount != 4 || std::wstring_view(a_arguments[2]) != L"Release" || !matches_project_id(a_arguments[3]))
     {
         return 1;
     }
@@ -122,15 +142,15 @@ constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe
         cue::Logger logger(fatalHandler, std::move(sinks));
         cue::AssertContext assertContext(logger, fatalHandler);
         {
-            cue::Result<cue::runtime_host::RuntimeHostStartup> startup = make_product_startup(assertContext);
+            cue::Result<cue::runtime_host::RuntimeHostStartup> startup = make_artifact_probe_startup(assertContext);
             if (!startup)
             {
                 return 2;
             }
         }
 
-        HANDLE marker = CreateFileW(L".probe-complete", GENERIC_WRITE, 0U, nullptr, CREATE_NEW,
-                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE marker =
+            CreateFileW(L".probe-complete", GENERIC_WRITE, 0U, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (marker == INVALID_HANDLE_VALUE)
         {
             return 3;
@@ -141,8 +161,8 @@ constexpr std::string_view k_productProbeCompletionMarker = "CueGameProductProbe
                       static_cast<DWORD>(k_productProbeCompletionMarker.size()), &written, nullptr);
         const BOOL flushSucceeded = writeSucceeded != FALSE ? FlushFileBuffers(marker) : FALSE;
         const BOOL closeSucceeded = CloseHandle(marker);
-        return writeSucceeded != FALSE && written == k_productProbeCompletionMarker.size() &&
-                       flushSucceeded != FALSE && closeSucceeded != FALSE
+        return writeSucceeded != FALSE && written == k_productProbeCompletionMarker.size() && flushSucceeded != FALSE &&
+                       closeSucceeded != FALSE
                    ? 0
                    : 4;
     }

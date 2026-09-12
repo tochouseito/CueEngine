@@ -45,13 +45,19 @@ enum class PackagePublishOutcome : std::uint8_t
     PublishedButDurabilityUnknown
 };
 
-/// @brief Package Manifestの主要IdentityとInventory規模を所有する診断Summary
+/// @brief Package Manifestの主要IdentityとRun前再照合用Inventoryを所有する診断Summary
 struct PackageManifestSummary final
 {
     std::string projectId;
     EngineVersion engineVersion;
     BuildConfiguration configuration;
+    PackageExecutionModel executionModel;
     std::string startupSceneAssetId;
+    std::optional<std::string> applicationExecutable;
+    std::optional<ShippingTrustMode> trustMode;
+    std::optional<std::string> publisherKeyId;
+    bool publicDistributionReady;
+    std::vector<PackageFileEntry> files;
     std::size_t fileCount;
     std::uint64_t inventoryBytes;
 };

@@ -21,11 +21,14 @@ cue_add_shipping_engine_module(Schema)
 cue_add_shipping_engine_module(Math)
 cue_add_shipping_engine_module(GameCore)
 cue_add_shipping_engine_module(IO)
+cue_add_shipping_engine_module(Project)
 cue_add_shipping_engine_module(Scene)
 cue_add_shipping_engine_module(Platform)
+cue_add_shipping_engine_module(Build)
 cue_add_shipping_engine_module(Input)
 cue_add_shipping_engine_module(Runtime)
 cue_add_shipping_engine_module(RHI)
+cue_add_shipping_engine_module(Package)
 
 set(CUE_RUNTIME_HOST_BUILD_DYNAMIC OFF)
 cue_add_shipping_engine_module(RuntimeHost)
@@ -50,6 +53,8 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
         "${targetName}"
         PRIVATE
             "CUE_GAME_PRODUCT_PROJECT_ID=\"${projectId}\""
+            CUE_GAME_PRODUCT_MINIMUM_TRUST_MODE=1
+            "CUE_GAME_PRODUCT_PUBLISHER_KEY_ID=\"\""
     )
     set_target_properties(
         "${targetName}"

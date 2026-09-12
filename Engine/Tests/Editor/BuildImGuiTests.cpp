@@ -256,8 +256,7 @@ class TestOperationIdSource final : public cue::editor::BuildOperationIdSource
 /// @brief Process起動を行わないTest用のAbsolute Runner設定を返す
 [[nodiscard]] cue::CMakeRunnerSettings make_settings()
 {
-    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5),
-            "14.51.36231"};
+    return {"C:/Tools/cmake.exe", "C:/CueEngine", {}, std::chrono::seconds(5), std::chrono::seconds(5), "14.51.36231"};
 }
 
 /// @brief Package Presenter Test用Project Descriptorを作る
@@ -484,7 +483,8 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
         cue::editor_core::EditorController::create(std::move(*generated.try_value()), persistence, a_assertContext);
     auto operationIds = std::make_unique<TestOperationIdSource>(
         std::vector<std::string>{"71234567-89ab-4cde-8f01-23456789abcd", "81234567-89ab-4cde-8f01-23456789abcd",
-                                 "91234567-89ab-4cde-8f01-23456789abcd", "a1234567-89ab-4cde-8f01-23456789abcd"});
+                                 "91234567-89ab-4cde-8f01-23456789abcd", "a1234567-89ab-4cde-8f01-23456789abcd",
+                                 "b1234567-89ab-4cde-8f01-23456789abcd"});
     std::unique_ptr<cue::editor::PackagePresenter> presenter =
         cue::editor::PackagePresenter::create(*service, *controller, projectRoot.generic_string(),
                                               k_workspaceCompatibility, std::move(operationIds), a_assertContext);
@@ -540,6 +540,19 @@ void test_package_retry_and_diagnostic(const cue::AssertContext &a_assertContext
     presenter->refresh();
     require(presenter->current_snapshot().state == cue::package::PackageWorkflowState::Failed);
     require(presenter->current_snapshot().build.operationId == "91234567-89ab-4cde-8f01-23456789abcd");
+
+    require(presenter->submit(cue::editor::EditorPackageCommand::StartShipping));
+    require(presenter->message().find("Monolithic Shipping Product") != std::string_view::npos);
+    require(service->wait_for_package().has_value());
+    presenter->refresh();
+    require(presenter->current_snapshot().state == cue::package::PackageWorkflowState::Failed);
+    require(presenter->message().starts_with("Buildに失敗したためPackageは開始していません") ||
+            presenter->message().starts_with("Packageの検証または公開に失敗しました"));
+    require(presenter->current_snapshot().build.operationId == "a1234567-89ab-4cde-8f01-23456789abcd");
+    require(presenter->current_snapshot().build.profile.has_value());
+    require(presenter->current_snapshot().build.profile->target() == cue::BuildTarget::ShippingProduct);
+    require(presenter->current_snapshot().build.profile->configuration() == cue::BuildConfiguration::Release);
+    require(presenter->current_snapshot().build.profile->minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal);
 
     auto locator = cue::RelativePath::parse("Scenes/Default.cuescene", a_assertContext);
     require(locator.has_value());

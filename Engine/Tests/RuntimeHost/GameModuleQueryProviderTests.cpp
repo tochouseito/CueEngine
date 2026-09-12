@@ -7,6 +7,7 @@
 #include <Cue/Input/FrameInputSnapshot.h>
 #include <Cue/Runtime/Error.h>
 #include <Cue/RuntimeHost/GameModuleQueryProvider.h>
+#include <Cue/RuntimeHost/StaticRuntimePackage.h>
 #include <Cue/Schema/Registry.h>
 
 #include <cstdlib>
@@ -359,6 +360,31 @@ void test_static_provider(const cue::AssertContext &a_assertContext)
     require(timeline == expected);
 }
 
+/// @brief 未実装のPublisher署名検証をRuntime起動境界が常に拒否することを検証する
+void test_static_runtime_trust_policy(const cue::AssertContext &a_assertContext)
+{
+    std::vector<std::string> timeline;
+    g_timeline = &timeline;
+    cue::Result<cue::runtime_host::RuntimeHostStartup> signedPackage =
+        cue::runtime_host::load_static_runtime_package(
+            &query_module, k_projectId, cue::runtime_host::StaticRuntimeTrustMode::PublisherSigned,
+            std::string(64U, 'a'), a_assertContext);
+    cue::Result<cue::runtime_host::RuntimeHostStartup> inconsistentUnsignedPackage =
+        cue::runtime_host::load_static_runtime_package(
+            &query_module, k_projectId, cue::runtime_host::StaticRuntimeTrustMode::UnsignedLocal,
+            std::string(64U, 'a'), a_assertContext);
+    cue::Result<cue::runtime_host::RuntimeHostStartup> unknownTrustMode =
+        cue::runtime_host::load_static_runtime_package(
+            &query_module, k_projectId, static_cast<cue::runtime_host::StaticRuntimeTrustMode>(0xffU), {},
+            a_assertContext);
+    require(!signedPackage.has_value() && !inconsistentUnsignedPackage.has_value() &&
+            !unknownTrustMode.has_value());
+    require(signedPackage.try_error()->summary().find("Only UnsignedLocal") != std::string_view::npos);
+    require(inconsistentUnsignedPackage.try_error()->summary().find("Only UnsignedLocal") != std::string_view::npos);
+    require(unknownTrustMode.try_error()->summary().find("Only UnsignedLocal") != std::string_view::npos);
+    require(timeline.empty());
+}
+
 void test_dynamic_provider_and_rollback(const cue::AssertContext &a_assertContext)
 {
     std::vector<std::string> timeline;
@@ -417,6 +443,7 @@ int main()
     cue::Logger logger(fatalHandler, std::move(sinks));
     cue::AssertContext assertContext(logger, fatalHandler);
     test_static_provider(assertContext);
+    test_static_runtime_trust_policy(assertContext);
     test_dynamic_provider_and_rollback(assertContext);
     return 0;
 }

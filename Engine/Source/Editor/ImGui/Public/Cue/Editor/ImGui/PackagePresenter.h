@@ -23,6 +23,7 @@ namespace cue::editor
 enum class EditorPackageCommand : std::uint8_t
 {
     Start,
+    StartShipping,
     Cancel,
     Retry,
     Run,
