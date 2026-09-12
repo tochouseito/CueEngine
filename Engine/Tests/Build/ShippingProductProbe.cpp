@@ -2,6 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#if defined(CUE_TEST_PRODUCT_D3D12_ORDINAL_IMPORT)
+#include <d3d12.h>
+#endif
+
 #include <cstddef>
 #include <string_view>
 
@@ -21,9 +25,33 @@ void exercise_packaged_loader_import() noexcept
 #error CUE_TEST_PRODUCT_CONFIGURATION must identify the probe product configuration
 #endif
 
+#if defined(CUE_TEST_PRODUCT_D3D12_ORDINAL_IMPORT)
+extern "C" decltype(&D3D12CreateDevice) __imp_D3D12CreateDevice;
+#endif
+
 namespace
 {
 constexpr std::string_view k_marker = "CueGameProductProbe:v1\n";
+
+#if defined(CUE_TEST_PRODUCT_D3D12_ORDINAL_IMPORT)
+/// @brief Security Test用にD3D12の序数Importを最終PEへ残す
+void exercise_d3d12_ordinal_import() noexcept
+{
+    decltype(&D3D12CreateDevice) const volatile createDevice = __imp_D3D12CreateDevice;
+    decltype(&GetCurrentProcessId) const volatile currentProcessId = &GetCurrentProcessId;
+    decltype(&GetTickCount64) const volatile tickCount = &GetTickCount64;
+    ID3D12Device *device = nullptr;
+    const volatile HRESULT result =
+        createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), reinterpret_cast<void **>(&device));
+    static_cast<void>(currentProcessId());
+    static_cast<void>(tickCount());
+    if (device != nullptr)
+    {
+        device->Release();
+    }
+    static_cast<void>(result);
+}
+#endif
 
 #if defined(CUE_TEST_PRODUCT_LOADER_IMPORT)
 /// @brief Security Test用に禁止対象Loader Importを最終PEへ残す
@@ -57,6 +85,9 @@ void exercise_loader_import() noexcept
 /// @brief Publisher専用Protocolを検証して固定完了Markerを耐久書込みする
 [[nodiscard]] int run_probe(int a_argumentCount, wchar_t **a_arguments) noexcept
 {
+#if defined(CUE_TEST_PRODUCT_D3D12_ORDINAL_IMPORT)
+    exercise_d3d12_ordinal_import();
+#endif
 #if defined(CUE_TEST_PRODUCT_LOADER_IMPORT)
     exercise_loader_import();
 #endif

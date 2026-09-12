@@ -355,10 +355,23 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     project.append(a_windowsSdkVersion);
     project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
     project.append(a_platformToolset);
-    project.append("</PlatformToolset><VCToolsVersion>");
-    project.append(a_msvcToolsetVersion);
-    project.append("</VCToolsVersion></PropertyGroup></Project>\n");
-    write_text(a_binary / "CueGameProduct.vcxproj", project);
+    project.append("</PlatformToolset></PropertyGroup><Import Project=\"");
+    const std::size_t firstVersionSeparator = a_msvcToolsetVersion.find('.');
+    const std::size_t secondVersionSeparator =
+        firstVersionSeparator == std::string_view::npos
+            ? std::string_view::npos
+            : a_msvcToolsetVersion.find('.', firstVersionSeparator + 1U);
+    require(secondVersionSeparator != std::string_view::npos);
+    const std::string_view propsVersion = a_msvcToolsetVersion.substr(0U, secondVersionSeparator);
+    project.append(CUE_TEST_CMAKE_GENERATOR_INSTANCE);
+    project.append("/VC/Auxiliary/Build/");
+    project.append(propsVersion);
+    project.append("/Microsoft.VCToolsVersion.");
+    project.append(propsVersion);
+    project.append(".props\" /></Project>\n");
+    const std::filesystem::path projectDirectory = a_binary / "Source" / "Game";
+    require(std::filesystem::create_directories(projectDirectory) || std::filesystem::is_directory(projectDirectory));
+    write_text(projectDirectory / "CueGameProduct.vcxproj", project);
 }
 
 /// @brief Test用Build PlanをOperation ID別に構築する

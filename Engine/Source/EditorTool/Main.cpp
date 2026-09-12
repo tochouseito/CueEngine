@@ -46,6 +46,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,69 @@ constexpr std::uint64_t k_firstEditorPlayGeneration = 1U;
 constexpr std::int64_t k_maximumEditorPlayDeltaNanoseconds = 100'000'000;
 constexpr std::size_t k_processTestPlayCycleCount = 12U;
 constexpr std::uint32_t k_engineBuildPolicyVersion = 2U;
+
+/// @brief EnumWindows中に対象Executableが所有する可視Windowを記録する
+struct VisibleProcessWindowProbe final
+{
+    const std::filesystem::path *expectedExecutable = nullptr;
+    bool found = false;
+};
+
+/// @brief 可視Top-level Windowの所有Processが対象Executableか照合する
+BOOL CALLBACK observe_visible_process_window(HWND a_window, LPARAM a_context) noexcept
+{
+    auto *probe = reinterpret_cast<VisibleProcessWindowProbe *>(a_context);
+    if (probe == nullptr || probe->expectedExecutable == nullptr || IsWindowVisible(a_window) == FALSE)
+    {
+        return TRUE;
+    }
+    DWORD processId = 0U;
+    static_cast<void>(GetWindowThreadProcessId(a_window, &processId));
+    if (processId == 0U)
+    {
+        return TRUE;
+    }
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (process == nullptr)
+    {
+        return TRUE;
+    }
+    std::array<wchar_t, 32768U> executablePath{};
+    DWORD executablePathSize = static_cast<DWORD>(executablePath.size());
+    const BOOL queried = QueryFullProcessImageNameW(process, 0U, executablePath.data(), &executablePathSize);
+    CloseHandle(process);
+    if (queried == FALSE)
+    {
+        return TRUE;
+    }
+    std::error_code error;
+    probe->found = std::filesystem::equivalent(
+        *probe->expectedExecutable, std::filesystem::path(std::wstring_view(executablePath.data(), executablePathSize)),
+        error);
+    return probe->found ? FALSE : TRUE;
+}
+
+/// @brief UTF-8 Absolute Executableが所有する可視Top-level Windowを観測したか返す
+[[nodiscard]] bool has_visible_process_window(std::string_view a_executable)
+{
+    const std::filesystem::path executable(
+        std::u8string_view(reinterpret_cast<const char8_t *>(a_executable.data()), a_executable.size()));
+    VisibleProcessWindowProbe probe{&executable, false};
+    static_cast<void>(EnumWindows(observe_visible_process_window, reinterpret_cast<LPARAM>(&probe)));
+    return probe.found;
+}
+
+/// @brief Child Processの全Capture Byte列に指定Markerが含まれるか返す
+[[nodiscard]] bool process_output_contains(const std::vector<cue::ChildProcessOutputChunk> &a_output,
+                                           std::string_view a_marker)
+{
+    std::string captured;
+    for (const cue::ChildProcessOutputChunk &chunk : a_output)
+    {
+        captured.append(chunk.bytes);
+    }
+    return captured.find(a_marker) != std::string::npos;
+}
 
 /// @brief Windows System RNGからBuild Operation用UUID Version 4を発行する
 class WindowsBuildOperationIdSource final : public cue::editor::BuildOperationIdSource
@@ -472,6 +536,12 @@ struct PlayWorkflowDocumentState final
     return std::nullopt;
 }
 
+/// @brief Process Test ActionがRelease Monolithic Shipping Workflowを要求するか返す
+[[nodiscard]] bool is_process_test_shipping_workflow(std::string_view a_action) noexcept
+{
+    return a_action == "shipping-workflow-release";
+}
+
 /// @brief Editor起動Contractの必須値、重複、未知Optionを検証する
 [[nodiscard]] cue::Result<EditorToolOptions> parse_options(int a_argumentCount, wchar_t **a_arguments,
                                                            const cue::AssertContext &a_context) noexcept
@@ -623,7 +693,8 @@ struct PlayWorkflowDocumentState final
               *options.processTestAction != "edit-close-save" && *options.processTestAction != "files-workflow" &&
               *options.processTestAction != "play-repeated-workflow" &&
               !process_test_build_configuration(*options.processTestAction).has_value() &&
-              !process_test_package_configuration(*options.processTestAction).has_value())))
+              !process_test_package_configuration(*options.processTestAction).has_value() &&
+              !is_process_test_shipping_workflow(*options.processTestAction))))
         {
             return cue::Result<EditorToolOptions>::failure(make_tool_error(
                 a_context, k_invalidArguments,
@@ -1036,6 +1107,18 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             const cue::package::PackageWorkflowSnapshot &published = m_packagePresenter->current_snapshot();
             if (!completed)
             {
+                if (!published.build.diagnostics.empty())
+                {
+                    return fail(published.build.diagnostics.back().summary);
+                }
+                if (!published.build.logs.empty())
+                {
+                    return fail(published.build.logs.back().bytes);
+                }
+                if (!published.message.empty())
+                {
+                    return fail(published.message);
+                }
                 return cue::Result<void>::failure(std::move(*completed.try_error()));
             }
             if (published.state != cue::package::PackageWorkflowState::PackageReady || !published.package ||
@@ -1062,6 +1145,133 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                                                                                        cue::package::PackageWorkflowStage::None)
             {
                 return fail(ran.message.empty() ? "Packaged Runtime did not exit successfully" : ran.message);
+            }
+            return cue::Result<void>::success();
+        }
+        catch (...)
+        {
+            terminate_tool_exception(*m_assertContext);
+        }
+    }
+
+    /// @brief 実Editor CompositionからRelease Shipping ProductのBuild、Package、起動をHeadless検証する
+    [[nodiscard]] cue::Result<void> run_shipping_workflow_process_test() noexcept
+    {
+        try
+        {
+            /// @brief Shipping Workflow不変条件違反をProcess Test用Errorへ変換する
+            const auto fail = [this](std::string_view a_summary) noexcept
+            { return cue::Result<void>::failure(make_tool_error(*m_assertContext, k_processTestFailed, a_summary)); };
+
+            if (m_packagePresenter == nullptr || m_packageService == nullptr)
+            {
+                return fail("Shipping workflow is unavailable in the Editor composition");
+            }
+            m_packagePresenter->set_active_document(m_session->active_document_id());
+            if (!m_packagePresenter->set_configuration(cue::BuildConfiguration::Release) ||
+                !m_packagePresenter->set_force_configure(true))
+            {
+                return fail("Editor Shipping configuration could not be applied");
+            }
+            if (!m_packagePresenter->submit(cue::editor::EditorPackageCommand::StartShipping))
+            {
+                return fail(m_packagePresenter->message().empty() ? "Editor Shipping command could not be submitted"
+                                                                  : m_packagePresenter->message());
+            }
+            cue::Result<void> completed = m_packageService->wait_for_package();
+            m_packagePresenter->refresh();
+            const cue::package::PackageWorkflowSnapshot &published = m_packagePresenter->current_snapshot();
+            if (!completed)
+            {
+                return cue::Result<void>::failure(std::move(*completed.try_error()));
+            }
+            if (published.state != cue::package::PackageWorkflowState::PackageReady || !published.package ||
+                published.package->manifest.configuration != cue::BuildConfiguration::Release ||
+                published.package->manifest.executionModel != cue::package::PackageExecutionModel::Monolithic ||
+                published.package->manifest.trustMode != cue::ShippingTrustMode::UnsignedLocal ||
+                published.package->manifest.publicDistributionReady || published.package->manifest.fileCount != 3U ||
+                published.package->artifactId.empty() || published.package->destination.empty() ||
+                published.recoveryStagingLocator.has_value() ||
+                !published.package->destination.starts_with("Generated/Packages/Shipping/Release/") ||
+                !published.package->executable.ends_with("/CueGameProduct.exe"))
+            {
+                if (!published.build.diagnostics.empty())
+                {
+                    return fail(published.build.diagnostics.back().summary);
+                }
+                if (!published.build.logs.empty())
+                {
+                    return fail(published.build.logs.back().bytes);
+                }
+                return fail(published.message.empty() ? "Editor Shipping Package did not complete successfully"
+                                                      : published.message);
+            }
+            const std::string productExecutable = published.package->executable;
+            cue::Result<void> started = m_packageService->run(cue::package::PackageRunMode::SmokeTest);
+            if (!started)
+            {
+                return cue::Result<void>::failure(std::move(*started.try_error()));
+            }
+            completed = m_packageService->wait_for_run_completion();
+            m_packagePresenter->refresh();
+            const cue::package::PackageWorkflowSnapshot &ran = m_packagePresenter->current_snapshot();
+            if (!completed)
+            {
+                return cue::Result<void>::failure(std::move(*completed.try_error()));
+            }
+            if (ran.state != cue::package::PackageWorkflowState::RunSucceeded ||
+                ran.activeStage != cue::package::PackageWorkflowStage::None || ran.recoveryStagingLocator.has_value())
+            {
+                return fail(ran.message.empty() ? "Packaged Shipping Product did not exit successfully" : ran.message);
+            }
+
+            started = m_packageService->run(cue::package::PackageRunMode::Interactive);
+            if (!started)
+            {
+                return cue::Result<void>::failure(std::move(*started.try_error()));
+            }
+            const auto startupDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            bool observedStartedProduct = false;
+            while (std::chrono::steady_clock::now() < startupDeadline)
+            {
+                const cue::package::PackageWorkflowSnapshot snapshot = m_packageService->snapshot();
+                if (snapshot.state != cue::package::PackageWorkflowState::Running)
+                {
+                    return fail(snapshot.message.empty() ? "Packaged Shipping Product exited before Stop verification"
+                                                         : snapshot.message);
+                }
+                if (has_visible_process_window(productExecutable))
+                {
+                    observedStartedProduct = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (!observedStartedProduct)
+            {
+                return fail("Packaged Shipping Product startup was not observed before timeout");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            const auto stopStartedAt = std::chrono::steady_clock::now();
+            cue::Result<void> stopped = m_packageService->stop();
+            if (!stopped)
+            {
+                return cue::Result<void>::failure(std::move(*stopped.try_error()));
+            }
+            completed = m_packageService->wait_for_run_completion();
+            const auto stopElapsed = std::chrono::steady_clock::now() - stopStartedAt;
+            m_packagePresenter->refresh();
+            const cue::package::PackageWorkflowSnapshot &stoppedSnapshot = m_packagePresenter->current_snapshot();
+            if (!completed || stoppedSnapshot.state != cue::package::PackageWorkflowState::PackageReady ||
+                stoppedSnapshot.activeStage != cue::package::PackageWorkflowStage::None ||
+                stoppedSnapshot.recoveryStagingLocator.has_value() ||
+                stopElapsed >= std::chrono::seconds(5) ||
+                !process_output_contains(stoppedSnapshot.runOutput, "D3D12 Render Loop shutdown completed"))
+            {
+                return completed
+                           ? fail(stoppedSnapshot.message.empty() ? "Packaged Shipping Product did not stop cleanly"
+                                                                 : stoppedSnapshot.message)
+                           : cue::Result<void>::failure(std::move(*completed.try_error()));
             }
             return cue::Result<void>::success();
         }
@@ -2390,7 +2600,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             make_tool_error(a_assertContext, k_processTestFailed, "Process test action requires an active scene"));
     }
     if (*a_action == "play-repeated-workflow" || process_test_build_configuration(*a_action).has_value() ||
-        process_test_package_configuration(*a_action).has_value())
+        process_test_package_configuration(*a_action).has_value() || is_process_test_shipping_workflow(*a_action))
     {
         return cue::Result<void>::success();
     }
@@ -2531,6 +2741,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         a_options.processTestAction ? process_test_build_configuration(*a_options.processTestAction) : std::nullopt;
     const std::optional<cue::BuildConfiguration> packageWorkflowConfiguration =
         a_options.processTestAction ? process_test_package_configuration(*a_options.processTestAction) : std::nullopt;
+    const bool isShippingWorkflowTest =
+        a_options.processTestAction.has_value() && is_process_test_shipping_workflow(*a_options.processTestAction);
     PlayWorkflowProbe playWorkflowProbe;
     PlayWorkflowSystemFactory playWorkflowFactory(playWorkflowProbe);
     const std::array<const cue::runtime::RuntimeSystemFactory *, 1U> playWorkflowFactories{&playWorkflowFactory};
@@ -2556,6 +2768,15 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             if (!workflow)
             {
                 return report_error(a_logger, "Editor Package process workflow failed",
+                                    std::move(*workflow.try_error()), k_processTestFailed);
+            }
+        }
+        if (isShippingWorkflowTest)
+        {
+            cue::Result<void> workflow = client.run_shipping_workflow_process_test();
+            if (!workflow)
+            {
+                return report_error(a_logger, "Editor Shipping process workflow failed",
                                     std::move(*workflow.try_error()), k_processTestFailed);
             }
         }
