@@ -406,7 +406,8 @@ struct MountPointReparseBuffer final
     const cue::BuildPlan &signedValue = *signedPlan.try_value();
     return unsignedValue.cmake_target_name() == "CueGameProduct" &&
            unsignedValue.profile().target() == cue::BuildTarget::ShippingProduct &&
-           unsignedValue.workspace_key().ends_with("-release-trust-unsigned-local") &&
+           unsignedValue.workspace_key() == "vs26-x64-m19.51.0.0-p1-r-u" &&
+           unsignedValue.workspace_key().size() <= 96U &&
            unsignedValue.binary_directory() ==
                root + "/Generated/Build/ShippingProduct/" + std::string(unsignedValue.workspace_key()) &&
            unsignedValue.workspace_lock_file() == root + "/Generated/Build/Locks/ShippingProduct/" +
@@ -415,7 +416,8 @@ struct MountPointReparseBuffer final
                root + "/Generated/Build/Candidates/ShippingProduct/21234567-89ab-4cde-8f01-23456789abcd" &&
            unsignedValue.artifact_store_directory() ==
                root + "/Generated/Artifacts/ShippingProduct/Release/unsigned-local" &&
-           signedValue.workspace_key().ends_with("-release-trust-publisher-" + publisherKey) &&
+           signedValue.workspace_key() == "vs26-x64-m19.51.0.0-p1-r-s-" + publisherKey &&
+           signedValue.workspace_key().size() <= 96U &&
            signedValue.artifact_store_directory() ==
                root + "/Generated/Artifacts/ShippingProduct/Release/publisher-aaaaaaaaaaaaaaaa" &&
            signedValue.workspace_key() != unsignedValue.workspace_key() &&

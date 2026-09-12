@@ -201,7 +201,8 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
                                              const cue::BuildWorkspaceCompatibility &a_compatibility)
 {
     const cue::BuildToolVersion &version = a_compatibility.toolsetVersion;
-    std::string key = "windows-vs2026-x64-msvc-";
+    const bool shippingProduct = a_profile.target() == cue::BuildTarget::ShippingProduct;
+    std::string key = shippingProduct ? "vs26-x64-m" : "windows-vs2026-x64-msvc-";
     key.append(std::to_string(version.major));
     key.push_back('.');
     key.append(std::to_string(version.minor));
@@ -209,20 +210,19 @@ constexpr std::size_t k_maximumProfileBytes = 4096U;
     key.append(std::to_string(version.patch));
     key.push_back('.');
     key.append(std::to_string(version.build));
-    key.append("-policy-");
+    key.append(shippingProduct ? "-p" : "-policy-");
     key.append(std::to_string(a_compatibility.engineBuildPolicyVersion));
     key.push_back('-');
-    key.append(configuration_key_name(a_profile.configuration()));
-    if (a_profile.target() == cue::BuildTarget::ShippingProduct)
+    key.append(shippingProduct ? "r" : configuration_key_name(a_profile.configuration()));
+    if (shippingProduct)
     {
-        key.append("-trust-");
         if (a_profile.minimum_trust_mode() == cue::ShippingTrustMode::UnsignedLocal)
         {
-            key.append("unsigned-local");
+            key.append("-u");
         }
         else
         {
-            key.append("publisher-");
+            key.append("-s-");
             key.append(a_profile.publisher_key_id());
         }
     }

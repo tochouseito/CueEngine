@@ -100,7 +100,7 @@ if(WIN32)
                 MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
                 MSVC_RUNTIME_CHECKS ""
         )
-        target_compile_options("${targetName}" PRIVATE /GS /guard:cf /O2 /Ob2)
+        target_compile_options("${targetName}" PRIVATE /GS /guard:cf /O2 /Ob2 /utf-8)
         target_compile_definitions("${targetName}" PRIVATE NDEBUG)
         target_link_options(
             "${targetName}"
@@ -126,6 +126,18 @@ if(WIN32)
             CUE_TEST_PRODUCT_CONFIGURATION="Release"
     )
     cue_configure_shipping_security_test_product(CueBuildShippingProductProbe)
+
+    add_executable(CueBuildD3D12OrdinalShippingProductProbe ShippingProductProbe.cpp)
+    target_link_libraries(CueBuildD3D12OrdinalShippingProductProbe PRIVATE d3d12)
+    target_compile_features(CueBuildD3D12OrdinalShippingProductProbe PRIVATE cxx_std_20)
+    target_compile_definitions(
+        CueBuildD3D12OrdinalShippingProductProbe
+        PRIVATE
+            CUE_TEST_PRODUCT_PROJECT_ID="41234567-89ab-4cde-8f01-23456789abcd"
+            CUE_TEST_PRODUCT_CONFIGURATION="Release"
+            CUE_TEST_PRODUCT_D3D12_ORDINAL_IMPORT=1
+    )
+    cue_configure_shipping_security_test_product(CueBuildD3D12OrdinalShippingProductProbe)
 
     add_executable(CueBuildWrongProjectShippingProductProbe ShippingProductProbe.cpp)
     target_compile_features(CueBuildWrongProjectShippingProductProbe PRIVATE cxx_std_20)
@@ -200,6 +212,7 @@ if(WIN32)
     add_dependencies(
         CueBuildWindowsProductSecurityTests
         CueBuildShippingProductProbe
+        CueBuildD3D12OrdinalShippingProductProbe
         CueBuildUnhardenedShippingProductProbe
         CueBuildLoaderShippingProductProbe
         CueBuildPackagedLoaderShippingProductProbe
@@ -349,6 +362,7 @@ if(WIN32)
 
     add_test(NAME Cue.Build.Windows.ProductSecurity
              COMMAND CueBuildWindowsProductSecurityTests $<TARGET_FILE:CueBuildShippingProductProbe>
+                     $<TARGET_FILE:CueBuildD3D12OrdinalShippingProductProbe>
                      $<TARGET_FILE:CueBuildUnhardenedShippingProductProbe>
                      $<TARGET_FILE:CueBuildLoaderShippingProductProbe>
                      $<TARGET_FILE:CueBuildPackagedLoaderShippingProductProbe>)

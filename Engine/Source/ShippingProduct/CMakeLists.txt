@@ -41,12 +41,25 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
     if(NOT TARGET "${gameModuleTarget}")
         message(FATAL_ERROR "Cue Shipping Product Game Module target does not exist: ${gameModuleTarget}")
     endif()
+    string(REGEX MATCH "(^|,)version=([^,]+)" cueShippingToolsetMatch "${CMAKE_GENERATOR_TOOLSET}")
+    set(cueShippingToolsetVersion "${CMAKE_MATCH_2}")
+    file(TO_CMAKE_PATH "${CMAKE_CXX_COMPILER}" cueShippingCompilerPath)
+    string(REGEX MATCH "/VC/Tools/MSVC/([^/]+)/bin/" cueShippingCompilerToolsetMatch "${cueShippingCompilerPath}")
+    set(cueShippingCompilerToolsetVersion "${CMAKE_MATCH_1}")
+    if(cueShippingCompilerToolsetMatch STREQUAL "" OR cueShippingCompilerToolsetVersion STREQUAL "")
+        message(FATAL_ERROR "Cue Shipping Product could not identify the selected Visual Studio toolset version")
+    endif()
+    if(NOT cueShippingToolsetMatch STREQUAL "" AND
+       NOT cueShippingToolsetVersion STREQUAL cueShippingCompilerToolsetVersion)
+        message(FATAL_ERROR "Cue Shipping Product Visual Studio toolset selection is inconsistent")
+    endif()
 
     add_executable(
         "${targetName}"
         EXCLUDE_FROM_ALL
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/StaticProductMain.cpp"
     )
+    set_property(TARGET "${targetName}" PROPERTY VS_GLOBAL_VCToolsVersion "${cueShippingCompilerToolsetVersion}")
     target_link_libraries("${targetName}" PRIVATE "${gameModuleTarget}" Cue.RuntimeHost.Static)
     target_compile_features("${targetName}" PRIVATE cxx_std_20)
     target_compile_definitions(

@@ -10,8 +10,11 @@
 #include <Cue/Project/Generator.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -40,6 +43,7 @@ constexpr std::wstring_view k_packageConfiguration = L"Release";
 #else
 #error CUE_TEST_BUILD_CONFIGURATION must identify a supported configuration
 #endif
+constexpr std::string_view k_shippingWorkflowAction = "shipping-workflow-release";
 
 /// @brief Test内のFatalを固定Exit Codeへ変換する
 class TestFatalHandler final : public cue::FatalHandler
@@ -58,6 +62,34 @@ class TestFatalHandler final : public cue::FatalHandler
     }
 };
 
+/// @brief Absolute Windows PathをLong Path対応表現へ変換する
+[[nodiscard]] std::filesystem::path extended_windows_path(const std::filesystem::path &a_path)
+{
+    const std::wstring native = a_path.native();
+    if (native.starts_with(L"\\\\?\\"))
+    {
+        return a_path;
+    }
+    if (native.starts_with(L"\\\\"))
+    {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + native.substr(2U));
+    }
+    return std::filesystem::path(L"\\\\?\\" + native);
+}
+
+/// @brief Drive PathとUNC PathのLong Path変換規則を検証する
+void test_extended_windows_path_conversion()
+{
+    if (extended_windows_path(L"C:\\Workspace\\Project").native() != L"\\\\?\\C:\\Workspace\\Project" ||
+        extended_windows_path(L"\\\\server\\share\\Project").native() !=
+            L"\\\\?\\UNC\\server\\share\\Project" ||
+        extended_windows_path(L"\\\\?\\C:\\Workspace\\Project").native() !=
+            L"\\\\?\\C:\\Workspace\\Project")
+    {
+        std::_Exit(80);
+    }
+}
+
 /// @brief Process固有Temporary Project Directoryを一意所有する
 class TestDirectory final
 {
@@ -65,8 +97,9 @@ class TestDirectory final
     /// @brief Test Workspace下へProcess固有Directoryを作成する
     explicit TestDirectory(const std::filesystem::path &a_workspaceRoot)
     {
-        m_path = a_workspaceRoot /
+        m_path = std::filesystem::absolute(a_workspaceRoot) /
                  (L"CEW-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        m_path.make_preferred();
         std::filesystem::create_directories(m_path);
     }
 
@@ -76,8 +109,19 @@ class TestDirectory final
     /// @brief Test所有Directoryだけを終了時に除去する
     ~TestDirectory()
     {
-        std::error_code error;
-        std::filesystem::remove_all(m_path, error);
+        const std::filesystem::path cleanupPath = extended_windows_path(m_path);
+        for (std::size_t attempt = 0U; attempt < 50U; ++attempt)
+        {
+            std::error_code removeError;
+            std::filesystem::remove_all(cleanupPath, removeError);
+            std::error_code existsError;
+            if (!std::filesystem::exists(m_path, existsError) && !existsError)
+            {
+                return;
+            }
+            Sleep(100U);
+        }
+        std::_Exit(77);
     }
 
     /// @brief Temporary RootのNative Pathを返す
@@ -205,6 +249,10 @@ class TestDirectory final
         {
             commandLine.append(L" --process-test-action package-workflow-release");
         }
+        else if (*a_processTestAction == k_shippingWorkflowAction)
+        {
+            commandLine.append(L" --process-test-action shipping-workflow-release");
+        }
         else
         {
             commandLine.append(L" --process-test-action edit-close-save");
@@ -219,9 +267,9 @@ class TestDirectory final
         return false;
     }
     CloseHandle(process.hThread);
-    const DWORD timeout = a_processTestAction.has_value() &&
-                                  (a_processTestAction->starts_with("build-workflow-") ||
-                                   a_processTestAction->starts_with("package-workflow-"))
+    const DWORD timeout = a_processTestAction.has_value() && (a_processTestAction->starts_with("build-workflow-") ||
+                                                              a_processTestAction->starts_with("package-workflow-") ||
+                                                              *a_processTestAction == k_shippingWorkflowAction)
                               ? 600000U
                               : 30000U;
     const DWORD wait = WaitForSingleObject(process.hProcess, timeout);
@@ -252,6 +300,139 @@ class TestDirectory final
     }
     std::ranges::sort(packages);
     return packages;
+}
+
+/// @brief Release Shipping Package Directoryを安定順で列挙する
+[[nodiscard]] std::vector<std::filesystem::path> list_shipping_package_directories(
+    const std::filesystem::path &a_projectPath)
+{
+    const std::filesystem::path parent = a_projectPath / L"Generated" / L"Packages" / L"Shipping" / L"Release";
+    std::vector<std::filesystem::path> packages;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(parent))
+    {
+        if (entry.is_directory())
+        {
+            packages.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(packages);
+    return packages;
+}
+
+/// @brief Package Tree Entryの種類、相対Path、完全Byte列を保持する
+struct PackageTreeEntry final
+{
+    char kind = 'O';
+    std::string relativePath;
+    std::string bytes;
+
+    /// @brief Package Treeの種類、Path、完全Byte列を比較する
+    bool operator==(const PackageTreeEntry &) const = default;
+};
+
+/// @brief Package Treeを相対Path、種類、完全Byte列の安定Snapshotへ変換する
+[[nodiscard]] std::vector<PackageTreeEntry> capture_package_tree(const std::filesystem::path &a_packageRoot)
+{
+    std::vector<PackageTreeEntry> entries;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::recursive_directory_iterator(a_packageRoot))
+    {
+        const std::string relative = entry.path().lexically_relative(a_packageRoot).generic_string();
+        if (entry.is_regular_file())
+        {
+            entries.push_back({'F', relative, read_file(entry.path())});
+        }
+        else if (entry.is_directory())
+        {
+            entries.push_back({'D', relative, {}});
+        }
+        else
+        {
+            entries.push_back({'O', relative, {}});
+        }
+    }
+    std::ranges::sort(entries, {}, &PackageTreeEntry::relativePath);
+    return entries;
+}
+
+/// @brief ASCII Byte列をWindows Path照合用のlowercaseへ変換する
+[[nodiscard]] std::string ascii_lowercase(std::string a_value)
+{
+    std::ranges::transform(a_value, a_value.begin(), [](unsigned char a_character) noexcept
+                           { return static_cast<char>(a_character >= 'A' && a_character <= 'Z'
+                                                          ? a_character - 'A' + 'a'
+                                                          : a_character); });
+    return a_value;
+}
+
+/// @brief Windows UTF-16 PathをBinary検索用のlittle-endian Byte列へ変換する
+[[nodiscard]] std::string utf16_bytes(std::wstring_view a_value)
+{
+    static_assert(sizeof(wchar_t) == 2U);
+    return {reinterpret_cast<const char *>(a_value.data()), a_value.size() * sizeof(wchar_t)};
+}
+
+/// @brief Package内Fileが指定Windows PathをNativeまたはGeneric表現で参照するか返す
+[[nodiscard]] bool package_contains_path_reference(const std::filesystem::path &a_packageRoot,
+                                                   const std::filesystem::path &a_reference,
+                                                   cue::FatalHandler &a_handler)
+{
+    const std::u8string genericReference = a_reference.generic_u8string();
+    const std::wstring nativeReference = a_reference.native();
+    const std::wstring extendedReference = L"\\\\?\\" + nativeReference;
+    const std::array references = {
+        ascii_lowercase(to_utf8(a_reference, a_handler)),
+        ascii_lowercase(std::string(reinterpret_cast<const char *>(genericReference.data()), genericReference.size())),
+        ascii_lowercase(utf16_bytes(nativeReference)), ascii_lowercase(utf16_bytes(extendedReference))};
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::recursive_directory_iterator(a_packageRoot))
+    {
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        const std::string bytes = ascii_lowercase(read_file(entry.path()));
+        if (std::ranges::any_of(references,
+                                [&bytes](const std::string &a_referenceBytes)
+                                {
+                                    return !a_referenceBytes.empty() &&
+                                           bytes.find(a_referenceBytes) != std::string::npos;
+                                }))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Shipping Packageが実行に必要な四File以外を含まないか返す
+[[nodiscard]] bool has_minimal_shipping_inventory(const std::filesystem::path &a_packageRoot,
+                                                  const std::filesystem::path &a_runtimeScene)
+{
+    std::vector<std::string> files;
+    std::vector<std::string> directories;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::recursive_directory_iterator(a_packageRoot))
+    {
+        const std::string relative = entry.path().lexically_relative(a_packageRoot).generic_string();
+        if (entry.is_regular_file())
+        {
+            files.push_back(relative);
+        }
+        else if (entry.is_directory())
+        {
+            directories.push_back(relative);
+        }
+        else
+        {
+            return false;
+        }
+    }
+    std::ranges::sort(files);
+    std::ranges::sort(directories);
+    std::vector<std::string> expectedFiles{"CueGameProduct.exe", "CuePackage.json", "Data/CueProject.runtime.json",
+                                           a_runtimeScene.generic_string()};
+    std::ranges::sort(expectedFiles);
+    const std::vector<std::string> expectedDirectories{"Data", "Data/Scenes"};
+    return files == expectedFiles && directories == expectedDirectories;
 }
 
 /// @brief JSON TextにDriveまたはslash／backslash形式のWindows Rooted Pathが含まれるか返す
@@ -294,11 +475,29 @@ class TestDirectory final
     return false;
 }
 
-/// @brief Relocated PackageのRuntimeHostを無関係なCurrent DirectoryからSmoke起動する
-[[nodiscard]] bool run_relocated_runtime_package(const std::filesystem::path &a_packageRoot,
-                                                 const std::filesystem::path &a_workingDirectory)
+/// @brief Project Treeに未回収のPackage／Workspace Staging Entryが残っているか返す
+[[nodiscard]] bool has_staging_entry(const std::filesystem::path &a_projectRoot)
 {
-    const std::filesystem::path executable = a_packageRoot / L"CueRuntimeHost.exe";
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::recursive_directory_iterator(a_projectRoot))
+    {
+        const std::wstring name = entry.path().filename().native();
+        if (name.starts_with(L"CueStaging-") || name.ends_with(L".cuedir-staging") ||
+            name.ends_with(L".cuefile-staging") || name.ends_with(L".cuefile-replace-staging") ||
+            name.ends_with(L"-dir-staging") || name.ends_with(L"-file-staging"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Relocated Packageの指定Executableを無関係なCurrent DirectoryからSmoke起動する
+[[nodiscard]] std::optional<DWORD> run_relocated_package(const std::filesystem::path &a_packageRoot,
+                                                         const std::filesystem::path &a_workingDirectory,
+                                                         std::wstring_view a_executableName)
+{
+    const std::filesystem::path executable = a_packageRoot / a_executableName;
     std::wstring commandLine = L"\"" + executable.native() + L"\" --package-smoke-test";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -306,7 +505,7 @@ class TestDirectory final
     if (CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0U, nullptr,
                        a_workingDirectory.c_str(), &startup, &process) == FALSE)
     {
-        return false;
+        return std::nullopt;
     }
     CloseHandle(process.hThread);
     const DWORD wait = WaitForSingleObject(process.hProcess, 30000U);
@@ -318,7 +517,7 @@ class TestDirectory final
         static_cast<void>(WaitForSingleObject(process.hProcess, 5000U));
     }
     CloseHandle(process.hProcess);
-    return completed && exitCode == 0U;
+    return completed ? std::optional<DWORD>(exitCode) : std::nullopt;
 }
 
 /// @brief Project生成からScene保存、実Editor再起動、Stable ID再Openまでを検証する
@@ -712,6 +911,12 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
     {
         std::_Exit(55);
     }
+#if CUE_TEST_BUILD_CONFIGURATION == 3
+    if (!run_editor_process(a_editorExecutable, projectPath, k_shippingWorkflowAction))
+    {
+        std::_Exit(61);
+    }
+#endif
 
     const std::vector<std::filesystem::path> packages = list_package_directories(projectPath);
     if (packages.size() != 2U)
@@ -747,16 +952,93 @@ void test_process_round_trip(const std::filesystem::path &a_editorExecutable,
         std::_Exit(58);
     }
 
+#if CUE_TEST_BUILD_CONFIGURATION == 3
+    const std::vector<std::filesystem::path> shippingPackages = list_shipping_package_directories(projectPath);
+    const std::filesystem::path engineBuildRoot =
+        std::filesystem::absolute(a_editorExecutable).parent_path().parent_path().parent_path();
+    if (shippingPackages.size() != 1U || !has_minimal_shipping_inventory(shippingPackages.front(), runtimeScene) ||
+        package_json_contains_absolute_path(shippingPackages.front()) ||
+        package_contains_path_reference(shippingPackages.front(), engineBuildRoot, a_context.fatal_handler()))
+    {
+        std::_Exit(62);
+    }
+    const std::filesystem::path relocatedShippingPackage = directory.path() / L"RelocatedShippingPackage";
+    std::filesystem::copy(shippingPackages.front(), relocatedShippingPackage,
+                          std::filesystem::copy_options::recursive);
+    const std::vector<PackageTreeEntry> shippingTreeBefore = capture_package_tree(relocatedShippingPackage);
+
+    /// @brief Shipping Packageを独立したTamper Caseへ複製する
+    const auto copy_shipping_package = [&directory, &relocatedShippingPackage](std::wstring_view a_name)
+    {
+        const std::filesystem::path destination = directory.path() / a_name;
+        std::filesystem::copy(relocatedShippingPackage, destination, std::filesystem::copy_options::recursive);
+        return destination;
+    };
+    const std::filesystem::path tamperedExecutable = copy_shipping_package(L"TamperedExecutable");
+    const std::filesystem::path mismatchedProject = copy_shipping_package(L"MismatchedProject");
+    const std::filesystem::path mismatchedConfiguration = copy_shipping_package(L"MismatchedConfiguration");
+    const std::filesystem::path mismatchedArchitecture = copy_shipping_package(L"MismatchedArchitecture");
+    const std::filesystem::path mismatchedRole = copy_shipping_package(L"MismatchedRole");
+    const std::filesystem::path tamperedRuntimeData = copy_shipping_package(L"TamperedRuntimeData");
+    const std::filesystem::path plantedDll = copy_shipping_package(L"PlantedDll");
+    {
+        std::ofstream stream(tamperedExecutable / L"CueGameProduct.exe", std::ios::binary | std::ios::app);
+        stream.put('\n');
+    }
+    if (!replace_file_text(mismatchedProject / L"CuePackage.json", "00000000-0000-4000-8000-000000000901",
+                           "00000000-0000-4000-8000-000000000902") ||
+        !replace_file_text(mismatchedConfiguration / L"CuePackage.json", "\"configuration\": \"Release\"",
+                           "\"configuration\": \"Debug\"") ||
+        !replace_file_text(mismatchedArchitecture / L"CuePackage.json", "\"architecture\": \"x64\"",
+                           "\"architecture\": \"arm\"") ||
+        !replace_file_text(mismatchedRole / L"CuePackage.json", "\"role\": \"applicationExecutable\"",
+                           "\"role\": \"runtimeDependency\""))
+    {
+        std::_Exit(63);
+    }
+    {
+        std::ofstream stream(tamperedRuntimeData / runtimeScene, std::ios::binary | std::ios::app);
+        stream.put('\n');
+    }
+    {
+        std::ofstream stream(plantedDll / L"unexpected.dll", std::ios::binary | std::ios::trunc);
+        stream << "not-a-runtime-dependency";
+    }
+#endif
+
     const std::filesystem::path unavailableProject = directory.path() / L"Project.SourceUnavailable";
     std::filesystem::rename(projectPath, unavailableProject);
     const std::filesystem::path unrelatedWorkingDirectory = directory.path() / L"UnrelatedWorkingDirectory";
     std::filesystem::create_directories(unrelatedWorkingDirectory);
-    const bool relocatedRun = run_relocated_runtime_package(relocatedPackage, unrelatedWorkingDirectory);
+    const std::optional<DWORD> relocatedRun =
+        run_relocated_package(relocatedPackage, unrelatedWorkingDirectory, L"CueRuntimeHost.exe");
+#if CUE_TEST_BUILD_CONFIGURATION == 3
+    const std::optional<DWORD> shippingRun =
+        run_relocated_package(relocatedShippingPackage, unrelatedWorkingDirectory, L"CueGameProduct.exe");
+    const std::vector<PackageTreeEntry> shippingTreeAfter = capture_package_tree(relocatedShippingPackage);
+    const std::array tamperedPackages = {
+        tamperedExecutable,  mismatchedProject, mismatchedConfiguration, mismatchedArchitecture, mismatchedRole,
+        tamperedRuntimeData, plantedDll};
+    bool rejectedEveryTamperedPackage = true;
+    for (const std::filesystem::path &package : tamperedPackages)
+    {
+        const std::optional<DWORD> result =
+            run_relocated_package(package, unrelatedWorkingDirectory, L"CueGameProduct.exe");
+        rejectedEveryTamperedPackage = rejectedEveryTamperedPackage && result.has_value() && *result != 0U;
+    }
+#endif
     std::filesystem::rename(unavailableProject, projectPath);
-    if (!relocatedRun)
+    if (!relocatedRun.has_value() || *relocatedRun != 0U)
     {
         std::_Exit(59);
     }
+#if CUE_TEST_BUILD_CONFIGURATION == 3
+    if (!shippingRun.has_value() || *shippingRun != 0U || shippingTreeAfter != shippingTreeBefore ||
+        !rejectedEveryTamperedPackage || has_staging_entry(projectPath))
+    {
+        std::_Exit(64);
+    }
+#endif
 }
 } // namespace
 
@@ -771,6 +1053,20 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(handler, std::move(sinks));
     cue::AssertContext context(logger, handler);
-    test_process_round_trip(a_arguments[1], a_arguments[2], context);
+    test_extended_windows_path_conversion();
+    try
+    {
+        test_process_round_trip(a_arguments[1], a_arguments[2], context);
+    }
+    catch (const std::exception &exception)
+    {
+        std::fprintf(stderr, "Unhandled Editor Workflow test exception: %s\n", exception.what());
+        return 78;
+    }
+    catch (...)
+    {
+        std::fputs("Unhandled non-standard Editor Workflow test exception\n", stderr);
+        return 79;
+    }
     return 0;
 }

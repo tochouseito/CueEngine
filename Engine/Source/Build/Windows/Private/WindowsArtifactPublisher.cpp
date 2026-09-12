@@ -1348,6 +1348,32 @@ template <typename Cancellation>
     return value;
 }
 
+/// @brief XMLのdouble-quoted Attribute値へ埋め込める表現を末尾へ追加する
+void append_xml_double_quoted_attribute(std::string &a_output, std::string_view a_value)
+{
+    for (const char value : a_value)
+    {
+        switch (value)
+        {
+        case '&':
+            a_output.append("&amp;");
+            break;
+        case '<':
+            a_output.append("&lt;");
+            break;
+        case '>':
+            a_output.append("&gt;");
+            break;
+        case '"':
+            a_output.append("&quot;");
+            break;
+        default:
+            a_output.push_back(value);
+            break;
+        }
+    }
+}
+
 /// @brief Build Tool VersionをCMakeの4要素表現へ変換する
 [[nodiscard]] std::string build_tool_version_text(const cue::BuildToolVersion &a_version)
 {
@@ -1510,7 +1536,7 @@ template <typename Cancellation>
     }
 
     cue::Result<std::string> project =
-        read_toolchain_evidence_file(a_binary / "CueGameProduct.vcxproj", a_assertContext);
+        read_toolchain_evidence_file(a_binary / "Source" / "Game" / "CueGameProduct.vcxproj", a_assertContext);
     if (!project)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(std::move(*project.try_error()));
@@ -1519,6 +1545,25 @@ template <typename Cancellation>
     const std::optional<std::string> windowsSdkVersion =
         uniform_xml_tag_value(*project.try_value(), "WindowsTargetPlatformVersion");
     const std::optional<std::string> vcToolsVersion = uniform_xml_tag_value(*project.try_value(), "VCToolsVersion");
+    constexpr std::string_view msvcToolsetVersion = cue::build_metadata::k_msvcToolsetVersion;
+    const std::size_t firstVersionSeparator = msvcToolsetVersion.find('.');
+    const std::size_t secondVersionSeparator =
+        firstVersionSeparator == std::string_view::npos ? std::string_view::npos
+                                                        : msvcToolsetVersion.find('.', firstVersionSeparator + 1U);
+    const std::string_view propsVersion = secondVersionSeparator == std::string_view::npos
+                                              ? std::string_view{}
+                                              : msvcToolsetVersion.substr(0U, secondVersionSeparator);
+    std::string expectedToolsetImport("Project=\"");
+    append_xml_double_quoted_attribute(expectedToolsetImport, cue::build_metadata::k_visualStudioRoot);
+    expectedToolsetImport.append("/VC/Auxiliary/Build/");
+    expectedToolsetImport.append(propsVersion);
+    expectedToolsetImport.append("/Microsoft.VCToolsVersion.");
+    expectedToolsetImport.append(propsVersion);
+    expectedToolsetImport.append(".props\"");
+    const std::size_t toolsetImport = project.try_value()->find(expectedToolsetImport);
+    const bool validToolsetImport = !propsVersion.empty() && toolsetImport != std::string::npos &&
+                                    project.try_value()->find(expectedToolsetImport, toolsetImport + 1U) ==
+                                        std::string::npos;
     const bool validPlatformToolset =
         platformToolset && platformToolset->size() <= 32U &&
         std::all_of(platformToolset->begin(), platformToolset->end(),
@@ -1527,8 +1572,8 @@ template <typename Cancellation>
                         return (a_value >= '0' && a_value <= '9') || (a_value >= 'A' && a_value <= 'Z') ||
                                (a_value >= 'a' && a_value <= 'z') || a_value == '.' || a_value == '_' || a_value == '-';
                     });
-    if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset || !vcToolsVersion ||
-        *vcToolsVersion != cue::build_metadata::k_msvcToolsetVersion || !windowsSdkVersion ||
+    if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset ||
+        !validToolsetImport || !vcToolsVersion || *vcToolsVersion != msvcToolsetVersion || !windowsSdkVersion ||
         *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(

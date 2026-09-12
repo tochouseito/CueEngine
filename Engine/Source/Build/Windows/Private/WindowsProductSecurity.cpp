@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -48,6 +49,7 @@ constexpr std::uint16_t k_maximumSectionCount = 96U;
 constexpr std::size_t k_maximumImportNameBytes = 256U;
 constexpr std::size_t k_maximumImportDescriptors = 256U;
 constexpr std::size_t k_maximumImportsPerLibrary = 65536U;
+constexpr std::size_t k_maximumImportAddressTableEntries = 65536U;
 constexpr DWORD k_unsupportedGuardMetadataFlags = IMAGE_GUARD_RF_INSTRUMENTED | IMAGE_GUARD_RF_ENABLE |
                                                   IMAGE_GUARD_RF_STRICT | IMAGE_GUARD_EH_CONTINUATION_TABLE_PRESENT |
                                                   IMAGE_GUARD_XFG_ENABLED | IMAGE_GUARD_CASTGUARD_PRESENT |
@@ -73,10 +75,27 @@ constexpr std::array<std::string_view, 8U> k_forbiddenLoaderImports = {
     "FreeLibrary",    "FreeLibraryAndExitThread", "GetProcAddress", "LoadLibraryA",
     "LoadLibraryExA", "LoadLibraryExW",           "LoadLibraryW",   "LoadPackagedLibrary"};
 
+/// @brief Library名とWindows SDKが定義する許可済み序数Importを保持する
+struct AllowedOrdinalImport final
+{
+    std::string_view libraryName;
+    WORD ordinal;
+};
+
+constexpr std::array<AllowedOrdinalImport, 1U> k_allowedOrdinalImports = {
+    AllowedOrdinalImport{"d3d12.dll", 101U}};
+
 /// @brief PE Header検証後に記録する正規化済みDirect Import一覧
 struct PeSecurityEvidence final
 {
     std::vector<std::string> importedLibraries;
+};
+
+/// @brief Direct Import検証後のLibrary一覧と実在する非null IAT Slotを保持する
+struct DirectImportEvidence final
+{
+    std::vector<std::string> importedLibraries;
+    std::vector<std::uint32_t> nonNullFirstThunkRvas;
 };
 
 /// @brief RVAに対応するFile Offsetと同一領域内の連続Byte数を保持する
@@ -501,6 +520,58 @@ template <typename Value>
     return true;
 }
 
+/// @brief CFG Address-taken IAT Tableの各RVAと予約Metadataを検証する
+[[nodiscard]] bool has_valid_guard_address_taken_iat_entries(
+    std::span<const std::byte> a_bytes, const MappedImageFileRange &a_tableRange, std::size_t a_entryCount,
+    std::size_t a_entryStride, const IMAGE_DATA_DIRECTORY &a_iatDirectory) noexcept
+{
+    if (a_entryStride < sizeof(std::uint32_t) || a_iatDirectory.VirtualAddress == 0U ||
+        a_iatDirectory.Size < sizeof(IMAGE_THUNK_DATA64))
+    {
+        return false;
+    }
+    const std::uint64_t iatStart = a_iatDirectory.VirtualAddress;
+    const std::uint64_t iatEnd = iatStart + a_iatDirectory.Size;
+    std::optional<std::uint32_t> previous;
+    for (std::size_t index = 0U; index < a_entryCount; ++index)
+    {
+        const std::size_t entryOffset = a_tableRange.offset + index * a_entryStride;
+        const std::optional<std::uint32_t> targetRva = read_value<std::uint32_t>(a_bytes, entryOffset);
+        if (!targetRva || *targetRva % alignof(IMAGE_THUNK_DATA64) != 0U || *targetRva < iatStart ||
+            static_cast<std::uint64_t>(*targetRva) > iatEnd - sizeof(IMAGE_THUNK_DATA64) ||
+            (previous.has_value() && *targetRva <= *previous))
+        {
+            return false;
+        }
+        for (std::size_t metadataIndex = sizeof(std::uint32_t); metadataIndex < a_entryStride; ++metadataIndex)
+        {
+            if (a_bytes[entryOffset + metadataIndex] != std::byte{0})
+            {
+                return false;
+            }
+        }
+        previous = targetRva;
+    }
+    return true;
+}
+
+/// @brief CFG Address-taken IAT Tableの各RVAが実在する非null FirstThunk Slotか検証する
+[[nodiscard]] bool has_imported_guard_address_taken_iat_entries(
+    std::span<const std::byte> a_bytes, const MappedImageFileRange &a_tableRange, std::size_t a_entryCount,
+    std::size_t a_entryStride, std::span<const std::uint32_t> a_nonNullFirstThunkRvas) noexcept
+{
+    for (std::size_t index = 0U; index < a_entryCount; ++index)
+    {
+        const std::optional<std::uint32_t> targetRva =
+            read_value<std::uint32_t>(a_bytes, a_tableRange.offset + index * a_entryStride);
+        if (!targetRva || !std::ranges::binary_search(a_nonNullFirstThunkRvas, *targetRva))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// @brief Base Relocation Directoryの範囲、Block、x64 Relocation Entryを検証する
 [[nodiscard]] cue::Result<std::vector<std::uint32_t>> validate_base_relocations(
     std::span<const std::byte> a_bytes, const IMAGE_OPTIONAL_HEADER64 &a_optional,
@@ -690,12 +761,16 @@ template <typename Value>
 }
 
 /// @brief 一LibraryのImport名とGame Module Loader API不在を検証する
-[[nodiscard]] cue::Result<void> validate_import_functions(std::span<const std::byte> a_bytes, std::uint32_t a_thunkRva,
-                                                          std::uint32_t a_firstThunkRva,
+[[nodiscard]] cue::Result<void> validate_import_functions(std::span<const std::byte> a_bytes,
+                                                          std::string_view a_libraryName,
+                                                          std::uint32_t a_thunkRva, std::uint32_t a_firstThunkRva,
                                                           const IMAGE_DATA_DIRECTORY &a_iatDirectory,
                                                           const IMAGE_OPTIONAL_HEADER64 &a_optional,
                                                           std::span<const IMAGE_SECTION_HEADER> a_sections,
                                                           std::span<const std::uint32_t> a_relocations,
+                                                          std::bitset<k_maximumImportAddressTableEntries>
+                                                              &a_seenFirstThunkSlots,
+                                                          std::vector<std::uint32_t> &a_nonNullFirstThunkRvas,
                                                           const cue::AssertContext &a_assertContext) noexcept
 {
     for (std::size_t index = 0U; index < k_maximumImportsPerLibrary; ++index)
@@ -735,18 +810,61 @@ template <typename Value>
             break;
         }
         const std::optional<IMAGE_THUNK_DATA64> thunk = read_value<IMAGE_THUNK_DATA64>(a_bytes, *thunkOffset);
-        if (!thunk || thunk->u1.AddressOfData == 0U)
+        const std::optional<IMAGE_THUNK_DATA64> firstThunk =
+            read_value<IMAGE_THUNK_DATA64>(a_bytes, *firstThunkOffset);
+        if (!thunk || !firstThunk)
         {
-            return thunk ? cue::Result<void>::success()
-                         : cue::Result<void>::failure(
-                               make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                                          "Shipping Product import thunk is invalid"));
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product import thunk is invalid"));
         }
+        if (thunk->u1.AddressOfData == 0U)
+        {
+            return firstThunk->u1.Function == 0U
+                       ? cue::Result<void>::success()
+                       : cue::Result<void>::failure(
+                             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                                        "Shipping Product import IAT is not terminated with its lookup table"));
+        }
+        if (firstThunk->u1.Function == 0U)
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product import IAT has a null slot before its lookup table terminator"));
+        }
+        const std::uint64_t firstThunkDelta = firstThunkRva - a_iatDirectory.VirtualAddress;
+        if (firstThunkDelta % sizeof(IMAGE_THUNK_DATA64) != 0U)
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product import FirstThunk is not aligned to the IAT directory"));
+        }
+        const std::size_t firstThunkSlot = static_cast<std::size_t>(firstThunkDelta / sizeof(IMAGE_THUNK_DATA64));
+        if (firstThunkSlot >= a_seenFirstThunkSlots.size() || a_seenFirstThunkSlots.test(firstThunkSlot))
+        {
+            return cue::Result<void>::failure(
+                make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                           "Shipping Product import descriptors overlap a nonnull IAT slot"));
+        }
+        a_seenFirstThunkSlots.set(firstThunkSlot);
+        a_nonNullFirstThunkRvas.push_back(static_cast<std::uint32_t>(firstThunkRva));
         if (IMAGE_SNAP_BY_ORDINAL64(thunk->u1.Ordinal))
         {
-            return cue::Result<void>::failure(make_error(a_assertContext,
-                                                         cue::WindowsBuildArtifactError::SecurityPolicyViolation,
-                                                         "Shipping Product ordinal imports are not allowed"));
+            const WORD ordinal = static_cast<WORD>(IMAGE_ORDINAL64(thunk->u1.Ordinal));
+            const bool allowed = std::ranges::any_of(
+                k_allowedOrdinalImports,
+                [a_libraryName, ordinal, &thunk](const AllowedOrdinalImport &a_import) noexcept
+                {
+                    return a_import.libraryName == a_libraryName && a_import.ordinal == ordinal &&
+                           thunk->u1.Ordinal == (IMAGE_ORDINAL_FLAG64 | static_cast<ULONGLONG>(ordinal));
+                });
+            if (!allowed)
+            {
+                return cue::Result<void>::failure(
+                    make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                               "Shipping Product ordinal import is outside the M17 allowlist"));
+            }
+            continue;
         }
         if (thunk->u1.AddressOfData > std::numeric_limits<std::uint32_t>::max())
         {
@@ -786,19 +904,24 @@ template <typename Value>
 }
 
 /// @brief Direct Import TableをVersion付きAllowlistとLoader不在Policyへ照合する
-[[nodiscard]] cue::Result<std::vector<std::string>> validate_imports(std::span<const std::byte> a_bytes,
-                                                                     const IMAGE_OPTIONAL_HEADER64 &a_optional,
-                                                                     std::span<const IMAGE_SECTION_HEADER> a_sections,
-                                                                     std::span<const std::uint32_t> a_relocations,
-                                                                     const cue::AssertContext &a_assertContext) noexcept
+[[nodiscard]] cue::Result<DirectImportEvidence> validate_imports(
+    std::span<const std::byte> a_bytes, const IMAGE_OPTIONAL_HEADER64 &a_optional,
+    std::span<const IMAGE_SECTION_HEADER> a_sections, std::span<const std::uint32_t> a_relocations,
+    const cue::AssertContext &a_assertContext) noexcept
 {
     const IMAGE_DATA_DIRECTORY &directory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     const IMAGE_DATA_DIRECTORY &iatDirectory = a_optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
     if (directory.VirtualAddress == 0U || directory.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR))
     {
-        return cue::Result<std::vector<std::string>>::failure(
+        return cue::Result<DirectImportEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product import directory is missing"));
+    }
+    if (iatDirectory.Size / sizeof(IMAGE_THUNK_DATA64) > k_maximumImportAddressTableEntries)
+    {
+        return cue::Result<DirectImportEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product IAT directory exceeds the M17 resource limit"));
     }
     const std::optional<MappedImageFileRange> iatRange =
         iatDirectory.VirtualAddress <= std::numeric_limits<ULONGLONG>::max() - a_optional.ImageBase
@@ -810,7 +933,7 @@ template <typename Value>
         !has_section_characteristics(*iatRange, k_readOnlyDataSection, IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_SHARED) ||
         has_relocation_overlap(a_relocations, iatDirectory.VirtualAddress, iatDirectory.Size))
     {
-        return cue::Result<std::vector<std::string>>::failure(
+        return cue::Result<DirectImportEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product IAT directory is invalid"));
     }
@@ -818,13 +941,13 @@ template <typename Value>
         rva_to_offset(directory.VirtualAddress, directory.Size, a_optional, a_sections, a_bytes.size());
     if (!directoryOffset)
     {
-        return cue::Result<std::vector<std::string>>::failure(
+        return cue::Result<DirectImportEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product import directory is invalid"));
     }
     if (has_relocation_overlap(a_relocations, directory.VirtualAddress, directory.Size))
     {
-        return cue::Result<std::vector<std::string>>::failure(
+        return cue::Result<DirectImportEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product import directory overlaps a base relocation target"));
     }
@@ -832,6 +955,9 @@ template <typename Value>
         k_maximumImportDescriptors, static_cast<std::size_t>(directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR)));
     std::vector<std::string> imports;
     imports.reserve(descriptorLimit);
+    std::vector<std::uint32_t> nonNullFirstThunkRvas;
+    nonNullFirstThunkRvas.reserve(iatDirectory.Size / sizeof(IMAGE_THUNK_DATA64));
+    std::bitset<k_maximumImportAddressTableEntries> seenFirstThunkSlots;
     for (std::size_t index = 0U; index < descriptorLimit; ++index)
     {
         const std::optional<IMAGE_IMPORT_DESCRIPTOR> descriptor =
@@ -842,14 +968,16 @@ template <typename Value>
         }
         if (descriptor->TimeDateStamp != 0U)
         {
-            return cue::Result<std::vector<std::string>>::failure(
+            return cue::Result<DirectImportEvidence>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                            "Shipping Product bound import descriptors are not allowed by the M17 policy"));
         }
         if (descriptor->OriginalFirstThunk == 0U && descriptor->FirstThunk == 0U && descriptor->Name == 0U)
         {
             std::ranges::sort(imports);
-            return cue::Result<std::vector<std::string>>::success(std::move(imports));
+            std::ranges::sort(nonNullFirstThunkRvas);
+            return cue::Result<DirectImportEvidence>::success(
+                {std::move(imports), std::move(nonNullFirstThunkRvas)});
         }
         const std::optional<RvaFileRange> nameRange =
             rva_to_file_range(descriptor->Name, a_optional, a_sections, a_bytes.size());
@@ -857,34 +985,36 @@ template <typename Value>
             nameRange ? read_ascii_string(a_bytes, nameRange->offset, nameRange->size) : std::nullopt;
         if (!name || has_relocation_overlap(a_relocations, descriptor->Name, name->size() + 1U))
         {
-            return cue::Result<std::vector<std::string>>::failure(
+            return cue::Result<DirectImportEvidence>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                            "Shipping Product import library name is invalid"));
         }
         if (rva_ranges_overlap(iatDirectory.VirtualAddress, iatDirectory.Size, descriptor->Name, name->size() + 1U))
         {
-            return cue::Result<std::vector<std::string>>::failure(
+            return cue::Result<DirectImportEvidence>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                            "Shipping Product IAT directory overlaps import loader metadata"));
         }
         const std::string normalized = lowercase_ascii(*name);
         if (std::ranges::find(k_allowedImports, normalized) == k_allowedImports.end())
         {
-            return cue::Result<std::vector<std::string>>::failure(
+            return cue::Result<DirectImportEvidence>::failure(
                 make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                            "Shipping Product imports a library outside the M17 allowlist"));
         }
         const std::uint32_t thunkRva =
             descriptor->OriginalFirstThunk != 0U ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
-        cue::Result<void> functions = validate_import_functions(a_bytes, thunkRva, descriptor->FirstThunk, iatDirectory,
-                                                                a_optional, a_sections, a_relocations, a_assertContext);
+        cue::Result<void> functions =
+            validate_import_functions(a_bytes, normalized, thunkRva, descriptor->FirstThunk, iatDirectory, a_optional,
+                                      a_sections, a_relocations, seenFirstThunkSlots, nonNullFirstThunkRvas,
+                                      a_assertContext);
         if (!functions)
         {
-            return cue::Result<std::vector<std::string>>::failure(std::move(*functions.try_error()));
+            return cue::Result<DirectImportEvidence>::failure(std::move(*functions.try_error()));
         }
         imports.push_back(normalized);
     }
-    return cue::Result<std::vector<std::string>>::failure(
+    return cue::Result<DirectImportEvidence>::failure(
         make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                    "Shipping Product import directory is not terminated within the policy limit"));
 }
@@ -1004,6 +1134,13 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product does not satisfy ASLR, High Entropy VA, DEP, and CFG header policy"));
     }
+    if (optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size / sizeof(IMAGE_THUNK_DATA64) >
+        k_maximumImportAddressTableEntries)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product IAT directory exceeds the M17 resource limit"));
+    }
     const std::size_t sectionsOffset = optionalOffset + fileHeader->SizeOfOptionalHeader;
     if (fileHeader->NumberOfSections == 0U)
     {
@@ -1033,7 +1170,6 @@ template <typename Value>
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*relocations.try_error()));
     }
-
     const IMAGE_DATA_DIRECTORY &loadDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
     constexpr std::size_t requiredLoadConfigSize =
         std::max({offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie) + sizeof(ULONGLONG),
@@ -1091,6 +1227,12 @@ template <typename Value>
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryTable));
     const std::optional<ULONGLONG> guardAddressTakenIatEntryCount = read_value<ULONGLONG>(
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryCount));
+    if (guardAddressTakenIatEntryCount && *guardAddressTakenIatEntryCount > k_maximumGuardFunctionEntries)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product CFG address-taken IAT table exceeds the M17 resource limit"));
+    }
     const std::optional<ULONGLONG> guardLongJumpTargetTable = read_value<ULONGLONG>(
         bytes, *validatedLoadOffset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetTable));
     const std::optional<ULONGLONG> guardLongJumpTargetCount = read_value<ULONGLONG>(
@@ -1118,6 +1260,20 @@ template <typename Value>
     const std::optional<MappedImageFileRange> guardFunctionTableRange =
         guardFunctionTable && hasValidFunctionTableSize && *guardFunctionCount > 0U
             ? mapped_image_va_range(*guardFunctionTable, guardFunctionTableSize, *optional, sections, bytes.size())
+            : std::nullopt;
+    const IMAGE_DATA_DIRECTORY &iatDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    const bool hasValidAddressTakenIatTableSize =
+        guardAddressTakenIatEntryTable && guardAddressTakenIatEntryCount && guardFunctionTableStride > 0U &&
+        *guardAddressTakenIatEntryCount <= std::numeric_limits<std::size_t>::max() / guardFunctionTableStride;
+    const std::size_t guardAddressTakenIatTableSize =
+        hasValidAddressTakenIatTableSize
+            ? static_cast<std::size_t>(*guardAddressTakenIatEntryCount) * guardFunctionTableStride
+            : 0U;
+    const std::optional<MappedImageFileRange> guardAddressTakenIatTableRange =
+        guardAddressTakenIatEntryTable && hasValidAddressTakenIatTableSize &&
+                *guardAddressTakenIatEntryTable != 0U && *guardAddressTakenIatEntryCount > 0U
+            ? mapped_image_va_range(*guardAddressTakenIatEntryTable, guardAddressTakenIatTableSize, *optional, sections,
+                                    bytes.size())
             : std::nullopt;
     const std::optional<ULONGLONG> guardCheckTarget =
         guardCheckRange && has_section_characteristics(*guardCheckRange, k_readOnlyDataSection,
@@ -1157,9 +1313,16 @@ template <typename Value>
     const std::uint64_t guardDispatchRva = guardDispatch && *guardDispatch >= optional->ImageBase
                                                ? *guardDispatch - optional->ImageBase
                                                : std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t guardAddressTakenIatTableRva =
+        guardAddressTakenIatEntryTable && *guardAddressTakenIatEntryTable >= optional->ImageBase
+            ? *guardAddressTakenIatEntryTable - optional->ImageBase
+            : std::numeric_limits<std::uint64_t>::max();
     const bool hasUnrelocatedFunctionTable =
         guardFunctionTableRange && hasNoRelocationOverlap(guardFunctionTableRva, guardFunctionTableSize);
-    const std::array<std::pair<std::uint64_t, std::size_t>, 4U> unrelocatedLoadConfigurationControls = {
+    const bool hasUnrelocatedAddressTakenIatTable =
+        guardAddressTakenIatTableRange &&
+        hasNoRelocationOverlap(guardAddressTakenIatTableRva, guardAddressTakenIatTableSize);
+    const std::array<std::pair<std::uint64_t, std::size_t>, 6U> unrelocatedLoadConfigurationControls = {
         std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
                       offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Size),
                   sizeof(DWORD)},
@@ -1169,6 +1332,12 @@ template <typename Value>
         std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
                       offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags),
                   sizeof(DWORD)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryCount),
+                  sizeof(ULONGLONG)},
+        std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                      offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardLongJumpTargetCount),
+                  sizeof(ULONGLONG)},
         std::pair{static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
                       offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags),
                   sizeof(WORD)}};
@@ -1187,11 +1356,19 @@ template <typename Value>
                                     IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE) &&
         has_valid_guard_function_entries(bytes, *guardFunctionTableRange, static_cast<std::size_t>(*guardFunctionCount),
                                          guardFunctionTableStride, *optional, sections);
-    const bool hasNoUnsupportedAuxiliaryGuardTables =
-        guardAddressTakenIatEntryTable && *guardAddressTakenIatEntryTable == 0U && guardAddressTakenIatEntryCount &&
-        *guardAddressTakenIatEntryCount == 0U && guardLongJumpTargetTable && *guardLongJumpTargetTable == 0U &&
+    const bool hasValidAddressTakenIatTable =
+        guardAddressTakenIatEntryTable && guardAddressTakenIatEntryCount &&
+        ((*guardAddressTakenIatEntryTable == 0U && *guardAddressTakenIatEntryCount == 0U) ||
+         (*guardAddressTakenIatEntryTable != 0U && *guardAddressTakenIatEntryCount > 0U &&
+          guardAddressTakenIatTableRange && hasUnrelocatedAddressTakenIatTable &&
+          has_section_characteristics(*guardAddressTakenIatTableRange, k_readOnlyDataSection,
+                                      IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE) &&
+          has_valid_guard_address_taken_iat_entries(bytes, *guardAddressTakenIatTableRange,
+                                                    static_cast<std::size_t>(*guardAddressTakenIatEntryCount),
+                                                    guardFunctionTableStride, iatDirectory)));
+    const bool hasSupportedAuxiliaryGuardTables =
+        hasValidAddressTakenIatTable && guardLongJumpTargetTable && *guardLongJumpTargetTable == 0U &&
         guardLongJumpTargetCount && *guardLongJumpTargetCount == 0U;
-    const IMAGE_DATA_DIRECTORY &iatDirectory = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
     bool hasIsolatedIatDirectory = true;
     for (std::size_t index = 0U; index < IMAGE_NUMBEROF_DIRECTORY_ENTRIES; ++index)
     {
@@ -1207,9 +1384,10 @@ template <typename Value>
             break;
         }
     }
-    const std::array<std::pair<std::uint64_t, std::size_t>, 4U> iatSecurityRanges = {
+    const std::array<std::pair<std::uint64_t, std::size_t>, 5U> iatSecurityRanges = {
         std::pair{securityCookieRva, sizeof(ULONGLONG)}, std::pair{guardCheckRva, sizeof(ULONGLONG)},
-        std::pair{guardDispatchRva, sizeof(ULONGLONG)}, std::pair{guardFunctionTableRva, guardFunctionTableSize}};
+        std::pair{guardDispatchRva, sizeof(ULONGLONG)}, std::pair{guardFunctionTableRva, guardFunctionTableSize},
+        std::pair{guardAddressTakenIatTableRva, guardAddressTakenIatTableSize}};
     hasIsolatedIatDirectory =
         hasIsolatedIatDirectory &&
         std::ranges::none_of(iatSecurityRanges,
@@ -1238,12 +1416,28 @@ template <typename Value>
             return a_rva <= std::numeric_limits<std::uint32_t>::max() &&
                    std::ranges::binary_search(*relocations.try_value(), static_cast<std::uint32_t>(a_rva));
         });
+    const std::uint64_t addressTakenIatTablePointerRva =
+        static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardAddressTakenIatEntryTable);
+    const bool hasValidAddressTakenIatTablePointerRelocation =
+        guardAddressTakenIatEntryTable &&
+        (*guardAddressTakenIatEntryTable != 0U
+             ? addressTakenIatTablePointerRva <= std::numeric_limits<std::uint32_t>::max() &&
+                   std::ranges::binary_search(*relocations.try_value(),
+                                              static_cast<std::uint32_t>(addressTakenIatTablePointerRva))
+             : hasNoRelocationOverlap(addressTakenIatTablePointerRva, sizeof(ULONGLONG)));
+    const std::uint64_t longJumpTargetTablePointerRva = static_cast<std::uint64_t>(loadDirectory.VirtualAddress) +
+                                                        offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64,
+                                                                 GuardLongJumpTargetTable);
+    const bool hasUnrelocatedEmptyLongJumpTargetTablePointer =
+        hasNoRelocationOverlap(longJumpTargetTablePointerRva, sizeof(ULONGLONG));
     if (!hasUnrelocatedSecurityCookie || !hasUnrelocatedFunctionTable || !hasUnrelocatedLoadConfigurationControls ||
-        !hasMappedGuardCheck || !hasMappedGuardDispatch || !hasNoUnsupportedAuxiliaryGuardTables || !guardFlags ||
+        !hasMappedGuardCheck || !hasMappedGuardDispatch || !hasSupportedAuxiliaryGuardTables || !guardFlags ||
         (*guardFlags & k_unsupportedGuardMetadataFlags) != 0U ||
         (*guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT) == 0U || !hasMappedFunctionTable ||
         (*guardFlags & IMAGE_GUARD_CF_INSTRUMENTED) == 0U || (*guardFlags & IMAGE_GUARD_SECURITY_COOKIE_UNUSED) != 0U ||
-        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations)
+        !dependentLoadFlags || *dependentLoadFlags != k_requiredDependentLoadFlags || !hasRequiredRelocations ||
+        !hasValidAddressTakenIatTablePointerRelocation || !hasUnrelocatedEmptyLongJumpTargetTablePointer)
     {
         return cue::Result<PeSecurityEvidence>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
@@ -1269,18 +1463,32 @@ template <typename Value>
             make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
                        "Shipping Product bound imports are not allowed by the M17 policy"));
     }
-    cue::Result<std::vector<std::string>> imports =
+    cue::Result<DirectImportEvidence> imports =
         validate_imports(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!imports)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*imports.try_error()));
+    }
+    const bool hasImportedAddressTakenIatEntries =
+        guardAddressTakenIatEntryTable && guardAddressTakenIatEntryCount &&
+        ((*guardAddressTakenIatEntryTable == 0U && *guardAddressTakenIatEntryCount == 0U) ||
+         (guardAddressTakenIatTableRange &&
+          has_imported_guard_address_taken_iat_entries(
+              bytes, *guardAddressTakenIatTableRange,
+              static_cast<std::size_t>(*guardAddressTakenIatEntryCount), guardFunctionTableStride,
+              imports.try_value()->nonNullFirstThunkRvas)));
+    if (!hasImportedAddressTakenIatEntries)
+    {
+        return cue::Result<PeSecurityEvidence>::failure(
+            make_error(a_assertContext, cue::WindowsBuildArtifactError::SecurityPolicyViolation,
+                       "Shipping Product CFG address-taken IAT table does not identify imported nonnull slots"));
     }
     cue::Result<void> cet = validate_cet(bytes, *optional, sections, *relocations.try_value(), a_assertContext);
     if (!cet)
     {
         return cue::Result<PeSecurityEvidence>::failure(std::move(*cet.try_error()));
     }
-    return cue::Result<PeSecurityEvidence>::success({std::move(*imports.try_value())});
+    return cue::Result<PeSecurityEvidence>::success({std::move(imports.try_value()->importedLibraries)});
 }
 
 /// @brief WinTrust State Handleを必ずCloseする

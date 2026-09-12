@@ -310,12 +310,39 @@ void write_text(const std::filesystem::path &a_path, std::string_view a_text)
     return make_descriptor(k_projectId, a_assertContext);
 }
 
+/// @brief XMLのdouble-quoted Attribute値へ埋め込める表現を末尾へ追加する
+void append_xml_double_quoted_attribute(std::string &a_output, std::string_view a_value)
+{
+    for (const char value : a_value)
+    {
+        switch (value)
+        {
+        case '&':
+            a_output.append("&amp;");
+            break;
+        case '<':
+            a_output.append("&lt;");
+            break;
+        case '>':
+            a_output.append("&gt;");
+            break;
+        case '"':
+            a_output.append("&quot;");
+            break;
+        default:
+            a_output.push_back(value);
+            break;
+        }
+    }
+}
+
 /// @brief Shipping Publisherが実使用Toolchainを照合するCMake生成物Fixtureを作る
 void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
                                        std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
                                        std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET,
                                        std::string_view a_engineRoot = CUE_TEST_ENGINE_ROOT,
-                                       std::string_view a_msvcToolsetVersion = CUE_TEST_MSVC_TOOLSET_VERSION)
+                                       std::string_view a_msvcToolsetVersion = CUE_TEST_MSVC_TOOLSET_VERSION,
+                                       std::string_view a_projectMsvcToolsetVersion = {})
 {
     const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
     const std::size_t firstDot = cmakeVersion.find('.');
@@ -351,14 +378,33 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_ARCHITECTURE_ID \"x64\")\n");
     write_text(compilerDirectory / "CMakeCXXCompiler.cmake", compilerEvidence);
 
-    std::string project("<Project><PropertyGroup><WindowsTargetPlatformVersion>");
+    if (a_projectMsvcToolsetVersion.empty())
+    {
+        a_projectMsvcToolsetVersion = a_msvcToolsetVersion;
+    }
+    std::string project("<Project><PropertyGroup><VCToolsVersion>");
+    project.append(a_projectMsvcToolsetVersion);
+    project.append("</VCToolsVersion><WindowsTargetPlatformVersion>");
     project.append(a_windowsSdkVersion);
     project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
     project.append(a_platformToolset);
-    project.append("</PlatformToolset><VCToolsVersion>");
-    project.append(a_msvcToolsetVersion);
-    project.append("</VCToolsVersion></PropertyGroup></Project>\n");
-    write_text(a_binary / "CueGameProduct.vcxproj", project);
+    project.append("</PlatformToolset></PropertyGroup><Import Project=\"");
+    const std::size_t firstVersionSeparator = a_msvcToolsetVersion.find('.');
+    const std::size_t secondVersionSeparator =
+        firstVersionSeparator == std::string_view::npos
+            ? std::string_view::npos
+            : a_msvcToolsetVersion.find('.', firstVersionSeparator + 1U);
+    require(secondVersionSeparator != std::string_view::npos);
+    const std::string_view propsVersion = a_msvcToolsetVersion.substr(0U, secondVersionSeparator);
+    append_xml_double_quoted_attribute(project, CUE_TEST_CMAKE_GENERATOR_INSTANCE);
+    project.append("/VC/Auxiliary/Build/");
+    project.append(propsVersion);
+    project.append("/Microsoft.VCToolsVersion.");
+    project.append(propsVersion);
+    project.append(".props\" /></Project>\n");
+    const std::filesystem::path projectDirectory = a_binary / "Source" / "Game";
+    require(std::filesystem::create_directories(projectDirectory) || std::filesystem::is_directory(projectDirectory));
+    write_text(projectDirectory / "CueGameProduct.vcxproj", project);
 }
 
 /// @brief Test用Build PlanをOperation ID別に構築する
@@ -883,6 +929,18 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
                                       CUE_TEST_ENGINE_ROOT, "14.99.99999");
     require(!publisher
                  ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedMinorToolsetLease), std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
+    auto mismatchedProjectToolsetLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedProjectToolsetLease.has_value());
+    write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
+                                      CUE_TEST_ENGINE_ROOT, CUE_TEST_MSVC_TOOLSET_VERSION, "14.51.99999");
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedProjectToolsetLease),
+                           std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
