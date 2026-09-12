@@ -6,6 +6,10 @@ M17の先行Issue #298から#306がGitHub上でClosedであり、本Gate Issue #
 2026-09-12に確認した。PR #316の最終HeadはCodex Reviewで指摘なし、Windows CIのDebug／Development／Releaseが
 全て成功し、未解決Review Threadは0件だった。
 
+Release Shipping E2Eの実行Tokenは`BATTEYOFF-DESKT\sinse`、Medium Integrity、
+`BUILTIN\Administrators`はdeny-only、`BUILTIN\Users`は有効、`IsAdministrator = false`だった。
+同じStandard User TokenからProductを起動し、Package Tree不変と正常終了を確認した。
+
 ADR-0024が定義するM17完了条件に従い、`MonolithicLocalReady = true`、
 `PublicDistributionReady = false`と判定する。Release／Monolithic／UnsignedLocal Productはローカル開発用途で
 生成、検証、移設、実行、停止できるが、公開配布用Certificateと外部Trust Anchorを使った実機検証は未実行である。
@@ -18,6 +22,7 @@ ADR-0024が定義するM17完了条件に従い、`MonolithicLocalReady = true`�
 | v1 Modular／v2 Monolithic回帰 | Pass | Build Profile、Game Module ABI、Package Manifest、RuntimeHost、Editor Workflowの両経路を3構成CTestとCIで確認 |
 | Game DLL Import／Dynamic Project Code Loadなし | Pass | Shipping ProductのPE Import allowlistと禁止Loader APIを機械検査し、Static Query ProviderだけをLink |
 | 配布禁止Fileなし | Pass | Manifest、Product EXE、Runtime Project、Runtime Sceneの4 Fileだけ。DLL、LIB、PDB、Source、Build Logなし |
+| Standard User起動・Package Root不変 | Pass | Medium Integrity、Administrators deny-only、Users有効、非管理者TokenからRelease Shipping E2E成功。実行前後のPackage全Byte列が一致 |
 | PE Hardening／Import／署名Policy | Pass | ASLR、DEP、CFG、CET、High Entropy VA、Load Policy、Import／Relocation／Load Config、Trust分類を検査 |
 | Relocation／Tamper／Malformed／Atomic Recovery | Pass | Source非表示と無関係Current Directoryからの移設起動、独立改ざん拒否、Staging／Snapshot／Rollback Test成功 |
 | 実Windowの起動・終了 | Pass | Productと同じFile Identityを持つProcess所有の可視Top-level HWNDを観測後、正常Stopと再実行可能状態を確認 |
@@ -58,6 +63,8 @@ Windows CI run `34675587408`が全Target Buildと全CTestを3構成で再検証�
 - 最終Debug E2E: 1/1成功、20.06秒
 - 最終Development E2E: 1/1成功、15.78秒
 - 最終Release Shipping E2E: 1/1成功、94.78秒
+- Standard User Token Release Shipping E2E: 1/1成功、95.68秒
+- Token: Medium Integrity、Administrators deny-only、Users有効、`IsAdministrator = false`
 - E2E Workspace: 修正後の各実行で新規残留なし
 - `git diff --check`: 成功
 
@@ -102,6 +109,7 @@ Windows PE／Trust検証、Test、CMake、ADR、利用手順に限定されて�
 - `cmake --build --preset windows-vs2026-release --parallel`
 - `ctest --preset windows-vs2026-release --output-on-failure`
 - `ctest --preset windows-vs2026-<configuration> -R "^Cue.Editor.Workflow.ProcessRoundTrip$" --output-on-failure`
+- `whoami /groups`
 - `git diff --name-only cb854c1a..c1488e9d`
 - `git diff --check`
 
@@ -111,7 +119,6 @@ CIでは固定済みvcpkg ManifestからDependencyを復元後、同じConfigure
 
 - 実運用の公開配布用CertificateによるAuthenticode署名、Timestamp、Online Revocation、Certificate Chain検証
 - Detached CMS／PKCS#7 Manifest署名と、許可Publisherを強制するInstaller／Launcher／App Control
-- 権限制限Tokenまたは別Standard User AccountによるACL試験
 - Engine Source／Build TreeをOS-levelでAccess Denialにした実行
 - UNC共有上に実配置したE2E Workspaceの削除。UNC／Drive／既拡張Pathの変換分岐は自動Test済み
 - 別Machine、Windows別Build、低性能CPU、HDDでのBuild、Package、Startup測定
@@ -126,7 +133,7 @@ CIでは固定済みvcpkg ManifestからDependencyを復元後、同じConfigure
 - `PublicDistributionReady = false`であり、実運用Certificateと外部Trust Anchorを導入するまで公開署名済み製品とは扱わない。
 - D3D12 ordinal 101の許可は現行Windows SDK／MSVC出力に固定され、Toolchain更新時に再検証が必要である。
 - Engine Build Tree非依存はSource退避、絶対Path非包含、移設、無関係Current Directoryで検証したもので、OS-level Access Denialではない。
-- Standard User相当GateはPackage Tree不変とRoot分離による検証で、制限TokenによるACL試験ではない。
+- Standard User Gateは現在のMedium Integrity非管理者Tokenで検証した。別User Account固有のProfile／ACL差異は未検証である。
 - Link／Startup Baselineは一台のMachine上の最小Productだけを表し、将来のGame CodeやAsset規模を予測しない。
 - 修正前のTest実行で生成された過去E2E Workspace 14件は本Issueで削除していない。修正後の実行では増加していない。
 - ReleaseでSkipされた4件はM17変更とは無関係だが、Release構成のDebug Layer／InfoQueue／DRED経路は未実行である。
