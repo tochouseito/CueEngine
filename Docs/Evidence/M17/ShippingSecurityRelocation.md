@@ -15,7 +15,7 @@ Package Tree不変、Staging回収を一続きで検証する。
 | Build環境からの独立 | Pass | Project Sourceを一時的に別名へ移し、Engine Build Rootの絶対Pathを含まない移設Packageを無関係なCurrent Directoryから起動 |
 | Tamper／不正Identity／不正Inventory拒否 | Pass | EXE、Runtime Scene、Project ID、Configuration、Architecture、Role、追加DLLの独立Copyを全て非0終了で拒否 |
 | Package RootへのUser Data書込みなし | Pass | 実行前後の相対Path、Entry種別、全File Byte列が一致し、最終Inventoryも4 Fileだけ |
-| Process／Staging cleanup | Pass | Interactive Stop後にChild Process完了、Active Stageなし、Recovery Stagingなし、Project Tree内のStaging命名なしを確認 |
+| Process／Staging cleanup | Pass | Interactive Stop後にChild Process完了、Active Stageなし、Recovery Stagingなし、Project Tree内のStaging命名なし、Process固有E2E Workspaceの実Path消失を確認 |
 | Size／Link／Startup Baseline | Pass | 本文の測定条件と数値を記録 |
 
 Manifestの`fileCount`はManifest自身を除く3 Entryで、物理Packageは`CuePackage.json`を含む4 Fileである。
@@ -84,7 +84,7 @@ Startupは移設済みPackageを無関係なCurrent Directoryから`--package-sm
 - `Cue.Build.Plan`: Shipping workspace keyの完全性、Trust分離、長さ上限
 - `Cue.Build.Windows.ArtifactPublisher`: 実生成TreeからのToolchain Evidence取得と厳密照合
 - `Cue.Build.Windows.ProductSecurity`: PE Hardening、Import allowlist、D3D12 ordinal 101、CFG auxiliary table、署名Policy、改ざん拒否
-- `Cue.Editor.Workflow.ProcessRoundTrip`: Editorからの生成、実行、停止、移設、Source非表示、Package改ざん、後始末
+- `Cue.Editor.Workflow.ProcessRoundTrip`: Editorからの生成、実行、停止、移設、Source非表示、Package改ざん、Process固有Workspace後始末
 - #304／#305の既存Security Test: Reparse Point、Snapshot Lease、TOCTOU候補、Malformed PE、署名Evidence
 
 ## Not Run

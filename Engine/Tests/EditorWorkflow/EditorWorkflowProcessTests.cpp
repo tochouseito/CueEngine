@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -67,8 +69,9 @@ class TestDirectory final
     /// @brief Test Workspace下へProcess固有Directoryを作成する
     explicit TestDirectory(const std::filesystem::path &a_workspaceRoot)
     {
-        m_path = a_workspaceRoot /
+        m_path = std::filesystem::absolute(a_workspaceRoot) /
                  (L"CEW-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        m_path.make_preferred();
         std::filesystem::create_directories(m_path);
     }
 
@@ -81,9 +84,10 @@ class TestDirectory final
         const std::filesystem::path cleanupPath(L"\\\\?\\" + m_path.native());
         for (std::size_t attempt = 0U; attempt < 50U; ++attempt)
         {
-            std::error_code error;
-            std::filesystem::remove_all(cleanupPath, error);
-            if (!std::filesystem::exists(cleanupPath, error) && !error)
+            std::error_code removeError;
+            std::filesystem::remove_all(cleanupPath, removeError);
+            std::error_code existsError;
+            if (!std::filesystem::exists(m_path, existsError) && !existsError)
             {
                 return;
             }
@@ -1021,6 +1025,19 @@ int wmain(int a_argumentCount, wchar_t **a_arguments)
     std::vector<std::unique_ptr<cue::LogSink>> sinks;
     cue::Logger logger(handler, std::move(sinks));
     cue::AssertContext context(logger, handler);
-    test_process_round_trip(a_arguments[1], a_arguments[2], context);
+    try
+    {
+        test_process_round_trip(a_arguments[1], a_arguments[2], context);
+    }
+    catch (const std::exception &exception)
+    {
+        std::fprintf(stderr, "Unhandled Editor Workflow test exception: %s\n", exception.what());
+        return 78;
+    }
+    catch (...)
+    {
+        std::fputs("Unhandled non-standard Editor Workflow test exception\n", stderr);
+        return 79;
+    }
     return 0;
 }
