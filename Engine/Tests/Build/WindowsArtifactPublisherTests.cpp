@@ -315,7 +315,8 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
                                        std::string_view a_windowsSdkVersion = CUE_TEST_WINDOWS_SDK_VERSION,
                                        std::string_view a_platformToolset = CUE_TEST_PLATFORM_TOOLSET,
                                        std::string_view a_engineRoot = CUE_TEST_ENGINE_ROOT,
-                                       std::string_view a_msvcToolsetVersion = CUE_TEST_MSVC_TOOLSET_VERSION)
+                                       std::string_view a_msvcToolsetVersion = CUE_TEST_MSVC_TOOLSET_VERSION,
+                                       std::string_view a_projectMsvcToolsetVersion = {})
 {
     const std::string cmakeVersion(CUE_TEST_CMAKE_VERSION);
     const std::size_t firstDot = cmakeVersion.find('.');
@@ -351,7 +352,13 @@ void write_shipping_toolchain_evidence(const std::filesystem::path &a_binary,
     compilerEvidence.append("\")\nset(CMAKE_CXX_COMPILER_ARCHITECTURE_ID \"x64\")\n");
     write_text(compilerDirectory / "CMakeCXXCompiler.cmake", compilerEvidence);
 
-    std::string project("<Project><PropertyGroup><WindowsTargetPlatformVersion>");
+    if (a_projectMsvcToolsetVersion.empty())
+    {
+        a_projectMsvcToolsetVersion = a_msvcToolsetVersion;
+    }
+    std::string project("<Project><PropertyGroup><VCToolsVersion>");
+    project.append(a_projectMsvcToolsetVersion);
+    project.append("</VCToolsVersion><WindowsTargetPlatformVersion>");
     project.append(a_windowsSdkVersion);
     project.append("</WindowsTargetPlatformVersion><PlatformToolset>");
     project.append(a_platformToolset);
@@ -896,6 +903,18 @@ void test_shipping_product_publisher(const std::filesystem::path &a_product,
                                       CUE_TEST_ENGINE_ROOT, "14.99.99999");
     require(!publisher
                  ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedMinorToolsetLease), std::nullopt)
+                 .has_value());
+    require(read_text(currentPath) == current &&
+            !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));
+    write_shipping_toolchain_evidence(binary);
+    auto mismatchedProjectToolsetLease =
+        take_value(publisher->acquire_build_lease(mismatchedToolchainPlan, cancellation, std::nullopt));
+    require(mismatchedProjectToolsetLease.has_value());
+    write_shipping_toolchain_evidence(binary, CUE_TEST_WINDOWS_SDK_VERSION, CUE_TEST_PLATFORM_TOOLSET,
+                                      CUE_TEST_ENGINE_ROOT, CUE_TEST_MSVC_TOOLSET_VERSION, "14.51.99999");
+    require(!publisher
+                 ->publish(mismatchedToolchainPlan, cancellation, std::move(*mismatchedProjectToolsetLease),
+                           std::nullopt)
                  .has_value());
     require(read_text(currentPath) == current &&
             !std::filesystem::exists(std::filesystem::path(mismatchedToolchainPlan.candidate_directory())));

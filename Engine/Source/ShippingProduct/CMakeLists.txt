@@ -41,6 +41,11 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
     if(NOT TARGET "${gameModuleTarget}")
         message(FATAL_ERROR "Cue Shipping Product Game Module target does not exist: ${gameModuleTarget}")
     endif()
+    string(REGEX MATCH "(^|,)version=([^,]+)" cueShippingToolsetMatch "${CMAKE_GENERATOR_TOOLSET}")
+    set(cueShippingToolsetVersion "${CMAKE_MATCH_2}")
+    if(cueShippingToolsetMatch STREQUAL "" OR cueShippingToolsetVersion STREQUAL "")
+        message(FATAL_ERROR "Cue Shipping Product requires an explicit Visual Studio toolset version")
+    endif()
 
     add_executable(
         "${targetName}"
@@ -61,6 +66,7 @@ function(cue_add_shipping_product targetName gameModuleTarget projectId)
         PROPERTIES
             CXX_EXTENSIONS OFF
             MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+            VS_GLOBAL_VCToolsVersion "${cueShippingToolsetVersion}"
             OUTPUT_NAME "CueGameProduct"
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
             PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"

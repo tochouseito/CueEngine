@@ -1518,6 +1518,7 @@ template <typename Cancellation>
     const std::optional<std::string> platformToolset = uniform_xml_tag_value(*project.try_value(), "PlatformToolset");
     const std::optional<std::string> windowsSdkVersion =
         uniform_xml_tag_value(*project.try_value(), "WindowsTargetPlatformVersion");
+    const std::optional<std::string> vcToolsVersion = uniform_xml_tag_value(*project.try_value(), "VCToolsVersion");
     constexpr std::string_view msvcToolsetVersion = cue::build_metadata::k_msvcToolsetVersion;
     const std::size_t firstVersionSeparator = msvcToolsetVersion.find('.');
     const std::size_t secondVersionSeparator =
@@ -1546,7 +1547,8 @@ template <typename Cancellation>
                                (a_value >= 'a' && a_value <= 'z') || a_value == '.' || a_value == '_' || a_value == '-';
                     });
     if (!validPlatformToolset || *platformToolset != cue::build_metadata::k_platformToolset ||
-        !validToolsetImport || !windowsSdkVersion || *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
+        !validToolsetImport || !vcToolsVersion || *vcToolsVersion != msvcToolsetVersion || !windowsSdkVersion ||
+        *windowsSdkVersion != cue::build_metadata::k_windowsSdkVersion)
     {
         return cue::Result<std::optional<ShippingToolchainIdentity>>::failure(
             make_error(a_assertContext, cue::WindowsBuildArtifactError::CandidateInvalid,
@@ -1574,7 +1576,7 @@ template <typename Cancellation>
     identity.cmakeVersion = std::move(cmakeVersion);
     identity.cmakeGenerator = std::move(*generator);
     identity.platformToolset = std::move(*platformToolset);
-    identity.msvcToolsetVersion = std::string(msvcToolsetVersion);
+    identity.msvcToolsetVersion = std::move(*vcToolsVersion);
     identity.compilerFileVersion = build_tool_version_text(*compilerFileVersion);
     identity.compilerSha256 = std::move(compilerHash.try_value()->contentHash);
     identity.windowsSdkVersion = std::move(*windowsSdkVersion);

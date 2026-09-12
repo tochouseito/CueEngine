@@ -3,7 +3,7 @@
 ## Result
 
 Issue #306のRelease Shipping End-to-Endを2026-09-12に実行し、`Cue.Editor.Workflow.ProcessRoundTrip`が
-95.13秒で成功した。テストはEditorの実CompositionからShipping Productを強制Configureして生成し、
+94.94秒で成功した。テストはEditorの実CompositionからShipping Productを強制Configureして生成し、
 Smoke起動、実Windowを伴うInteractive起動、要求停止、別Directoryへの移設、Source非表示、改ざん拒否、
 Package Tree不変、Staging回収を一続きで検証する。
 
@@ -43,7 +43,8 @@ PE／Load Config／CFGの判定根拠はMicrosoftの
 [PE metadata](https://learn.microsoft.com/en-us/windows/win32/secbp/pe-metadata)を正本とする。
 
 Shipping Toolchain Evidenceは、生成Treeの実配置`Source/Game/CueGameProduct.vcxproj`を読み、明示された
-`Microsoft.VCToolsVersion.<major.minor>.props` ImportとBuild metadataの完全なCompiler File Versionを照合する。
+完全な`VCToolsVersion`、`Microsoft.VCToolsVersion.<major.minor>.props` Import、Build metadataの完全なCompiler File
+Versionを照合する。
 Shipping Workspace Keyは長いSource PathでもWindowsのPath制限内へ収めるため、情報を欠落させず短縮した。
 
 ## Performance Baseline
