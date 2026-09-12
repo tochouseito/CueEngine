@@ -32,8 +32,9 @@ Import Address Tableはallocation前に65,536 Entryを上限として検証し�
 収集時点で拒否する。
 
 D3D12 Runtime Importは現行Windows SDK Linkで`d3d12.dll`のordinal 101として生成された。M17ではLibrary名と
-ordinalの組を`d3d12.dll`／101だけに限定し、そのordinalの実在`FirstThunk` RVAがAddress-taken IAT Tableへ
-登録されることを確認する。ordinal 102と同じordinalを別Libraryへ設定した改ざんPEは拒否する。
+ordinalの組を`d3d12.dll`／101だけに限定する。Test fixtureでそのordinalをAddress-taken IAT Tableへ列挙した場合は、
+実在`FirstThunk` RVAとの一致を確認する。直接IAT Callだけを行いImport SymbolのAddressを取得しないProductには
+Table登録を要求しない。ordinal 102と同じordinalを別Libraryへ設定した改ざんPEは拒否する。
 ordinal encodingはflagと16-bit ordinalだけを含むcanonical値に限定し、予約bitを含む値も拒否する。
 許可範囲は名前Import全般へ拡張せず、既存のLibrary allowlistとLoader API禁止を維持する。
 
