@@ -35,6 +35,8 @@ struct ToolHostDescriptor final
     std::string_view title;
     WindowSize clientSize;
     std::uint64_t maximumFrameCount;
+    /// @brief Main Executableに埋め込まれたInteger Icon Resourceを選択し、0ではWindow Iconを設定しない
+    /// @details 非0のResourceが存在しない場合はWindowInitializationFailedでHost起動を中止する
     std::uint16_t iconResourceId = 0U;
 };
 
