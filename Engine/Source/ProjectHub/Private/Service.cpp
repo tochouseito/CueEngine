@@ -35,6 +35,17 @@ namespace
     }
     return cue::project_hub::ProjectEntryState::Broken;
 }
+
+/// @brief Engine VersionをProject一覧用のcanonical文字列へ変換する
+[[nodiscard]] std::string format_engine_version(const cue::EngineVersion &a_version)
+{
+    std::string formatted = std::to_string(a_version.major);
+    formatted.push_back('.');
+    formatted.append(std::to_string(a_version.minor));
+    formatted.push_back('.');
+    formatted.append(std::to_string(a_version.patch));
+    return formatted;
+}
 } // namespace
 
 namespace cue::project_hub
@@ -217,6 +228,9 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
                                std::string(entry.locator()),
                                std::string(entry.locator()),
                                entry.last_opened_milliseconds(),
+                               format_engine_version(m_configuration.currentEngineVersion),
+                               std::nullopt,
+                               std::nullopt,
                                entry.is_pinned(),
                                map_locator_state(entry.locator_state()),
                                ProjectEntryProblem::None,
@@ -248,6 +262,13 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
                 }
                 projects.push_back(std::move(row));
                 continue;
+            }
+
+            auto storage = m_platform->inspect_project_storage(entry.locator());
+            if (storage)
+            {
+                row.latestWriteMilliseconds = storage.try_value()->latestWriteMilliseconds;
+                row.byteSize = storage.try_value()->byteSize;
             }
 
             auto descriptor = load_project_descriptor(**root.try_value(), *m_assertContext);
@@ -292,8 +313,7 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
             row.compatibilityStatus = compatibility.try_value()->status();
             row.canOpen = compatibility.try_value()->can_open();
             row.canMigrate = descriptor.try_value()->schema_version() < k_currentProjectDescriptorSchemaVersion &&
-                             m_configuration.supportedProjectFormatVersion ==
-                                 k_currentProjectDescriptorSchemaVersion;
+                             m_configuration.supportedProjectFormatVersion == k_currentProjectDescriptorSchemaVersion;
             row.compatibilityReasons.assign(compatibility.try_value()->reasons().begin(),
                                             compatibility.try_value()->reasons().end());
             projects.push_back(std::move(row));
@@ -640,9 +660,9 @@ Result<ProjectDescriptorMigrationOutcome> ProjectHubService::migrate_project(std
         auto root = m_platform->open_root(entry->locator());
         if (!root)
         {
-            return Result<ProjectDescriptorMigrationOutcome>::failure(reclassify_project_hub_error(
-                *m_assertContext, ProjectHubError::ProjectBroken, "Project locator could not be opened",
-                std::move(*root.try_error())));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(
+                reclassify_project_hub_error(*m_assertContext, ProjectHubError::ProjectBroken,
+                                             "Project locator could not be opened", std::move(*root.try_error())));
         }
         if (*root.try_value() == nullptr)
         {
@@ -652,22 +672,22 @@ Result<ProjectDescriptorMigrationOutcome> ProjectHubService::migrate_project(std
         auto source = load_project_descriptor(**root.try_value(), *m_assertContext);
         if (!source)
         {
-            return Result<ProjectDescriptorMigrationOutcome>::failure(reclassify_project_hub_error(
-                *m_assertContext, ProjectHubError::ProjectBroken, "Project descriptor could not be loaded",
-                std::move(*source.try_error())));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(
+                reclassify_project_hub_error(*m_assertContext, ProjectHubError::ProjectBroken,
+                                             "Project descriptor could not be loaded", std::move(*source.try_error())));
         }
         if (source.try_value()->project_id() != *projectId.try_value())
         {
-            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
-                *m_assertContext, ProjectHubError::ProjectIdentityMismatch,
-                "Project descriptor identity differs from the Recent registry"));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(
+                make_project_hub_error(*m_assertContext, ProjectHubError::ProjectIdentityMismatch,
+                                       "Project descriptor identity differs from the Recent registry"));
         }
         if (source.try_value()->schema_version() >= k_currentProjectDescriptorSchemaVersion ||
             m_configuration.supportedProjectFormatVersion != k_currentProjectDescriptorSchemaVersion)
         {
-            return Result<ProjectDescriptorMigrationOutcome>::failure(make_project_hub_error(
-                *m_assertContext, ProjectHubError::ProjectUnsupported,
-                "Project does not have an explicitly supported descriptor migration"));
+            return Result<ProjectDescriptorMigrationOutcome>::failure(
+                make_project_hub_error(*m_assertContext, ProjectHubError::ProjectUnsupported,
+                                       "Project does not have an explicitly supported descriptor migration"));
         }
 
         auto migrated = migrate_project_descriptor(**root.try_value(), *m_assertContext);
@@ -739,6 +759,35 @@ Result<void> ProjectHubService::move_pinned_project(std::string_view a_projectId
     }
     auto changed = candidate.try_value()->move_pinned_project(*projectId.try_value(), a_targetIndex, *m_assertContext);
     return changed ? commit_registry(std::move(*candidate.try_value())) : std::move(changed);
+}
+
+Result<void> ProjectHubService::open_project_folder(std::string_view a_projectId) noexcept
+{
+    auto projectId = parse_project_id(a_projectId);
+    if (!projectId)
+    {
+        return Result<void>::failure(std::move(*projectId.try_error()));
+    }
+    const auto row = std::find_if(m_projects.begin(), m_projects.end(), [&projectId](const ProjectRowView &a_row)
+                                  { return a_row.projectId == projectId.try_value()->text(); });
+    if (row == m_projects.end())
+    {
+        return Result<void>::failure(
+            make_project_hub_error(*m_assertContext, ProjectHubError::ProjectNotFound, "Project is not registered"));
+    }
+    auto root = m_platform->open_root(row->locator);
+    if (!root)
+    {
+        return Result<void>::failure(reclassify_project_hub_error(*m_assertContext, ProjectHubError::InvalidLocator,
+                                                                  "Project folder could not be opened",
+                                                                  std::move(*root.try_error())));
+    }
+    if (*root.try_value() == nullptr)
+    {
+        return Result<void>::failure(
+            make_project_hub_error(*m_assertContext, ProjectHubError::ProjectMissing, "Project folder does not exist"));
+    }
+    return m_platform->open_project_folder(row->locator);
 }
 
 Result<void> ProjectHubService::remove_project(std::string_view a_projectId) noexcept

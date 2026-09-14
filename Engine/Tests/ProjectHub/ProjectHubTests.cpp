@@ -377,6 +377,31 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
         std::terminate();
     }
 
+    [[nodiscard]] cue::Result<cue::project_hub::ProjectStorageMetadata> inspect_project_storage(
+        std::string_view) noexcept override
+    {
+        return cue::Result<cue::project_hub::ProjectStorageMetadata>::success({1234U, 5678U});
+    }
+
+    [[nodiscard]] cue::Result<void> open_project_folder(std::string_view a_locator) noexcept override
+    {
+        try
+        {
+            m_lastOpenedFolder = std::string(a_locator);
+            return cue::Result<void>::success();
+        }
+        catch (...)
+        {
+            m_assertContext->fatal_handler().terminate("Test Project folder open failed");
+        }
+        std::terminate();
+    }
+
+    [[nodiscard]] std::string_view last_opened_folder() const noexcept
+    {
+        return m_lastOpenedFolder;
+    }
+
     [[nodiscard]] cue::Result<cue::ProjectId> next_project_id() noexcept override
     {
         constexpr std::string_view ids[] = {
@@ -416,6 +441,7 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     std::optional<std::string> m_failedLocator;
     std::optional<std::string> m_missingAfterNextOpenLocator;
     std::size_t m_matchingOpenCount = 0U;
+    std::string m_lastOpenedFolder;
 };
 
 [[nodiscard]] cue::Result<cue::project_hub::ProjectHubConfiguration> make_configuration(
@@ -501,10 +527,16 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     constexpr std::string_view echoId = "00000000-0000-4000-8000-000000000005";
     const auto *alpha = find_project(service.try_value()->get()->projects(), alphaId);
     if (alpha == nullptr || alpha->state != cue::project_hub::ProjectEntryState::Available || !alpha->canOpen ||
-        alpha->canMigrate ||
-        alpha->compatibilityStatus != cue::ProjectCompatibilityStatus::Compatible ||
+        alpha->canMigrate || alpha->compatibilityStatus != cue::ProjectCompatibilityStatus::Compatible ||
         !alpha->engineCompatibility.has_value() ||
-        alpha->engineCompatibility->minimum != cue::EngineVersion{1U, 0U, 0U})
+        alpha->engineCompatibility->minimum != cue::EngineVersion{1U, 0U, 0U} || alpha->editorVersion != "1.0.0" ||
+        alpha->latestWriteMilliseconds != 1234U || alpha->byteSize != 5678U)
+    {
+        return false;
+    }
+    const std::string alphaLocator = alpha->locator;
+    if (!service.try_value()->get()->open_project_folder(alphaId) || platform.last_opened_folder() != alphaLocator ||
+        service.try_value()->get()->open_project_folder("00000000-0000-4000-8000-000000000099"))
     {
         return false;
     }
@@ -528,8 +560,7 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     }
     auto migratedBravo = service.try_value()->get()->migrate_project(bravoId);
     const auto *currentBravo = find_project(service.try_value()->get()->projects(), bravoId);
-    if (!migratedBravo ||
-        migratedBravo.try_value()->status() != cue::ProjectDescriptorMigrationStatus::Committed ||
+    if (!migratedBravo || migratedBravo.try_value()->status() != cue::ProjectDescriptorMigrationStatus::Committed ||
         migratedBravo.try_value()->descriptor().default_scene().has_value() || currentBravo == nullptr ||
         !currentBravo->canOpen || currentBravo->canMigrate)
     {

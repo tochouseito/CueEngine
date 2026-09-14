@@ -25,6 +25,13 @@ namespace cue::project_hub
 inline constexpr std::uint32_t k_editorLaunchProtocolVersion = cue::k_editorLaunchProtocolVersion;
 inline constexpr std::string_view k_blank3dTemplateId = "cue.blank-3d";
 
+/// @brief 一覧更新時にProject Folderから取得した表示専用Storage Snapshot
+struct ProjectStorageMetadata final
+{
+    std::uint64_t latestWriteMilliseconds;
+    std::uint64_t byteSize;
+};
+
 /// @brief Stored Locator を開く Platform Composition 境界
 class ProjectHubPlatform
 {
@@ -43,6 +50,11 @@ class ProjectHubPlatform
         std::string_view a_projectLocator) noexcept = 0;
     /// @brief LocatorのRootを開く。存在しない場合は成功したnullptr、その他の失敗はErrorを返す
     [[nodiscard]] virtual Result<std::unique_ptr<FilesystemRoot>> open_root(std::string_view a_locator) noexcept = 0;
+    /// @brief Project FolderをReparse Point非追跡で走査し、表示専用の更新時刻と合計File Sizeを返す
+    [[nodiscard]] virtual Result<ProjectStorageMetadata> inspect_project_storage(
+        std::string_view a_locator) noexcept = 0;
+    /// @brief Project FolderをPlatform標準のFile Managerで開く
+    [[nodiscard]] virtual Result<void> open_project_folder(std::string_view a_locator) noexcept = 0;
     /// @brief 新規Project用のUUID Version 4を返す
     [[nodiscard]] virtual Result<ProjectId> next_project_id() noexcept = 0;
     /// @brief Blank Default Scene用のcanonical SceneAssetId UUID Version 4文字列を返す
@@ -96,6 +108,9 @@ struct ProjectRowView final
     std::string displayName;
     std::string locator;
     std::uint64_t lastOpenedMilliseconds;
+    std::string editorVersion;
+    std::optional<std::uint64_t> latestWriteMilliseconds;
+    std::optional<std::uint64_t> byteSize;
     bool isPinned;
     ProjectEntryState state;
     ProjectEntryProblem problem;
@@ -230,6 +245,8 @@ class ProjectHubService final
     /// @brief Pin EntryをPin一覧内の位置へ移動する
     /// @note ErrorのRoot CodeがCue.IO/IoError::DurabilityUnknownなら並べ替えは公開済みでprojectsの旧Spanは無効
     [[nodiscard]] Result<void> move_pinned_project(std::string_view a_projectId, std::size_t a_targetIndex) noexcept;
+    /// @brief Recent EntryのLocatorを再検証しPlatform標準のFile Managerで開く
+    [[nodiscard]] Result<void> open_project_folder(std::string_view a_projectId) noexcept;
     /// @brief Recent Entryだけを除外しProject Folderには触れない
     /// @note ErrorのRoot CodeがCue.IO/IoError::DurabilityUnknownなら除外は公開済みでprojectsの旧Spanは無効
     [[nodiscard]] Result<void> remove_project(std::string_view a_projectId) noexcept;

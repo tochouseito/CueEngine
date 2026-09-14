@@ -20,6 +20,7 @@ target_link_libraries(
         Cue.Foundation.Windows
         Cue.IO.Windows
         bcrypt
+        shell32
 )
 target_compile_features(Cue.ProjectHub.Windows PUBLIC cxx_std_20)
 target_include_directories(Cue.ProjectHub.Windows PUBLIC Public)

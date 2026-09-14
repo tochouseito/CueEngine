@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -33,6 +34,64 @@ namespace
 {
     const auto duration = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+}
+
+/// @brief Unix MillisecondsをProject一覧向けの相対更新表示へ変換する
+[[nodiscard]] std::string format_relative_time(std::uint64_t a_milliseconds)
+{
+    const std::uint64_t now = current_milliseconds();
+    const std::uint64_t elapsed = now > a_milliseconds ? now - a_milliseconds : 0U;
+    constexpr std::uint64_t k_second = 1000U;
+    constexpr std::uint64_t k_minute = 60U * k_second;
+    constexpr std::uint64_t k_hour = 60U * k_minute;
+    constexpr std::uint64_t k_day = 24U * k_hour;
+    if (elapsed < k_minute)
+    {
+        return "たった今";
+    }
+    if (elapsed < k_hour)
+    {
+        return std::to_string(elapsed / k_minute) + "分前";
+    }
+    if (elapsed < k_day)
+    {
+        return std::to_string(elapsed / k_hour) + "時間前";
+    }
+    if (elapsed < 30U * k_day)
+    {
+        return std::to_string(elapsed / k_day) + "日前";
+    }
+    if (elapsed < 365U * k_day)
+    {
+        return std::to_string(elapsed / (30U * k_day)) + "か月前";
+    }
+    return std::to_string(elapsed / (365U * k_day)) + "年前";
+}
+
+/// @brief Byte数をProject一覧向けの短いSize表示へ変換する
+[[nodiscard]] std::string format_byte_size(std::uint64_t a_bytes)
+{
+    constexpr double k_kib = 1024.0;
+    constexpr double k_mib = k_kib * 1024.0;
+    constexpr double k_gib = k_mib * 1024.0;
+    std::array<char, 64> buffer{};
+    if (a_bytes < 1024U)
+    {
+        std::snprintf(buffer.data(), buffer.size(), "%llu B", static_cast<unsigned long long>(a_bytes));
+    }
+    else if (static_cast<double>(a_bytes) < k_mib)
+    {
+        std::snprintf(buffer.data(), buffer.size(), "%.2f KB", static_cast<double>(a_bytes) / k_kib);
+    }
+    else if (static_cast<double>(a_bytes) < k_gib)
+    {
+        std::snprintf(buffer.data(), buffer.size(), "%.2f MB", static_cast<double>(a_bytes) / k_mib);
+    }
+    else
+    {
+        std::snprintf(buffer.data(), buffer.size(), "%.2f GB", static_cast<double>(a_bytes) / k_gib);
+    }
+    return buffer.data();
 }
 
 /// @brief Error ChainのRootが公開後のDurability確認失敗か返す
@@ -123,8 +182,10 @@ namespace
     case cue::project_hub::ProjectEntryProblem::DescriptorInvalid:
         return "Project Folder内のCueProject.jsonが存在し、正しいJSONと必須項目を保持しているか確認してください。";
     case cue::project_hub::ProjectEntryProblem::IdentityMismatch:
-        return "同一Projectの移動先を登録する場合は、このEntryを残したまま移動先Folderを指定し、再関連付けを有効にしてください。"
-               "現在のFolder内Projectを別Projectとして登録する場合だけ、このEntryを一覧から除外して通常登録してください。";
+        return "同一Projectの移動先を登録する場合は、このEntryを残したまま移動先Folderを指定し、再関連付けを有効にして"
+               "ください。"
+               "現在のFolder内Projectを別Projectとして登録する場合だけ、このEntryを一覧から除外して通常登録してください"
+               "。";
     case cue::project_hub::ProjectEntryProblem::CompatibilityInvalid:
         return "CueProject.jsonのFormat VersionとEngine互換性情報を確認し、対応するCueEngineで開いてください。";
     }
@@ -397,13 +458,10 @@ void ProjectHubPresenter::draw(bool a_canLaunchEditor) noexcept
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     if (ImGui::Begin("CueEngine Project Hub", nullptr, k_windowFlags))
     {
-        const bool canUseGlobalShortcuts =
-            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-        const bool createShortcut =
-            canUseGlobalShortcuts && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N);
-        const bool registerShortcut =
-            canUseGlobalShortcuts && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O);
+        const bool canUseGlobalShortcuts = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                                           !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+        const bool createShortcut = canUseGlobalShortcuts && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N);
+        const bool registerShortcut = canUseGlobalShortcuts && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O);
         if (ImGui::Button("新しいProject (Ctrl+N)") || createShortcut)
         {
             m_openCreateDialog = true;
@@ -460,103 +518,114 @@ void ProjectHubPresenter::draw(bool a_canLaunchEditor) noexcept
 void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
 {
     std::string openProjectId;
+    std::string openFolderProjectId;
     std::string pinProjectId;
     bool pinValue = false;
     try
     {
-        if (ImGui::BeginChild("RecentProjects", ImVec2(0.0F, -92.0F), ImGuiChildFlags_Borders))
+        bool projectListHasKeyboardFocus = false;
+        if (ImGui::BeginChild("RecentProjects", ImVec2(0.0F, -122.0F), ImGuiChildFlags_Borders))
         {
-            for (const ProjectRowView &project : m_service->projects())
+            constexpr ImGuiTableFlags k_tableFlags = ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersInnerV |
+                                                     ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
+            if (ImGui::BeginTable("ProjectTable", 5, k_tableFlags))
             {
-                ImGui::PushID(project.projectId.c_str());
-                const bool isSelected = m_selectedProjectId == project.projectId;
-                if (ImGui::Selectable("##ProjectRow", isSelected, ImGuiSelectableFlags_AllowDoubleClick))
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Project名", ImGuiTableColumnFlags_WidthStretch, 2.5F);
+                ImGui::TableSetupColumn("更新", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+                ImGui::TableSetupColumn("Editor Version", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+                ImGui::TableSetupColumn("Project Size", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, 42.0F);
+                ImGui::TableHeadersRow();
+                for (const ProjectRowView &project : m_service->projects())
                 {
-                    m_selectedProjectId = project.projectId;
-                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && project.canOpen && a_canLaunchEditor)
+                    ImGui::PushID(project.projectId.c_str());
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    const bool isSelected = m_selectedProjectId == project.projectId;
+                    const std::string renderedDisplayName = make_renderable_text(project.displayName);
+                    if (ImGui::Selectable(renderedDisplayName.c_str(), isSelected,
+                                          ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns))
                     {
-                        openProjectId = project.projectId;
-                    }
-                }
-                ImDrawList *drawList = ImGui::GetWindowDrawList();
-                const ImVec2 rowMinimum = ImGui::GetItemRectMin();
-                const ImVec2 rowMaximum = ImGui::GetItemRectMax();
-                const float textOffset = (rowMaximum.y - rowMinimum.y - ImGui::GetTextLineHeight()) * 0.5F;
-                const std::string renderedDisplayName = make_renderable_text(project.displayName);
-                drawList->PushClipRect(rowMinimum, ImVec2(rowMinimum.x + 250.0F, rowMaximum.y), true);
-                drawList->AddText(ImVec2(rowMinimum.x + ImGui::GetStyle().FramePadding.x, rowMinimum.y + textOffset),
-                                  ImGui::GetColorU32(ImGuiCol_Text), renderedDisplayName.data(),
-                                  renderedDisplayName.data() + renderedDisplayName.size());
-                drawList->PopClipRect();
-                ImGui::SameLine(260.0F);
-                const char *problemText = entry_problem_text(project.problem);
-                ImGui::TextDisabled("%s / %s", problemText != nullptr ? problemText : entry_state_text(project.state),
-                                    compatibility_text(project.compatibilityStatus));
-                if (project.isPinned)
-                {
-                    ImGui::SameLine();
-                    ImGui::TextUnformatted("[Pin]");
-                }
-                if (isSelected)
-                {
-                    ImGui::Indent();
-                    const std::string renderedLocator = make_renderable_text(project.locator);
-                    ImGui::TextDisabled("Locator（Unicode Escape表示）");
-                    ImGui::TextWrapped("%s", renderedLocator.c_str());
-                    const char *recoveryText = entry_problem_recovery_text(project.problem);
-                    if (recoveryText != nullptr)
-                    {
-                        ImGui::TextWrapped("確認: %s", recoveryText);
-                    }
-                    for (const ProjectCompatibilityReason &reason : project.compatibilityReasons)
-                    {
-                        if (reason.capability.has_value())
+                        m_selectedProjectId = project.projectId;
+                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && project.canOpen && a_canLaunchEditor)
                         {
-                            if (reason.minimumVersion.has_value())
-                            {
-                                ImGui::TextWrapped("互換性 [%s / %s / 必要Version %u.%u以上]: %s",
-                                                   capability_text(*reason.capability),
-                                                   requirement_kind_text(reason.requirementKind),
-                                                   reason.minimumVersion->major, reason.minimumVersion->minor,
-                                                   compatibility_reason_text(reason.code));
-                            }
-                            else
-                            {
-                                ImGui::TextWrapped("互換性 [%s / %s]: %s", capability_text(*reason.capability),
-                                                   requirement_kind_text(reason.requirementKind),
-                                                   compatibility_reason_text(reason.code));
-                            }
-                        }
-                        else if ((reason.code == ProjectCompatibilityReasonCode::EngineVersionTooOld ||
-                                  reason.code == ProjectCompatibilityReasonCode::EngineVersionTooNew) &&
-                                 project.engineCompatibility.has_value())
-                        {
-                            const EngineCompatibility &range = *project.engineCompatibility;
-                            if (range.maximumExclusive.has_value())
-                            {
-                                ImGui::TextWrapped("互換性 [対応Engine %u.%u.%u以上、%u.%u.%u未満]: %s",
-                                                   range.minimum.major, range.minimum.minor, range.minimum.patch,
-                                                   range.maximumExclusive->major, range.maximumExclusive->minor,
-                                                   range.maximumExclusive->patch, compatibility_reason_text(reason.code));
-                            }
-                            else
-                            {
-                                ImGui::TextWrapped("互換性 [対応Engine %u.%u.%u以上]: %s", range.minimum.major,
-                                                   range.minimum.minor, range.minimum.patch,
-                                                   compatibility_reason_text(reason.code));
-                            }
-                        }
-                        else
-                        {
-                            ImGui::TextWrapped("互換性: %s", compatibility_reason_text(reason.code));
+                            openProjectId = project.projectId;
                         }
                     }
-                    ImGui::Unindent();
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::SetTooltip("%s", project.locator.c_str());
+                    }
+                    if (project.isPinned)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("[Pin]");
+                    }
+                    ImGui::TableSetColumnIndex(1);
+                    if (project.latestWriteMilliseconds.has_value())
+                    {
+                        const std::string updated = format_relative_time(*project.latestWriteMilliseconds);
+                        ImGui::TextUnformatted(updated.c_str());
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("—");
+                    }
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted(project.editorVersion.c_str());
+                    ImGui::TableSetColumnIndex(3);
+                    if (project.byteSize.has_value())
+                    {
+                        const std::string size = format_byte_size(*project.byteSize);
+                        ImGui::TextUnformatted(size.c_str());
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("—");
+                    }
+                    ImGui::TableSetColumnIndex(4);
+                    if (ImGui::SmallButton("..."))
+                    {
+                        ImGui::OpenPopup("ProjectActions");
+                    }
+                    if (ImGui::BeginPopup("ProjectActions"))
+                    {
+                        const bool canOpenFolder = project.state != ProjectEntryState::Missing &&
+                                                   project.problem != ProjectEntryProblem::LocatorAccessFailed;
+                        ImGui::BeginDisabled(!canOpenFolder);
+                        if (ImGui::MenuItem("Project Folderを開く"))
+                        {
+                            openFolderProjectId = project.projectId;
+                        }
+                        ImGui::EndDisabled();
+                        if (ImGui::MenuItem("Projectをリストから削除"))
+                        {
+                            m_pendingRemoveProjectId = project.projectId;
+                            m_openRemoveDialog = true;
+                        }
+                        ImGui::Separator();
+                        if (ImGui::MenuItem(project.isPinned ? "Pinを解除" : "Pinに固定"))
+                        {
+                            pinProjectId = project.projectId;
+                            pinValue = !project.isPinned;
+                        }
+                        ImGui::BeginDisabled(!project.canMigrate);
+                        if (ImGui::MenuItem("Project Formatを更新"))
+                        {
+                            m_pendingMigrateProjectId = project.projectId;
+                            m_openMigrateDialog = true;
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
                 }
-                ImGui::PopID();
+                ImGui::EndTable();
             }
+            projectListHasKeyboardFocus = ImGui::IsWindowFocused();
         }
-        const bool projectListHasKeyboardFocus = ImGui::IsWindowFocused();
         ImGui::EndChild();
 
         const ProjectRowView *selected = nullptr;
@@ -568,36 +637,68 @@ void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
                 break;
             }
         }
+        if (selected != nullptr)
+        {
+            const char *problemText = entry_problem_text(selected->problem);
+            ImGui::TextDisabled("%s / %s", problemText != nullptr ? problemText : entry_state_text(selected->state),
+                                compatibility_text(selected->compatibilityStatus));
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", selected->locator.c_str());
+            const char *recoveryText = entry_problem_recovery_text(selected->problem);
+            if (recoveryText != nullptr && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", recoveryText);
+            }
+            for (const ProjectCompatibilityReason &reason : selected->compatibilityReasons)
+            {
+                if (reason.capability.has_value())
+                {
+                    if (reason.minimumVersion.has_value())
+                    {
+                        ImGui::TextWrapped("互換性 [%s / %s / 必要Version %u.%u以上]: %s",
+                                           capability_text(*reason.capability),
+                                           requirement_kind_text(reason.requirementKind), reason.minimumVersion->major,
+                                           reason.minimumVersion->minor, compatibility_reason_text(reason.code));
+                    }
+                    else
+                    {
+                        ImGui::TextWrapped("互換性 [%s / %s]: %s", capability_text(*reason.capability),
+                                           requirement_kind_text(reason.requirementKind),
+                                           compatibility_reason_text(reason.code));
+                    }
+                }
+                else if ((reason.code == ProjectCompatibilityReasonCode::EngineVersionTooOld ||
+                          reason.code == ProjectCompatibilityReasonCode::EngineVersionTooNew) &&
+                         selected->engineCompatibility.has_value())
+                {
+                    const EngineCompatibility &range = *selected->engineCompatibility;
+                    if (range.maximumExclusive.has_value())
+                    {
+                        ImGui::TextWrapped("互換性 [対応Engine %u.%u.%u以上、%u.%u.%u未満]: %s", range.minimum.major,
+                                           range.minimum.minor, range.minimum.patch, range.maximumExclusive->major,
+                                           range.maximumExclusive->minor, range.maximumExclusive->patch,
+                                           compatibility_reason_text(reason.code));
+                    }
+                    else
+                    {
+                        ImGui::TextWrapped("互換性 [対応Engine %u.%u.%u以上]: %s", range.minimum.major,
+                                           range.minimum.minor, range.minimum.patch,
+                                           compatibility_reason_text(reason.code));
+                    }
+                }
+                else
+                {
+                    ImGui::TextWrapped("互換性: %s", compatibility_reason_text(reason.code));
+                }
+            }
+        }
         ImGui::BeginDisabled(selected == nullptr || !selected->canOpen || !a_canLaunchEditor);
-        const bool canActivateWithEnter = a_canLaunchEditor && selected != nullptr && selected->canOpen &&
-                                          projectListHasKeyboardFocus &&
-                                          !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
-                                          ImGui::IsKeyPressed(ImGuiKey_Enter);
+        const bool canActivateWithEnter =
+            a_canLaunchEditor && selected != nullptr && selected->canOpen && projectListHasKeyboardFocus &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && ImGui::IsKeyPressed(ImGuiKey_Enter);
         if (ImGui::Button("Editorで開く") || canActivateWithEnter)
         {
             openProjectId = selected->projectId;
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(selected == nullptr || !selected->canMigrate);
-        if (ImGui::Button("Project Formatを更新"))
-        {
-            m_pendingMigrateProjectId = selected->projectId;
-            m_openMigrateDialog = true;
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(selected == nullptr);
-        if (ImGui::Button(selected != nullptr && selected->isPinned ? "Pinを解除" : "Pinに固定"))
-        {
-            pinProjectId = selected->projectId;
-            pinValue = !selected->isPinned;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("一覧から除外"))
-        {
-            m_pendingRemoveProjectId = selected->projectId;
-            m_openRemoveDialog = true;
         }
         ImGui::EndDisabled();
     }
@@ -612,6 +713,18 @@ void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
         open_selected_project();
         return;
     }
+    if (!openFolderProjectId.empty())
+    {
+        Result<void> opened = m_service->open_project_folder(openFolderProjectId);
+        if (opened)
+        {
+            set_status("Project Folderを開きました。");
+        }
+        else
+        {
+            set_error(*opened.try_error());
+        }
+    }
     if (!pinProjectId.empty())
     {
         Result<void> pinned = m_service->set_project_pinned(pinProjectId, pinValue);
@@ -624,11 +737,10 @@ void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
             const Error &error = *pinned.try_error();
             if (is_durability_unknown(error))
             {
-                set_warning(pinValue
-                                ? "ProjectをPinに固定しましたが、Diskへの永続化を確認できませんでした。"
-                                  "一覧のPin表示を確認し、次回起動後にも保持されているか再確認してください。"
-                                : "ProjectのPinを解除しましたが、Diskへの永続化を確認できませんでした。"
-                                  "一覧のPin表示を確認し、次回起動後にも解除されているか再確認してください。");
+                set_warning(pinValue ? "ProjectをPinに固定しましたが、Diskへの永続化を確認できませんでした。"
+                                       "一覧のPin表示を確認し、次回起動後にも保持されているか再確認してください。"
+                                     : "ProjectのPinを解除しましたが、Diskへの永続化を確認できませんでした。"
+                                       "一覧のPin表示を確認し、次回起動後にも解除されているか再確認してください。");
             }
             else
             {
@@ -692,9 +804,8 @@ void ProjectHubPresenter::draw_create_dialog() noexcept
     ImGui::BeginDisabled(!canCreate);
     if (ImGui::Button("作成"))
     {
-        Result<ProjectCreationOutcome> created =
-            m_service->create_blank_project(m_parentLocator, m_projectName.data(), m_displayName.data(),
-                                            m_selectedTemplateId, current_milliseconds());
+        Result<ProjectCreationOutcome> created = m_service->create_blank_project(
+            m_parentLocator, m_projectName.data(), m_displayName.data(), m_selectedTemplateId, current_milliseconds());
         if (created)
         {
             if (created.try_value()->try_creation_durability_error() != nullptr ||
@@ -837,7 +948,8 @@ void ProjectHubPresenter::draw_migrate_dialog() noexcept
         return;
     }
     ImGui::TextUnformatted("CueProject.jsonを現在のFormatへAtomicに更新します。");
-    ImGui::TextWrapped("version 1のdefaultSceneはnullのまま保持されます。更新後にStartup Sceneを明示選択してください。");
+    ImGui::TextWrapped(
+        "version 1のdefaultSceneはnullのまま保持されます。更新後にStartup Sceneを明示選択してください。");
     if (ImGui::Button("更新する"))
     {
         Result<ProjectDescriptorMigrationOutcome> migrated = m_service->migrate_project(m_pendingMigrateProjectId);
@@ -881,8 +993,7 @@ void ProjectHubPresenter::open_selected_project() noexcept
     {
         const Error &error = *opened.try_error();
         if (error.code().domain() == "Cue.ProjectHub" &&
-            error.code().value() ==
-                static_cast<std::int64_t>(ProjectHubError::OpenRejectedViewDurabilityUnknown))
+            error.code().value() == static_cast<std::int64_t>(ProjectHubError::OpenRejectedViewDurabilityUnknown))
         {
             std::string warning;
             try
@@ -969,7 +1080,8 @@ void ProjectHubPresenter::set_error(const Error &a_error) noexcept
             message = "同じProject Folderが別のProjectとして登録されています。";
             break;
         case ProjectError::DuplicateProjectId:
-            message = "同じProject IDが別のFolderで登録済みです。移動した同一Projectなら再関連付けを有効にして登録してください。";
+            message = "同じProject "
+                      "IDが別のFolderで登録済みです。移動した同一Projectなら再関連付けを有効にして登録してください。";
             break;
         case ProjectError::ProjectNotRegistered:
             message = "Projectは一覧に登録されていません。一覧を更新してください。";
@@ -982,13 +1094,11 @@ void ProjectHubPresenter::set_error(const Error &a_error) noexcept
             break;
         }
     }
-    else if (rootCode.domain() == "Cue.IO" &&
-             rootCode.value() == static_cast<std::int64_t>(IoError::PermissionDenied))
+    else if (rootCode.domain() == "Cue.IO" && rootCode.value() == static_cast<std::int64_t>(IoError::PermissionDenied))
     {
         message = "Folderへアクセスする権限がありません。";
     }
-    if (rootCode.domain() == "Cue.IO" &&
-        rootCode.value() == static_cast<std::int64_t>(IoError::DurabilityUnknown))
+    if (rootCode.domain() == "Cue.IO" && rootCode.value() == static_cast<std::int64_t>(IoError::DurabilityUnknown))
     {
         message = "保存は完了しましたが、Diskへの永続化を確認できませんでした。";
     }
