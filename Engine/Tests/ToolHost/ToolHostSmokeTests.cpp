@@ -53,6 +53,12 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
         ++m_drawCount;
     }
 
+    /// @brief 初期化済みWindowが最初のFrame前に通知されたことを記録する
+    void window_ready(cue::Window &) noexcept override
+    {
+        m_windowWasReady = m_drawCount == 0U;
+    }
+
     /// @brief 有限Frame Smokeでは予期しないNative Window終了要求を状態へ反映しない
     void request_close() noexcept override
     {
@@ -70,8 +76,15 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
         return m_drawCount;
     }
 
+    /// @brief Window通知が最初の描画より前に届いたか返す
+    [[nodiscard]] bool window_was_ready() const noexcept
+    {
+        return m_windowWasReady;
+    }
+
   private:
     std::uint32_t m_drawCount = 0;
+    bool m_windowWasReady = false;
 };
 } // namespace
 
@@ -85,5 +98,5 @@ int main()
     SmokeClient client;
     const cue::tool_host::ToolHostDescriptor descriptor{"Cue Tool Host Smoke", {640U, 360U}, 2U};
     cue::Result<void> result = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, context);
-    return result && client.draw_count() == 2U ? 0 : 1;
+    return result && client.window_was_ready() && client.draw_count() == 2U ? 0 : 1;
 }

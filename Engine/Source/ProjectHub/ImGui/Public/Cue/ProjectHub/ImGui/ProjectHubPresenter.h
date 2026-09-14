@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace cue
 {
@@ -39,6 +40,15 @@ class ProjectHubPresenter final
 
     /// @brief Open操作で生成されたEditor Launch Requestを一度だけ移動して返す
     [[nodiscard]] std::optional<EditorLaunchRequest> take_editor_launch_request() noexcept;
+
+    /// @brief 新規Projectの保存場所参照要求を一度だけ返す。返却Viewは次のdrawまたは設定変更まで有効
+    [[nodiscard]] std::optional<std::string_view> take_destination_browse_request() noexcept;
+
+    /// @brief Folder Dialogで選択したUTF-8 Absolute Pathを保存場所入力へ反映する
+    void apply_destination_selection(std::string_view a_destination) noexcept;
+
+    /// @brief Composition Rootで失敗したFolder Dialogを日本語Messageへ反映する
+    void report_destination_browse_failure(const Error &a_error) noexcept;
 
     /// @brief Composition Rootで失敗したEditor Process起動を日本語Messageへ反映する
     void report_editor_launch_failure(const Error &a_error) noexcept;
@@ -84,7 +94,6 @@ class ProjectHubPresenter final
     std::string m_parentLocator;
     std::string m_registerLocator;
     std::array<char, 128> m_projectName{};
-    std::array<char, 257> m_displayName{};
     bool m_openCreateDialog = false;
     bool m_openRegisterDialog = false;
     bool m_openRemoveDialog = false;
@@ -93,5 +102,6 @@ class ProjectHubPresenter final
     bool m_hasError = false;
     bool m_hasWarning = false;
     bool m_isExitRequested = false;
+    bool m_destinationBrowseRequested = false;
 };
 } // namespace cue::project_hub

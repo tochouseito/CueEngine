@@ -49,6 +49,7 @@ class TestDirectory final
         m_root += L"CueProjectHubWindowsTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
                   std::to_wstring(GetTickCount64());
         m_project = m_root + L"\\SampleGame";
+        m_createdParent = m_root + L"\\Created\\Nested";
         m_isCreated = CreateDirectoryW(m_root.c_str(), nullptr) != FALSE;
     }
 
@@ -70,6 +71,8 @@ class TestDirectory final
                 RemoveDirectoryW(path->c_str());
             }
             RemoveDirectoryW(m_project.c_str());
+            RemoveDirectoryW(m_createdParent.c_str());
+            RemoveDirectoryW((m_root + L"\\Created").c_str());
             RemoveDirectoryW(m_root.c_str());
         }
     }
@@ -117,6 +120,12 @@ class TestDirectory final
         return m_project;
     }
 
+    /// @brief 自動作成を検証する欠損保存場所のUTF-16 Pathを返す
+    [[nodiscard]] const std::wstring &created_parent() const noexcept
+    {
+        return m_createdParent;
+    }
+
     /// @brief MAX_PATHを超える既存Project RootをExtended-length APIで作成する
     [[nodiscard]] bool create_long_project()
     {
@@ -145,6 +154,7 @@ class TestDirectory final
   private:
     std::wstring m_root;
     std::wstring m_project;
+    std::wstring m_createdParent;
     std::wstring m_longProject;
     std::vector<std::wstring> m_longDirectories;
     bool m_isCreated = false;
@@ -194,10 +204,18 @@ class TestDirectory final
     auto normalized = platform->normalize_project_locator(root);
     auto project = platform->compose_project_locator(root, "SampleGame");
     auto invalidProject = platform->compose_project_locator(root, "../Outside");
-    if (!normalized || !project || invalidProject)
+    std::string embeddedNull = root;
+    embeddedNull.push_back('\0');
+    embeddedNull.append("Hidden");
+    auto invalidEmbeddedNull = platform->normalize_project_locator(embeddedNull);
+    const std::string createdParent = to_utf8(directory.created_parent(), a_context);
+    auto createdRoot = platform->create_or_open_root(createdParent);
+    if (!normalized || !project || invalidProject || invalidEmbeddedNull || createdParent.empty() || !createdRoot ||
+        *createdRoot.try_value() == nullptr)
     {
         return false;
     }
+    createdRoot.try_value()->reset();
 
     auto missing = platform->open_root(*project.try_value());
     if (!missing || *missing.try_value() != nullptr || CreateDirectoryW(directory.project().c_str(), nullptr) == FALSE)

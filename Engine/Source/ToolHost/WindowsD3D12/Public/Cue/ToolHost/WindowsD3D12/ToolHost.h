@@ -9,7 +9,8 @@
 namespace cue
 {
 class AssertContext;
-}
+class Window;
+} // namespace cue
 
 namespace cue::tool_host
 {
@@ -54,6 +55,11 @@ class ToolHostClient
 
     /// @brief 現在FrameのImGui Widgetを構築する
     virtual void draw_frame() noexcept = 0;
+
+    /// @brief 初期化済みWindowを最初のFrame前に通知する。参照はHost実行中だけ有効
+    virtual void window_ready(Window &) noexcept
+    {
+    }
 
     /// @brief Native Window終了要求をTool固有の保存確認または終了状態へ変換する
     virtual void request_close() noexcept = 0;

@@ -24,6 +24,7 @@ target_link_libraries(
         Cue.Foundation.Windows
         Cue.ImGui.Core
         Cue.IO.Windows
+        Cue.Platform.Windows
         Cue.ProjectHub.ImGui
         Cue.ProjectHub.Windows
         Cue.ToolHost.WindowsD3D12

@@ -51,7 +51,6 @@ class TestDirectory final
         std::error_code error;
         std::filesystem::remove_all(m_path, error);
         std::filesystem::create_directories(m_path / "Workspace", error);
-        std::filesystem::create_directories(m_path / "Projects", error);
         m_valid = !error;
     }
 
@@ -377,6 +376,30 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
         std::terminate();
     }
 
+    [[nodiscard]] cue::Result<std::unique_ptr<cue::FilesystemRoot>> create_or_open_root(
+        std::string_view a_locator) noexcept override
+    {
+        try
+        {
+            std::error_code error;
+            static_cast<void>(
+                std::filesystem::create_directories(std::filesystem::path(std::string(a_locator)), error));
+            if (error)
+            {
+                return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(
+                    cue::project_hub::make_project_hub_error(*m_assertContext,
+                                                             cue::project_hub::ProjectHubError::InvalidLocator,
+                                                             "Test project root creation failed"));
+            }
+            return open_root(a_locator);
+        }
+        catch (...)
+        {
+            m_assertContext->fatal_handler().terminate("Test project root creation failed");
+        }
+        std::terminate();
+    }
+
     [[nodiscard]] cue::Result<cue::project_hub::ProjectStorageMetadata> inspect_project_storage(
         std::string_view) noexcept override
     {
@@ -509,13 +532,12 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     }
 
     const std::string projectsLocator = to_utf8(directory.path() / "Projects");
-    if (service.try_value()->get()->create_blank_project(projectsLocator, "Invalid", "Invalid Project",
-                                                         "unknown-template", 0U) ||
-        !service.try_value()->get()->create_blank_project(projectsLocator, "Alpha", "Alpha Project",
+    if (service.try_value()->get()->create_blank_project(projectsLocator, "Invalid", "unknown-template", 0U) ||
+        !service.try_value()->get()->create_blank_project(projectsLocator, "Alpha",
                                                           cue::project_hub::k_blank3dTemplateId, 100U) ||
-        !service.try_value()->get()->create_blank_project(projectsLocator, "Bravo", "Bravo Project",
+        !service.try_value()->get()->create_blank_project(projectsLocator, "Bravo",
                                                           cue::project_hub::k_blank3dTemplateId, 200U) ||
-        !service.try_value()->get()->create_blank_project(projectsLocator, "Charlie", "Charlie Project",
+        !service.try_value()->get()->create_blank_project(projectsLocator, "Charlie",
                                                           cue::project_hub::k_blank3dTemplateId, 300U))
     {
         return false;
@@ -526,8 +548,9 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
     constexpr std::string_view deltaId = "00000000-0000-4000-8000-000000000004";
     constexpr std::string_view echoId = "00000000-0000-4000-8000-000000000005";
     const auto *alpha = find_project(service.try_value()->get()->projects(), alphaId);
-    if (alpha == nullptr || alpha->state != cue::project_hub::ProjectEntryState::Available || !alpha->canOpen ||
-        alpha->canMigrate || alpha->compatibilityStatus != cue::ProjectCompatibilityStatus::Compatible ||
+    if (alpha == nullptr || alpha->displayName != "Alpha" ||
+        alpha->state != cue::project_hub::ProjectEntryState::Available || !alpha->canOpen || alpha->canMigrate ||
+        alpha->compatibilityStatus != cue::ProjectCompatibilityStatus::Compatible ||
         !alpha->engineCompatibility.has_value() ||
         alpha->engineCompatibility->minimum != cue::EngineVersion{1U, 0U, 0U} || alpha->editorVersion != "1.0.0" ||
         alpha->latestWriteMilliseconds != 1234U || alpha->byteSize != 5678U)
@@ -702,7 +725,7 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
 
     workspaceFilesystem.set_write_failure(true);
     auto partiallyCreated = service.try_value()->get()->create_blank_project(
-        projectsLocator, "Delta", "Delta Project", cue::project_hub::k_blank3dTemplateId, 550U);
+        projectsLocator, "Delta", cue::project_hub::k_blank3dTemplateId, 550U);
     workspaceFilesystem.set_write_failure(false);
     if (!partiallyCreated || partiallyCreated.try_value()->is_recent_registered() ||
         partiallyCreated.try_value()->try_recent_persistence_error() == nullptr ||
@@ -717,7 +740,7 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
 
     platform.set_next_project_publish_durability_unknown();
     auto uncertainCreation = service.try_value()->get()->create_blank_project(
-        projectsLocator, "Echo", "Echo Project", cue::project_hub::k_blank3dTemplateId, 575U);
+        projectsLocator, "Echo", cue::project_hub::k_blank3dTemplateId, 575U);
     if (!uncertainCreation || !uncertainCreation.try_value()->is_recent_registered() ||
         uncertainCreation.try_value()->try_creation_durability_error() == nullptr ||
         uncertainCreation.try_value()->try_recent_persistence_error() != nullptr ||
@@ -732,7 +755,7 @@ class TestProjectHubPlatform final : public cue::project_hub::ProjectHubPlatform
 
     platform.set_next_project_write_durability_unknown();
     auto unpublishedCreation = service.try_value()->get()->create_blank_project(
-        projectsLocator, "Foxtrot", "Foxtrot Project", cue::project_hub::k_blank3dTemplateId, 600U);
+        projectsLocator, "Foxtrot", cue::project_hub::k_blank3dTemplateId, 600U);
     if (unpublishedCreation || unpublishedCreation.try_error()->root_code().domain() != "Cue.IO" ||
         unpublishedCreation.try_error()->root_code().value() !=
             static_cast<std::int64_t>(cue::IoError::DurabilityUnknown) ||
