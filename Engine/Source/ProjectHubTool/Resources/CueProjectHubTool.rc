@@ -1,0 +1,3 @@
+#include "CueProjectHubToolResource.h"
+
+IDI_CUE_PROJECT_HUB_TOOL ICON "CueProjectHubTool.ico"

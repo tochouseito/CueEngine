@@ -1,0 +1,3 @@
+#include "CueEditorToolResource.h"
+
+IDI_CUE_EDITOR_TOOL ICON "CueEditorTool.ico"

@@ -4,6 +4,18 @@ target_sources(
     CueEditorTool
     PRIVATE
         Main.cpp
+        Resources/CueEditorTool.rc
+        Resources/CueEditorToolResource.h
+        Resources/CueEditorTool.ico
+        Resources/CueEditorToolIcon.png
+)
+
+# 原本 PNG は編集用 Source として保持し、Build 時の画像変換 Tool 依存を避けるため ICO も追跡する
+set_source_files_properties(
+    Resources/CueEditorTool.ico
+    Resources/CueEditorToolIcon.png
+    PROPERTIES
+        HEADER_FILE_ONLY TRUE
 )
 
 target_link_libraries(

@@ -1,3 +1,5 @@
+#include "Resources/CueEditorToolResource.h"
+
 #include <Cue/Build/DiagnosticBundle.h>
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 #include <Cue/Build/Windows/WindowsToolchain.h>
@@ -2790,7 +2792,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             }
         }
         const cue::tool_host::ToolHostDescriptor descriptor{
-            "CueEngine Editor", {1440U, 900U}, a_options.maximumFrameCount};
+            "CueEngine Editor", {1440U, 900U}, a_options.maximumFrameCount,
+            static_cast<std::uint16_t>(IDI_CUE_EDITOR_TOOL)};
         cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
         if (!hosted)
         {
