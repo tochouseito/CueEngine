@@ -50,6 +50,9 @@ class ProjectHubPlatform
         std::string_view a_projectLocator) noexcept = 0;
     /// @brief LocatorのRootを開く。存在しない場合は成功したnullptr、その他の失敗はErrorを返す
     [[nodiscard]] virtual Result<std::unique_ptr<FilesystemRoot>> open_root(std::string_view a_locator) noexcept = 0;
+    /// @brief LocatorのRootを開き、存在しない場合は親Directoryを含めて作成する
+    [[nodiscard]] virtual Result<std::unique_ptr<FilesystemRoot>> create_or_open_root(
+        std::string_view a_locator) noexcept = 0;
     /// @brief Project FolderをReparse Point非追跡で走査し、表示専用の更新時刻と合計File Sizeを返す
     [[nodiscard]] virtual Result<ProjectStorageMetadata> inspect_project_storage(
         std::string_view a_locator) noexcept = 0;
@@ -219,7 +222,6 @@ class ProjectHubService final
     /// Recent登録だけを再試行する
     [[nodiscard]] Result<ProjectCreationOutcome> create_blank_project(std::string_view a_parentLocator,
                                                                       std::string_view a_projectName,
-                                                                      std::string_view a_displayName,
                                                                       std::string_view a_templateId,
                                                                       std::uint64_t a_openedMilliseconds) noexcept;
     /// @brief 既存Projectを登録し、明示時だけ同一ProjectIdの移動を再関連付けする

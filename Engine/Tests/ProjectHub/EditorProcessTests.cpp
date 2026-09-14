@@ -190,7 +190,7 @@ class TestDirectory final
         return false;
     }
     cue::Result<cue::project_hub::ProjectCreationOutcome> created = service.try_value()->get()->create_blank_project(
-        projectsLocator, "LaunchGame", "Launch Game", cue::project_hub::k_blank3dTemplateId, 1U);
+        projectsLocator, "LaunchGame", cue::project_hub::k_blank3dTemplateId, 1U);
     if (!created || service.try_value()->get()->projects().size() != 1U)
     {
         return false;

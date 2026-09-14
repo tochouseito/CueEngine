@@ -6,6 +6,8 @@
 #include <Cue/Foundation/Windows/UtfConversion.h>
 #include <Cue/IO/RelativePath.h>
 #include <Cue/IO/Windows/WindowsFilesystem.h>
+#include <Cue/Platform/FileDialog.h>
+#include <Cue/Platform/Windows/WindowsFileDialog.h>
 #include <Cue/Project/Compatibility.h>
 #include <Cue/ProjectHub/ImGui/ProjectHubPresenter.h>
 #include <Cue/ProjectHub/Windows/WindowsProjectHubPlatform.h>
@@ -121,7 +123,8 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
     ProjectHubToolClient(cue::project_hub::ProjectHubPresenter &a_presenter, std::string &&a_editorExecutableLocator,
                          const cue::AssertContext &a_assertContext) noexcept
         : m_presenter(&a_presenter), m_assertContext(&a_assertContext),
-          m_editorExecutableLocator(std::move(a_editorExecutableLocator))
+          m_editorExecutableLocator(std::move(a_editorExecutableLocator)),
+          m_fileDialogService(cue::create_windows_file_dialog_service(a_assertContext))
     {
     }
 
@@ -151,6 +154,11 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
         }
 
         m_presenter->draw(m_editorProcess == nullptr);
+        const std::optional<std::string_view> browseRequest = m_presenter->take_destination_browse_request();
+        if (browseRequest.has_value())
+        {
+            browse_destination(*browseRequest);
+        }
         std::optional<cue::project_hub::EditorLaunchRequest> request = m_presenter->take_editor_launch_request();
         if (!request.has_value())
         {
@@ -166,6 +174,12 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
         m_editorProcess = std::move(*launched.try_value());
     }
 
+    /// @brief Native File Dialog Ownerとして使用するWindowをHost実行中だけ保持する
+    void window_ready(cue::Window &a_window) noexcept override
+    {
+        m_window = &a_window;
+    }
+
     /// @brief Native Window終了要求をProject Hub Presenterへ渡す
     void request_close() noexcept override
     {
@@ -179,10 +193,51 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
     }
 
   private:
+    /// @brief 保存場所選択Intentを既存Windows Folder Dialogへ同期接続する
+    void browse_destination(std::string_view a_initialLocation) noexcept
+    {
+        if (m_window == nullptr)
+        {
+            return;
+        }
+        cue::Result<cue::FileDialogOwnerToken> owner =
+            cue::create_windows_file_dialog_owner(*m_window, *m_assertContext);
+        if (!owner)
+        {
+            m_presenter->report_destination_browse_failure(*owner.try_error());
+            return;
+        }
+        try
+        {
+            cue::FileDialogRequest request(cue::FileDialogKind::SelectFolder, {}, {}, std::string(a_initialLocation),
+                                           std::move(*owner.try_value()));
+            cue::Result<cue::FileDialogResult> selected = m_fileDialogService->show(request);
+            if (!selected)
+            {
+                m_presenter->report_destination_browse_failure(*selected.try_error());
+                return;
+            }
+            if (selected.try_value()->outcome() == cue::FileDialogOutcome::Selected)
+            {
+                const std::optional<std::string_view> selectedPath = selected.try_value()->selected_path();
+                if (selectedPath.has_value())
+                {
+                    m_presenter->apply_destination_selection(*selectedPath);
+                }
+            }
+        }
+        catch (...)
+        {
+            m_assertContext->fatal_handler().terminate("Project Hub folder dialog request allocation failed");
+        }
+    }
+
     cue::project_hub::ProjectHubPresenter *m_presenter;
     const cue::AssertContext *m_assertContext;
     std::string m_editorExecutableLocator;
+    std::unique_ptr<cue::FileDialogService> m_fileDialogService;
     std::unique_ptr<cue::project_hub::WindowsEditorProcess> m_editorProcess;
+    cue::Window *m_window = nullptr;
     bool m_closeRequested = false;
 };
 

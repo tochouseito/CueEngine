@@ -330,7 +330,6 @@ Result<ProjectHubService::PreparedRegistrySnapshot> ProjectHubService::prepare_r
 
 Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::string_view a_parentLocator,
                                                                        std::string_view a_projectName,
-                                                                       std::string_view a_displayName,
                                                                        std::string_view a_templateId,
                                                                        std::uint64_t a_openedMilliseconds) noexcept
 {
@@ -346,7 +345,7 @@ Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::stri
             reclassify_project_hub_error(*m_assertContext, ProjectHubError::InvalidLocator,
                                          "Project parent locator is invalid", std::move(*parentLocator.try_error())));
     }
-    auto parentRoot = m_platform->open_root(*parentLocator.try_value());
+    auto parentRoot = m_platform->create_or_open_root(*parentLocator.try_value());
     if (!parentRoot)
     {
         return Result<ProjectCreationOutcome>::failure(reclassify_project_hub_error(
@@ -356,7 +355,7 @@ Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::stri
     if (*parentRoot.try_value() == nullptr)
     {
         return Result<ProjectCreationOutcome>::failure(make_project_hub_error(
-            *m_assertContext, ProjectHubError::ProjectMissing, "Project parent locator does not exist"));
+            *m_assertContext, ProjectHubError::ProjectMissing, "Project parent locator could not be created"));
     }
     auto projectLocator = m_platform->compose_project_locator(*parentLocator.try_value(), a_projectName);
     if (!projectLocator)
@@ -376,7 +375,7 @@ Result<ProjectCreationOutcome> ProjectHubService::create_blank_project(std::stri
         return Result<ProjectCreationOutcome>::failure(std::move(*sceneAssetId.try_error()));
     }
     auto descriptor = generate_blank_project(
-        **parentRoot.try_value(), a_projectName, a_displayName, *projectId.try_value(), *sceneAssetId.try_value(),
+        **parentRoot.try_value(), a_projectName, a_projectName, *projectId.try_value(), *sceneAssetId.try_value(),
         BlankProjectTemplate{m_configuration.blankProjectCompatibility}, *m_assertContext);
     std::optional<Error> creationDurabilityError;
     if (!descriptor)

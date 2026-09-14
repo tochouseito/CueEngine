@@ -417,7 +417,6 @@ ProjectHubPresenter::ProjectHubPresenter(ProjectHubService &a_service, const Ass
     : m_service(&a_service), m_assertContext(&a_assertContext)
 {
     set_buffer(m_projectName, "NewGame");
-    set_buffer(m_displayName, "新しいゲーム");
     if (!m_service->templates().empty())
     {
         try
@@ -762,10 +761,18 @@ void ProjectHubPresenter::draw_create_dialog() noexcept
     {
         return;
     }
-    input_locator("作成先Folder", m_parentLocator, *m_assertContext);
     ImGui::InputText("Project名", m_projectName.data(), m_projectName.size());
-    ImGui::InputText("表示名", m_displayName.data(), m_displayName.size());
-    draw_unicode_escape_preview(m_displayName.data(), *m_assertContext);
+    draw_unicode_escape_preview(m_projectName.data(), *m_assertContext);
+    ImGui::SetNextItemWidth(520.0F);
+    StringInputContext destinationContext{&m_parentLocator, m_assertContext};
+    ImGui::InputText("保存場所", m_parentLocator.data(), m_parentLocator.capacity() + 1U,
+                     ImGuiInputTextFlags_CallbackResize, resize_string_input, &destinationContext);
+    ImGui::SameLine();
+    if (ImGui::Button("参照..."))
+    {
+        m_destinationBrowseRequested = true;
+    }
+    draw_unicode_escape_preview(m_parentLocator, *m_assertContext);
     const ProjectTemplateView *selectedTemplate = nullptr;
     for (const ProjectTemplateView &candidate : m_service->templates())
     {
@@ -776,7 +783,7 @@ void ProjectHubPresenter::draw_create_dialog() noexcept
         }
     }
     const char *templatePreview = selectedTemplate != nullptr ? selectedTemplate->displayName.c_str() : "選択なし";
-    if (ImGui::BeginCombo("Template", templatePreview))
+    if (ImGui::BeginCombo("テンプレート", templatePreview))
     {
         for (const ProjectTemplateView &candidate : m_service->templates())
         {
@@ -799,13 +806,12 @@ void ProjectHubPresenter::draw_create_dialog() noexcept
         }
         ImGui::EndCombo();
     }
-    const bool canCreate = !m_parentLocator.empty() && m_projectName[0] != '\0' && m_displayName[0] != '\0' &&
-                           !m_selectedTemplateId.empty();
+    const bool canCreate = !m_parentLocator.empty() && m_projectName[0] != '\0' && !m_selectedTemplateId.empty();
     ImGui::BeginDisabled(!canCreate);
     if (ImGui::Button("作成"))
     {
         Result<ProjectCreationOutcome> created = m_service->create_blank_project(
-            m_parentLocator, m_projectName.data(), m_displayName.data(), m_selectedTemplateId, current_milliseconds());
+            m_parentLocator, m_projectName.data(), m_selectedTemplateId, current_milliseconds());
         if (created)
         {
             if (created.try_value()->try_creation_durability_error() != nullptr ||
@@ -1180,6 +1186,33 @@ std::optional<EditorLaunchRequest> ProjectHubPresenter::take_editor_launch_reque
     std::optional<EditorLaunchRequest> request = std::move(m_launchRequest);
     m_launchRequest.reset();
     return request;
+}
+
+std::optional<std::string_view> ProjectHubPresenter::take_destination_browse_request() noexcept
+{
+    if (!m_destinationBrowseRequested)
+    {
+        return std::nullopt;
+    }
+    m_destinationBrowseRequested = false;
+    return std::string_view(m_parentLocator);
+}
+
+void ProjectHubPresenter::apply_destination_selection(std::string_view a_destination) noexcept
+{
+    try
+    {
+        m_parentLocator.assign(a_destination);
+    }
+    catch (...)
+    {
+        terminate_allocation(*m_assertContext);
+    }
+}
+
+void ProjectHubPresenter::report_destination_browse_failure(const Error &a_error) noexcept
+{
+    set_error(a_error);
 }
 
 void ProjectHubPresenter::report_editor_launch_failure(const Error &a_error) noexcept

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <exception>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -236,13 +237,16 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
     /// @brief UTF-8 LocatorをProcess間受け渡し可能な絶対Windows Pathへ正規化する
     [[nodiscard]] cue::Result<std::string> normalize_project_locator(std::string_view a_locator) noexcept override
     {
-        cue::Result<std::wstring> converted = to_utf16(a_locator, *m_assertContext);
-        if (!converted || converted.try_value()->empty())
+        if (a_locator.empty() || a_locator.find('\0') != std::string_view::npos)
         {
-            return converted ? cue::Result<std::string>::failure(cue::project_hub::make_project_hub_error(
-                                   *m_assertContext, cue::project_hub::ProjectHubError::InvalidLocator,
-                                   "Project locator is empty"))
-                             : cue::Result<std::string>::failure(std::move(*converted.try_error()));
+            return cue::Result<std::string>::failure(cue::project_hub::make_project_hub_error(
+                *m_assertContext, cue::project_hub::ProjectHubError::InvalidLocator,
+                "Project locator is empty or contains an embedded null"));
+        }
+        cue::Result<std::wstring> converted = to_utf16(a_locator, *m_assertContext);
+        if (!converted)
+        {
+            return cue::Result<std::string>::failure(std::move(*converted.try_error()));
         }
 
         const DWORD required = GetFullPathNameW(converted.try_value()->c_str(), 0, nullptr, nullptr);
@@ -359,6 +363,42 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
                 make_path_error(*m_assertContext, code, "Project locator inspection failed"));
         }
         return cue::create_windows_filesystem_root(*normalized.try_value(), *m_assertContext);
+    }
+
+    /// @brief 欠損した保存場所を親Directoryごと作成しRoot-bound Filesystemとして開く
+    [[nodiscard]] cue::Result<std::unique_ptr<cue::FilesystemRoot>> create_or_open_root(
+        std::string_view a_locator) noexcept override
+    {
+        cue::Result<std::string> normalized = normalize_project_locator(a_locator);
+        if (!normalized)
+        {
+            return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(std::move(*normalized.try_error()));
+        }
+        cue::Result<std::wstring> path = to_utf16(*normalized.try_value(), *m_assertContext);
+        if (!path)
+        {
+            return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(std::move(*path.try_error()));
+        }
+        cue::Result<std::wstring> extended = make_extended_path(std::move(*path.try_value()), *m_assertContext);
+        if (!extended)
+        {
+            return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(std::move(*extended.try_error()));
+        }
+        try
+        {
+            std::error_code error;
+            static_cast<void>(std::filesystem::create_directories(std::filesystem::path(*extended.try_value()), error));
+            if (error)
+            {
+                return cue::Result<std::unique_ptr<cue::FilesystemRoot>>::failure(make_path_error(
+                    *m_assertContext, static_cast<DWORD>(error.value()), "Project parent locator creation failed"));
+            }
+        }
+        catch (...)
+        {
+            terminate_allocation(*m_assertContext);
+        }
+        return open_root(*normalized.try_value());
     }
 
     /// @brief Project Treeを上限付きで走査しReparse Pointを追跡せず表示用Metadataを集計する
