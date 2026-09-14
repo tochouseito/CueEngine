@@ -100,6 +100,52 @@ constexpr DXGI_FORMAT k_backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     return cue::Error::create(a_context.fatal_handler(), std::move(code), a_summary, std::move(native));
 }
 
+/// @brief Executable Resourceの大・小IconをTool Windowへ関連付ける
+[[nodiscard]] cue::Result<void> apply_window_icon(HWND a_window, std::uint16_t a_resourceId,
+                                                  const cue::AssertContext &a_context) noexcept
+{
+    if (a_resourceId == 0U)
+    {
+        return cue::Result<void>::success();
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    HINSTANCE module = GetModuleHandleW(nullptr);
+    if (module == nullptr)
+    {
+        return cue::Result<void>::failure(
+            make_native_error(a_context, cue::tool_host::ToolHostError::WindowInitializationFailed,
+                              "Tool Host application module could not be acquired", "Win32", GetLastError()));
+    }
+
+    constexpr UINT k_loadFlags = LR_DEFAULTCOLOR | LR_SHARED;
+    SetLastError(ERROR_SUCCESS);
+    HICON largeIcon = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(a_resourceId), IMAGE_ICON,
+                                                    GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+                                                    k_loadFlags));
+    if (largeIcon == nullptr)
+    {
+        return cue::Result<void>::failure(
+            make_native_error(a_context, cue::tool_host::ToolHostError::WindowInitializationFailed,
+                              "Tool Host large application icon could not be loaded", "Win32", GetLastError()));
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    HICON smallIcon = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(a_resourceId), IMAGE_ICON,
+                                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                                                    k_loadFlags));
+    if (smallIcon == nullptr)
+    {
+        return cue::Result<void>::failure(
+            make_native_error(a_context, cue::tool_host::ToolHostError::WindowInitializationFailed,
+                              "Tool Host small application icon could not be loaded", "Win32", GetLastError()));
+    }
+
+    static_cast<void>(SendMessageW(a_window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(largeIcon)));
+    static_cast<void>(SendMessageW(a_window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon)));
+    return cue::Result<void>::success();
+}
+
 /// @brief DREDのUTF-16 Object名をUTF-8へ変換できたか返す
 [[nodiscard]] bool try_convert_dred_name(const wchar_t *a_name, std::string &a_storage,
                                          const cue::AssertContext &a_context) noexcept
@@ -513,6 +559,12 @@ cue::Result<void> WindowsD3d12ToolHost::initialize(const cue::tool_host::ToolHos
         return cue::Result<void>::failure(std::move(*nativeView.try_error()));
     }
     HWND nativeWindow = static_cast<HWND>(const_cast<void *>(nativeView.try_value()->value()));
+
+    cue::Result<void> icon = apply_window_icon(nativeWindow, a_descriptor.iconResourceId, *m_assertContext);
+    if (!icon)
+    {
+        return icon;
+    }
 
     cue::Result<void> d3d12 = initialize_d3d12(nativeWindow, a_descriptor.clientSize);
     if (!d3d12)

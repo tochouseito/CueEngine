@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         Main.cpp
         Resources/CueProjectHubTool.rc
+        Resources/CueProjectHubToolResource.h
         Resources/CueProjectHubTool.ico
         Resources/CueProjectHubToolIcon.png
 )

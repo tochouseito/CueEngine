@@ -35,6 +35,7 @@ struct ToolHostDescriptor final
     std::string_view title;
     WindowSize clientSize;
     std::uint64_t maximumFrameCount;
+    std::uint16_t iconResourceId = 0U;
 };
 
 /// @brief Tool固有Presentationを共通Windows D3D12 Hostへ接続する

@@ -1,3 +1,5 @@
+#include "Resources/CueProjectHubToolResource.h"
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
@@ -94,7 +96,8 @@ class InitializationFailureClient final : public cue::tool_host::ToolHostClient
                                               const cue::AssertContext &a_assertContext) noexcept
 {
     InitializationFailureClient client(std::move(a_error));
-    const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Project Hub", {960U, 480U}, 0U};
+    const cue::tool_host::ToolHostDescriptor descriptor{
+        "CueEngine Project Hub", {960U, 480U}, 0U, static_cast<std::uint16_t>(IDI_CUE_PROJECT_HUB_TOOL)};
     cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
     cue::Error initialization = client.take_error();
     if (!hosted)
@@ -296,7 +299,8 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
     }
 
     ProjectHubToolClient client(**presenter.try_value(), std::move(*editorExecutable.try_value()), a_assertContext);
-    const cue::tool_host::ToolHostDescriptor descriptor{"CueEngine Project Hub", {1280U, 720U}, 0U};
+    const cue::tool_host::ToolHostDescriptor descriptor{
+        "CueEngine Project Hub", {1280U, 720U}, 0U, static_cast<std::uint16_t>(IDI_CUE_PROJECT_HUB_TOOL)};
     cue::Result<void> hosted = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_assertContext);
     if (!hosted)
     {

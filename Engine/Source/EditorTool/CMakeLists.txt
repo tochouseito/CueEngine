@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         Main.cpp
         Resources/CueEditorTool.rc
+        Resources/CueEditorToolResource.h
         Resources/CueEditorTool.ico
         Resources/CueEditorToolIcon.png
 )
