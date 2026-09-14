@@ -4,6 +4,17 @@ target_sources(
     CueProjectHubTool
     PRIVATE
         Main.cpp
+        Resources/CueProjectHubTool.rc
+        Resources/CueProjectHubTool.ico
+        Resources/CueProjectHubToolIcon.png
+)
+
+# 原本 PNG は編集用 Source として保持し、Build 時の画像変換 Tool 依存を避けるため ICO も追跡する
+set_source_files_properties(
+    Resources/CueProjectHubTool.ico
+    Resources/CueProjectHubToolIcon.png
+    PROPERTIES
+        HEADER_FILE_ONLY TRUE
 )
 
 target_link_libraries(
