@@ -9,6 +9,7 @@
 
 #include <Windows.h>
 #include <bcrypt.h>
+#include <shellapi.h>
 
 #include <array>
 #include <cstddef>
@@ -21,10 +22,14 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
 constexpr std::size_t k_maxWindowsPathLength = 32767;
+constexpr std::size_t k_maxProjectStorageEntryCount = 200000;
+constexpr std::size_t k_maxProjectStorageDepth = 128;
+constexpr std::uint64_t k_windowsToUnixEpochTicks = 116444736000000000ULL;
 
 /// @brief Allocation失敗をProject Hub診断境界からFatal終端する
 [[noreturn]] void terminate_allocation(const cue::AssertContext &a_context) noexcept
@@ -110,6 +115,66 @@ constexpr std::size_t k_maxWindowsPathLength = 32767;
         code = cue::IoError::CapacityExceeded;
     }
     return cue::make_io_error(a_context, code, a_summary, static_cast<std::int64_t>(a_nativeCode));
+}
+
+/// @brief Win32 Find HandleをScope終了時に閉じる
+class FindHandle final
+{
+  public:
+    explicit FindHandle(HANDLE a_handle) noexcept : m_handle(a_handle)
+    {
+    }
+    FindHandle(const FindHandle &) = delete;
+    FindHandle &operator=(const FindHandle &) = delete;
+    ~FindHandle()
+    {
+        if (m_handle != INVALID_HANDLE_VALUE)
+        {
+            FindClose(m_handle);
+        }
+    }
+
+    [[nodiscard]] HANDLE get() const noexcept
+    {
+        return m_handle;
+    }
+
+  private:
+    HANDLE m_handle;
+};
+
+/// @brief FILETIMEをUTC Unix Millisecondsへ変換する
+[[nodiscard]] std::uint64_t unix_milliseconds(const FILETIME &a_time) noexcept
+{
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = a_time.dwLowDateTime;
+    ticks.HighPart = a_time.dwHighDateTime;
+    return ticks.QuadPart <= k_windowsToUnixEpochTicks ? 0U : (ticks.QuadPart - k_windowsToUnixEpochTicks) / 10000U;
+}
+
+/// @brief DirectoryへChild名を結合しWindows上限を検証する
+[[nodiscard]] cue::Result<std::wstring> append_child(std::wstring_view a_directory, std::wstring_view a_name,
+                                                     const cue::AssertContext &a_context) noexcept
+{
+    try
+    {
+        std::wstring child(a_directory);
+        if (!child.empty() && child.back() != L'\\')
+        {
+            child.push_back(L'\\');
+        }
+        child.append(a_name);
+        if (child.size() >= k_maxWindowsPathLength)
+        {
+            return cue::Result<std::wstring>::failure(
+                cue::make_io_error(a_context, cue::IoError::CapacityExceeded, "Project metadata path is too long"));
+        }
+        return cue::Result<std::wstring>::success(std::move(child));
+    }
+    catch (...)
+    {
+        terminate_allocation(a_context);
+    }
 }
 
 /// @brief UUID Byte列をRFC 4122 Version 4文字列へ変換する
@@ -294,6 +359,171 @@ class WindowsProjectHubPlatform final : public cue::project_hub::ProjectHubPlatf
                 make_path_error(*m_assertContext, code, "Project locator inspection failed"));
         }
         return cue::create_windows_filesystem_root(*normalized.try_value(), *m_assertContext);
+    }
+
+    /// @brief Project Treeを上限付きで走査しReparse Pointを追跡せず表示用Metadataを集計する
+    [[nodiscard]] cue::Result<cue::project_hub::ProjectStorageMetadata> inspect_project_storage(
+        std::string_view a_locator) noexcept override
+    {
+        cue::Result<std::string> normalized = normalize_project_locator(a_locator);
+        if (!normalized)
+        {
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(std::move(*normalized.try_error()));
+        }
+        cue::Result<std::wstring> path = to_utf16(*normalized.try_value(), *m_assertContext);
+        if (!path)
+        {
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(std::move(*path.try_error()));
+        }
+        cue::Result<std::wstring> extended = make_extended_path(std::move(*path.try_value()), *m_assertContext);
+        if (!extended)
+        {
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(std::move(*extended.try_error()));
+        }
+
+        WIN32_FILE_ATTRIBUTE_DATA rootData{};
+        if (GetFileAttributesExW(extended.try_value()->c_str(), GetFileExInfoStandard, &rootData) == FALSE)
+        {
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                make_path_error(*m_assertContext, GetLastError(), "Project metadata root inspection failed"));
+        }
+        if ((rootData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U ||
+            (rootData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(cue::make_io_error(
+                *m_assertContext, cue::IoError::UnsupportedEntry, "Project metadata root is not a regular directory"));
+        }
+
+        struct PendingDirectory final
+        {
+            std::wstring path;
+            std::size_t depth;
+        };
+        try
+        {
+            cue::project_hub::ProjectStorageMetadata metadata{unix_milliseconds(rootData.ftLastWriteTime), 0U};
+            std::vector<PendingDirectory> pending;
+            pending.push_back({std::move(*extended.try_value()), 0U});
+            std::size_t entryCount = 0U;
+            while (!pending.empty())
+            {
+                PendingDirectory current = std::move(pending.back());
+                pending.pop_back();
+                cue::Result<std::wstring> pattern = append_child(current.path, L"*", *m_assertContext);
+                if (!pattern)
+                {
+                    return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                        std::move(*pattern.try_error()));
+                }
+                WIN32_FIND_DATAW data{};
+                FindHandle search(FindFirstFileExW(pattern.try_value()->c_str(), FindExInfoBasic, &data,
+                                                   FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH));
+                if (search.get() == INVALID_HANDLE_VALUE)
+                {
+                    const DWORD code = GetLastError();
+                    if (code == ERROR_FILE_NOT_FOUND)
+                    {
+                        continue;
+                    }
+                    return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                        make_path_error(*m_assertContext, code, "Project metadata enumeration failed"));
+                }
+                while (true)
+                {
+                    const bool isDot = data.cFileName[0] == L'.' && data.cFileName[1] == L'\0';
+                    const bool isDotDot =
+                        data.cFileName[0] == L'.' && data.cFileName[1] == L'.' && data.cFileName[2] == L'\0';
+                    if (!isDot && !isDotDot)
+                    {
+                        ++entryCount;
+                        if (entryCount > k_maxProjectStorageEntryCount)
+                        {
+                            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                                cue::make_io_error(*m_assertContext, cue::IoError::CapacityExceeded,
+                                                   "Project metadata entry limit was exceeded"));
+                        }
+                        metadata.latestWriteMilliseconds =
+                            (std::max)(metadata.latestWriteMilliseconds, unix_milliseconds(data.ftLastWriteTime));
+                        if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U)
+                        {
+                            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U)
+                            {
+                                if (current.depth >= k_maxProjectStorageDepth)
+                                {
+                                    return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                                        cue::make_io_error(*m_assertContext, cue::IoError::CapacityExceeded,
+                                                           "Project metadata depth limit was exceeded"));
+                                }
+                                cue::Result<std::wstring> child =
+                                    append_child(current.path, data.cFileName, *m_assertContext);
+                                if (!child)
+                                {
+                                    return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                                        std::move(*child.try_error()));
+                                }
+                                pending.push_back({std::move(*child.try_value()), current.depth + 1U});
+                            }
+                            else
+                            {
+                                const std::uint64_t fileSize =
+                                    (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32U) | data.nFileSizeLow;
+                                if (fileSize > (std::numeric_limits<std::uint64_t>::max)() - metadata.byteSize)
+                                {
+                                    return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                                        cue::make_io_error(*m_assertContext, cue::IoError::CapacityExceeded,
+                                                           "Project metadata size overflowed"));
+                                }
+                                metadata.byteSize += fileSize;
+                            }
+                        }
+                    }
+                    if (FindNextFileW(search.get(), &data) == FALSE)
+                    {
+                        const DWORD code = GetLastError();
+                        if (code != ERROR_NO_MORE_FILES)
+                        {
+                            return cue::Result<cue::project_hub::ProjectStorageMetadata>::failure(
+                                make_path_error(*m_assertContext, code, "Project metadata enumeration failed"));
+                        }
+                        break;
+                    }
+                }
+            }
+            return cue::Result<cue::project_hub::ProjectStorageMetadata>::success(std::move(metadata));
+        }
+        catch (...)
+        {
+            terminate_allocation(*m_assertContext);
+        }
+    }
+
+    /// @brief Project FolderをShellへ値で渡しWindows Explorerで開く
+    [[nodiscard]] cue::Result<void> open_project_folder(std::string_view a_locator) noexcept override
+    {
+        cue::Result<std::string> normalized = normalize_project_locator(a_locator);
+        if (!normalized)
+        {
+            return cue::Result<void>::failure(std::move(*normalized.try_error()));
+        }
+        cue::Result<std::wstring> path = to_utf16(*normalized.try_value(), *m_assertContext);
+        if (!path)
+        {
+            return cue::Result<void>::failure(std::move(*path.try_error()));
+        }
+        SHELLEXECUTEINFOW request{};
+        request.cbSize = sizeof(request);
+        request.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+        request.lpVerb = L"open";
+        request.lpFile = path.try_value()->c_str();
+        request.nShow = SW_SHOWNORMAL;
+        if (ShellExecuteExW(&request) == FALSE)
+        {
+            return cue::Result<void>::failure(cue::project_hub::reclassify_project_hub_error(
+                *m_assertContext, cue::project_hub::ProjectHubError::ProjectFolderOpenFailed,
+                "Project folder could not be opened in Windows Explorer",
+                make_path_error(*m_assertContext, GetLastError(), "Windows Shell folder open failed")));
+        }
+        return cue::Result<void>::success();
     }
 
     /// @brief Cryptographic Random SourceからRFC 4122 Version 4 ProjectIdを生成する

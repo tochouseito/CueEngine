@@ -62,6 +62,9 @@ class TestDirectory final
     {
         if (m_isCreated)
         {
+            DeleteFileW((m_project + L"\\Nested\\Two.bin").c_str());
+            DeleteFileW((m_project + L"\\One.bin").c_str());
+            RemoveDirectoryW((m_project + L"\\Nested").c_str());
             for (auto path = m_longDirectories.rbegin(); path != m_longDirectories.rend(); ++path)
             {
                 RemoveDirectoryW(path->c_str());
@@ -69,6 +72,31 @@ class TestDirectory final
             RemoveDirectoryW(m_project.c_str());
             RemoveDirectoryW(m_root.c_str());
         }
+    }
+
+    /// @brief Metadata集計用に合計8 Byteの通常File Treeを作成する
+    [[nodiscard]] bool create_metadata_files() const noexcept
+    {
+        const std::wstring nested = m_project + L"\\Nested";
+        if (CreateDirectoryW(nested.c_str(), nullptr) == FALSE)
+        {
+            return false;
+        }
+        const auto writeFile = [](const std::wstring &a_path, std::string_view a_bytes) noexcept
+        {
+            HANDLE file =
+                CreateFileW(a_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE)
+            {
+                return false;
+            }
+            DWORD written = 0U;
+            const BOOL didWrite =
+                WriteFile(file, a_bytes.data(), static_cast<DWORD>(a_bytes.size()), &written, nullptr);
+            const BOOL didClose = CloseHandle(file);
+            return didWrite != FALSE && didClose != FALSE && written == a_bytes.size();
+        };
+        return writeFile(m_project + L"\\One.bin", "abc") && writeFile(nested + L"\\Two.bin", "12345");
     }
 
     /// @brief 一時Rootの作成結果を返す
@@ -181,11 +209,17 @@ class TestDirectory final
     auto firstId = platform->next_project_id();
     auto secondId = platform->next_project_id();
     auto sceneId = platform->next_scene_asset_id();
-    if (!opened || *opened.try_value() == nullptr || !descriptor || !firstId || !secondId || !sceneId)
+    if (!opened || *opened.try_value() == nullptr || !descriptor || !firstId || !secondId || !sceneId ||
+        !directory.create_metadata_files())
     {
         return false;
     }
     opened.try_value()->reset();
+    auto metadata = platform->inspect_project_storage(*project.try_value());
+    if (!metadata || metadata.try_value()->byteSize != 8U || metadata.try_value()->latestWriteMilliseconds == 0U)
+    {
+        return false;
+    }
 
     if (!directory.create_long_project())
     {
