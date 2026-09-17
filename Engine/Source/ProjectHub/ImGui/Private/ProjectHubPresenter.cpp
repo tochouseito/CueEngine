@@ -309,16 +309,6 @@ int resize_string_input(ImGuiInputTextCallbackData *a_data) noexcept
     return 0;
 }
 
-/// @brief Windows上限まで拡張できるProject Locator入力を描画する
-bool input_locator(const char *a_label, std::string &a_value, const cue::AssertContext &a_context) noexcept
-{
-    StringInputContext context{&a_value, &a_context};
-    const bool changed = ImGui::InputText(a_label, a_value.data(), a_value.capacity() + 1U,
-                                          ImGuiInputTextFlags_CallbackResize, resize_string_input, &context);
-    draw_unicode_escape_preview(a_value, a_context);
-    return changed;
-}
-
 /// @brief FontにないUnicode Scalarと表示名中のEscape開始文字を衝突しないASCII表記へ変換する
 [[nodiscard]] std::string make_renderable_text(std::string_view a_text, bool *a_usedUnicodeEscape)
 {
@@ -545,7 +535,8 @@ void ProjectHubPresenter::draw_project_list(bool a_canLaunchEditor) noexcept
                     const bool isSelected = m_selectedProjectId == project.projectId;
                     const std::string renderedDisplayName = make_renderable_text(project.displayName);
                     if (ImGui::Selectable(renderedDisplayName.c_str(), isSelected,
-                                          ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns))
+                                          ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns |
+                                              ImGuiSelectableFlags_AllowOverlap))
                     {
                         m_selectedProjectId = project.projectId;
                         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && project.canOpen && a_canLaunchEditor)
@@ -851,7 +842,16 @@ void ProjectHubPresenter::draw_register_dialog() noexcept
     {
         return;
     }
-    input_locator("Project Folder", m_registerLocator, *m_assertContext);
+    ImGui::SetNextItemWidth(520.0F);
+    StringInputContext registrationContext{&m_registerLocator, m_assertContext};
+    ImGui::InputText("Project Folder", m_registerLocator.data(), m_registerLocator.capacity() + 1U,
+                     ImGuiInputTextFlags_CallbackResize, resize_string_input, &registrationContext);
+    ImGui::SameLine();
+    if (ImGui::Button("参照..."))
+    {
+        m_registrationBrowseRequested = true;
+    }
+    draw_unicode_escape_preview(m_registerLocator, *m_assertContext);
     ImGui::Checkbox("移動した同一Projectとして再関連付け", &m_confirmMovedProject);
     ImGui::BeginDisabled(m_registerLocator.empty());
     if (ImGui::Button("登録"))
@@ -1210,7 +1210,29 @@ void ProjectHubPresenter::apply_destination_selection(std::string_view a_destina
     }
 }
 
-void ProjectHubPresenter::report_destination_browse_failure(const Error &a_error) noexcept
+std::optional<std::string_view> ProjectHubPresenter::take_registration_browse_request() noexcept
+{
+    if (!m_registrationBrowseRequested)
+    {
+        return std::nullopt;
+    }
+    m_registrationBrowseRequested = false;
+    return std::string_view(m_registerLocator);
+}
+
+void ProjectHubPresenter::apply_registration_selection(std::string_view a_projectLocator) noexcept
+{
+    try
+    {
+        m_registerLocator.assign(a_projectLocator);
+    }
+    catch (...)
+    {
+        terminate_allocation(*m_assertContext);
+    }
+}
+
+void ProjectHubPresenter::report_folder_browse_failure(const Error &a_error) noexcept
 {
     set_error(a_error);
 }

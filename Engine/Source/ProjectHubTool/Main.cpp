@@ -115,6 +115,13 @@ class InitializationFailureClient final : public cue::tool_host::ToolHostClient
     return k_initializationFailure;
 }
 
+/// @brief Folder Dialog の選択結果を反映する Project Hub 入力欄を区別する
+enum class FolderSelectionTarget
+{
+    CreationDestination,
+    ExistingProject
+};
+
 /// @brief Project Hub PresenterをTool Host CallbackとEditor Process Adapterへ接続する
 class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
 {
@@ -157,7 +164,13 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
         const std::optional<std::string_view> browseRequest = m_presenter->take_destination_browse_request();
         if (browseRequest.has_value())
         {
-            browse_destination(*browseRequest);
+            browse_folder(*browseRequest, FolderSelectionTarget::CreationDestination);
+        }
+        const std::optional<std::string_view> registrationBrowseRequest =
+            m_presenter->take_registration_browse_request();
+        if (registrationBrowseRequest.has_value())
+        {
+            browse_folder(*registrationBrowseRequest, FolderSelectionTarget::ExistingProject);
         }
         std::optional<cue::project_hub::EditorLaunchRequest> request = m_presenter->take_editor_launch_request();
         if (!request.has_value())
@@ -193,8 +206,8 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
     }
 
   private:
-    /// @brief 保存場所選択Intentを既存Windows Folder Dialogへ同期接続する
-    void browse_destination(std::string_view a_initialLocation) noexcept
+    /// @brief Project Folder 選択 Intent を既存 Windows Folder Dialog へ同期接続する
+    void browse_folder(std::string_view a_initialLocation, FolderSelectionTarget a_target) noexcept
     {
         if (m_window == nullptr)
         {
@@ -204,7 +217,7 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
             cue::create_windows_file_dialog_owner(*m_window, *m_assertContext);
         if (!owner)
         {
-            m_presenter->report_destination_browse_failure(*owner.try_error());
+            m_presenter->report_folder_browse_failure(*owner.try_error());
             return;
         }
         try
@@ -214,7 +227,7 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
             cue::Result<cue::FileDialogResult> selected = m_fileDialogService->show(request);
             if (!selected)
             {
-                m_presenter->report_destination_browse_failure(*selected.try_error());
+                m_presenter->report_folder_browse_failure(*selected.try_error());
                 return;
             }
             if (selected.try_value()->outcome() == cue::FileDialogOutcome::Selected)
@@ -222,7 +235,14 @@ class ProjectHubToolClient final : public cue::tool_host::ToolHostClient
                 const std::optional<std::string_view> selectedPath = selected.try_value()->selected_path();
                 if (selectedPath.has_value())
                 {
-                    m_presenter->apply_destination_selection(*selectedPath);
+                    if (a_target == FolderSelectionTarget::ExistingProject)
+                    {
+                        m_presenter->apply_registration_selection(*selectedPath);
+                    }
+                    else
+                    {
+                        m_presenter->apply_destination_selection(*selectedPath);
+                    }
                 }
             }
         }

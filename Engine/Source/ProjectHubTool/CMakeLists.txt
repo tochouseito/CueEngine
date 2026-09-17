@@ -1,5 +1,9 @@
 add_executable(CueProjectHubTool)
 
+# Project Hub は同じ Runtime 出力 Directory の CueEditorTool.exe を Process 起動する
+# Visual Studio で Hub だけを Build／起動した場合も Editor 実行 File を必ず用意する
+add_dependencies(CueProjectHubTool CueEditorTool)
+
 target_sources(
     CueProjectHubTool
     PRIVATE
