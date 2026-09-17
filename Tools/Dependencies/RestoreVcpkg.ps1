@@ -80,16 +80,50 @@ if (-not (Test-Path -LiteralPath $toolRoot -PathType Container))
     ) -WorkingDirectory $toolRoot
 }
 
-$actualCommit = (& git -c "safe.directory=$toolRoot" -C $toolRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $configuration.commit)
-{
-    throw "Managed vcpkg checkout does not match the pinned commit."
-}
-
 $trackedChanges = (& git -c "safe.directory=$toolRoot" -C $toolRoot status --porcelain --untracked-files=no | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $trackedChanges.Length -ne 0)
 {
     throw "Managed vcpkg checkout contains tracked changes."
+}
+
+$actualRepository = (& git -c "safe.directory=$toolRoot" -C $toolRoot remote get-url origin).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualRepository -ne $configuration.repository)
+{
+    throw "Managed vcpkg checkout origin does not match the pinned repository."
+}
+
+$actualCommit = (& git -c "safe.directory=$toolRoot" -C $toolRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0)
+{
+    throw "Managed vcpkg checkout commit could not be read."
+}
+if ($actualCommit -ne $configuration.commit)
+{
+    Invoke-CheckedProcess -FilePath "git" -ArgumentList @(
+        "-c",
+        "safe.directory=$toolRoot",
+        "-C",
+        $toolRoot,
+        "fetch",
+        "--filter=blob:none",
+        "origin",
+        $configuration.commit
+    ) -WorkingDirectory $repositoryRoot
+    Invoke-CheckedProcess -FilePath "git" -ArgumentList @(
+        "-c",
+        "safe.directory=$toolRoot",
+        "-C",
+        $toolRoot,
+        "checkout",
+        "--detach",
+        $configuration.commit
+    ) -WorkingDirectory $repositoryRoot
+}
+
+$actualCommit = (& git -c "safe.directory=$toolRoot" -C $toolRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $configuration.commit)
+{
+    throw "Managed vcpkg checkout does not match the pinned commit."
 }
 
 $metadataPath = Join-Path $toolRoot "scripts\vcpkg-tool-metadata.txt"
