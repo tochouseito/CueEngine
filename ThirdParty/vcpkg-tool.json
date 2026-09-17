@@ -1,8 +1,8 @@
 {
     "repository": "https://github.com/microsoft/vcpkg.git",
-    "commit": "f8be6942c0c5abd48bb325726d57af9ac39e251d",
-    "release": "2026-03-04",
-    "windowsX64Version": "2026-03-04-4b3e4c276b5b87a649e66341e11553e8c577459c",
-    "windowsX64Sha256": "13a1c66b9c7578427b3eda7eba2332b73d4fb86706e053ad6426dad2f354cbc3",
-    "sourceSha512": "5eeffe70ab71a4d1ea1a836b5c16b60fbd318bfe1d4473bd2b9e03e089e81508b00d3b9368b2a1a8423010d9bf479500a00f03524f4e88aa3d444c2ef3b30ca1"
+    "commit": "386d7c478221b7ee0c97bfe6ea61dcf65121d564",
+    "release": "2026-07-27",
+    "windowsX64Version": "2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8",
+    "windowsX64Sha256": "13b8175e99a884c5ad34249218754b45541a1a63f216e92603aee57a285ac741",
+    "sourceSha512": "e2e256879343662da5b18994559559faa04691987bc1025fc067d9ca944d3ba495bad759e4906bb06952572df1a2671e0fc63281c494fe7299078bcd18c16cde"
 }
