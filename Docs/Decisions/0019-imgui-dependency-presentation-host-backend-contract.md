@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-04
+- Last amended: 2026-09-17 (#327)
 - Decision Owners: CueEngine Project
 - Approval: User authorized Dear ImGui through vcpkg on 2026-09-04
 
@@ -29,7 +30,8 @@ vcpkgで導入する方針を指定した。新規外部Libraryは導入前に�
 - Dear ImGui 自体は CueEngine 用の正式 CMake Target を提供しないため、CueEngine 側に限定された Adapter Target が必要となる
 - vcpkgはManifest Modeを多くのUserに推奨し、Manifestごとに分離されたInstall Treeを使用する
 - vcpkgの`builtin-baseline`はRegistry Commitを固定し、Dependency Versionの再現性を提供する
-- 確認時点のvcpkg builtin portはDear ImGui `1.92.6`と`win32-binding`／`dx12-binding` Featureを提供する
+- #327で固定したvcpkg builtin portはDear ImGui `1.92.9`と`docking-experimental`／`win32-binding`／
+  `dx12-binding` Featureを提供し、`docking-experimental`はupstreamの`v1.92.9b-docking`を取得する
 
 確認元:
 
@@ -50,7 +52,7 @@ vcpkgで導入する方針を指定した。新規外部Libraryは導入前に�
 - UI Adapter を Runtime、Cue.RHI、D3D12 Native API から隔離する
 - Tool Host 固有の Window、ImGui Context、Backend、GPU Resource の寿命を一意にする
 - M12 の手動 UI Workflow と Headless Test を両立する
-- 将来の Runtime Renderer、Viewport、Docking、Multi-Viewport を先取りしない
+- Runtime Renderer、Viewport、Multi-Viewportを先取りせず、User承認済みのDocking API利用可能化だけをM21で行う
 
 ## Options
 
@@ -92,19 +94,20 @@ ABI、Compiler、Configuration、Version、License、Clean Checkout 再現性を
 Option Dを採用し、Dear ImGuiをvcpkg Manifest Modeで導入する。
 
 - Dependency Control PlaneはRepository Rootの`ThirdParty`配下に置く
-- `ThirdParty/vcpkg.json`へDear ImGui Core、`win32-binding`、`dx12-binding`だけを宣言する
+- `ThirdParty/vcpkg.json`へDear ImGui Core、`docking-experimental`、`win32-binding`、`dx12-binding`だけを宣言する
 - `ThirdParty/vcpkg-configuration.json`で公式vcpkg Registryと40文字のBaseline Commitを固定する
 - `ThirdParty/vcpkg-tool.json`で公式vcpkg Repository、Tool Commit
-  `f8be6942c0c5abd48bb325726d57af9ac39e251d`、Tool Release `2026-03-04`、Windows x64 Tool Version
-  `2026-03-04-4b3e4c276b5b87a649e66341e11553e8c577459c`、実行Binary SHA-256
-  `13a1c66b9c7578427b3eda7eba2332b73d4fb86706e053ad6426dad2f354cbc3`、Tool Source SHA-512
-  `5eeffe70ab71a4d1ea1a836b5c16b60fbd318bfe1d4473bd2b9e03e089e81508b00d3b9368b2a1a8423010d9bf479500a00f03524f4e88aa3d444c2ef3b30ca1`
+  `386d7c478221b7ee0c97bfe6ea61dcf65121d564`、Tool Release `2026-07-27`、Windows x64 Tool Version
+  `2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8`、実行Binary SHA-256
+  `13b8175e99a884c5ad34249218754b45541a1a63f216e92603aee57a285ac741`、Tool Source SHA-512
+  `e2e256879343662da5b18994559559faa04691987bc1025fc067d9ca944d3ba495bad759e4906bb06952572df1a2671e0fc63281c494fe7299078bcd18c16cde`
   を固定する
-- 初期導入は確認済みbuiltin portのDear ImGui `1.92.6`を使用し、導入時のBaselineでVersionを固定する
+- #327以降は確認済みbuiltin portのDear ImGui `1.92.9`とupstream `v1.92.9b-docking`を使用し、
+  Registry BaselineとManifest FeatureでVersionを固定する
 - `ThirdParty/vcpkg_installed`をProject専用Install Rootとし、生成物としてGit管理対象外にする
 - `ThirdParty/.tools/vcpkg`は明示Dependency Restoreだけが作成できるPin済みTool Checkoutとし、Git管理対象外にする
 - `ThirdParty/THIRD_PARTY_NOTICES.md`と`ThirdParty/Licenses/DearImGui-LICENSE.txt`をGit管理し、配布物にも含める
-- `examples/`、Demo Application、第三者Extension、Docking Feature、Multi-Viewportは対象にしない
+- `examples/`、Demo Application、第三者Extension、Multi-Viewportは対象にしない
 - 第三者Sourceは変更、Copy、Patch、Rename、部分抽出しない
 - `Engine`配下には第三者Source、Header、Binary、License Copyを配置しない
 - Dependency Restoreは専用Script／CI Stepとして明示実行し、通常のCMake Configure中の暗黙Network取得は無効にする
@@ -116,6 +119,7 @@ Option Dを採用し、Dear ImGuiをvcpkg Manifest Modeで導入する。
   再照合に失敗した場合はInstallを開始せず失敗する
 - Machine固有の絶対PathをRepositoryへ記録しない
 - Updateは専用Research／Maintenance IssueでUser承認を得て、Baseline、Version、License、API差分、3構成Buildを再検証する
+- ImGui Version番号を`Cue.ImGui.Core`のCompile Version Tokenにも固定し、更新時は全利用Targetを再Compileさせる
 - Dear ImGui以外の外部LibraryをManifestへ追加する場合は、その変更前にUserの明示承認を得る
 
 ## Target and Dependency Boundary
@@ -356,6 +360,7 @@ ImGui Adapterは表示用ViewとPresentation Stateだけを読み、User操作�
 
 Headless TestはDear ImGuiのPixel出力に依存せず、次を検証する。
 
+- `IMGUI_HAS_DOCK`、固定Version、`ImGuiConfigFlags_DockingEnable`、`ImGui::DockSpace`の実Link Symbol
 - ViewModelから表示Row状態へのMapping
 - Semantic Intentの生成と無効操作抑止
 - Keyboard Activate、Focus移動、Escape Cancel
@@ -405,6 +410,7 @@ Pixel完全一致、Theme、Font Raster差分、Docking、Multi-ViewportはM12 G
 - Clean Checkout後に明示的なDependency Restoreが必要になる
 - Tool専用D3D12 ResourceはRuntime RHIと実装責務が一部重複する
 - Upstream Update、License Notice、Supply Chain Reviewの継続運用が必要になる
+- Docking Branchはupstreamで安定化前のため、Version更新時にAPI／ABI差分の再検証が必要になる
 - Presentation Adapter、Host、Backendを分離するためTarget数が増える
 
 ### Mitigations
@@ -413,6 +419,7 @@ Pixel完全一致、Theme、Font Raster差分、Docking、Multi-ViewportはM12 G
 - External TargetへWarningとInclude境界を限定し、First-party Warningを抑止しない
 - Tool Hostの重複をM12最小Scopeに限定し、Runtime Rendererへ逆流させない
 - Dependency取得、Hash、License、3構成BuildをCI Gateへ追加する
+- Compile Version TokenとDockSpace実Link契約Testで、既存Build Treeに古いHeader／Libraryが残る不整合を検出する
 
 ## Rejected Shortcuts
 
@@ -433,9 +440,14 @@ Tool起動にRuntime WorldとGame Rendererを要求し、RuntimeからEditorへ�
 2026-09-04にUserは、第三者Codeを`Engine`から分離して`ThirdParty`配下でLicenseに従い管理すること、今後の外部Libraryは
 導入前に毎回確認すること、導入手段をvcpkgへ限定すること、Dear ImGuiをM12へ導入することを明示承認した。
 
+2026-09-17にUserは、Dear ImGuiをDockingを含む最新版へ更新することを明示承認した。#327では
+`v1.92.9b-docking`の利用可能化だけを行い、DockSpace配置、Layout永続化、Multi-Viewportは後続Issueへ分離する。
+
 ## Follow-up
 
 - #162でDependency Pin、External Target、Tool Host、Project Hub ImGui Adapterを最小実装する
 - #163で同じHostへHierarchy／Inspector Adapterを追加する
 - #164でProject HubとEditor Process Workflowを統合する
 - #165でClean Checkout、3構成、Headless、Backend Smoke、手動UI Workflowを検証する
+- #327でDear ImGui `v1.92.9b-docking`のPin、増分Build契約、Docking Compile／Link契約を検証する
+- EditorのDockSpace配置とLayout永続化はM21の別Issueで設計・実装する

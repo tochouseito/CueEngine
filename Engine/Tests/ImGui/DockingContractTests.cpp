@@ -11,10 +11,11 @@
 static_assert(CUE_IMGUI_COMPILE_VERSION == IMGUI_VERSION_NUM, "CueEngine Dear ImGui compile version is stale");
 static_assert(CUE_IMGUI_COMPILE_VERSION == 19291, "CueEngine requires Dear ImGui 1.92.9b-docking");
 static_assert(ImGuiConfigFlags_DockingEnable != 0, "Dear ImGui docking configuration flag is unavailable");
-static_assert(requires(ImGuiID a_id) { ImGui::DockSpace(a_id); }, "Dear ImGui DockSpace API is unavailable");
+using DockSpaceFunction = ImGuiID (*)(ImGuiID, const ImVec2&, ImGuiDockNodeFlags, const ImGuiWindowClass*);
 
 /// @brief Dear ImGui の Version と Docking 契約が Compile／Link できることを終了 Code で示す
 int main() noexcept
 {
-    return 0;
+    volatile DockSpaceFunction dockingFunction = static_cast<DockSpaceFunction>(&ImGui::DockSpace);
+    return dockingFunction == nullptr ? 1 : 0;
 }
