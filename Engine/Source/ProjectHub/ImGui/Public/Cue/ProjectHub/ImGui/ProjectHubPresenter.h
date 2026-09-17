@@ -47,8 +47,14 @@ class ProjectHubPresenter final
     /// @brief Folder Dialogで選択したUTF-8 Absolute Pathを保存場所入力へ反映する
     void apply_destination_selection(std::string_view a_destination) noexcept;
 
+    /// @brief 既存 Project 登録の Folder 参照要求を一度だけ返し、View を次の draw または設定変更まで有効にする
+    [[nodiscard]] std::optional<std::string_view> take_registration_browse_request() noexcept;
+
+    /// @brief Folder Dialog で選択した UTF-8 Absolute Path を既存 Project 登録入力へ反映する
+    void apply_registration_selection(std::string_view a_projectLocator) noexcept;
+
     /// @brief Composition Rootで失敗したFolder Dialogを日本語Messageへ反映する
-    void report_destination_browse_failure(const Error &a_error) noexcept;
+    void report_folder_browse_failure(const Error &a_error) noexcept;
 
     /// @brief Composition Rootで失敗したEditor Process起動を日本語Messageへ反映する
     void report_editor_launch_failure(const Error &a_error) noexcept;
@@ -103,5 +109,6 @@ class ProjectHubPresenter final
     bool m_hasWarning = false;
     bool m_isExitRequested = false;
     bool m_destinationBrowseRequested = false;
+    bool m_registrationBrowseRequested = false;
 };
 } // namespace cue::project_hub
