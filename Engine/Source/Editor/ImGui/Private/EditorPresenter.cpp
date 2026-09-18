@@ -1,5 +1,7 @@
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 
+#include <Cue/Editor/ImGui/EditorDockspace.h>
+
 #include <Cue/EditorCore/Error.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Scene/Error.h>
@@ -655,12 +657,7 @@ void EditorPresenter::draw() noexcept
         const bool isApplyingDeferredIntent = pendingIntent.has_value();
         const editor_core::EditorDocument *document = m_controller->session().find_document(m_documentId);
 
-        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        constexpr ImGuiWindowFlags k_windowFlags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoCollapse |
-                                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
-        if (ImGui::Begin("CueEngine Editor", nullptr, k_windowFlags))
+        if (begin_editor_dockspace_host())
         {
             if (document != nullptr)
             {
@@ -683,16 +680,16 @@ void EditorPresenter::draw() noexcept
             {
                 ImGui::TextUnformatted("編集対象のScene Documentが開かれていません。");
             }
-            else
-            {
-                ImGui::BeginDisabled(isApplyingDeferredIntent);
-                draw_hierarchy(*document, pendingIntent);
-                ImGui::SameLine();
-                draw_inspector(*document, pendingIntent);
-                ImGui::EndDisabled();
-            }
         }
-        ImGui::End();
+        end_editor_dockspace_host();
+
+        if (document != nullptr)
+        {
+            ImGui::BeginDisabled(isApplyingDeferredIntent);
+            draw_hierarchy(*document, pendingIntent);
+            draw_inspector(*document, pendingIntent);
+            ImGui::EndDisabled();
+        }
 
         // Scene ViewのPointerやSpanを使用し終えたFrame末尾だけでController Mutationを行う
         if (pendingIntent.has_value())
@@ -912,8 +909,12 @@ void EditorPresenter::draw_hierarchy(const editor_core::EditorDocument &a_docume
         }
     }
 
-    ImGui::BeginChild("Hierarchy", ImVec2(ImGui::GetContentRegionAvail().x * 0.36F, -1.0F), true);
-    ImGui::TextUnformatted("Hierarchy");
+    dock_editor_window_on_first_use();
+    if (!ImGui::Begin("Hierarchy"))
+    {
+        ImGui::End();
+        return;
+    }
 
     const bool canAddObject = sceneDocument.object_count() < scene::k_maximumSceneObjectCount &&
                               (primarySelection == nullptr || hierarchy_depth(sceneDocument, *primarySelection) <
@@ -963,14 +964,18 @@ void EditorPresenter::draw_hierarchy(const editor_core::EditorDocument &a_docume
                              a_pendingIntent);
         }
     }
-    ImGui::EndChild();
+    ImGui::End();
 }
 
 void EditorPresenter::draw_inspector(const editor_core::EditorDocument &a_document,
                                      std::optional<EditorIntent> &a_pendingIntent)
 {
-    ImGui::BeginChild("Inspector", ImVec2(0.0F, -1.0F), true);
-    ImGui::TextUnformatted("Inspector");
+    dock_editor_window_on_first_use();
+    if (!ImGui::Begin("Inspector"))
+    {
+        ImGui::End();
+        return;
+    }
     const scene::ObjectId *primarySelection = a_document.try_primary_selection();
     if (primarySelection == nullptr)
     {
@@ -981,7 +986,7 @@ void EditorPresenter::draw_inspector(const editor_core::EditorDocument &a_docume
         m_rotationDirty.fill(false);
         m_scaleDirty.fill(false);
         ImGui::TextDisabled("HierarchyからObjectを選択してください。");
-        ImGui::EndChild();
+        ImGui::End();
         return;
     }
 
@@ -996,7 +1001,7 @@ void EditorPresenter::draw_inspector(const editor_core::EditorDocument &a_docume
         m_rotationDirty.fill(false);
         m_scaleDirty.fill(false);
         ImGui::TextUnformatted("選択ObjectがSceneに存在しません。");
-        ImGui::EndChild();
+        ImGui::End();
         return;
     }
     sync_inspector(a_document, *object);
@@ -1250,7 +1255,7 @@ void EditorPresenter::draw_inspector(const editor_core::EditorDocument &a_docume
         m_deferredIntent.emplace(std::move(*a_pendingIntent));
         a_pendingIntent.emplace(RenameObjectIntent{object->id(), m_name});
     }
-    ImGui::EndChild();
+    ImGui::End();
 }
 
 void EditorPresenter::sync_inspector(const editor_core::EditorDocument &a_document, const scene::SceneObject &a_object)
