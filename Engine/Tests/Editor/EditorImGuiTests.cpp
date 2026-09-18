@@ -1,5 +1,7 @@
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 
+#include <Cue/Editor/ImGui/EditorDockspace.h>
+
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Fatal.h>
 #include <Cue/Foundation/Log.h>
@@ -189,8 +191,17 @@ void draw_frame(cue::editor::EditorPresenter &a_presenter) noexcept
     require(isVisible);
     const ImGuiWindow *editorWindow = ImGui::GetCurrentWindowRead();
     require(editorWindow != nullptr);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoDocking) != 0);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoTitleBar) != 0);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoResize) != 0);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoMove) != 0);
     require((editorWindow->Flags & ImGuiWindowFlags_NoBringToFrontOnFocus) != 0);
+    require((editorWindow->Flags & ImGuiWindowFlags_NoNavFocus) != 0);
     ImGui::End();
+    const ImGuiWindow *hierarchyWindow = ImGui::FindWindowByName("Hierarchy");
+    const ImGuiWindow *inspectorWindow = ImGui::FindWindowByName("Inspector");
+    require(hierarchyWindow != nullptr && hierarchyWindow->DockId != 0U);
+    require(inspectorWindow != nullptr && inspectorWindow->DockId != 0U);
     ImGui::Render();
 }
 
@@ -304,6 +315,7 @@ void test_hierarchy_inspector_intents() noexcept
     require(ImGui::CreateContext() != nullptr);
     ImGuiIO &input = ImGui::GetIO();
     input.IniFilename = nullptr;
+    cue::editor::enable_editor_docking();
     input.DisplaySize = ImVec2(1280.0F, 720.0F);
     input.DeltaTime = 1.0F / 60.0F;
     static_cast<void>(input.Fonts->Build());

@@ -4,6 +4,7 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 #include <Cue/Build/Windows/WindowsToolchain.h>
 #include <Cue/Editor/ImGui/BuildPresenter.h>
+#include <Cue/Editor/ImGui/EditorDockspace.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
 #include <Cue/Editor/ImGui/PackagePresenter.h>
@@ -855,6 +856,12 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         }
     }
 
+    /// @brief 最初のFrame前にEditor専用ImGui Dockingを有効化する
+    void window_ready(cue::Window &) noexcept override
+    {
+        cue::editor::enable_editor_docking();
+    }
+
     /// @brief 実Editor Compositionから一構成の生成Project BuildとArtifact公開を検証する
     [[nodiscard]] cue::Result<void> run_build_workflow_process_test(cue::BuildConfiguration a_configuration) noexcept
     {
@@ -1525,10 +1532,13 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             {
                 draw_project_shell();
             }
+            cue::editor::dock_editor_window_on_first_use();
             m_filesPresenter->draw();
+            cue::editor::dock_editor_window_on_first_use();
             m_playPresenter->draw();
             if (m_buildPresenter != nullptr)
             {
+                cue::editor::dock_editor_window_on_first_use();
                 m_buildPresenter->draw();
                 if (m_buildPresenter->take_shutdown_ready())
                 {
@@ -1537,6 +1547,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             }
             else if (!m_buildUnavailableMessage.empty())
             {
+                cue::editor::dock_editor_window_on_first_use();
                 if (ImGui::Begin("Game Build"))
                 {
                     ImGui::TextWrapped("%s", m_buildUnavailableMessage.c_str());
@@ -1546,6 +1557,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             if (m_packagePresenter != nullptr)
             {
                 m_packagePresenter->set_active_document(m_session->active_document_id());
+                cue::editor::dock_editor_window_on_first_use();
                 m_packagePresenter->draw();
                 if (m_packagePresenter->take_shutdown_ready())
                 {
@@ -1778,13 +1790,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     /// @brief Project-only状態からScene作成、Open、Recovery、終了操作を描画する
     void draw_project_shell() noexcept
     {
-        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        constexpr ImGuiWindowFlags k_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoCollapse |
-                                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                             ImGuiWindowFlags_NoBringToFrontOnFocus;
         std::optional<PendingTransition> transition;
-        if (ImGui::Begin("CueEngine Editor", nullptr, k_flags))
+        if (cue::editor::begin_editor_dockspace_host())
         {
             if (ImGui::BeginMenuBar())
             {
@@ -1806,8 +1813,6 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 }
                 ImGui::EndMenuBar();
             }
-            ImGui::Text("Project: %s", m_session->project_locator().data());
-            ImGui::TextUnformatted("Sceneを作成するか、Source Assets内のSceneを開いてください。");
             if (!m_message.empty())
             {
                 ImGui::PushStyleColor(ImGuiCol_Text,
@@ -1815,6 +1820,14 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 ImGui::TextWrapped("%s", m_message.c_str());
                 ImGui::PopStyleColor();
             }
+        }
+        cue::editor::end_editor_dockspace_host();
+
+        cue::editor::dock_editor_window_on_first_use();
+        if (ImGui::Begin("Project"))
+        {
+            ImGui::Text("Project: %s", m_session->project_locator().data());
+            ImGui::TextUnformatted("Sceneを作成するか、Source Assets内のSceneを開いてください。");
             if (ImGui::Button("新しいScene"))
             {
                 transition = PendingTransition::NewScene;

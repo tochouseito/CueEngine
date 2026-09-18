@@ -4,6 +4,7 @@ target_sources(
     Cue.Editor.ImGui
     PRIVATE
         Private/BuildPresenter.cpp
+        Private/EditorDockspace.cpp
         Private/EditorPresenter.cpp
         Private/FilesPresenter.cpp
         Private/PackagePresenter.cpp
@@ -14,6 +15,7 @@ target_sources(
         BASE_DIRS Public
         FILES
             Public/Cue/Editor/ImGui/BuildPresenter.h
+            Public/Cue/Editor/ImGui/EditorDockspace.h
             Public/Cue/Editor/ImGui/EditorPresenter.h
             Public/Cue/Editor/ImGui/FilesPresenter.h
             Public/Cue/Editor/ImGui/PackagePresenter.h
