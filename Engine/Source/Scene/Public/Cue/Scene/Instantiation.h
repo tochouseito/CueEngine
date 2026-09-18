@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -115,6 +116,37 @@ class RuntimeComponentBuilder
         game_core::World &a_world,
         game_core::EntityHandle a_entity,
         const AssertContext &a_assertContext) noexcept = 0;
+};
+
+/// @brief RuntimeWorld初期化後にSession-local Component Builderを生成するProject Scope境界
+///
+/// Factoryと生成したBuilderは一つのRuntime Sessionだけが所有し、対象WorldのComponent Tokenを
+/// 同じSessionのRuntime Systemと共有できる。Project ScopeへWorld-local Tokenを持ち出さない。
+class RuntimeComponentBuilderFactory
+{
+  public:
+    /// @brief 派生Factoryを基底Pointerから正しく破棄する
+    virtual ~RuntimeComponentBuilderFactory() noexcept = default;
+
+    /// @brief Factoryが登録するStable Component Type Identityを返す
+    [[nodiscard]] virtual schema::TypeId type_id() const noexcept = 0;
+    /// @brief 指定Worldへ型を登録しScene実体化中だけ使用するBuilderを生成する
+    [[nodiscard]] virtual Result<std::unique_ptr<RuntimeComponentBuilder>> create(
+        game_core::World &a_world, game_core::ComponentType<math::Transform> a_transformType,
+        game_core::ComponentType<SceneObjectState> a_sceneObjectStateType,
+        const AssertContext &a_assertContext) const noexcept = 0;
+
+  protected:
+    /// @brief 派生Factoryだけが基底部分を構築できるようにする
+    RuntimeComponentBuilderFactory() noexcept = default;
+    /// @brief Project Scope Factory Identityの複製を禁止する
+    RuntimeComponentBuilderFactory(const RuntimeComponentBuilderFactory &) = delete;
+    /// @brief Project Scope Factory Identityの複製代入を禁止する
+    RuntimeComponentBuilderFactory &operator=(const RuntimeComponentBuilderFactory &) = delete;
+    /// @brief Project Scope Factory Addressを固定するためMove構築を禁止する
+    RuntimeComponentBuilderFactory(RuntimeComponentBuilderFactory &&) = delete;
+    /// @brief Project Scope Factory Addressを固定するためMove代入を禁止する
+    RuntimeComponentBuilderFactory &operator=(RuntimeComponentBuilderFactory &&) = delete;
 };
 
 /// @brief SceneInstance終了中に破棄できず所有を維持したEntityとError

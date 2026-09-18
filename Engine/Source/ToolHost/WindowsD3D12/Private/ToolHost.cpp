@@ -1,5 +1,6 @@
 #include <Cue/ToolHost/WindowsD3D12/ToolHost.h>
 
+#include <Cue/EngineAssets/BuiltInMesh.h>
 #include <Cue/Foundation/Assert.h>
 #include <Cue/Foundation/Error.h>
 #include <Cue/Foundation/Fatal.h>
@@ -14,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -22,6 +24,7 @@
 
 #include <Windows.h>
 #include <d3d12.h>
+#include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <imgui.h>
 #include <imgui_impl_dx12.h>
@@ -38,10 +41,49 @@ using Microsoft::WRL::ComPtr;
 
 constexpr std::uint32_t k_frameCount = 2;
 constexpr std::uint32_t k_srvDescriptorCount = 64;
-constexpr std::size_t k_retiredRenderSurfaceCapacity = k_frameCount + 1U;
+constexpr std::size_t k_retiredRenderSurfaceCapacity =
+    (k_frameCount + 1U) * cue::tool_host::k_toolHostRenderSurfaceCount;
 constexpr std::uint32_t k_maxDredNodes = 4096;
 constexpr DWORD k_fenceTimeoutMilliseconds = 5000;
 constexpr DXGI_FORMAT k_backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr DXGI_FORMAT k_depthFormat = DXGI_FORMAT_D32_FLOAT;
+constexpr std::size_t k_maximumRenderMeshInstances = 4096U;
+constexpr std::size_t k_constantBufferStride = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+
+constexpr std::string_view k_sceneShader = R"(
+cbuffer ObjectConstants : register(b0)
+{
+    row_major float4x4 worldViewProjection;
+};
+
+struct VertexInput
+{
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+};
+
+struct VertexOutput
+{
+    float4 position : SV_POSITION;
+    float3 normal : NORMAL;
+};
+
+// Transforms a built-in mesh vertex into clip space.
+VertexOutput vs_main(VertexInput input)
+{
+    VertexOutput output;
+    output.position = mul(float4(input.position, 1.0F), worldViewProjection);
+    output.normal = input.normal;
+    return output;
+}
+
+// Converts the face normal into a visible unlit diagnostic color.
+float4 ps_main(VertexOutput input) : SV_TARGET
+{
+    const float3 color = 0.25F + abs(normalize(input.normal)) * 0.65F;
+    return float4(color, 1.0F);
+}
+)";
 
 /// @brief Windows標準日本語FontをProject Hubの既定Fontへ設定できたか返す
 [[nodiscard]] bool configure_japanese_font(const cue::AssertContext &a_context) noexcept
@@ -372,8 +414,7 @@ class DescriptorPool final
     }
 
     /// @brief 空きDescriptorがある場合だけ確保してHandleを返す
-    [[nodiscard]] bool try_allocate(D3D12_CPU_DESCRIPTOR_HANDLE &a_cpu,
-                                    D3D12_GPU_DESCRIPTOR_HANDLE &a_gpu) noexcept
+    [[nodiscard]] bool try_allocate(D3D12_CPU_DESCRIPTOR_HANDLE &a_cpu, D3D12_GPU_DESCRIPTOR_HANDLE &a_gpu) noexcept
     {
         for (std::size_t index = 0; index < m_used.size(); ++index)
         {
@@ -451,6 +492,8 @@ class ImGuiWindowsMessageSink final : public cue::WindowsMessageSink
 struct FrameResource final
 {
     ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12Resource> constantBuffer;
+    std::byte *mappedConstants = nullptr;
     std::uint64_t reuseFenceValue = 0;
 };
 
@@ -458,7 +501,9 @@ struct FrameResource final
 struct RenderSurfaceGeneration final
 {
     ComPtr<ID3D12Resource> resource;
+    ComPtr<ID3D12Resource> depthResource;
     ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    ComPtr<ID3D12DescriptorHeap> dsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpu{};
     D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
     std::uint32_t width = 0U;
@@ -503,6 +548,8 @@ class WindowsD3d12ToolHost final
         HWND a_window, cue::WindowSize a_size, cue::tool_host::ToolHostAdapterPreference a_adapterPreference) noexcept;
     /// @brief ImGui Contextと公式Win32／DX12 Backendを生成する
     [[nodiscard]] cue::Result<void> initialize_imgui(HWND a_window) noexcept;
+    /// @brief Built-in Cubeを描画する固定D3D12 PipelineとFrame Bufferを生成する
+    [[nodiscard]] cue::Result<void> initialize_scene_renderer() noexcept;
     /// @brief Swap Chain Back BufferとRTVを再取得する
     [[nodiscard]] cue::Result<void> create_back_buffers() noexcept;
     /// @brief Back Buffer参照を全て解放する
@@ -510,19 +557,19 @@ class WindowsD3d12ToolHost final
     /// @brief 一つのImGui Frameを記録、Execute、Present、Signalする
     [[nodiscard]] cue::Result<void> render_frame(cue::tool_host::ToolHostClient &a_client) noexcept;
     /// @brief Client要求と現在世代を比較し必要な生成または退役を行う
-    [[nodiscard]] cue::Result<void> prepare_render_surface(
-        cue::tool_host::ToolHostRenderSurfaceRequest a_request) noexcept;
+    [[nodiscard]] cue::Result<void> prepare_render_surfaces(
+        cue::tool_host::ToolHostRenderSurfaceRequests a_requests) noexcept;
     /// @brief 指定寸法のRender Target、RTV、SRVを新規生成する
     [[nodiscard]] cue::Result<RenderSurfaceGeneration> create_render_surface(std::uint32_t a_width,
                                                                              std::uint32_t a_height) noexcept;
     /// @brief Active Surfaceを最後の提出Fenceに関連付けて退役させる
-    [[nodiscard]] cue::Result<void> retire_active_render_surface() noexcept;
+    [[nodiscard]] cue::Result<void> retire_active_render_surface(std::size_t a_slot) noexcept;
     /// @brief 完了済みFenceに対応する退役Surfaceを解放する
     [[nodiscard]] cue::Result<void> collect_retired_render_surfaces() noexcept;
-    /// @brief 現在世代の固定色ClearとShader Resource遷移を記録する
-    void record_render_surface_clear() noexcept;
+    /// @brief 現在世代のClear、Cube描画、Shader Resource遷移を記録する
+    void record_render_surfaces(FrameResource &a_frame, cue::tool_host::ToolHostRenderFrameView a_renderFrame) noexcept;
     /// @brief Active SurfaceのImGui表示用非所有Viewを返す
-    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceView render_surface_view() const noexcept;
+    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceViews render_surface_views() const noexcept;
     /// @brief 一世代のSRV DescriptorとD3D12 Resourceを解放する
     void release_render_surface(RenderSurfaceGeneration &a_generation) noexcept;
     /// @brief Cleanup前に全Surface世代を解放する
@@ -566,8 +613,14 @@ class WindowsD3d12ToolHost final
     std::array<FrameResource, k_frameCount> m_frames;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
     ComPtr<ID3D12Fence> m_fence;
+    ComPtr<ID3D12RootSignature> m_sceneRootSignature;
+    ComPtr<ID3D12PipelineState> m_scenePipelineState;
+    ComPtr<ID3D12Resource> m_sceneVertexBuffer;
+    ComPtr<ID3D12Resource> m_sceneIndexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW m_sceneVertexView{};
+    D3D12_INDEX_BUFFER_VIEW m_sceneIndexView{};
     DescriptorPool m_descriptorPool;
-    RenderSurfaceGeneration m_renderSurface;
+    std::array<RenderSurfaceGeneration, cue::tool_host::k_toolHostRenderSurfaceCount> m_renderSurfaces;
     std::array<RetiredRenderSurface, k_retiredRenderSurfaceCapacity> m_retiredRenderSurfaces;
     std::uint32_t m_rtvIncrement = 0;
     std::uint64_t m_nextFenceValue = 1;
@@ -618,8 +671,7 @@ cue::Result<void> WindowsD3d12ToolHost::initialize(const cue::tool_host::ToolHos
         return icon;
     }
 
-    cue::Result<void> d3d12 =
-        initialize_d3d12(nativeWindow, a_descriptor.clientSize, a_descriptor.adapterPreference);
+    cue::Result<void> d3d12 = initialize_d3d12(nativeWindow, a_descriptor.clientSize, a_descriptor.adapterPreference);
     if (!d3d12)
     {
         return d3d12;
@@ -675,7 +727,7 @@ cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(
         {
             ComPtr<IDXGIAdapter1> adapter;
             result = m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                            IID_PPV_ARGS(&adapter));
+                                                           IID_PPV_ARGS(&adapter));
             if (result == DXGI_ERROR_NOT_FOUND)
             {
                 break;
@@ -799,6 +851,11 @@ cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(
                                                             cue::tool_host::ToolHostError::D3d12InitializationFailed,
                                                             "Tool Host Fence creation failed", "HRESULT", result));
     }
+    cue::Result<void> sceneRenderer = initialize_scene_renderer();
+    if (!sceneRenderer)
+    {
+        return sceneRenderer;
+    }
     cue::Result<void> buffers = create_back_buffers();
     if (!buffers && FAILED(m_device->GetDeviceRemovedReason()))
     {
@@ -806,6 +863,180 @@ cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(
         return finish_device_removed(std::move(removed));
     }
     return buffers;
+}
+
+cue::Result<void> WindowsD3d12ToolHost::initialize_scene_renderer() noexcept
+{
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> diagnostics;
+    constexpr UINT k_compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+    HRESULT result = D3DCompile(k_sceneShader.data(), k_sceneShader.size(), "Cue.ToolHost.SceneShader", nullptr,
+                                nullptr, "vs_main", "vs_5_1", k_compileFlags, 0U, &vertexShader, &diagnostics);
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene vertex shader compilation failed", "HRESULT", result));
+    }
+    diagnostics.Reset();
+    result = D3DCompile(k_sceneShader.data(), k_sceneShader.size(), "Cue.ToolHost.SceneShader", nullptr, nullptr,
+                        "ps_main", "ps_5_1", k_compileFlags, 0U, &pixelShader, &diagnostics);
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene pixel shader compilation failed", "HRESULT", result));
+    }
+
+    D3D12_ROOT_PARAMETER rootParameter{};
+    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameter.Descriptor.ShaderRegister = 0U;
+    rootParameter.Descriptor.RegisterSpace = 0U;
+    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    D3D12_ROOT_SIGNATURE_DESC rootDescription{};
+    rootDescription.NumParameters = 1U;
+    rootDescription.pParameters = &rootParameter;
+    rootDescription.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                            D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                            D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                            D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+                            D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+    ComPtr<ID3DBlob> serializedRoot;
+    diagnostics.Reset();
+    result = D3D12SerializeRootSignature(&rootDescription, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRoot, &diagnostics);
+    if (SUCCEEDED(result))
+    {
+        result = m_device->CreateRootSignature(0U, serializedRoot->GetBufferPointer(), serializedRoot->GetBufferSize(),
+                                               IID_PPV_ARGS(&m_sceneRootSignature));
+    }
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene root signature creation failed", "HRESULT", result));
+    }
+
+    constexpr std::array<D3D12_INPUT_ELEMENT_DESC, 2U> k_inputElements{{
+        {"POSITION", 0U, DXGI_FORMAT_R32G32B32_FLOAT, 0U, 0U, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0U},
+        {"NORMAL", 0U, DXGI_FORMAT_R32G32B32_FLOAT, 0U, 12U, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0U},
+    }};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline{};
+    pipeline.pRootSignature = m_sceneRootSignature.Get();
+    pipeline.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    pipeline.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+    pipeline.BlendState.AlphaToCoverageEnable = FALSE;
+    pipeline.BlendState.IndependentBlendEnable = FALSE;
+    D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlend{};
+    renderTargetBlend.BlendEnable = FALSE;
+    renderTargetBlend.LogicOpEnable = FALSE;
+    renderTargetBlend.SrcBlend = D3D12_BLEND_ONE;
+    renderTargetBlend.DestBlend = D3D12_BLEND_ZERO;
+    renderTargetBlend.BlendOp = D3D12_BLEND_OP_ADD;
+    renderTargetBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    renderTargetBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+    renderTargetBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    renderTargetBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+    renderTargetBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pipeline.BlendState.RenderTarget[0] = renderTargetBlend;
+    pipeline.SampleMask = UINT_MAX;
+    pipeline.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pipeline.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    pipeline.RasterizerState.FrontCounterClockwise = TRUE;
+    pipeline.RasterizerState.DepthClipEnable = TRUE;
+    pipeline.DepthStencilState.DepthEnable = TRUE;
+    pipeline.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pipeline.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    pipeline.DepthStencilState.StencilEnable = FALSE;
+    pipeline.InputLayout = {k_inputElements.data(), static_cast<UINT>(k_inputElements.size())};
+    pipeline.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pipeline.NumRenderTargets = 1U;
+    pipeline.RTVFormats[0] = k_backBufferFormat;
+    pipeline.DSVFormat = k_depthFormat;
+    pipeline.SampleDesc.Count = 1U;
+    result = m_device->CreateGraphicsPipelineState(&pipeline, IID_PPV_ARGS(&m_scenePipelineState));
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene pipeline state creation failed", "HRESULT", result));
+    }
+
+    const cue::engine_assets::MeshView cube = cue::engine_assets::built_in_cube_mesh();
+    const UINT64 vertexBytes = static_cast<UINT64>(cube.vertices.size_bytes());
+    const UINT64 indexBytes = static_cast<UINT64>(cube.indices.size_bytes());
+    D3D12_HEAP_PROPERTIES uploadHeap{};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    /// @brief Scene固定DataとFrame Constants用のUpload Bufferを生成する
+    const auto createUploadBuffer = [&](UINT64 a_size, ComPtr<ID3D12Resource> &a_resource) noexcept -> HRESULT
+    {
+        D3D12_RESOURCE_DESC description{};
+        description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        description.Width = a_size;
+        description.Height = 1U;
+        description.DepthOrArraySize = 1U;
+        description.MipLevels = 1U;
+        description.Format = DXGI_FORMAT_UNKNOWN;
+        description.SampleDesc.Count = 1U;
+        description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        return m_device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &description,
+                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&a_resource));
+    };
+    result = createUploadBuffer(vertexBytes, m_sceneVertexBuffer);
+    if (SUCCEEDED(result))
+    {
+        result = createUploadBuffer(indexBytes, m_sceneIndexBuffer);
+    }
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene geometry buffer creation failed", "HRESULT", result));
+    }
+    void *mapped = nullptr;
+    result = m_sceneVertexBuffer->Map(0U, nullptr, &mapped);
+    if (SUCCEEDED(result))
+    {
+        std::memcpy(mapped, cube.vertices.data(), cube.vertices.size_bytes());
+        m_sceneVertexBuffer->Unmap(0U, nullptr);
+        mapped = nullptr;
+        result = m_sceneIndexBuffer->Map(0U, nullptr, &mapped);
+    }
+    if (SUCCEEDED(result))
+    {
+        std::memcpy(mapped, cube.indices.data(), cube.indices.size_bytes());
+        m_sceneIndexBuffer->Unmap(0U, nullptr);
+    }
+    if (FAILED(result))
+    {
+        return cue::Result<void>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                              "Tool Host scene geometry upload failed", "HRESULT", result));
+    }
+    m_sceneVertexView = {m_sceneVertexBuffer->GetGPUVirtualAddress(), static_cast<UINT>(vertexBytes),
+                         static_cast<UINT>(sizeof(cue::engine_assets::MeshVertex))};
+    m_sceneIndexView = {m_sceneIndexBuffer->GetGPUVirtualAddress(), static_cast<UINT>(indexBytes),
+                        DXGI_FORMAT_R16_UINT};
+
+    const UINT64 constantBytes = static_cast<UINT64>(k_constantBufferStride) *
+                                 cue::tool_host::k_toolHostRenderSurfaceCount * k_maximumRenderMeshInstances;
+    for (FrameResource &frame : m_frames)
+    {
+        result = createUploadBuffer(constantBytes, frame.constantBuffer);
+        if (SUCCEEDED(result))
+        {
+            void *constantMapping = nullptr;
+            result = frame.constantBuffer->Map(0U, nullptr, &constantMapping);
+            frame.mappedConstants = static_cast<std::byte *>(constantMapping);
+        }
+        if (FAILED(result))
+        {
+            return cue::Result<void>::failure(
+                make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                                  "Tool Host scene constant buffer creation failed", "HRESULT", result));
+        }
+    }
+    return cue::Result<void>::success();
 }
 
 cue::Result<void> WindowsD3d12ToolHost::initialize_imgui(HWND a_window) noexcept
@@ -904,9 +1135,9 @@ cue::Result<RenderSurfaceGeneration> WindowsD3d12ToolHost::create_render_surface
     clearValue.Color[1] = 0.105F;
     clearValue.Color[2] = 0.19F;
     clearValue.Color[3] = 1.0F;
-    HRESULT result = m_device->CreateCommittedResource(
-        &heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDescription, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        &clearValue, IID_PPV_ARGS(&generation.resource));
+    HRESULT result = m_device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDescription,
+                                                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearValue,
+                                                       IID_PPV_ARGS(&generation.resource));
     if (FAILED(result))
     {
         return cue::Result<RenderSurfaceGeneration>::failure(
@@ -927,11 +1158,39 @@ cue::Result<RenderSurfaceGeneration> WindowsD3d12ToolHost::create_render_surface
     m_device->CreateRenderTargetView(generation.resource.Get(), nullptr,
                                      generation.rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
+    D3D12_RESOURCE_DESC depthDescription = resourceDescription;
+    depthDescription.Format = k_depthFormat;
+    depthDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_CLEAR_VALUE depthClear{};
+    depthClear.Format = k_depthFormat;
+    depthClear.DepthStencil.Depth = 1.0F;
+    result = m_device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &depthDescription,
+                                               D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthClear,
+                                               IID_PPV_ARGS(&generation.depthResource));
+    if (FAILED(result))
+    {
+        return cue::Result<RenderSurfaceGeneration>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceCreationFailed,
+                              "Tool Host render surface depth resource creation failed", "HRESULT", result));
+    }
+    D3D12_DESCRIPTOR_HEAP_DESC dsvDescription{};
+    dsvDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsvDescription.NumDescriptors = 1U;
+    result = m_device->CreateDescriptorHeap(&dsvDescription, IID_PPV_ARGS(&generation.dsvHeap));
+    if (FAILED(result))
+    {
+        return cue::Result<RenderSurfaceGeneration>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceCreationFailed,
+                              "Tool Host render surface DSV heap creation failed", "HRESULT", result));
+    }
+    m_device->CreateDepthStencilView(generation.depthResource.Get(), nullptr,
+                                     generation.dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
     if (!m_descriptorPool.try_allocate(generation.srvCpu, generation.srvGpu))
     {
-        return cue::Result<RenderSurfaceGeneration>::failure(make_error(
-            *m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceDescriptorExhausted,
-            "Tool Host render surface SRV descriptor pool is exhausted"));
+        return cue::Result<RenderSurfaceGeneration>::failure(
+            make_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceDescriptorExhausted,
+                       "Tool Host render surface SRV descriptor pool is exhausted"));
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription{};
     srvDescription.Format = k_backBufferFormat;
@@ -971,9 +1230,10 @@ cue::Result<void> WindowsD3d12ToolHost::collect_retired_render_surfaces() noexce
     return cue::Result<void>::success();
 }
 
-cue::Result<void> WindowsD3d12ToolHost::retire_active_render_surface() noexcept
+cue::Result<void> WindowsD3d12ToolHost::retire_active_render_surface(std::size_t a_slot) noexcept
 {
-    if (m_renderSurface.resource == nullptr)
+    RenderSurfaceGeneration &active = m_renderSurfaces[a_slot];
+    if (active.resource == nullptr)
     {
         return cue::Result<void>::success();
     }
@@ -981,92 +1241,160 @@ cue::Result<void> WindowsD3d12ToolHost::retire_active_render_surface() noexcept
     {
         if (retired.generation.resource == nullptr)
         {
-            retired.generation = std::move(m_renderSurface);
+            retired.generation = std::move(active);
             retired.fenceValue = m_lastSignaledFence;
-            m_renderSurface = {};
+            active = {};
             return cue::Result<void>::success();
         }
     }
-    return cue::Result<void>::failure(make_error(
-        *m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceRetirementCapacityExceeded,
-        "Tool Host render surface retirement capacity is exhausted"));
+    return cue::Result<void>::failure(make_error(*m_assertContext,
+                                                 cue::tool_host::ToolHostError::RenderSurfaceRetirementCapacityExceeded,
+                                                 "Tool Host render surface retirement capacity is exhausted"));
 }
 
-cue::Result<void> WindowsD3d12ToolHost::prepare_render_surface(
-    cue::tool_host::ToolHostRenderSurfaceRequest a_request) noexcept
+cue::Result<void> WindowsD3d12ToolHost::prepare_render_surfaces(
+    cue::tool_host::ToolHostRenderSurfaceRequests a_requests) noexcept
 {
     cue::Result<void> collected = collect_retired_render_surfaces();
     if (!collected)
     {
         return collected;
     }
-    if (!a_request.isVisible)
+    for (std::size_t slot = 0U; slot < a_requests.size(); ++slot)
     {
-        return retire_active_render_surface();
-    }
-    if (a_request.width == 0U || a_request.height == 0U ||
-        a_request.width > cue::tool_host::k_maximumToolHostRenderSurfaceDimension ||
-        a_request.height > cue::tool_host::k_maximumToolHostRenderSurfaceDimension)
-    {
-        return cue::Result<void>::failure(
-            make_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceInvalidSize,
-                       "Tool Host render surface size is invalid"));
-    }
-    if (m_renderSurface.resource != nullptr && m_renderSurface.width == a_request.width &&
-        m_renderSurface.height == a_request.height)
-    {
-        return cue::Result<void>::success();
-    }
+        const cue::tool_host::ToolHostRenderSurfaceRequest request = a_requests[slot];
+        RenderSurfaceGeneration &active = m_renderSurfaces[slot];
+        if (!request.isVisible)
+        {
+            cue::Result<void> retired = retire_active_render_surface(slot);
+            if (!retired)
+            {
+                return retired;
+            }
+            continue;
+        }
+        if (request.width == 0U || request.height == 0U ||
+            request.width > cue::tool_host::k_maximumToolHostRenderSurfaceDimension ||
+            request.height > cue::tool_host::k_maximumToolHostRenderSurfaceDimension)
+        {
+            return cue::Result<void>::failure(make_error(*m_assertContext,
+                                                         cue::tool_host::ToolHostError::RenderSurfaceInvalidSize,
+                                                         "Tool Host render surface size is invalid"));
+        }
+        if (active.resource != nullptr && active.width == request.width && active.height == request.height)
+        {
+            continue;
+        }
 
-    cue::Result<RenderSurfaceGeneration> created = create_render_surface(a_request.width, a_request.height);
-    if (!created)
-    {
-        return cue::Result<void>::failure(std::move(*created.try_error()));
+        cue::Result<RenderSurfaceGeneration> created = create_render_surface(request.width, request.height);
+        if (!created)
+        {
+            return cue::Result<void>::failure(std::move(*created.try_error()));
+        }
+        cue::Result<void> retired = retire_active_render_surface(slot);
+        if (!retired)
+        {
+            release_render_surface(*created.try_value());
+            return retired;
+        }
+        active = std::move(*created.try_value());
     }
-    cue::Result<void> retired = retire_active_render_surface();
-    if (!retired)
-    {
-        release_render_surface(*created.try_value());
-        return retired;
-    }
-    m_renderSurface = std::move(*created.try_value());
     return cue::Result<void>::success();
 }
 
-cue::tool_host::ToolHostRenderSurfaceView WindowsD3d12ToolHost::render_surface_view() const noexcept
+cue::tool_host::ToolHostRenderSurfaceViews WindowsD3d12ToolHost::render_surface_views() const noexcept
 {
-    if (m_renderSurface.resource == nullptr)
+    cue::tool_host::ToolHostRenderSurfaceViews views;
+    for (std::size_t slot = 0U; slot < m_renderSurfaces.size(); ++slot)
     {
-        return {};
+        const RenderSurfaceGeneration &surface = m_renderSurfaces[slot];
+        if (surface.resource != nullptr)
+        {
+            views[slot] = {static_cast<std::uint64_t>(surface.srvGpu.ptr), surface.width, surface.height};
+        }
     }
-    return {static_cast<std::uint64_t>(m_renderSurface.srvGpu.ptr), m_renderSurface.width, m_renderSurface.height};
+    return views;
 }
 
-void WindowsD3d12ToolHost::record_render_surface_clear() noexcept
+void WindowsD3d12ToolHost::record_render_surfaces(FrameResource &a_frame,
+                                                  cue::tool_host::ToolHostRenderFrameView a_renderFrame) noexcept
 {
-    if (m_renderSurface.resource == nullptr)
+    for (std::size_t slot = 0U; slot < m_renderSurfaces.size(); ++slot)
     {
-        return;
+        RenderSurfaceGeneration &surface = m_renderSurfaces[slot];
+        if (surface.resource == nullptr)
+        {
+            continue;
+        }
+        D3D12_RESOURCE_BARRIER toRenderTarget{};
+        toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toRenderTarget.Transition.pResource = surface.resource.Get();
+        toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_commandList->ResourceBarrier(1U, &toRenderTarget);
+        const D3D12_CPU_DESCRIPTOR_HANDLE rtv = surface.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        constexpr std::array<std::array<float, 4U>, cue::tool_host::k_toolHostRenderSurfaceCount> k_clearColors{{
+            {0.035F, 0.105F, 0.19F, 1.0F},
+            {0.08F, 0.075F, 0.095F, 1.0F},
+        }};
+        m_commandList->ClearRenderTargetView(rtv, k_clearColors[slot].data(), 0U, nullptr);
+        const D3D12_CPU_DESCRIPTOR_HANDLE dsv = surface.dsvHeap->GetCPUDescriptorHandleForHeapStart();
+        m_commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0F, 0U, 0U, nullptr);
+
+        const cue::renderer::PerspectiveCamera *camera =
+            slot == static_cast<std::size_t>(cue::tool_host::ToolHostRenderSurfaceSlot::GameView)
+                ? a_renderFrame.gameCamera
+                : a_renderFrame.debugCamera;
+        if (a_renderFrame.snapshot != nullptr && camera != nullptr && cue::renderer::is_valid(*camera))
+        {
+            const D3D12_VIEWPORT viewport{
+                0.0F, 0.0F, static_cast<float>(surface.width), static_cast<float>(surface.height), 0.0F, 1.0F};
+            const D3D12_RECT scissor{0, 0, static_cast<LONG>(surface.width), static_cast<LONG>(surface.height)};
+            m_commandList->RSSetViewports(1U, &viewport);
+            m_commandList->RSSetScissorRects(1U, &scissor);
+            m_commandList->OMSetRenderTargets(1U, &rtv, FALSE, &dsv);
+            m_commandList->SetGraphicsRootSignature(m_sceneRootSignature.Get());
+            m_commandList->SetPipelineState(m_scenePipelineState.Get());
+            m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->IASetVertexBuffers(0U, 1U, &m_sceneVertexView);
+            m_commandList->IASetIndexBuffer(&m_sceneIndexView);
+
+            const float aspect = static_cast<float>(surface.width) / static_cast<float>(surface.height);
+            const cue::math::Matrix4 viewProjection = cue::renderer::make_view_projection(*camera, aspect);
+            const std::span<const cue::renderer::RenderMeshInstance> meshes = a_renderFrame.snapshot->meshes();
+            const std::size_t drawCount = (std::min)(meshes.size(), k_maximumRenderMeshInstances);
+            for (std::size_t draw = 0U; draw < drawCount; ++draw)
+            {
+                if (meshes[draw].mesh != cue::renderer::RenderMesh::Cube)
+                {
+                    continue;
+                }
+                const cue::math::Matrix4 worldViewProjection =
+                    cue::renderer::make_world_matrix(meshes[draw].transform) * viewProjection;
+                const std::size_t constantIndex = slot * k_maximumRenderMeshInstances + draw;
+                const std::size_t constantOffset = constantIndex * k_constantBufferStride;
+                std::memcpy(a_frame.mappedConstants + constantOffset, &worldViewProjection,
+                            sizeof(worldViewProjection));
+                m_commandList->SetGraphicsRootConstantBufferView(0U, a_frame.constantBuffer->GetGPUVirtualAddress() +
+                                                                         constantOffset);
+                m_commandList->DrawIndexedInstanced(
+                    static_cast<UINT>(cue::engine_assets::built_in_cube_mesh().indices.size()), 1U, 0U, 0, 0U);
+            }
+        }
+        D3D12_RESOURCE_BARRIER toShaderResource = toRenderTarget;
+        toShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        m_commandList->ResourceBarrier(1U, &toShaderResource);
     }
-    D3D12_RESOURCE_BARRIER toRenderTarget{};
-    toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    toRenderTarget.Transition.pResource = m_renderSurface.resource.Get();
-    toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1U, &toRenderTarget);
-    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_renderSurface.rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    constexpr float k_gameViewClearColor[] = {0.035F, 0.105F, 0.19F, 1.0F};
-    m_commandList->ClearRenderTargetView(rtv, k_gameViewClearColor, 0U, nullptr);
-    D3D12_RESOURCE_BARRIER toShaderResource = toRenderTarget;
-    toShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    toShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    m_commandList->ResourceBarrier(1U, &toShaderResource);
 }
 
 void WindowsD3d12ToolHost::release_all_render_surfaces() noexcept
 {
-    release_render_surface(m_renderSurface);
+    for (RenderSurfaceGeneration &surface : m_renderSurfaces)
+    {
+        release_render_surface(surface);
+    }
     for (RetiredRenderSurface &retired : m_retiredRenderSurfaces)
     {
         release_render_surface(retired.generation);
@@ -1317,7 +1645,7 @@ cue::Result<void> WindowsD3d12ToolHost::render_frame(cue::tool_host::ToolHostCli
         return finish_after_wait_error(std::move(*reusable.try_error()));
     }
 
-    cue::Result<void> prepared = prepare_render_surface(a_client.render_surface_request());
+    cue::Result<void> prepared = prepare_render_surfaces(a_client.render_surface_requests());
     if (!prepared)
     {
         cue::Error error = std::move(*prepared.try_error());
@@ -1370,11 +1698,11 @@ cue::Result<void> WindowsD3d12ToolHost::render_frame(cue::tool_host::ToolHostCli
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    a_client.render_surface_ready(render_surface_view());
+    a_client.render_surfaces_ready(render_surface_views());
     a_client.draw_frame();
     ImGui::Render();
 
-    record_render_surface_clear();
+    record_render_surfaces(frame, a_client.render_frame_view());
 
     const UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     D3D12_RESOURCE_BARRIER toRenderTarget{};
@@ -1691,9 +2019,21 @@ void WindowsD3d12ToolHost::cleanup(cue::Error *a_secondaryDiagnostics) noexcept
     m_commandList.Reset();
     for (FrameResource &frame : m_frames)
     {
+        if (frame.constantBuffer != nullptr && frame.mappedConstants != nullptr)
+        {
+            frame.constantBuffer->Unmap(0U, nullptr);
+        }
+        frame.mappedConstants = nullptr;
+        frame.constantBuffer.Reset();
         frame.allocator.Reset();
         frame.reuseFenceValue = 0;
     }
+    m_sceneIndexBuffer.Reset();
+    m_sceneVertexBuffer.Reset();
+    m_scenePipelineState.Reset();
+    m_sceneRootSignature.Reset();
+    m_sceneIndexView = {};
+    m_sceneVertexView = {};
     release_back_buffers();
     m_rtvHeap.Reset();
     m_srvHeap.Reset();

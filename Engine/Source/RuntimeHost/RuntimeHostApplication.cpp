@@ -125,8 +125,8 @@ Result<std::unique_ptr<RuntimeHostApplication>> RuntimeHostApplication::start(
         state->session = std::move(*session.try_value());
         for (runtime::RuntimeSystemRegistration &system : systems)
         {
-            Result<void> registered =
-                state->session->register_system(std::move(system.descriptor), std::move(system.system));
+            Result<void> registered = state->session->register_system(
+                std::move(system.descriptor), std::move(system.system), std::move(system.componentBuilderFactories));
             if (!registered)
             {
                 return Result<std::unique_ptr<RuntimeHostApplication>>::failure(std::move(*registered.try_error()));

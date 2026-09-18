@@ -10,6 +10,7 @@
 #include <Cue/IO/Windows/WindowsWorkspaceFilesystem.h>
 #include <Cue/Project/Descriptor.h>
 #include <Cue/ProjectFiles/Service.h>
+#include <Cue/Renderer/RendererSchema.h>
 #include <Cue/Scene/ComponentData.h>
 #include <Cue/Scene/Identity.h>
 #include <Cue/Scene/SceneDocument.h>
@@ -405,6 +406,13 @@ Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
     {
         m_schemaIdentitySource = std::make_unique<schema::SchemaRegistryIdentitySource>();
         schema::SchemaRegistryBuilder schemaBuilder(*m_schemaIdentitySource, *m_assertContext);
+        Result<void> rendererSchemas = renderer::add_renderer_schema_types(schemaBuilder, *m_assertContext);
+        if (!rendererSchemas)
+        {
+            return Result<void>::failure(reclassify_session_error(
+                *m_assertContext, WindowsEditorSessionError::SchemaInitializationFailed,
+                "Renderer Schema types could not be registered", std::move(*rendererSchemas.try_error())));
+        }
         Result<std::unique_ptr<schema::SchemaRegistry>> schemaRegistry = schemaBuilder.seal();
         if (!schemaRegistry)
         {
@@ -413,8 +421,17 @@ Result<void> WindowsEditorSession::initialize(ProjectDescriptor a_descriptor,
                 "Editor Schema Registry could not be initialized", std::move(*schemaRegistry.try_error())));
         }
         m_schemaRegistry = std::move(*schemaRegistry.try_value());
-        Result<scene::ComponentValueSchemaRegistry> valueRegistry =
-            scene::ComponentValueSchemaRegistry::create({}, *m_schemaRegistry, *m_assertContext);
+        Result<std::vector<scene::ComponentValueSchema>> rendererValueSchemas =
+            renderer::make_renderer_value_schemas(*m_schemaRegistry, *m_assertContext);
+        if (!rendererValueSchemas)
+        {
+            return Result<void>::failure(
+                reclassify_session_error(*m_assertContext, WindowsEditorSessionError::SchemaInitializationFailed,
+                                         "Renderer Component Value Schemas could not be initialized",
+                                         std::move(*rendererValueSchemas.try_error())));
+        }
+        Result<scene::ComponentValueSchemaRegistry> valueRegistry = scene::ComponentValueSchemaRegistry::create(
+            std::move(*rendererValueSchemas.try_value()), *m_schemaRegistry, *m_assertContext);
         if (!valueRegistry)
         {
             return Result<void>::failure(reclassify_session_error(
@@ -868,6 +885,11 @@ editor_core::FilesWorkspaceService &WindowsEditorSession::files_workspace() noex
 const schema::SchemaRegistry &WindowsEditorSession::schema_registry() const noexcept
 {
     return *m_schemaRegistry;
+}
+
+const scene::ComponentValueSchemaRegistry &WindowsEditorSession::value_schema_registry() const noexcept
+{
+    return *m_valueSchemaRegistry;
 }
 
 scene::SceneIdentitySource &WindowsEditorSession::identity_source() noexcept

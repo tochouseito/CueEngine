@@ -16,10 +16,12 @@ target_link_libraries(
     PUBLIC
         Cue.Foundation
         Cue.Platform
+        Cue.Renderer
     PRIVATE
         Cue.ImGui.Core
         Cue.Platform.Windows
         d3d12
+        d3dcompiler
         dxgi
         dxguid
 )

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <thread>
 
 namespace cue
@@ -92,7 +93,8 @@ class RuntimeSceneSession final
     [[nodiscard]] static Result<std::unique_ptr<RuntimeSceneSession>> start(
         const scene::SceneSnapshot &a_snapshot, game_core::WorldIdentitySource &a_identitySource,
         const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
-        schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext) noexcept;
+        schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext,
+        std::span<const scene::RuntimeComponentBuilderFactory *const> a_componentBuilderFactories = {}) noexcept;
 
     /// @brief Factory外からの既定構築を禁止する
     RuntimeSceneSession() = delete;
@@ -130,7 +132,8 @@ class RuntimeSceneSession final
         const scene::SceneSnapshot &a_snapshot, game_core::WorldIdentitySource &a_identitySource,
         const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
         schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext,
-        const details::SceneEndOperation &a_endOperation) noexcept;
+        const details::SceneEndOperation &a_endOperation,
+        std::span<const scene::RuntimeComponentBuilderFactory *const> a_componentBuilderFactories = {}) noexcept;
     /// @brief Runtime Application Sessionへ所有Worldの短命な明示参照を渡す
     [[nodiscard]] game_core::RuntimeWorld &runtime_world() noexcept;
     /// @brief 現在ThreadがSession Ownerであることを全構成で検証する

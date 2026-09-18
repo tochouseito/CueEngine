@@ -18,6 +18,7 @@ target_link_libraries(
     PRIVATE
         Cue.Foundation.Windows
         Cue.IO.Windows
+        Cue.Renderer
         bcrypt
 )
 target_compile_features(Cue.Editor.Windows PUBLIC cxx_std_20)
