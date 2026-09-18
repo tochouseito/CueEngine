@@ -5,6 +5,7 @@
 - Last amended: 2026-09-17 (#327)
 - Decision Owners: CueEngine Project
 - Approval: User authorized Dear ImGui through vcpkg on 2026-09-04
+- Amended by: ADR-0025（Tool Host Offscreen Render Surface契約）
 
 ## Context
 
