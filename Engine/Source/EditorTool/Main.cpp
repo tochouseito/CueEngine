@@ -7,6 +7,7 @@
 #include <Cue/Editor/ImGui/EditorDockspace.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
+#include <Cue/Editor/ImGui/GameView.h>
 #include <Cue/Editor/ImGui/PackagePresenter.h>
 #include <Cue/Editor/ImGui/PlaySessionPresenter.h>
 #include <Cue/Editor/ImGui/SessionLog.h>
@@ -862,6 +863,18 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
         cue::editor::enable_editor_docking();
     }
 
+    /// @brief Game Viewが前Frameで計測した描画領域をTool Host要求へ変換する
+    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceRequest render_surface_request() const noexcept override
+    {
+        return {m_gameViewRequest.width, m_gameViewRequest.height, m_gameViewRequest.isVisible};
+    }
+
+    /// @brief Tool Hostが所有する非所有Texture Viewを現在FrameのGame Viewへ関連付ける
+    void render_surface_ready(cue::tool_host::ToolHostRenderSurfaceView a_surface) noexcept override
+    {
+        m_gameViewSurface = {a_surface.textureId, a_surface.width, a_surface.height};
+    }
+
     /// @brief 実Editor Compositionから一構成の生成Project BuildとArtifact公開を検証する
     [[nodiscard]] cue::Result<void> run_build_workflow_process_test(cue::BuildConfiguration a_configuration) noexcept
     {
@@ -1536,6 +1549,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             m_filesPresenter->draw();
             cue::editor::dock_editor_window_on_first_use();
             m_playPresenter->draw();
+            m_gameViewRequest = cue::editor::draw_game_view(m_gameViewSurface);
             if (m_buildPresenter != nullptr)
             {
                 cue::editor::dock_editor_window_on_first_use();
@@ -2575,6 +2589,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     std::unique_ptr<cue::editor::PackagePresenter> m_packagePresenter;
     std::unique_ptr<cue::editor::EditorPresenter> m_presenter;
     std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
+    cue::editor::GameViewRequest m_gameViewRequest;
+    cue::editor::GameViewSurface m_gameViewSurface;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;
     std::array<char, 512> m_sceneLocator{};
     std::string m_message;

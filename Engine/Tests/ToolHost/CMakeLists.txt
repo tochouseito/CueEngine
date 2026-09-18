@@ -31,8 +31,10 @@ if(MSVC)
 endif()
 
 add_test(NAME Cue.ToolHost.WindowsD3D12.Smoke COMMAND CueToolHostSmokeTests)
+add_test(NAME Cue.ToolHost.WindowsD3D12.WarpSmoke COMMAND CueToolHostSmokeTests --warp)
 set_tests_properties(
     Cue.ToolHost.WindowsD3D12.Smoke
+    Cue.ToolHost.WindowsD3D12.WarpSmoke
     PROPERTIES
         LABELS "ToolHost;Smoke"
         TIMEOUT 30

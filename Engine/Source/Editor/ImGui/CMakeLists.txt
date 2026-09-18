@@ -7,6 +7,7 @@ target_sources(
         Private/EditorDockspace.cpp
         Private/EditorPresenter.cpp
         Private/FilesPresenter.cpp
+        Private/GameView.cpp
         Private/PackagePresenter.cpp
         Private/PlaySessionPresenter.cpp
         Private/SessionLog.cpp
@@ -18,6 +19,7 @@ target_sources(
             Public/Cue/Editor/ImGui/EditorDockspace.h
             Public/Cue/Editor/ImGui/EditorPresenter.h
             Public/Cue/Editor/ImGui/FilesPresenter.h
+            Public/Cue/Editor/ImGui/GameView.h
             Public/Cue/Editor/ImGui/PackagePresenter.h
             Public/Cue/Editor/ImGui/PlaySessionPresenter.h
             Public/Cue/Editor/ImGui/SessionLog.h

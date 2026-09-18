@@ -38,6 +38,7 @@ using Microsoft::WRL::ComPtr;
 
 constexpr std::uint32_t k_frameCount = 2;
 constexpr std::uint32_t k_srvDescriptorCount = 64;
+constexpr std::size_t k_retiredRenderSurfaceCapacity = k_frameCount + 1U;
 constexpr std::uint32_t k_maxDredNodes = 4096;
 constexpr DWORD k_fenceTimeoutMilliseconds = 5000;
 constexpr DXGI_FORMAT k_backBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -362,6 +363,18 @@ class DescriptorPool final
     /// @brief 空きDescriptorを確保してCPU／GPU Handleを返す
     void allocate(D3D12_CPU_DESCRIPTOR_HANDLE &a_cpu, D3D12_GPU_DESCRIPTOR_HANDLE &a_gpu) noexcept
     {
+        if (try_allocate(a_cpu, a_gpu))
+        {
+            return;
+        }
+        m_assertContext->fatal_handler().terminate("Tool Host ImGui SRV descriptor pool is exhausted");
+        std::abort();
+    }
+
+    /// @brief 空きDescriptorがある場合だけ確保してHandleを返す
+    [[nodiscard]] bool try_allocate(D3D12_CPU_DESCRIPTOR_HANDLE &a_cpu,
+                                    D3D12_GPU_DESCRIPTOR_HANDLE &a_gpu) noexcept
+    {
         for (std::size_t index = 0; index < m_used.size(); ++index)
         {
             if (!m_used[index])
@@ -371,11 +384,10 @@ class DescriptorPool final
                 a_gpu = m_heap->GetGPUDescriptorHandleForHeapStart();
                 a_cpu.ptr += index * m_increment;
                 a_gpu.ptr += index * m_increment;
-                return;
+                return true;
             }
         }
-        m_assertContext->fatal_handler().terminate("Tool Host ImGui SRV descriptor pool is exhausted");
-        std::abort();
+        return false;
     }
 
     /// @brief Poolが発行したDescriptorを再利用可能に戻す
@@ -390,6 +402,10 @@ class DescriptorPool final
         if (offset % m_increment != 0 || offset / m_increment >= m_used.size())
         {
             m_assertContext->fatal_handler().terminate("Tool Host ImGui SRV descriptor is outside the pool");
+        }
+        if (!m_used[offset / m_increment])
+        {
+            m_assertContext->fatal_handler().terminate("Tool Host ImGui SRV descriptor was already released");
         }
         m_used[offset / m_increment] = false;
     }
@@ -438,6 +454,24 @@ struct FrameResource final
     std::uint64_t reuseFenceValue = 0;
 };
 
+/// @brief 一世代のOffscreen Render Surfaceと専用Descriptor所有権
+struct RenderSurfaceGeneration final
+{
+    ComPtr<ID3D12Resource> resource;
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpu{};
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
+    std::uint32_t width = 0U;
+    std::uint32_t height = 0U;
+};
+
+/// @brief GPU完了確認まで保持する旧Render Surface世代
+struct RetiredRenderSurface final
+{
+    RenderSurfaceGeneration generation;
+    std::uint64_t fenceValue = 0U;
+};
+
 /// @brief Windows WindowとTool専用D3D12／ImGui Resourceの全寿命を所有する
 class WindowsD3d12ToolHost final
 {
@@ -465,7 +499,8 @@ class WindowsD3d12ToolHost final
 
   private:
     /// @brief DXGI Device、Queue、Swap Chain、Frame Resourceを生成する
-    [[nodiscard]] cue::Result<void> initialize_d3d12(HWND a_window, cue::WindowSize a_size) noexcept;
+    [[nodiscard]] cue::Result<void> initialize_d3d12(
+        HWND a_window, cue::WindowSize a_size, cue::tool_host::ToolHostAdapterPreference a_adapterPreference) noexcept;
     /// @brief ImGui Contextと公式Win32／DX12 Backendを生成する
     [[nodiscard]] cue::Result<void> initialize_imgui(HWND a_window) noexcept;
     /// @brief Swap Chain Back BufferとRTVを再取得する
@@ -474,6 +509,24 @@ class WindowsD3d12ToolHost final
     void release_back_buffers() noexcept;
     /// @brief 一つのImGui Frameを記録、Execute、Present、Signalする
     [[nodiscard]] cue::Result<void> render_frame(cue::tool_host::ToolHostClient &a_client) noexcept;
+    /// @brief Client要求と現在世代を比較し必要な生成または退役を行う
+    [[nodiscard]] cue::Result<void> prepare_render_surface(
+        cue::tool_host::ToolHostRenderSurfaceRequest a_request) noexcept;
+    /// @brief 指定寸法のRender Target、RTV、SRVを新規生成する
+    [[nodiscard]] cue::Result<RenderSurfaceGeneration> create_render_surface(std::uint32_t a_width,
+                                                                             std::uint32_t a_height) noexcept;
+    /// @brief Active Surfaceを最後の提出Fenceに関連付けて退役させる
+    [[nodiscard]] cue::Result<void> retire_active_render_surface() noexcept;
+    /// @brief 完了済みFenceに対応する退役Surfaceを解放する
+    [[nodiscard]] cue::Result<void> collect_retired_render_surfaces() noexcept;
+    /// @brief 現在世代の固定色ClearとShader Resource遷移を記録する
+    void record_render_surface_clear() noexcept;
+    /// @brief Active SurfaceのImGui表示用非所有Viewを返す
+    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceView render_surface_view() const noexcept;
+    /// @brief 一世代のSRV DescriptorとD3D12 Resourceを解放する
+    void release_render_surface(RenderSurfaceGeneration &a_generation) noexcept;
+    /// @brief Cleanup前に全Surface世代を解放する
+    void release_all_render_surfaces() noexcept;
     /// @brief 全提出WorkをDrainしてSwap Chain SizeとRTVを再構築する
     [[nodiscard]] cue::Result<void> resize(cue::WindowSize a_size) noexcept;
     /// @brief Fence値をWrapさせず一度だけ予約する
@@ -514,6 +567,8 @@ class WindowsD3d12ToolHost final
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
     ComPtr<ID3D12Fence> m_fence;
     DescriptorPool m_descriptorPool;
+    RenderSurfaceGeneration m_renderSurface;
+    std::array<RetiredRenderSurface, k_retiredRenderSurfaceCapacity> m_retiredRenderSurfaces;
     std::uint32_t m_rtvIncrement = 0;
     std::uint64_t m_nextFenceValue = 1;
     std::uint64_t m_lastSignaledFence = 0;
@@ -563,7 +618,8 @@ cue::Result<void> WindowsD3d12ToolHost::initialize(const cue::tool_host::ToolHos
         return icon;
     }
 
-    cue::Result<void> d3d12 = initialize_d3d12(nativeWindow, a_descriptor.clientSize);
+    cue::Result<void> d3d12 =
+        initialize_d3d12(nativeWindow, a_descriptor.clientSize, a_descriptor.adapterPreference);
     if (!d3d12)
     {
         return d3d12;
@@ -582,7 +638,8 @@ cue::Result<void> WindowsD3d12ToolHost::initialize(const cue::tool_host::ToolHos
     return m_window->show();
 }
 
-cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(HWND a_window, cue::WindowSize a_size) noexcept
+cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(
+    HWND a_window, cue::WindowSize a_size, cue::tool_host::ToolHostAdapterPreference a_adapterPreference) noexcept
 {
     UINT factoryFlags = 0;
 #if CUE_ENABLE_ASSERTS
@@ -612,26 +669,29 @@ cue::Result<void> WindowsD3d12ToolHost::initialize_d3d12(HWND a_window, cue::Win
                                                             "DXGI Factory creation failed", "HRESULT", result));
     }
 
-    for (UINT index = 0;; ++index)
+    if (a_adapterPreference == cue::tool_host::ToolHostAdapterPreference::HardwarePreferred)
     {
-        ComPtr<IDXGIAdapter1> adapter;
-        result =
-            m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
-        if (result == DXGI_ERROR_NOT_FOUND)
+        for (UINT index = 0;; ++index)
         {
-            break;
-        }
-        if (FAILED(result))
-        {
-            return cue::Result<void>::failure(
-                make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
-                                  "DXGI Adapter enumeration failed", "HRESULT", result));
-        }
-        DXGI_ADAPTER_DESC1 description{};
-        if (SUCCEEDED(adapter->GetDesc1(&description)) && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
-            SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device))))
-        {
-            break;
+            ComPtr<IDXGIAdapter1> adapter;
+            result = m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                            IID_PPV_ARGS(&adapter));
+            if (result == DXGI_ERROR_NOT_FOUND)
+            {
+                break;
+            }
+            if (FAILED(result))
+            {
+                return cue::Result<void>::failure(
+                    make_native_error(*m_assertContext, cue::tool_host::ToolHostError::D3d12InitializationFailed,
+                                      "DXGI Adapter enumeration failed", "HRESULT", result));
+            }
+            DXGI_ADAPTER_DESC1 description{};
+            if (SUCCEEDED(adapter->GetDesc1(&description)) && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+                SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device))))
+            {
+                break;
+            }
         }
     }
     if (m_device == nullptr)
@@ -819,6 +879,198 @@ void WindowsD3d12ToolHost::release_back_buffers() noexcept
     for (ComPtr<ID3D12Resource> &buffer : m_backBuffers)
     {
         buffer.Reset();
+    }
+}
+
+cue::Result<RenderSurfaceGeneration> WindowsD3d12ToolHost::create_render_surface(std::uint32_t a_width,
+                                                                                 std::uint32_t a_height) noexcept
+{
+    RenderSurfaceGeneration generation;
+    D3D12_HEAP_PROPERTIES heapProperties{};
+    heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC resourceDescription{};
+    resourceDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDescription.Width = a_width;
+    resourceDescription.Height = a_height;
+    resourceDescription.DepthOrArraySize = 1U;
+    resourceDescription.MipLevels = 1U;
+    resourceDescription.Format = k_backBufferFormat;
+    resourceDescription.SampleDesc.Count = 1U;
+    resourceDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE clearValue{};
+    clearValue.Format = k_backBufferFormat;
+    clearValue.Color[0] = 0.035F;
+    clearValue.Color[1] = 0.105F;
+    clearValue.Color[2] = 0.19F;
+    clearValue.Color[3] = 1.0F;
+    HRESULT result = m_device->CreateCommittedResource(
+        &heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDescription, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        &clearValue, IID_PPV_ARGS(&generation.resource));
+    if (FAILED(result))
+    {
+        return cue::Result<RenderSurfaceGeneration>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceCreationFailed,
+                              "Tool Host render surface resource creation failed", "HRESULT", result));
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDescription{};
+    rtvDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDescription.NumDescriptors = 1U;
+    result = m_device->CreateDescriptorHeap(&rtvDescription, IID_PPV_ARGS(&generation.rtvHeap));
+    if (FAILED(result))
+    {
+        return cue::Result<RenderSurfaceGeneration>::failure(
+            make_native_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceCreationFailed,
+                              "Tool Host render surface RTV heap creation failed", "HRESULT", result));
+    }
+    m_device->CreateRenderTargetView(generation.resource.Get(), nullptr,
+                                     generation.rtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    if (!m_descriptorPool.try_allocate(generation.srvCpu, generation.srvGpu))
+    {
+        return cue::Result<RenderSurfaceGeneration>::failure(make_error(
+            *m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceDescriptorExhausted,
+            "Tool Host render surface SRV descriptor pool is exhausted"));
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription{};
+    srvDescription.Format = k_backBufferFormat;
+    srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDescription.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDescription.Texture2D.MipLevels = 1U;
+    m_device->CreateShaderResourceView(generation.resource.Get(), &srvDescription, generation.srvCpu);
+    generation.width = a_width;
+    generation.height = a_height;
+    return cue::Result<RenderSurfaceGeneration>::success(std::move(generation));
+}
+
+void WindowsD3d12ToolHost::release_render_surface(RenderSurfaceGeneration &a_generation) noexcept
+{
+    if (a_generation.width != 0U)
+    {
+        m_descriptorPool.release(a_generation.srvCpu);
+    }
+    a_generation = {};
+}
+
+cue::Result<void> WindowsD3d12ToolHost::collect_retired_render_surfaces() noexcept
+{
+    const std::uint64_t completedFence = m_fence->GetCompletedValue();
+    if (completedFence == (std::numeric_limits<std::uint64_t>::max)())
+    {
+        return cue::Result<void>::failure(make_device_removed_error());
+    }
+    for (RetiredRenderSurface &retired : m_retiredRenderSurfaces)
+    {
+        if (retired.generation.resource != nullptr && retired.fenceValue <= completedFence)
+        {
+            release_render_surface(retired.generation);
+            retired.fenceValue = 0U;
+        }
+    }
+    return cue::Result<void>::success();
+}
+
+cue::Result<void> WindowsD3d12ToolHost::retire_active_render_surface() noexcept
+{
+    if (m_renderSurface.resource == nullptr)
+    {
+        return cue::Result<void>::success();
+    }
+    for (RetiredRenderSurface &retired : m_retiredRenderSurfaces)
+    {
+        if (retired.generation.resource == nullptr)
+        {
+            retired.generation = std::move(m_renderSurface);
+            retired.fenceValue = m_lastSignaledFence;
+            m_renderSurface = {};
+            return cue::Result<void>::success();
+        }
+    }
+    return cue::Result<void>::failure(make_error(
+        *m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceRetirementCapacityExceeded,
+        "Tool Host render surface retirement capacity is exhausted"));
+}
+
+cue::Result<void> WindowsD3d12ToolHost::prepare_render_surface(
+    cue::tool_host::ToolHostRenderSurfaceRequest a_request) noexcept
+{
+    cue::Result<void> collected = collect_retired_render_surfaces();
+    if (!collected)
+    {
+        return collected;
+    }
+    if (!a_request.isVisible)
+    {
+        return retire_active_render_surface();
+    }
+    if (a_request.width == 0U || a_request.height == 0U ||
+        a_request.width > cue::tool_host::k_maximumToolHostRenderSurfaceDimension ||
+        a_request.height > cue::tool_host::k_maximumToolHostRenderSurfaceDimension)
+    {
+        return cue::Result<void>::failure(
+            make_error(*m_assertContext, cue::tool_host::ToolHostError::RenderSurfaceInvalidSize,
+                       "Tool Host render surface size is invalid"));
+    }
+    if (m_renderSurface.resource != nullptr && m_renderSurface.width == a_request.width &&
+        m_renderSurface.height == a_request.height)
+    {
+        return cue::Result<void>::success();
+    }
+
+    cue::Result<RenderSurfaceGeneration> created = create_render_surface(a_request.width, a_request.height);
+    if (!created)
+    {
+        return cue::Result<void>::failure(std::move(*created.try_error()));
+    }
+    cue::Result<void> retired = retire_active_render_surface();
+    if (!retired)
+    {
+        release_render_surface(*created.try_value());
+        return retired;
+    }
+    m_renderSurface = std::move(*created.try_value());
+    return cue::Result<void>::success();
+}
+
+cue::tool_host::ToolHostRenderSurfaceView WindowsD3d12ToolHost::render_surface_view() const noexcept
+{
+    if (m_renderSurface.resource == nullptr)
+    {
+        return {};
+    }
+    return {static_cast<std::uint64_t>(m_renderSurface.srvGpu.ptr), m_renderSurface.width, m_renderSurface.height};
+}
+
+void WindowsD3d12ToolHost::record_render_surface_clear() noexcept
+{
+    if (m_renderSurface.resource == nullptr)
+    {
+        return;
+    }
+    D3D12_RESOURCE_BARRIER toRenderTarget{};
+    toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toRenderTarget.Transition.pResource = m_renderSurface.resource.Get();
+    toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1U, &toRenderTarget);
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_renderSurface.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    constexpr float k_gameViewClearColor[] = {0.035F, 0.105F, 0.19F, 1.0F};
+    m_commandList->ClearRenderTargetView(rtv, k_gameViewClearColor, 0U, nullptr);
+    D3D12_RESOURCE_BARRIER toShaderResource = toRenderTarget;
+    toShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    m_commandList->ResourceBarrier(1U, &toShaderResource);
+}
+
+void WindowsD3d12ToolHost::release_all_render_surfaces() noexcept
+{
+    release_render_surface(m_renderSurface);
+    for (RetiredRenderSurface &retired : m_retiredRenderSurfaces)
+    {
+        release_render_surface(retired.generation);
+        retired.fenceValue = 0U;
     }
 }
 
@@ -1065,6 +1317,17 @@ cue::Result<void> WindowsD3d12ToolHost::render_frame(cue::tool_host::ToolHostCli
         return finish_after_wait_error(std::move(*reusable.try_error()));
     }
 
+    cue::Result<void> prepared = prepare_render_surface(a_client.render_surface_request());
+    if (!prepared)
+    {
+        cue::Error error = std::move(*prepared.try_error());
+        if (is_device_removed_error(error))
+        {
+            return finish_device_removed(std::move(error));
+        }
+        return finish_after_wait_error(std::move(error));
+    }
+
     cue::Result<std::uint64_t> reserved = reserve_fence_value();
     if (!reserved)
     {
@@ -1107,8 +1370,11 @@ cue::Result<void> WindowsD3d12ToolHost::render_frame(cue::tool_host::ToolHostCli
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    a_client.render_surface_ready(render_surface_view());
     a_client.draw_frame();
     ImGui::Render();
+
+    record_render_surface_clear();
 
     const UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     D3D12_RESOURCE_BARRIER toRenderTarget{};
@@ -1405,6 +1671,7 @@ void WindowsD3d12ToolHost::cleanup(cue::Error *a_secondaryDiagnostics) noexcept
         }
     }
     m_isMessageSinkAttached = false;
+    release_all_render_surfaces();
     if (m_isDx12BackendInitialized)
     {
         ImGui_ImplDX12_Shutdown();
