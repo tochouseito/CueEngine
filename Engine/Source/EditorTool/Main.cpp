@@ -4,6 +4,7 @@
 #include <Cue/Build/Windows/WindowsArtifactPublisher.h>
 #include <Cue/Build/Windows/WindowsToolchain.h>
 #include <Cue/Editor/ImGui/BuildPresenter.h>
+#include <Cue/Editor/ImGui/DebugView.h>
 #include <Cue/Editor/ImGui/EditorDockspace.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
@@ -30,6 +31,9 @@
 #include <Cue/Package/Workflow.h>
 #include <Cue/Platform/Windows/WindowsProcess.h>
 #include <Cue/Project/Compatibility.h>
+#include <Cue/Renderer/RenderExtraction.h>
+#include <Cue/Renderer/RendererRuntimeSystem.h>
+#include <Cue/Renderer/RendererSchema.h>
 #include <Cue/Runtime/RuntimeSchema.h>
 #include <Cue/Runtime/RuntimeSystemFactory.h>
 #include <Cue/Scene/Error.h>
@@ -740,7 +744,7 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                      cue::editor::EditorSessionLogRouter &a_logRouter,
                      std::span<const cue::runtime::RuntimeSystemFactory *const> a_systemFactories,
                      const cue::AssertContext &a_assertContext) noexcept
-        : m_session(&a_session), m_assertContext(&a_assertContext)
+        : m_session(&a_session), m_assertContext(&a_assertContext), m_rendererSystemFactory(m_runtimeRenderSnapshot)
     {
         try
         {
@@ -752,6 +756,14 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                 cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
                                   "Editor Runtime Schema initialization failed",
                                   std::move(*addedRuntimeSchema.try_error()));
+            }
+            cue::Result<void> addedRendererSchema =
+                cue::renderer::add_renderer_schema_types(schemaBuilder, a_assertContext);
+            if (!addedRendererSchema)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Renderer Schema initialization failed",
+                                  std::move(*addedRendererSchema.try_error()));
             }
             cue::Result<std::unique_ptr<cue::schema::SchemaRegistry>> runtimeSchema = schemaBuilder.seal();
             if (!runtimeSchema)
@@ -769,10 +781,15 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                                   "Editor Runtime Schema identity initialization failed",
                                   std::move(*typeIds.try_error()));
             }
+            std::vector<const cue::runtime::RuntimeSystemFactory *> runtimeSystemFactories;
+            runtimeSystemFactories.reserve(a_systemFactories.size() + 1U);
+            runtimeSystemFactories.push_back(&m_rendererSystemFactory);
+            runtimeSystemFactories.insert(runtimeSystemFactories.end(), a_systemFactories.begin(),
+                                          a_systemFactories.end());
             cue::Result<std::unique_ptr<cue::editor_core::EditorPlaySessionController>> playController =
                 cue::editor_core::EditorPlaySessionController::create(
                     a_session.controller().session(), m_worldIdentitySource, m_clock, *m_runtimeSchema,
-                    a_systemFactories, std::move(typeIds.try_value()->transform),
+                    runtimeSystemFactories, std::move(typeIds.try_value()->transform),
                     std::move(typeIds.try_value()->sceneObjectState), k_firstEditorPlayGeneration,
                     k_maximumEditorPlayDeltaNanoseconds, a_assertContext);
             if (!playController)
@@ -782,6 +799,24 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
                                   std::move(*playController.try_error()));
             }
             m_playController = std::move(*playController.try_value());
+
+            cue::Result<cue::renderer::RendererSchemaTypeIds> rendererTypeIds =
+                cue::renderer::make_renderer_schema_type_ids(a_assertContext);
+            if (!rendererTypeIds)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Renderer Schema identity initialization failed",
+                                  std::move(*rendererTypeIds.try_error()));
+            }
+            m_rendererTypeIds.emplace(std::move(*rendererTypeIds.try_value()));
+            cue::Result<cue::renderer::DebugCamera> debugCamera =
+                cue::renderer::DebugCamera::create_default(a_assertContext.fatal_handler());
+            if (!debugCamera)
+            {
+                cue::report_fatal(a_logger, a_assertContext.fatal_handler(),
+                                  "Editor Debug Camera initialization failed", std::move(*debugCamera.try_error()));
+            }
+            m_debugCamera.emplace(std::move(*debugCamera.try_value()));
 
             m_playPresenter =
                 cue::editor::PlaySessionPresenter::create(*m_playController, a_logger, a_logRouter, a_assertContext);
@@ -864,15 +899,33 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     }
 
     /// @brief Game Viewが前Frameで計測した描画領域をTool Host要求へ変換する
-    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceRequest render_surface_request() const noexcept override
+    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceRequests render_surface_requests() const noexcept override
     {
-        return {m_gameViewRequest.width, m_gameViewRequest.height, m_gameViewRequest.isVisible};
+        return {{{m_gameViewRequest.width, m_gameViewRequest.height, m_gameViewRequest.isVisible},
+                 {m_debugViewRequest.width, m_debugViewRequest.height, m_debugViewRequest.isVisible}}};
     }
 
-    /// @brief Tool Hostが所有する非所有Texture Viewを現在FrameのGame Viewへ関連付ける
-    void render_surface_ready(cue::tool_host::ToolHostRenderSurfaceView a_surface) noexcept override
+    /// @brief Tool Hostが所有する非所有Texture Viewを現在FrameのGame／Debug Viewへ関連付ける
+    void render_surfaces_ready(cue::tool_host::ToolHostRenderSurfaceViews a_surfaces) noexcept override
     {
-        m_gameViewSurface = {a_surface.textureId, a_surface.width, a_surface.height};
+        const cue::tool_host::ToolHostRenderSurfaceView game =
+            a_surfaces[static_cast<std::size_t>(cue::tool_host::ToolHostRenderSurfaceSlot::GameView)];
+        const cue::tool_host::ToolHostRenderSurfaceView debug =
+            a_surfaces[static_cast<std::size_t>(cue::tool_host::ToolHostRenderSurfaceSlot::DebugView)];
+        m_gameViewSurface = {game.textureId, game.width, game.height};
+        m_debugViewSurface = {debug.textureId, debug.width, debug.height};
+    }
+
+    /// @brief 現在のEdit／Play SnapshotへMain CameraとEditor専用DebugCameraを関連付ける
+    [[nodiscard]] cue::tool_host::ToolHostRenderFrameView render_frame_view() const noexcept override
+    {
+        const cue::editor_core::EditorPlaySessionState playState = m_playPresenter->state_snapshot().state;
+        const cue::renderer::RenderSnapshot &snapshot =
+            playState == cue::editor_core::EditorPlaySessionState::Running ||
+                    playState == cue::editor_core::EditorPlaySessionState::StopRequested
+                ? m_runtimeRenderSnapshot.snapshot()
+                : m_authoringRenderSnapshot;
+        return {&snapshot, snapshot.try_main_camera(), m_debugCamera ? &m_debugCamera->camera() : nullptr};
     }
 
     /// @brief 実Editor Compositionから一構成の生成Project BuildとArtifact公開を検証する
@@ -1550,6 +1603,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             cue::editor::dock_editor_window_on_first_use();
             m_playPresenter->draw();
             m_gameViewRequest = cue::editor::draw_game_view(m_gameViewSurface);
+            m_debugViewRequest = cue::editor::draw_debug_view(m_debugViewSurface);
+            refresh_render_snapshot();
             if (m_buildPresenter != nullptr)
             {
                 cue::editor::dock_editor_window_on_first_use();
@@ -1766,9 +1821,55 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
             m_presenter.reset();
             return;
         }
+        cue::Result<cue::scene::ComponentInstanceId> cameraTemplateId =
+            cue::scene::ComponentInstanceId::parse("70000000-0000-4000-8000-000000000101", *m_assertContext);
+        cue::Result<cue::scene::ComponentInstanceId> meshTemplateId =
+            cue::scene::ComponentInstanceId::parse("70000000-0000-4000-8000-000000000102", *m_assertContext);
+        if (!cameraTemplateId || !meshTemplateId)
+        {
+            m_assertContext->fatal_handler().terminate("Editor Renderer component template identity is invalid");
+        }
+        cue::Result<cue::scene::SceneComponent> cameraTemplate = cue::renderer::make_camera_component(
+            std::move(*cameraTemplateId.try_value()), false, m_session->schema_registry(),
+            m_session->value_schema_registry(), *m_assertContext);
+        cue::Result<cue::scene::SceneComponent> meshTemplate = cue::renderer::make_cube_mesh_component(
+            std::move(*meshTemplateId.try_value()), m_session->schema_registry(), m_session->value_schema_registry(),
+            *m_assertContext);
+        if (!cameraTemplate || !meshTemplate)
+        {
+            m_assertContext->fatal_handler().terminate("Editor Renderer component template creation failed");
+        }
+        std::vector<cue::editor_core::EditorComponentTemplate> componentTemplates;
+        componentTemplates.push_back({"Camera", std::move(*cameraTemplate.try_value())});
+        componentTemplates.push_back({"Mesh (Built-in Cube)", std::move(*meshTemplate.try_value())});
         m_presenter = cue::editor::EditorPresenter::create(m_session->controller(), *m_session->active_document_id(),
                                                            m_session->identity_source(), m_session->schema_registry(),
-                                                           {}, *m_assertContext);
+                                                           std::move(componentTemplates), *m_assertContext);
+    }
+
+    /// @brief Edit中はAuthoring Scene、Play中はRuntime SystemのSnapshotを描画入力へ選択する
+    void refresh_render_snapshot() noexcept
+    {
+        const cue::editor_core::EditorPlaySessionState playState = m_playPresenter->state_snapshot().state;
+        if (playState == cue::editor_core::EditorPlaySessionState::Running ||
+            playState == cue::editor_core::EditorPlaySessionState::StopRequested)
+        {
+            return;
+        }
+        const cue::editor_core::EditorDocument *document = active_document();
+        if (document == nullptr || !m_rendererTypeIds.has_value())
+        {
+            m_authoringRenderSnapshot = cue::renderer::RenderSnapshot{};
+            return;
+        }
+        cue::Result<cue::renderer::RenderSnapshot> snapshot = cue::renderer::extract_render_snapshot(
+            document->scene_document(), *m_rendererTypeIds, ++m_authoringSnapshotGeneration, *m_assertContext);
+        if (!snapshot)
+        {
+            m_authoringRenderSnapshot = cue::renderer::RenderSnapshot{};
+            return;
+        }
+        m_authoringRenderSnapshot = std::move(*snapshot.try_value());
     }
 
     /// @brief 各Persistent Stateを一度だけRecoveryへAtomic保存する
@@ -2580,6 +2681,12 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     cue::game_core::WorldIdentitySource m_worldIdentitySource;
     cue::game_core::SteadyMonotonicClock m_clock;
     std::unique_ptr<cue::schema::SchemaRegistry> m_runtimeSchema;
+    cue::renderer::RenderSnapshotStore m_runtimeRenderSnapshot;
+    cue::renderer::RendererRuntimeSystemFactory m_rendererSystemFactory;
+    std::optional<cue::renderer::RendererSchemaTypeIds> m_rendererTypeIds;
+    std::optional<cue::renderer::DebugCamera> m_debugCamera;
+    cue::renderer::RenderSnapshot m_authoringRenderSnapshot;
+    std::uint64_t m_authoringSnapshotGeneration = 0U;
     std::unique_ptr<cue::editor_core::EditorPlaySessionController> m_playController;
     std::unique_ptr<cue::editor::PlaySessionPresenter> m_playPresenter;
     std::unique_ptr<cue::GameBuildService> m_buildService;
@@ -2591,6 +2698,8 @@ class EditorToolClient final : public cue::tool_host::ToolHostClient
     std::unique_ptr<cue::editor::FilesPresenter> m_filesPresenter;
     cue::editor::GameViewRequest m_gameViewRequest;
     cue::editor::GameViewSurface m_gameViewSurface;
+    cue::editor::DebugViewRequest m_debugViewRequest;
+    cue::editor::DebugViewSurface m_debugViewSurface;
     std::vector<cue::editor_core::RecoveryCandidateInspection> m_recoveryCandidates;
     std::array<char, 512> m_sceneLocator{};
     std::string m_message;

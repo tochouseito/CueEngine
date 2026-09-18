@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <vector>
 
 namespace cue
 {
@@ -29,8 +30,9 @@ class StructuralCommandReport;
 
 namespace cue::scene
 {
+class RuntimeComponentBuilderFactory;
 class SceneSnapshot;
-}
+} // namespace cue::scene
 
 namespace cue::schema
 {
@@ -125,8 +127,9 @@ class RuntimeApplicationSession final
                               const AssertContext &a_assertContext) noexcept;
 
     /// @brief 開始前に一意System所有権と決定的実行順定義をSessionへ登録する
-    [[nodiscard]] Result<void> register_system(game_core::RuntimeSystemDescriptor a_descriptor,
-                                               std::unique_ptr<game_core::RuntimeSystem> a_system) noexcept;
+    [[nodiscard]] Result<void> register_system(
+        game_core::RuntimeSystemDescriptor a_descriptor, std::unique_ptr<game_core::RuntimeSystem> a_system,
+        std::vector<std::unique_ptr<scene::RuntimeComponentBuilderFactory>> a_componentBuilderFactories = {}) noexcept;
     /// @brief Snapshotを新Worldへ実体化しSystemとClockを開始してRunningへ移る
     /// @details Snapshotは呼出中だけ参照し、開始失敗時も成功済みOwnerだけを逆順Cleanupする
     /// @param a_snapshot 呼出中だけ借用し開始成功後は保持しない不変Scene入力
@@ -192,6 +195,7 @@ class RuntimeApplicationSession final
     std::unique_ptr<InputState> m_inputState;
     std::unique_ptr<game_core::GameClock> m_clock;
     std::unique_ptr<game_core::RuntimeSystemRegistry> m_systemRegistry;
+    std::vector<std::unique_ptr<scene::RuntimeComponentBuilderFactory>> m_componentBuilderFactories;
     std::unique_ptr<RuntimeSceneSession> m_sceneSession;
     std::optional<Error> m_failure;
     bool m_hasFlushedSystemCommands = false;

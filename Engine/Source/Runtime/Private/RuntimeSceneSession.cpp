@@ -51,10 +51,12 @@ namespace cue::runtime
 Result<std::unique_ptr<RuntimeSceneSession>> RuntimeSceneSession::start(
     const scene::SceneSnapshot &a_snapshot, game_core::WorldIdentitySource &a_identitySource,
     const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
-    schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext) noexcept
+    schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext,
+    std::span<const scene::RuntimeComponentBuilderFactory *const> a_componentBuilderFactories) noexcept
 {
     return start_with_operation(a_snapshot, a_identitySource, a_schemaRegistry, std::move(a_transformTypeId),
-                                std::move(a_sceneObjectStateTypeId), a_assertContext, production_scene_end_operation());
+                                std::move(a_sceneObjectStateTypeId), a_assertContext, production_scene_end_operation(),
+                                a_componentBuilderFactories);
 }
 
 RuntimeSceneSession::RuntimeSceneSession(ConstructionKey, const AssertContext &a_assertContext) noexcept
@@ -160,7 +162,8 @@ Result<std::unique_ptr<RuntimeSceneSession>> RuntimeSceneSession::start_with_ope
     const scene::SceneSnapshot &a_snapshot, game_core::WorldIdentitySource &a_identitySource,
     const schema::SchemaRegistry &a_schemaRegistry, schema::TypeId a_transformTypeId,
     schema::TypeId a_sceneObjectStateTypeId, const AssertContext &a_assertContext,
-    const details::SceneEndOperation &a_endOperation) noexcept
+    const details::SceneEndOperation &a_endOperation,
+    std::span<const scene::RuntimeComponentBuilderFactory *const> a_componentBuilderFactories) noexcept
 {
     try
     {
@@ -194,7 +197,35 @@ Result<std::unique_ptr<RuntimeSceneSession>> RuntimeSceneSession::start_with_ope
                 session->finish_failed_start(std::move(*stateType.try_error())));
         }
 
+        std::vector<std::unique_ptr<scene::RuntimeComponentBuilder>> ownedBuilders;
         std::vector<scene::RuntimeComponentBuilder *> builders;
+        ownedBuilders.reserve(a_componentBuilderFactories.size());
+        builders.reserve(a_componentBuilderFactories.size());
+        for (const scene::RuntimeComponentBuilderFactory *factory : a_componentBuilderFactories)
+        {
+            if (factory == nullptr)
+            {
+                return Result<std::unique_ptr<RuntimeSceneSession>>::failure(session->finish_failed_start(
+                    make_runtime_error(a_assertContext, RuntimeError::InvalidApplicationConfiguration,
+                                       "Runtime scene component builder factory view contains a null factory")));
+            }
+
+            Result<std::unique_ptr<scene::RuntimeComponentBuilder>> builder = factory->create(
+                *world, *session->m_runtimeWorld->try_transform_type(), *stateType.try_value(), a_assertContext);
+            if (!builder)
+            {
+                return Result<std::unique_ptr<RuntimeSceneSession>>::failure(
+                    session->finish_failed_start(std::move(*builder.try_error())));
+            }
+            if (*builder.try_value() == nullptr || (*builder.try_value())->type_id() != factory->type_id())
+            {
+                return Result<std::unique_ptr<RuntimeSceneSession>>::failure(session->finish_failed_start(
+                    make_runtime_error(a_assertContext, RuntimeError::InvalidApplicationConfiguration,
+                                       "Runtime component builder factory returned an invalid type")));
+            }
+            builders.push_back(builder.try_value()->get());
+            ownedBuilders.push_back(std::move(*builder.try_value()));
+        }
         Result<scene::SceneInstance> instance = scene::SceneInstantiator::instantiate(
             a_snapshot, *session->m_runtimeWorld, *stateType.try_value(), builders, a_assertContext);
         if (!instance)

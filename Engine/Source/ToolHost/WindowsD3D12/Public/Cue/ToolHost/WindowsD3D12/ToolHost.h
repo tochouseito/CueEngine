@@ -2,7 +2,9 @@
 
 #include <Cue/Foundation/Result.h>
 #include <Cue/Platform/WindowEvent.h>
+#include <Cue/Renderer/RenderSnapshot.h>
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -42,6 +44,14 @@ enum class ToolHostAdapterPreference : std::uint8_t
 };
 
 inline constexpr std::uint32_t k_maximumToolHostRenderSurfaceDimension = 16384U;
+inline constexpr std::size_t k_toolHostRenderSurfaceCount = 2U;
+
+/// @brief Editor Viewと固定Surface Slotの対応
+enum class ToolHostRenderSurfaceSlot : std::uint8_t
+{
+    GameView = 0,
+    DebugView = 1
+};
 
 /// @brief Clientが次Frameで必要とする単一Offscreen Render Surfaceの状態
 struct ToolHostRenderSurfaceRequest final
@@ -57,6 +67,19 @@ struct ToolHostRenderSurfaceView final
     std::uint64_t textureId = 0U;
     std::uint32_t width = 0U;
     std::uint32_t height = 0U;
+};
+
+/// @brief GameView／DebugViewの固定順Surface要求集合
+using ToolHostRenderSurfaceRequests = std::array<ToolHostRenderSurfaceRequest, k_toolHostRenderSurfaceCount>;
+/// @brief GameView／DebugViewの固定順Surface View集合
+using ToolHostRenderSurfaceViews = std::array<ToolHostRenderSurfaceView, k_toolHostRenderSurfaceCount>;
+
+/// @brief UI構築後にToolHostが描画するPortable SceneとCamera View
+struct ToolHostRenderFrameView final
+{
+    const renderer::RenderSnapshot *snapshot = nullptr;
+    const renderer::PerspectiveCamera *gameCamera = nullptr;
+    const renderer::PerspectiveCamera *debugCamera = nullptr;
 };
 
 /// @brief Tool Host Windowと自動Smoke終了条件を指定する
@@ -92,15 +115,21 @@ class ToolHostClient
     }
 
     /// @brief 次Frameの固定色Clear対象となるOffscreen Surface要求をOwner Threadから取得する
-    [[nodiscard]] virtual ToolHostRenderSurfaceRequest render_surface_request() const noexcept
+    [[nodiscard]] virtual ToolHostRenderSurfaceRequests render_surface_requests() const noexcept
     {
         return {};
     }
 
     /// @brief 現在FrameでImGui Imageへ使用できる非所有Texture Viewをdraw_frame直前に通知する
     /// @details Viewは次回通知またはHost終了までだけ有効で、textureIdはImGui以外へ使用しない
-    virtual void render_surface_ready(ToolHostRenderSurfaceView) noexcept
+    virtual void render_surfaces_ready(ToolHostRenderSurfaceViews) noexcept
     {
+    }
+
+    /// @brief UI構築後の現在Frameで描画するPortable SnapshotとCameraを返す
+    [[nodiscard]] virtual ToolHostRenderFrameView render_frame_view() const noexcept
+    {
+        return {};
     }
 
     /// @brief Native Window終了要求をTool固有の保存確認または終了状態へ変換する

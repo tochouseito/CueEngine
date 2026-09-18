@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -39,8 +40,21 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
     SmokeClient(const SmokeClient &) = delete;
     /// @brief Smoke Client Stateの複製を禁止する
     SmokeClient &operator=(const SmokeClient &) = delete;
-    /// @brief Frame Counterを0から開始する
-    SmokeClient() noexcept = default;
+    /// @brief 描画可能なCameraとCube Snapshotを所有してFrame Counterを0から開始する
+    explicit SmokeClient(cue::EmergencyHandler &a_emergencyHandler) noexcept
+    {
+        cue::Result<cue::renderer::DebugCamera> debugCamera =
+            cue::renderer::DebugCamera::create_default(a_emergencyHandler);
+        if (!debugCamera)
+        {
+            std::_Exit(77);
+        }
+        m_debugCamera.emplace(std::move(*debugCamera.try_value()));
+        std::vector<cue::renderer::RenderMeshInstance> meshes{
+            {cue::math::Transform{}, cue::renderer::RenderMesh::Cube}};
+        m_snapshot = cue::renderer::RenderSnapshot(cue::renderer::MainCameraStatus::Ready, m_debugCamera->camera(),
+                                                   std::move(meshes), 1U);
+    }
     /// @brief 所有Resourceを持たないSmoke Clientを破棄する
     ~SmokeClient() override = default;
 
@@ -49,19 +63,24 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
     {
         ImGui::Begin("CueEngine Tool Host Smoke");
         ImGui::TextUnformatted("ImGui / Win32 / D3D12");
-        if (m_surface.textureId != 0U)
+        if (m_surfaces[0U].textureId != 0U)
         {
-            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(m_surface.textureId)), ImVec2(160.0F, 90.0F));
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(m_surfaces[0U].textureId)), ImVec2(160.0F, 90.0F));
+        }
+        if (m_surfaces[1U].textureId != 0U)
+        {
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(m_surfaces[1U].textureId)), ImVec2(160.0F, 90.0F));
         }
         ImGui::End();
         ++m_drawCount;
         if (m_drawCount == 1U)
         {
-            m_request = {256U, 144U, true};
+            m_requests[0U] = {256U, 144U, true};
+            m_requests[1U] = {300U, 180U, true};
         }
         else if (m_drawCount == 2U)
         {
-            m_request = {};
+            m_requests = {};
         }
     }
 
@@ -72,27 +91,39 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
     }
 
     /// @brief 現在FrameのSurface要求を返す
-    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceRequest render_surface_request() const noexcept override
+    [[nodiscard]] cue::tool_host::ToolHostRenderSurfaceRequests render_surface_requests() const noexcept override
     {
-        return m_request;
+        return m_requests;
     }
 
     /// @brief Hostが要求通りのSurface世代または非表示Viewを通知したことを検証する
-    void render_surface_ready(cue::tool_host::ToolHostRenderSurfaceView a_surface) noexcept override
+    void render_surfaces_ready(cue::tool_host::ToolHostRenderSurfaceViews a_surfaces) noexcept override
     {
-        m_surface = a_surface;
+        m_surfaces = a_surfaces;
         if (m_drawCount == 0U)
         {
-            m_surfaceWasValid = a_surface.textureId != 0U && a_surface.width == 320U && a_surface.height == 180U;
+            m_surfaceWasValid = a_surfaces[0U].textureId != 0U && a_surfaces[0U].width == 320U &&
+                                a_surfaces[0U].height == 180U && a_surfaces[1U].textureId != 0U &&
+                                a_surfaces[1U].width == 200U && a_surfaces[1U].height == 120U;
         }
         else if (m_drawCount == 1U)
         {
-            m_resizeWasValid = a_surface.textureId != 0U && a_surface.width == 256U && a_surface.height == 144U;
+            m_resizeWasValid = a_surfaces[0U].textureId != 0U && a_surfaces[0U].width == 256U &&
+                               a_surfaces[0U].height == 144U && a_surfaces[1U].textureId != 0U &&
+                               a_surfaces[1U].width == 300U && a_surfaces[1U].height == 180U;
         }
         else if (m_drawCount == 2U)
         {
-            m_hiddenWasValid = a_surface.textureId == 0U && a_surface.width == 0U && a_surface.height == 0U;
+            m_hiddenWasValid = a_surfaces[0U].textureId == 0U && a_surfaces[0U].width == 0U &&
+                               a_surfaces[0U].height == 0U && a_surfaces[1U].textureId == 0U &&
+                               a_surfaces[1U].width == 0U && a_surfaces[1U].height == 0U;
         }
+    }
+
+    /// @brief GameViewとDebugViewへ同じCube Snapshotを異なるCameraで描画させる
+    [[nodiscard]] cue::tool_host::ToolHostRenderFrameView render_frame_view() const noexcept override
+    {
+        return {&m_snapshot, &m_debugCamera->camera(), &m_debugCamera->camera()};
     }
 
     /// @brief 有限Frame Smokeでは予期しないNative Window終了要求を状態へ反映しない
@@ -125,8 +156,10 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
     }
 
   private:
-    cue::tool_host::ToolHostRenderSurfaceRequest m_request{320U, 180U, true};
-    cue::tool_host::ToolHostRenderSurfaceView m_surface;
+    cue::tool_host::ToolHostRenderSurfaceRequests m_requests{{{320U, 180U, true}, {200U, 120U, true}}};
+    cue::tool_host::ToolHostRenderSurfaceViews m_surfaces;
+    std::optional<cue::renderer::DebugCamera> m_debugCamera;
+    cue::renderer::RenderSnapshot m_snapshot;
     std::uint32_t m_drawCount = 0;
     bool m_windowWasReady = false;
     bool m_surfaceWasValid = false;
@@ -138,9 +171,8 @@ class SmokeClient final : public cue::tool_host::ToolHostClient
 [[nodiscard]] int run_smoke(cue::tool_host::ToolHostAdapterPreference a_preference,
                             const cue::AssertContext &a_context) noexcept
 {
-    SmokeClient client;
-    const cue::tool_host::ToolHostDescriptor descriptor{"Cue Tool Host Smoke", {640U, 360U}, 3U, 0U,
-                                                         a_preference};
+    SmokeClient client(a_context.fatal_handler());
+    const cue::tool_host::ToolHostDescriptor descriptor{"Cue Tool Host Smoke", {640U, 360U}, 3U, 0U, a_preference};
     cue::Result<void> result = cue::tool_host::run_windows_d3d12_tool_host(descriptor, client, a_context);
     if (!result)
     {

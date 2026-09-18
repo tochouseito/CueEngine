@@ -1,0 +1,40 @@
+#pragma once
+
+#include <Cue/Math/Matrix.h>
+#include <Cue/Math/Transform.h>
+
+namespace cue::renderer
+{
+/// @brief Perspective CameraのPortable Projection値
+struct PerspectiveCamera final
+{
+    math::Transform transform;
+    float verticalFovRadians = 1.0471975512F;
+    float nearPlane = 0.1F;
+    float farPlane = 1000.0F;
+};
+
+/// @brief Editor専用CameraのPoseとProjectionをScene永続化から分離して所有する値
+class DebugCamera final
+{
+  public:
+    /// @brief Scene原点を見下ろす既定Debug Cameraを返す
+    [[nodiscard]] static Result<DebugCamera> create_default(EmergencyHandler &a_emergencyHandler) noexcept;
+
+    /// @brief 現在のPortable Camera値を返す
+    [[nodiscard]] const PerspectiveCamera &camera() const noexcept;
+
+  private:
+    /// @brief 検証済みCamera値を保持する
+    explicit DebugCamera(PerspectiveCamera a_camera) noexcept;
+
+    PerspectiveCamera m_camera;
+};
+
+/// @brief 行Vector規約のTransformからWorld Matrixを生成する
+[[nodiscard]] math::Matrix4 make_world_matrix(const math::Transform &a_transform) noexcept;
+/// @brief 左手系CameraとDirect3D Depth RangeからView Projection Matrixを生成する
+[[nodiscard]] math::Matrix4 make_view_projection(const PerspectiveCamera &a_camera, float a_aspectRatio) noexcept;
+/// @brief Camera Projection値が描画可能範囲ならtrueを返す
+[[nodiscard]] bool is_valid(const PerspectiveCamera &a_camera) noexcept;
+} // namespace cue::renderer

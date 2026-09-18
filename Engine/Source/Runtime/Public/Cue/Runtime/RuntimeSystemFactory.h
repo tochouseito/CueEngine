@@ -2,8 +2,10 @@
 
 #include <Cue/Foundation/Result.h>
 #include <Cue/GameCore/RuntimeSystem.h>
+#include <Cue/Scene/Instantiation.h>
 
 #include <memory>
+#include <vector>
 
 namespace cue
 {
@@ -17,6 +19,7 @@ struct RuntimeSystemRegistration final
 {
     game_core::RuntimeSystemDescriptor descriptor;
     std::unique_ptr<game_core::RuntimeSystem> system;
+    std::vector<std::unique_ptr<scene::RuntimeComponentBuilderFactory>> componentBuilderFactories;
 };
 
 /// @brief PlayまたはRuntimeHostのSessionごとに独立Runtime Systemを生成するProject Scope境界

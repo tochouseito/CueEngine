@@ -1,6 +1,7 @@
 #include <Windows.h>
 
 #include <Cue/Editor/ImGui/BuildPresenter.h>
+#include <Cue/Editor/ImGui/DebugView.h>
 #include <Cue/Editor/ImGui/EditorDockspace.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>

@@ -15,6 +15,7 @@
 #include <exception>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace cue::runtime
 {
@@ -81,8 +82,9 @@ RuntimeApplicationSession::~RuntimeApplicationSession() noexcept
     }
 }
 
-Result<void> RuntimeApplicationSession::register_system(game_core::RuntimeSystemDescriptor a_descriptor,
-                                                        std::unique_ptr<game_core::RuntimeSystem> a_system) noexcept
+Result<void> RuntimeApplicationSession::register_system(
+    game_core::RuntimeSystemDescriptor a_descriptor, std::unique_ptr<game_core::RuntimeSystem> a_system,
+    std::vector<std::unique_ptr<scene::RuntimeComponentBuilderFactory>> a_componentBuilderFactories) noexcept
 {
     assert_owner_thread();
     if (m_state != RuntimeApplicationSessionState::Constructed)
@@ -90,7 +92,59 @@ Result<void> RuntimeApplicationSession::register_system(game_core::RuntimeSystem
         return Result<void>::failure(make_runtime_error(*m_assertContext, RuntimeError::InvalidApplicationSessionState,
                                                         "Runtime systems can register only before session start"));
     }
-    return m_systemRegistry->register_system(std::move(a_descriptor), std::move(a_system));
+
+    for (std::size_t index = 0U; index < a_componentBuilderFactories.size(); ++index)
+    {
+        if (a_componentBuilderFactories[index] == nullptr)
+        {
+            return Result<void>::failure(
+                make_runtime_error(*m_assertContext, RuntimeError::InvalidApplicationConfiguration,
+                                   "Runtime component builder factory registration contains a null factory"));
+        }
+        for (std::size_t previous = 0U; previous < index; ++previous)
+        {
+            if (a_componentBuilderFactories[previous]->type_id() == a_componentBuilderFactories[index]->type_id())
+            {
+                return Result<void>::failure(
+                    make_runtime_error(*m_assertContext, RuntimeError::InvalidApplicationConfiguration,
+                                       "Runtime component builder factory registration contains a duplicate type"));
+            }
+        }
+        for (const std::unique_ptr<scene::RuntimeComponentBuilderFactory> &registered : m_componentBuilderFactories)
+        {
+            if (registered->type_id() == a_componentBuilderFactories[index]->type_id())
+            {
+                return Result<void>::failure(
+                    make_runtime_error(*m_assertContext, RuntimeError::InvalidApplicationConfiguration,
+                                       "Runtime component builder factory type is already registered"));
+            }
+        }
+    }
+
+    try
+    {
+        m_componentBuilderFactories.reserve(m_componentBuilderFactories.size() + a_componentBuilderFactories.size());
+    }
+    catch (const std::bad_alloc &)
+    {
+        m_assertContext->fatal_handler().terminate("Cue.Runtime component builder factory allocation failed");
+    }
+    catch (...)
+    {
+        m_assertContext->fatal_handler().terminate(
+            "Cue.Runtime component builder factory registration caught an unexpected exception");
+    }
+
+    Result<void> registered = m_systemRegistry->register_system(std::move(a_descriptor), std::move(a_system));
+    if (!registered)
+    {
+        return registered;
+    }
+    for (std::unique_ptr<scene::RuntimeComponentBuilderFactory> &factory : a_componentBuilderFactories)
+    {
+        m_componentBuilderFactories.push_back(std::move(factory));
+    }
+    return Result<void>::success();
 }
 
 Result<void> RuntimeApplicationSession::start(const scene::SceneSnapshot &a_snapshot,
@@ -117,9 +171,28 @@ Result<void> RuntimeApplicationSession::start(const scene::SceneSnapshot &a_snap
                                       "Runtime application session start failed");
     }
 
+    std::vector<const scene::RuntimeComponentBuilderFactory *> componentBuilderFactories;
+    try
+    {
+        componentBuilderFactories.reserve(m_componentBuilderFactories.size());
+        for (const std::unique_ptr<scene::RuntimeComponentBuilderFactory> &factory : m_componentBuilderFactories)
+        {
+            componentBuilderFactories.push_back(factory.get());
+        }
+    }
+    catch (const std::bad_alloc &)
+    {
+        m_assertContext->fatal_handler().terminate("Cue.Runtime component builder factory view allocation failed");
+    }
+    catch (...)
+    {
+        m_assertContext->fatal_handler().terminate(
+            "Cue.Runtime component builder factory view creation caught an unexpected exception");
+    }
+
     Result<std::unique_ptr<RuntimeSceneSession>> sceneSession =
         RuntimeSceneSession::start(a_snapshot, a_identitySource, a_schemaRegistry, std::move(a_transformTypeId),
-                                   std::move(a_sceneObjectStateTypeId), *m_assertContext);
+                                   std::move(a_sceneObjectStateTypeId), *m_assertContext, componentBuilderFactories);
     if (!sceneSession)
     {
         retain_failure(std::move(*sceneSession.try_error()), "Runtime scene start failed", "Runtime scene session");

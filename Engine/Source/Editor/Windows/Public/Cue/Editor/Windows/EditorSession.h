@@ -130,6 +130,8 @@ class WindowsEditorSession final
     [[nodiscard]] editor_core::FilesWorkspaceService &files_workspace() noexcept;
     /// @brief Sessionが所有するSchema Registryを返す
     [[nodiscard]] const schema::SchemaRegistry &schema_registry() const noexcept;
+    /// @brief Sessionが所有するComponent Value Schema Registryを返す
+    [[nodiscard]] const scene::ComponentValueSchemaRegistry &value_schema_registry() const noexcept;
     /// @brief SceneとObjectのUUID生成に使用するSession-local Sourceを返す
     [[nodiscard]] scene::SceneIdentitySource &identity_source() noexcept;
     /// @brief Active SceneがあればProcess-local Document Identityを返す

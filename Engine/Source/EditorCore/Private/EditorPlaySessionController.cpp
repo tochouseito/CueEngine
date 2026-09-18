@@ -148,8 +148,9 @@ Result<void> EditorPlaySessionController::start(EditorDocumentId a_documentId) n
             add_document_context(error, a_documentId);
             return Result<void>::failure(std::move(error));
         }
-        Result<void> registered = candidate->register_system(std::move(system.try_value()->descriptor),
-                                                             std::move(system.try_value()->system));
+        Result<void> registered =
+            candidate->register_system(std::move(system.try_value()->descriptor), std::move(system.try_value()->system),
+                                       std::move(system.try_value()->componentBuilderFactories));
         if (!registered)
         {
             Error error = std::move(*registered.try_error());
