@@ -4,6 +4,7 @@
 #include <Cue/Editor/ImGui/EditorDockspace.h>
 #include <Cue/Editor/ImGui/EditorPresenter.h>
 #include <Cue/Editor/ImGui/FilesPresenter.h>
+#include <Cue/Editor/ImGui/GameView.h>
 #include <Cue/Editor/ImGui/PackagePresenter.h>
 #include <Cue/Editor/ImGui/PlaySessionPresenter.h>
 #include <Cue/Editor/ImGui/SessionLog.h>

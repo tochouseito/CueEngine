@@ -27,6 +27,10 @@ add_executable(CueEditorBuildImGuiTests BuildImGuiTests.cpp)
 target_link_libraries(CueEditorBuildImGuiTests PRIVATE Cue.Editor.ImGui Cue.ImGui.Core Cue.IO.Windows)
 target_compile_features(CueEditorBuildImGuiTests PRIVATE cxx_std_20)
 
+add_executable(CueEditorGameViewImGuiTests GameViewImGuiTests.cpp)
+target_link_libraries(CueEditorGameViewImGuiTests PRIVATE Cue.Editor.ImGui Cue.ImGui.Core)
+target_compile_features(CueEditorGameViewImGuiTests PRIVATE cxx_std_20)
+
 set(
     cueEditorTestTargets
     CueEditorImGuiTests
@@ -34,6 +38,7 @@ set(
     CueEditorFilesImGuiTests
     CueEditorPlaySessionImGuiTests
     CueEditorBuildImGuiTests
+    CueEditorGameViewImGuiTests
 )
 
 foreach(testTarget IN LISTS cueEditorTestTargets)
@@ -67,6 +72,7 @@ add_test(NAME Cue.Editor.ImGui.PublicHeaders COMMAND CueEditorImGuiPublicHeaderT
 add_test(NAME Cue.Editor.ImGui.Files COMMAND CueEditorFilesImGuiTests)
 add_test(NAME Cue.Editor.ImGui.PlaySession COMMAND CueEditorPlaySessionImGuiTests)
 add_test(NAME Cue.Editor.ImGui.Build COMMAND CueEditorBuildImGuiTests)
+add_test(NAME Cue.Editor.ImGui.GameView COMMAND CueEditorGameViewImGuiTests)
 
 set_tests_properties(
     Cue.Editor.ImGui.HierarchyInspector
@@ -74,6 +80,7 @@ set_tests_properties(
     Cue.Editor.ImGui.Files
     Cue.Editor.ImGui.PlaySession
     Cue.Editor.ImGui.Build
+    Cue.Editor.ImGui.GameView
     PROPERTIES
         LABELS Editor
         TIMEOUT 10

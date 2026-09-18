@@ -28,6 +28,35 @@ enum class ToolHostError : std::int64_t
     PresentFailed = 9,
     SwapChainResizeFailed = 10,
     FenceValueExhausted = 11,
+    RenderSurfaceInvalidSize = 12,
+    RenderSurfaceCreationFailed = 13,
+    RenderSurfaceDescriptorExhausted = 14,
+    RenderSurfaceRetirementCapacityExceeded = 15,
+};
+
+/// @brief Tool HostがD3D12 Device生成へ使用するAdapter選択方針
+enum class ToolHostAdapterPreference : std::uint8_t
+{
+    HardwarePreferred,
+    Warp,
+};
+
+inline constexpr std::uint32_t k_maximumToolHostRenderSurfaceDimension = 16384U;
+
+/// @brief Clientが次Frameで必要とする単一Offscreen Render Surfaceの状態
+struct ToolHostRenderSurfaceRequest final
+{
+    std::uint32_t width = 0U;
+    std::uint32_t height = 0U;
+    bool isVisible = false;
+};
+
+/// @brief 現在FrameでImGuiへ渡せる非所有Offscreen Render Surface View
+struct ToolHostRenderSurfaceView final
+{
+    std::uint64_t textureId = 0U;
+    std::uint32_t width = 0U;
+    std::uint32_t height = 0U;
 };
 
 /// @brief Tool Host Windowと自動Smoke終了条件を指定する
@@ -39,6 +68,7 @@ struct ToolHostDescriptor final
     /// @brief Main Executableに埋め込まれたInteger Icon Resourceを選択し、0ではWindow Iconを設定しない
     /// @details 非0のResourceが存在しない場合はWindowInitializationFailedでHost起動を中止する
     std::uint16_t iconResourceId = 0U;
+    ToolHostAdapterPreference adapterPreference = ToolHostAdapterPreference::HardwarePreferred;
 };
 
 /// @brief Tool固有Presentationを共通Windows D3D12 Hostへ接続する
@@ -58,6 +88,18 @@ class ToolHostClient
 
     /// @brief 初期化済みWindowを最初のFrame前に通知する。参照はHost実行中だけ有効
     virtual void window_ready(Window &) noexcept
+    {
+    }
+
+    /// @brief 次Frameの固定色Clear対象となるOffscreen Surface要求をOwner Threadから取得する
+    [[nodiscard]] virtual ToolHostRenderSurfaceRequest render_surface_request() const noexcept
+    {
+        return {};
+    }
+
+    /// @brief 現在FrameでImGui Imageへ使用できる非所有Texture Viewをdraw_frame直前に通知する
+    /// @details Viewは次回通知またはHost終了までだけ有効で、textureIdはImGui以外へ使用しない
+    virtual void render_surface_ready(ToolHostRenderSurfaceView) noexcept
     {
     }
 
