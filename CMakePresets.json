@@ -1,64 +1,67 @@
-﻿{
-    "version": 3,
+{
+    "version": 9,
+    "cmakeMinimumRequired": {
+        "major": 4,
+        "minor": 2,
+        "patch": 0
+    },
     "configurePresets": [
         {
-            "name": "windows-base",
-            "hidden": true,
-            "generator": "Ninja",
+            "name": "windows-vs2026",
+            "displayName": "Windows x64 - Visual Studio 2026",
+            "generator": "Visual Studio 18 2026",
+            "architecture": "x64",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
-            "installDir": "${sourceDir}/out/install/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe"
+                "CMAKE_CONFIGURATION_TYPES": "Debug;Development;Release"
             },
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
                 "rhs": "Windows"
             }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-vs2026-debug",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Debug"
         },
         {
-            "name": "x64-debug",
-            "displayName": "x64 Debug",
-            "inherits": "windows-base",
-            "architecture": {
-                "value": "x64",
-                "strategy": "external"
-            },
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake"
+            "name": "windows-vs2026-development",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Development"
+        },
+        {
+            "name": "windows-vs2026-release",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "windows-vs2026-debug",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Debug",
+            "output": {
+                "outputOnFailure": true
             }
         },
         {
-            "name": "x64-release",
-            "displayName": "x64 Release",
-            "inherits": "x64-debug",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake"
+            "name": "windows-vs2026-development",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Development",
+            "output": {
+                "outputOnFailure": true
             }
         },
         {
-            "name": "x86-debug",
-            "displayName": "x86 Debug",
-            "inherits": "windows-base",
-            "architecture": {
-                "value": "x86",
-                "strategy": "external"
-            },
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake"
-            }
-        },
-        {
-            "name": "x86-release",
-            "displayName": "x86 Release",
-            "inherits": "x86-debug",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake"
+            "name": "windows-vs2026-release",
+            "configurePreset": "windows-vs2026",
+            "configuration": "Release",
+            "output": {
+                "outputOnFailure": true
             }
         }
     ]
