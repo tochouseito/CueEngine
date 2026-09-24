@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <cwchar>
+#include <string>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -31,48 +33,84 @@ BOOL CALLBACK find_window(HWND a_handle, LPARAM a_context)
 int wmain(int a_argumentCount, wchar_t* a_arguments[])
 {
     // CTest から実 Host の Path を一つ受け取る
-    if (a_argumentCount != 2)
+    if (a_argumentCount != 2 && a_argumentCount != 3)
+    {
+        return 1;
+    }
+    const bool isAutoMode = a_argumentCount == 3 &&
+                            (std::wcscmp(a_arguments[2], L"--auto") == 0 ||
+                             std::wcscmp(a_arguments[2], L"--auto-single") == 0);
+    const bool isSingleThread = isAutoMode && std::wcscmp(a_arguments[2], L"--auto-single") == 0;
+    if (a_argumentCount == 3 && !isAutoMode)
     {
         return 1;
     }
 
     // 実 Host を別 Process で起動して表示と終了を確認する
+    std::wstring commandLine;
+    if (isAutoMode)
+    {
+        commandLine = L"\"" + std::wstring(a_arguments[1]) + L"\" --test-frames=4";
+        if (isSingleThread)
+        {
+            commandLine += L" --single-thread";
+        }
+    }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(a_arguments[1], nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-                        &startup, &process))
+    if (!CreateProcessW(a_arguments[1], isAutoMode ? commandLine.data() : nullptr, nullptr, nullptr, FALSE, 0,
+                        nullptr, nullptr, &startup, &process))
     {
         return 2;
     }
 
-    // Window 表示まで最大5秒だけ待つ
-    WindowSearch search{process.dwProcessId};
-    for (int attempt = 0; attempt < 200 && !search.handle; ++attempt)
-    {
-        EnumWindows(&find_window, reinterpret_cast<LPARAM>(&search));
-        if (!search.handle)
-        {
-            Sleep(25);
-        }
-    }
-
-    // Title Bar の Close と同じ Message を送り、正常終了を待つ
     int result = 0;
-    if (!search.handle || !PostMessageW(search.handle, WM_CLOSE, 0, 0))
+    if (isAutoMode)
     {
-        result = 3;
-    }
-    else if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
-    {
-        result = 4;
+        // 自動終了Modeでは4Frameの両Callback完了とProcess終了をHostが検証する
+        if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
+        {
+            result = 4;
+        }
+        else
+        {
+            DWORD exitCode = 0;
+            if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)
+            {
+                result = 5;
+            }
+        }
     }
     else
     {
-        DWORD exitCode = 0;
-        if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)
+        // Window 表示まで最大5秒だけ待つ
+        WindowSearch search{process.dwProcessId};
+        for (int attempt = 0; attempt < 200 && !search.handle; ++attempt)
         {
-            result = 5;
+            EnumWindows(&find_window, reinterpret_cast<LPARAM>(&search));
+            if (!search.handle)
+            {
+                Sleep(25);
+            }
+        }
+
+        // Title Bar の Close と同じ Message を送り、正常終了を待つ
+        if (!search.handle || !PostMessageW(search.handle, WM_CLOSE, 0, 0))
+        {
+            result = 3;
+        }
+        else if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
+        {
+            result = 4;
+        }
+        else
+        {
+            DWORD exitCode = 0;
+            if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)
+            {
+                result = 5;
+            }
         }
     }
 

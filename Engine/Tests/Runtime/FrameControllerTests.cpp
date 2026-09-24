@@ -100,6 +100,11 @@ int test_worker_frames(cue::WindowsThreadServices& a_services)
     {
         return 5;
     }
+    if (progress.lastUpdateFrame != 5 || progress.lastRenderFrame != 5 ||
+        progress.updateThreadId != updateThreadId || progress.renderThreadId != renderThreadId)
+    {
+        return 8;
+    }
     if (updateThreadId == std::this_thread::get_id() || renderThreadId == std::this_thread::get_id() ||
         updateThreadId == renderThreadId)
     {
@@ -139,11 +144,155 @@ int test_single_thread(cue::WindowsThreadServices& a_services)
     {
         return 2;
     }
-    if (controller.progress().renderedFrames != 1 || !controller.stop().has_value())
+    const auto progress = controller.progress();
+    if (progress.renderedFrames != 1 || progress.lastUpdateFrame != 0 || progress.lastRenderFrame != 0 ||
+        progress.updateThreadId != ownerId || progress.renderThreadId != ownerId ||
+        !controller.stop().has_value())
     {
         return 3;
     }
     return 0;
+}
+
+/// @brief Hostが開始前にCallbackを一度だけ登録できることを確認する
+int test_callback_registration(cue::WindowsThreadServices& a_services)
+{
+    cue::FrameController controller({1, false, 0}, *a_services.clock, *a_services.waiter,
+                                    *a_services.threadFactory);
+    if (controller.start().has_value())
+    {
+        return 1;
+    }
+    if (controller.register_callbacks({},
+                                      [](std::uint64_t, std::stop_token) {
+                                          return cue::Result<void>::success();
+                                      }).has_value())
+    {
+        return 2;
+    }
+    bool wasUpdated = false;
+    bool wasRendered = false;
+    auto registerResult = controller.register_callbacks(
+        [&](std::uint64_t a_frame, std::stop_token) {
+            wasUpdated = a_frame == 0;
+            return cue::Result<void>::success();
+        },
+        [&](std::uint64_t a_frame, std::stop_token) {
+            wasRendered = wasUpdated && a_frame == 0;
+            return cue::Result<void>::success();
+        });
+    if (!registerResult.has_value() ||
+        controller.register_callbacks([](std::uint64_t, std::stop_token) {
+                                          return cue::Result<void>::success();
+                                      },
+                                      [](std::uint64_t, std::stop_token) {
+                                          return cue::Result<void>::success();
+                                      }).has_value())
+    {
+        return 3;
+    }
+    if (!controller.start().has_value() ||
+        controller.register_callbacks([](std::uint64_t, std::stop_token) {
+                                          return cue::Result<void>::success();
+                                      },
+                                      [](std::uint64_t, std::stop_token) {
+                                          return cue::Result<void>::success();
+                                      }).has_value())
+    {
+        return 4;
+    }
+    auto stepResult = controller.step();
+    if (!stepResult.has_value() || !wasUpdated || !wasRendered)
+    {
+        return 5;
+    }
+    return controller.stop().has_value() ? 0 : 6;
+}
+
+/// @brief Render完了間隔に指定FPSの上限が適用されることを確認する
+int test_fps_limit(cue::WindowsThreadServices& a_services)
+{
+    cue::FrameController controller(
+        {1, false, 20}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+    if (!controller.start().has_value() || !controller.step().has_value())
+    {
+        return 1;
+    }
+    const auto firstCompletion = a_services.clock->now();
+    auto secondStep = controller.step();
+    if (!secondStep.has_value() || !*secondStep.try_value())
+    {
+        return 2;
+    }
+    const auto elapsed = a_services.clock->now() - firstCompletion;
+    const auto progress = controller.progress();
+    if (elapsed < std::chrono::milliseconds(40) || progress.renderedFrames != 2 ||
+        progress.lastFrameInterval < std::chrono::milliseconds(40))
+    {
+        return 3;
+    }
+    return controller.stop().has_value() ? 0 : 4;
+}
+
+/// @brief Worker経路でもRender完了間隔が上限FPSを下回らないことを確認する
+int test_worker_fps_limit(cue::WindowsThreadServices& a_services)
+{
+    cue::FrameController controller(
+        {1, true, 20}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+    if (!controller.start().has_value())
+    {
+        return 1;
+    }
+    const auto deadline = a_services.clock->now() + std::chrono::seconds(5);
+    while (controller.progress().renderedFrames < 2 && a_services.clock->now() < deadline)
+    {
+        if (!controller.step().has_value())
+        {
+            return 2;
+        }
+    }
+    const auto progress = controller.progress();
+    if (progress.renderedFrames < 2 || progress.lastFrameInterval < std::chrono::milliseconds(40))
+    {
+        return 3;
+    }
+    return controller.stop().has_value() ? 0 : 4;
+}
+
+/// @brief FPS上限の待機中も停止要求でWorkerを速やかに回収する
+int test_stop_during_fps_limit(cue::WindowsThreadServices& a_services)
+{
+    std::atomic<int> renderCalls = 0;
+    cue::FrameController controller(
+        {2, true, 1}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [&](std::uint64_t, std::stop_token) {
+            ++renderCalls;
+            return cue::Result<void>::success();
+        });
+    if (!controller.start().has_value() || !controller.step().has_value() || !controller.step().has_value())
+    {
+        return 1;
+    }
+    const auto deadline = a_services.clock->now() + std::chrono::seconds(5);
+    while (renderCalls.load() < 2 && a_services.clock->now() < deadline)
+    {
+        [[maybe_unused]] const auto status = a_services.waiter->sleep_for(std::chrono::milliseconds(1), {});
+    }
+    if (renderCalls.load() < 2 || controller.progress().renderedFrames != 1)
+    {
+        return 2;
+    }
+    const auto stopStart = a_services.clock->now();
+    if (!controller.stop().has_value())
+    {
+        return 3;
+    }
+    return a_services.clock->now() - stopStart < std::chrono::milliseconds(500) ? 0 : 4;
 }
 
 /// @brief Workerの失敗がMainThreadへ伝わり停止できることを確認する
@@ -276,6 +425,22 @@ int run_tests()
     if (const int result = test_single_thread(services); result != 0)
     {
         return 20 + result;
+    }
+    if (const int result = test_callback_registration(services); result != 0)
+    {
+        return 100 + result;
+    }
+    if (const int result = test_fps_limit(services); result != 0)
+    {
+        return 70 + result;
+    }
+    if (const int result = test_worker_fps_limit(services); result != 0)
+    {
+        return 80 + result;
+    }
+    if (const int result = test_stop_during_fps_limit(services); result != 0)
+    {
+        return 90 + result;
     }
     if (const int result = test_failure(services); result != 0)
     {
