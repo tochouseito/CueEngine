@@ -21,6 +21,16 @@ target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 
 if(WIN32)
+    add_executable(CueRuntimeHostTests
+        Runtime/RuntimeHostTests.cpp
+    )
+
+    target_link_libraries(CueRuntimeHostTests PRIVATE Cue.RuntimeHost)
+
+    add_test(NAME Cue.RuntimeHost.Lifecycle COMMAND CueRuntimeHostTests)
+
+    set_tests_properties(Cue.RuntimeHost.Lifecycle PROPERTIES TIMEOUT 10)
+
     add_executable(CueFrameControllerTests
         Runtime/FrameControllerTests.cpp
     )
