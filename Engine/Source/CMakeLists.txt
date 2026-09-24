@@ -4,6 +4,7 @@ add_executable(CueEngine
 
 add_subdirectory(Foundation)
 add_subdirectory(Platform)
+add_subdirectory(Runtime/Frame)
 
 if(WIN32)
     add_executable(CueWindowHost WIN32

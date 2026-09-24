@@ -18,7 +18,9 @@ using ThreadRoutine = std::function<Result<void>(std::stop_token)>;
 class Thread
 {
 public:
-    /// @brief Workerを停止し、資源を解放する
+    /// @brief Workerを停止・joinしてから資源を解放する
+    ///
+    /// 破棄後にRoutineや借用先へアクセスしない
     virtual ~Thread() = default;
 
     /// @brief 協調停止を要求する

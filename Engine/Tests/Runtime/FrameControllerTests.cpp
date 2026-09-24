@@ -1,0 +1,304 @@
+#include <Cue/Platform/Windows/WindowsPlatform.h>
+#include <Cue/Runtime/FrameController.h>
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+namespace
+{
+class FailSecondThreadFactory final : public cue::ThreadFactory
+{
+public:
+    /// @brief 一回だけ二番目のWorker生成を拒否する
+    explicit FailSecondThreadFactory(cue::ThreadFactory& a_delegate)
+        : m_delegate(a_delegate)
+    {
+    }
+
+    /// @brief 失敗後の再試行では実Factoryへ委譲する
+    [[nodiscard]] cue::Result<std::unique_ptr<cue::Thread>> start(cue::ThreadRoutine a_routine) override
+    {
+        if (++m_calls == 2)
+        {
+            return cue::Result<std::unique_ptr<cue::Thread>>::failure(
+                {cue::ErrorCategory::PlatformFailure, "Test.second.worker", 89});
+        }
+        return m_delegate.start(std::move(a_routine));
+    }
+
+private:
+    cue::ThreadFactory& m_delegate;
+    int m_calls = 0;
+};
+
+/// @brief Frame番号の順序と有界な先行数を実Workerで確認する
+int test_worker_frames(cue::WindowsThreadServices& a_services)
+{
+    std::mutex recordMutex;
+    std::array<bool, 6> wasUpdated{};
+    std::uint64_t renderedFrames = 0;
+    std::thread::id updateThreadId;
+    std::thread::id renderThreadId;
+    cue::FrameController controller(
+        {2, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [&](std::uint64_t a_frame, std::stop_token) {
+            std::lock_guard lock(recordMutex);
+            if (a_frame >= wasUpdated.size())
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.update.frame"});
+            }
+            wasUpdated[a_frame] = true;
+            updateThreadId = std::this_thread::get_id();
+            return cue::Result<void>::success();
+        },
+        [&](std::uint64_t a_frame, std::stop_token) {
+            std::lock_guard lock(recordMutex);
+            if (a_frame >= wasUpdated.size() || a_frame != renderedFrames || !wasUpdated[a_frame])
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.render.order"});
+            }
+            ++renderedFrames;
+            renderThreadId = std::this_thread::get_id();
+            return cue::Result<void>::success();
+        });
+    if (!controller.start().has_value())
+    {
+        return 1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (controller.progress().renderedFrames < wasUpdated.size() && std::chrono::steady_clock::now() < deadline)
+    {
+        const auto generation = a_services.waiter->generation();
+        if (controller.progress().submittedFrames < wasUpdated.size())
+        {
+            auto advanceResult = controller.advance();
+            if (!advanceResult.has_value())
+            {
+                return 2;
+            }
+        }
+        const auto progress = controller.progress();
+        if (progress.submittedFrames - progress.renderedFrames > 2)
+        {
+            return 3;
+        }
+        [[maybe_unused]] const auto waitStatus =
+            a_services.waiter->wait_for_change(generation, std::chrono::milliseconds(10), {});
+    }
+    if (!controller.stop().has_value())
+    {
+        return 4;
+    }
+    const auto progress = controller.progress();
+    if (progress.submittedFrames != 6 || progress.updatedFrames != 6 || progress.renderedFrames != 6)
+    {
+        return 5;
+    }
+    if (updateThreadId == std::this_thread::get_id() || renderThreadId == std::this_thread::get_id() ||
+        updateThreadId == renderThreadId)
+    {
+        return 6;
+    }
+    if (!controller.stop().has_value())
+    {
+        return 7;
+    }
+    return 0;
+}
+
+/// @brief 単一Thread経路が同じFrameのUpdate後にRenderを処理することを確認する
+int test_single_thread(cue::WindowsThreadServices& a_services)
+{
+    bool wasUpdated = false;
+    const auto ownerId = std::this_thread::get_id();
+    cue::FrameController controller(
+        {1, false}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [&](std::uint64_t a_frame, std::stop_token) {
+            wasUpdated = a_frame == 0 && std::this_thread::get_id() == ownerId;
+            return cue::Result<void>::success();
+        },
+        [&](std::uint64_t a_frame, std::stop_token) {
+            if (!wasUpdated || a_frame != 0)
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.single.order"});
+            }
+            return cue::Result<void>::success();
+        });
+    if (!controller.start().has_value())
+    {
+        return 1;
+    }
+    auto advanceResult = controller.advance();
+    if (!advanceResult.has_value() || !*advanceResult.try_value())
+    {
+        return 2;
+    }
+    if (controller.progress().renderedFrames != 1 || !controller.stop().has_value())
+    {
+        return 3;
+    }
+    return 0;
+}
+
+/// @brief Workerの失敗がMainThreadへ伝わり停止できることを確認する
+int test_failure(cue::WindowsThreadServices& a_services)
+{
+    cue::FrameController controller(
+        {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [](std::uint64_t, std::stop_token) {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.update.failure", 37});
+        },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+    if (!controller.start().has_value() || !controller.advance().has_value())
+    {
+        return 1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool sawFailure = false;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto result = controller.advance();
+        if (!result.has_value())
+        {
+            sawFailure = result.try_error()->nativeCode == 37;
+            break;
+        }
+        const auto generation = a_services.waiter->generation();
+        [[maybe_unused]] const auto waitStatus =
+            a_services.waiter->wait_for_change(generation, std::chrono::milliseconds(10), {});
+    }
+    auto stopResult = controller.stop();
+    return sawFailure && !stopResult.has_value() && stopResult.try_error()->nativeCode == 37 ? 0 : 2;
+}
+
+/// @brief Render失敗とCallback例外がMainThreadへ伝わることを確認する
+int test_render_failure(cue::WindowsThreadServices& a_services)
+{
+    cue::FrameController controller(
+        {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [](std::uint64_t, std::stop_token) -> cue::Result<void> { throw std::runtime_error("render failure"); });
+    if (!controller.start().has_value() || !controller.advance().has_value())
+    {
+        return 1;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool sawFailure = false;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto result = controller.advance();
+        if (!result.has_value())
+        {
+            sawFailure = result.try_error()->operation == "FrameController.render.exception";
+            break;
+        }
+        const auto generation = a_services.waiter->generation();
+        [[maybe_unused]] const auto waitStatus =
+            a_services.waiter->wait_for_change(generation, std::chrono::milliseconds(10), {});
+    }
+    auto stopResult = controller.stop();
+    return sawFailure && !stopResult.has_value() ? 0 : 2;
+}
+
+/// @brief 二番目のWorker起動失敗で一番目を回収して再試行できることを確認する
+int test_start_rollback(cue::WindowsThreadServices& a_services)
+{
+    FailSecondThreadFactory factory(*a_services.threadFactory);
+    cue::FrameController controller(
+        {2, true}, *a_services.clock, *a_services.waiter, factory,
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+    auto firstStart = controller.start();
+    if (firstStart.has_value() || firstStart.try_error()->nativeCode != 89)
+    {
+        return 1;
+    }
+    if (!controller.start().has_value())
+    {
+        return 2;
+    }
+    return controller.stop().has_value() ? 0 : 3;
+}
+
+/// @brief 待機中のCallbackを停止要求で解除しWorkerを回収する
+int test_stop_during_callback(cue::WindowsThreadServices& a_services)
+{
+    std::atomic<bool> entered = false;
+    cue::FrameController controller(
+        {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
+        [&](std::uint64_t, std::stop_token a_token) {
+            entered = true;
+            [[maybe_unused]] const auto waitStatus = a_services.waiter->sleep_for(std::chrono::seconds(10), a_token);
+            return cue::Result<void>::success();
+        },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+    if (!controller.start().has_value() || !controller.advance().has_value())
+    {
+        return 1;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!entered && std::chrono::steady_clock::now() < deadline)
+    {
+        [[maybe_unused]] const auto waitStatus = a_services.waiter->sleep_for(std::chrono::milliseconds(1), {});
+    }
+    if (!entered)
+    {
+        return 2;
+    }
+    const auto stopStart = std::chrono::steady_clock::now();
+    if (!controller.stop().has_value())
+    {
+        return 3;
+    }
+    return std::chrono::steady_clock::now() - stopStart < std::chrono::seconds(5) ? 0 : 4;
+}
+
+/// @brief FrameControllerの有界実行、Fallback、失敗伝播を確認する
+int run_tests()
+{
+    auto servicesResult = cue::create_windows_thread_services();
+    if (!servicesResult.has_value())
+    {
+        return 1;
+    }
+    auto services = servicesResult.take_value();
+    if (const int result = test_worker_frames(services); result != 0)
+    {
+        return 10 + result;
+    }
+    if (const int result = test_single_thread(services); result != 0)
+    {
+        return 20 + result;
+    }
+    if (const int result = test_failure(services); result != 0)
+    {
+        return 30 + result;
+    }
+    if (const int result = test_render_failure(services); result != 0)
+    {
+        return 40 + result;
+    }
+    if (const int result = test_start_rollback(services); result != 0)
+    {
+        return 50 + result;
+    }
+    if (const int result = test_stop_during_callback(services); result != 0)
+    {
+        return 60 + result;
+    }
+    return 0;
+}
+} // namespace
+
+/// @brief 実Workerと単一ThreadのFrame順序を検証する
+int main()
+{
+    return run_tests();
+}
