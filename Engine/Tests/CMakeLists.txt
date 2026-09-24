@@ -21,6 +21,14 @@ target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 
 if(WIN32)
+    add_executable(CueWindowsThreadServicesTests
+        Platform/WindowsThreadServicesTests.cpp
+    )
+
+    target_link_libraries(CueWindowsThreadServicesTests PRIVATE Cue.Platform.Windows)
+
+    add_test(NAME Cue.Platform.Windows.Threading COMMAND CueWindowsThreadServicesTests)
+
     add_executable(CueWindowsUtfConversionTests
         Foundation/WindowsUtfConversionTests.cpp
     )
