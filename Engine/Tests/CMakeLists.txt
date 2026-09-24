@@ -62,4 +62,11 @@ if(WIN32)
     target_link_libraries(CueWindowHostProcessTests PRIVATE Cue.Platform.Windows user32)
 
     add_test(NAME Cue.WindowHost.Process COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost>)
+
+    add_test(NAME Cue.WindowHost.AutoFrames COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost> --auto)
+
+    add_test(NAME Cue.WindowHost.SingleThread COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost> --auto-single)
+
+    set_tests_properties(Cue.WindowHost.AutoFrames PROPERTIES TIMEOUT 7)
+    set_tests_properties(Cue.WindowHost.SingleThread PROPERTIES TIMEOUT 7)
 endif()

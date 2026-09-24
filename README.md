@@ -66,3 +66,23 @@ Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、M
 | Debug | 成功 | 6/6成功 |
 | Development | 成功 | 6/6成功 |
 | Release | 成功 | 6/6成功 |
+
+## M02 Frame制御のダミー実行
+
+Hostの初期化時に`FrameController`へUpdate／RenderのCallbackを登録する。`Main.cpp`はWindow Messageを処理し、終了要求がなければ`FrameController::step()`を直接呼ぶ。終了要求を受けた周回ではFrameを進めず、Workerを停止・joinしてからWindowとSystemを破棄する。UpdateとRenderはそれぞれ別のWorker Threadで各Frameに16ms待機するダミー。Runtime World、Renderer、GPU Submitは接続していない。Frameは最大2件まで先行し、同じFrameのUpdate完了後にRenderを開始する。
+
+DebuggerにはFrame数、直近のUpdate／Render経過時間、Render完了間隔から求めたFPS、Thread識別子を約60Frameごとに出力する。`FrameController`は既定でRender完了間隔を最大60 FPSに制限し、`maxFps=0`で制限を無効化できる。まだPresentがないため、これは旧EngineのPresent後の制御に対応する暫定的な同期点。処理負荷やOSの待機精度によって60 FPSを保証するものではない。`CueWindowHost.exe --test-frames=4`は4Frameのダミー処理完了後に自動終了するTest用入口。`--single-thread`を追加すると、同じWindow Hostで両CallbackをMainThreadから順に実行する。
+
+```powershell
+& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe'
+& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe' --test-frames=4
+& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe' --test-frames=4 --single-thread
+```
+
+2026-09-24、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で確認した。自動終了Testは4Frame後にWindowとProcessが終了することと、直近のUpdate／Render待機を各15ms以上観測したことを検証する。Window Close Testは別Processへ`WM_CLOSE`を送り、Workerをjoinした後に正常終了する経路を検証する。Worker失敗時の伝播、Frame順序、指定20 FPSでのRender完了間隔40ms以上は`Cue.Runtime.FrameController` Testで確認する。
+
+| 構成 | Build | CTest |
+| --- | --- | --- |
+| Debug | 成功 | 10/10成功 |
+| Development | 成功 | 10/10成功 |
+| Release | 成功 | 10/10成功 |

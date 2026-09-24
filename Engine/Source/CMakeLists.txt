@@ -9,9 +9,11 @@ add_subdirectory(Runtime/Frame)
 if(WIN32)
     add_executable(CueWindowHost WIN32
         WindowHost/Main.cpp
+        WindowHost/WindowHost.cpp
+        WindowHost/WindowHost.h
     )
 
-    target_link_libraries(CueWindowHost PRIVATE Cue.Platform.Windows)
+    target_link_libraries(CueWindowHost PRIVATE Cue.Platform.Windows Cue.Runtime.Frame)
 
     set_target_properties(CueWindowHost PROPERTIES
         CXX_STANDARD 20

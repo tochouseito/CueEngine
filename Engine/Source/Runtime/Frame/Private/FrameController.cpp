@@ -27,12 +27,21 @@ Result<void> invoke_callback(FrameCallback& a_callback, std::uint64_t a_frame, s
 }
 } // namespace
 
-/// @brief 借用ServiceとFrame処理を保持する
+/// @brief 借用Serviceを保持する
+FrameController::FrameController(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter,
+                                 ThreadFactory& a_threadFactory)
+    : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
+      m_ownerId(std::this_thread::get_id())
+{
+}
+
+/// @brief 構築時にCallbackを渡す既存の入口を維持する
 FrameController::FrameController(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter,
                                  ThreadFactory& a_threadFactory, FrameCallback a_update, FrameCallback a_render)
-    : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
-      m_update(std::move(a_update)), m_render(std::move(a_render)), m_ownerId(std::this_thread::get_id())
+    : FrameController(a_desc, a_clock, a_waiter, a_threadFactory)
 {
+    m_update = std::move(a_update);
+    m_render = std::move(a_render);
 }
 
 /// @brief 停止とjoinを完了してCallbackの借用先を失効させる
@@ -60,6 +69,7 @@ Result<void> FrameController::start()
         std::lock_guard lock(m_mutex);
         m_stopRequested = false;
     }
+    m_nextRenderTime = m_clock.now();
 
     if (m_desc.useWorkerThreads)
     {
@@ -143,6 +153,8 @@ Result<bool> FrameController::advance()
     {
         std::lock_guard lock(m_mutex);
         ++m_progress.updatedFrames;
+        m_progress.lastUpdateFrame = frame;
+        m_progress.updateThreadId = std::this_thread::get_id();
         m_progress.lastUpdateDuration = updateDuration;
     }
 
@@ -155,12 +167,62 @@ Result<bool> FrameController::advance()
         record_failure(error);
         return Result<bool>::failure(std::move(error));
     }
+    const auto completion = wait_for_render_limit({});
+    if (!completion)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "FrameController.render.limit"});
+    }
     {
         std::lock_guard lock(m_mutex);
+        if (m_progress.renderedFrames != 0)
+        {
+            m_progress.lastFrameInterval =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(*completion - m_lastRenderCompletion);
+        }
+        m_lastRenderCompletion = *completion;
         ++m_progress.renderedFrames;
+        m_progress.lastRenderFrame = frame;
+        m_progress.renderThreadId = std::this_thread::get_id();
         m_progress.lastRenderDuration = renderDuration;
     }
     return Result<bool>::success(true);
+}
+
+/// @brief HostのCallbackを開始前に一度だけ登録する
+Result<void> FrameController::register_callbacks(FrameCallback a_update, FrameCallback a_render)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.register_callbacks"});
+    }
+    if (m_isStarted || m_hasStarted || m_update || m_render)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.register_callbacks"});
+    }
+    if (!a_update || !a_render)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.register_callbacks"});
+    }
+    m_update = std::move(a_update);
+    m_render = std::move(a_render);
+    return Result<void>::success();
+}
+
+/// @brief MainThreadの一回分のFrame進行と容量待機をまとめる
+Result<bool> FrameController::step()
+{
+    const auto generation = m_waiter.generation();
+    auto result = advance();
+    if (!result.has_value())
+    {
+        return result;
+    }
+    if (m_desc.useWorkerThreads && !*result.try_value())
+    {
+        [[maybe_unused]] const auto waitStatus =
+            m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), {});
+    }
+    return result;
 }
 
 /// @brief 協調停止を通知してWorkerをjoinする
@@ -255,6 +317,8 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
                 break;
             }
             ++m_progress.updatedFrames;
+            m_progress.lastUpdateFrame = frame;
+            m_progress.updateThreadId = std::this_thread::get_id();
             m_progress.lastUpdateDuration = duration;
         }
         m_waiter.notify_all();
@@ -297,13 +361,26 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             record_failure(std::move(*result.try_error()));
             return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.render"});
         }
+        const auto completion = wait_for_render_limit(a_stopToken);
+        if (!completion)
+        {
+            break;
+        }
         {
             std::lock_guard lock(m_mutex);
             if (m_stopRequested || a_stopToken.stop_requested())
             {
                 break;
             }
+            if (m_progress.renderedFrames != 0)
+            {
+                m_progress.lastFrameInterval =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(*completion - m_lastRenderCompletion);
+            }
+            m_lastRenderCompletion = *completion;
             ++m_progress.renderedFrames;
+            m_progress.lastRenderFrame = frame;
+            m_progress.renderThreadId = std::this_thread::get_id();
             m_progress.lastRenderDuration = duration;
         }
         m_waiter.notify_all();
@@ -323,5 +400,33 @@ void FrameController::record_failure(Error a_error)
         m_stopRequested = true;
     }
     m_waiter.notify_all();
+}
+
+/// @brief Render完了間隔を上限FPSに合わせ、遅れたFrameをまとめて進めない
+std::optional<std::chrono::steady_clock::time_point>
+FrameController::wait_for_render_limit(std::stop_token a_stopToken)
+{
+    if (a_stopToken.stop_requested())
+    {
+        return std::nullopt;
+    }
+    if (m_desc.maxFps == 0)
+    {
+        return m_clock.now();
+    }
+    const auto now = m_clock.now();
+    if (now < m_nextRenderTime &&
+        m_waiter.sleep_for(m_nextRenderTime - now, a_stopToken) == WaitStatus::Stopped)
+    {
+        return std::nullopt;
+    }
+    if (a_stopToken.stop_requested())
+    {
+        return std::nullopt;
+    }
+    const auto completion = m_clock.now();
+    const auto interval = (1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps;
+    m_nextRenderTime = completion + std::chrono::nanoseconds(interval);
+    return completion;
 }
 } // namespace cue
