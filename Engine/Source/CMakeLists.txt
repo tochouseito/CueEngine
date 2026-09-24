@@ -9,6 +9,35 @@ add_subdirectory(Runtime/Frame)
 if(WIN32)
     add_subdirectory(RuntimeHost)
 
+    add_executable(CueRuntimeHost WIN32
+        RuntimeHost/Main.cpp
+    )
+
+    target_link_libraries(CueRuntimeHost PRIVATE Cue.RuntimeHost)
+
+    set_target_properties(CueRuntimeHost PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    )
+
+    if(MSVC)
+        target_compile_options(CueRuntimeHost PRIVATE
+            /utf-8
+            $<$<CONFIG:Development>:/O2>
+            $<$<CONFIG:Development>:/Zi>
+        )
+
+        target_link_options(CueRuntimeHost PRIVATE
+            $<$<CONFIG:Development>:/DEBUG>
+        )
+    endif()
+
+    target_compile_definitions(CueRuntimeHost PRIVATE
+        $<$<CONFIG:Release>:CUE_SHIPPING=1>
+    )
+
     add_executable(CueWindowHost WIN32
         WindowHost/Main.cpp
         WindowHost/WindowHost.cpp

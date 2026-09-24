@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineの最小Build基盤とWindows Window Host。`CueEngine` はConsole Smoke、`CueWindowHost` は実Windowを開くTarget。Editor、Graphics、製品Runtimeはまだ含まない。Build定義はCMakeを正本とする。
+新CueEngineの最小Build基盤とWindows Host。`CueEngine` はConsole Smoke、`CueWindowHost` はM02のダミーFrame検証用、`CueRuntimeHost` は製品用Hostの起動・終了基盤。Editor、Graphics、Runtime Worldはまだ含まない。Build定義はCMakeを正本とする。
 
 ## 開発環境
 
@@ -19,6 +19,7 @@ cmake --build --preset windows-vs2026-debug
 ctest --preset windows-vs2026-debug --output-on-failure
 & 'out/build/windows-vs2026/bin/Debug/CueEngine.exe'
 & 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe'
+& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe'
 ```
 
 DevelopmentとReleaseは、Build/Test Preset名末尾の`debug`をそれぞれ`development`、`release`に置き換える。実行ファイルは`out/build/windows-vs2026/bin/<Configuration>/`に生成される。`CueWindowHost` は1280×720のClient Areaを持つWindowを開き、右上の閉じるボタンで終了する。CTestはConsole Smoke、Foundation、Windows UTF変換、Platform公開Header、Win32 Lifecycle、別ProcessでのWindow表示とCloseを確認する。
@@ -86,3 +87,23 @@ DebuggerにはFrame数、直近のUpdate／Render経過時間、Render完了間�
 | Debug | 成功 | 10/10成功 |
 | Development | 成功 | 10/10成功 |
 | Release | 成功 | 10/10成功 |
+
+## M03 RuntimeHostの起動・終了基盤
+
+`CueRuntimeHost` は`WindowSystem`、Window、時間／Thread Service、`FrameController`を所有する。MainThreadはWindow Messageを処理し、終了要求がなければ`FrameController::step()`を呼ぶ。Close要求を受けた周回ではFrameを進めず、Workerを停止・joinしてからWindowを破棄する。Update／Render Callbackは起動時に登録できる。現在の製品用Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続。`CueWindowHost`の各16msダミー処理はM02の検証用として残す。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
+
+```powershell
+& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe'
+& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe' --test-frames=4
+& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe' --test-frames=4 --single-thread
+```
+
+`--test-frames=4`はRender Callbackが4Frame完了した時点で自動終了するTest用入口。`--single-thread`はUpdate／RenderをMainThreadから順に実行する。`--test-fail-render`はRender Callback失敗が非0のProcess終了へ伝播するかを確認するTest専用指定。描画とPresentはM04で接続する。
+
+2026-09-25、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、起動・Close、自動終了、単一Thread、Callback失敗のProcess Testを含めて確認した。
+
+| 構成 | Build | CTest |
+| --- | --- | --- |
+| Debug | 成功 | 15/15成功 |
+| Development | 成功 | 15/15成功 |
+| Release | 成功 | 15/15成功 |

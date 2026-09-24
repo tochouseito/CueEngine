@@ -41,16 +41,18 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
                             (std::wcscmp(a_arguments[2], L"--auto") == 0 ||
                              std::wcscmp(a_arguments[2], L"--auto-single") == 0);
     const bool isSingleThread = isAutoMode && std::wcscmp(a_arguments[2], L"--auto-single") == 0;
-    if (a_argumentCount == 3 && !isAutoMode)
+    const bool isFailureMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--expect-render-failure") == 0;
+    if (a_argumentCount == 3 && !isAutoMode && !isFailureMode)
     {
         return 1;
     }
 
     // 実 Host を別 Process で起動して表示と終了を確認する
     std::wstring commandLine;
-    if (isAutoMode)
+    if (isAutoMode || isFailureMode)
     {
-        commandLine = L"\"" + std::wstring(a_arguments[1]) + L"\" --test-frames=4";
+        commandLine = L"\"" + std::wstring(a_arguments[1]) +
+                      (isFailureMode ? L"\" --test-fail-render" : L"\" --test-frames=4");
         if (isSingleThread)
         {
             commandLine += L" --single-thread";
@@ -59,16 +61,17 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(a_arguments[1], isAutoMode ? commandLine.data() : nullptr, nullptr, nullptr, FALSE, 0,
+    if (!CreateProcessW(a_arguments[1], (isAutoMode || isFailureMode) ? commandLine.data() : nullptr,
+                        nullptr, nullptr, FALSE, 0,
                         nullptr, nullptr, &startup, &process))
     {
         return 2;
     }
 
     int result = 0;
-    if (isAutoMode)
+    if (isAutoMode || isFailureMode)
     {
-        // 自動終了Modeでは4Frameの両Callback完了とProcess終了をHostが検証する
+        // 自動終了またはCallback失敗を子Process自身の終了Codeで確認する
         if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
         {
             result = 4;
@@ -76,7 +79,8 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
         else
         {
             DWORD exitCode = 0;
-            if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)
+            const DWORD expectedExitCode = isFailureMode ? 1 : 0;
+            if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != expectedExitCode)
             {
                 result = 5;
             }
