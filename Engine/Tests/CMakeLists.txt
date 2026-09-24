@@ -79,4 +79,15 @@ if(WIN32)
 
     set_tests_properties(Cue.WindowHost.AutoFrames PROPERTIES TIMEOUT 7)
     set_tests_properties(Cue.WindowHost.SingleThread PROPERTIES TIMEOUT 7)
+
+    add_test(NAME Cue.RuntimeHost.Process COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost>)
+
+    add_test(NAME Cue.RuntimeHost.AutoFrames COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --auto)
+
+    add_test(NAME Cue.RuntimeHost.SingleThread COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --auto-single)
+
+    add_test(NAME Cue.RuntimeHost.RenderFailure COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --expect-render-failure)
+
+    set_tests_properties(Cue.RuntimeHost.Process Cue.RuntimeHost.AutoFrames Cue.RuntimeHost.SingleThread
+                         Cue.RuntimeHost.RenderFailure PROPERTIES TIMEOUT 7)
 endif()
