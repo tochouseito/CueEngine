@@ -3,3 +3,45 @@ add_test(NAME CueEngine.Smoke COMMAND CueEngine)
 set_tests_properties(CueEngine.Smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "CueEngine smoke OK"
 )
+
+add_executable(CueFoundationResultTests
+    Foundation/ResultTests.cpp
+)
+
+target_link_libraries(CueFoundationResultTests PRIVATE Cue.Foundation)
+
+add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
+
+add_executable(CuePlatformHeaderCompile
+    Platform/PublicHeaderCompile.cpp
+)
+
+target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
+
+add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
+
+if(WIN32)
+    add_executable(CueWindowsUtfConversionTests
+        Foundation/WindowsUtfConversionTests.cpp
+    )
+
+    target_link_libraries(CueWindowsUtfConversionTests PRIVATE Cue.Foundation.Windows)
+
+    add_test(NAME Cue.Foundation.Windows.UtfConversion COMMAND CueWindowsUtfConversionTests)
+
+    add_executable(CueWindowsWindowLifecycleTests
+        Platform/WindowsWindowLifecycleTests.cpp
+    )
+
+    target_link_libraries(CueWindowsWindowLifecycleTests PRIVATE Cue.Platform.Windows user32)
+
+    add_test(NAME Cue.Platform.Windows.Lifecycle COMMAND CueWindowsWindowLifecycleTests)
+
+    add_executable(CueWindowHostProcessTests
+        Platform/WindowHostProcessTests.cpp
+    )
+
+    target_link_libraries(CueWindowHostProcessTests PRIVATE Cue.Platform.Windows user32)
+
+    add_test(NAME Cue.WindowHost.Process COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost>)
+endif()
