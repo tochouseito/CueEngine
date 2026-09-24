@@ -7,6 +7,8 @@ add_subdirectory(Platform)
 add_subdirectory(Runtime/Frame)
 
 if(WIN32)
+    add_subdirectory(RuntimeHost)
+
     add_executable(CueWindowHost WIN32
         WindowHost/Main.cpp
         WindowHost/WindowHost.cpp
