@@ -94,6 +94,18 @@ public:
         m_isPublished = true;
     }
 
+    /// @brief Swap Chain作成中にWindowより短い期間だけHWNDを借用させる
+    [[nodiscard]] HWND native_handle() const noexcept
+    {
+        return m_handle;
+    }
+
+    /// @brief Native Handle借用をWindow生成Threadに限定する
+    [[nodiscard]] bool is_owner_thread() const noexcept
+    {
+        return GetCurrentThreadId() == m_threadId;
+    }
+
     /// @brief Windowを表示する
     [[nodiscard]] Result<void> show() override
     {
@@ -467,5 +479,20 @@ void WindowsWindowSystem::mark_quit_requested() noexcept
 Result<std::unique_ptr<WindowSystem>> create_windows_window_system()
 {
     return Result<std::unique_ptr<WindowSystem>>::success(std::make_unique<WindowsWindowSystem>());
+}
+
+/// @brief Windows実装のWindowから有効なHWNDを借用する
+Result<void*> borrow_windows_window_handle(Window& a_window)
+{
+    auto* window = dynamic_cast<WindowsWindow*>(&a_window);
+    if (!window || !window->native_handle())
+    {
+        return Result<void*>::failure({ErrorCategory::InvalidArgument, "borrow_windows_window_handle"});
+    }
+    if (!window->is_owner_thread())
+    {
+        return Result<void*>::failure({ErrorCategory::WrongThread, "borrow_windows_window_handle"});
+    }
+    return Result<void*>::success(window->native_handle());
 }
 } // namespace cue
