@@ -13,7 +13,7 @@ using ThreadRoutine = std::function<Result<void>(std::stop_token)>;
 
 /// @brief Workerの停止要求と完了待ちを所有する
 ///
-/// Factoryの成功結果をHostが一意所有する。request_stopは任意Threadから呼出可能
+/// Factoryの成功結果をFrameControllerが一意所有する。request_stopは任意Threadから呼出可能
 /// joinと破棄は起動元Threadで行い、Worker自身から呼ばない。join後にRoutineは実行されない
 class Thread
 {

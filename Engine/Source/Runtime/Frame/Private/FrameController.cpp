@@ -53,6 +53,7 @@ FrameController::~FrameController()
 /// @brief 設定検証後にUpdateとRenderのWorkerを開始する
 Result<void> FrameController::start()
 {
+    // Worker の生成と停止は構築 Thread に固定する
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.start"});
@@ -65,14 +66,17 @@ Result<void> FrameController::start()
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.start"});
     }
+    // 再開始を許さない一方、開始失敗時の停止要求は毎回初期化する
     {
         std::lock_guard lock(m_mutex);
         m_stopRequested = false;
     }
+    // 最初の Render は即時実行できるよう現在時刻を基準にする
     m_nextRenderTime = m_clock.now();
 
     if (m_desc.useWorkerThreads)
     {
+        // Render Worker より先に Update Worker を起動する
         auto updateResult = m_threadFactory.start([this](std::stop_token a_token) { return update_loop(a_token); });
         if (!updateResult.has_value())
         {
@@ -83,6 +87,7 @@ Result<void> FrameController::start()
         auto renderResult = m_threadFactory.start([this](std::stop_token a_token) { return render_loop(a_token); });
         if (!renderResult.has_value())
         {
+            // 片方だけ動かしたまま返さず、Update を停止・join する
             {
                 std::lock_guard lock(m_mutex);
                 m_stopRequested = true;
@@ -104,6 +109,7 @@ Result<void> FrameController::start()
         m_renderThread = renderResult.take_value();
     }
 
+    // 両 Worker の開始、または単一 Thread 準備が完了してから投入を許可する
     m_isStarted = true;
     m_hasStarted = true;
     return Result<void>::success();
@@ -112,6 +118,7 @@ Result<void> FrameController::start()
 /// @brief MainThreadから容量を確認して次のFrameを投入する
 Result<bool> FrameController::advance()
 {
+    // 投入数の上限と最初の失敗は、共有状態を変更する前に確認する
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<bool>::failure({ErrorCategory::WrongThread, "FrameController.advance"});
@@ -129,6 +136,7 @@ Result<bool> FrameController::advance()
         }
         if (m_progress.submittedFrames - m_progress.renderedFrames >= m_desc.maxFramesInFlight)
         {
+            // 空きがない場合は失敗ではなく、次の Step で再試行させる
             return Result<bool>::success(false);
         }
         frame = m_progress.submittedFrames++;
@@ -136,6 +144,7 @@ Result<bool> FrameController::advance()
 
     if (m_desc.useWorkerThreads)
     {
+        // Worker が次の Frame を取得できるよう通知する
         m_waiter.notify_all();
         return Result<bool>::success(true);
     }
@@ -146,6 +155,7 @@ Result<bool> FrameController::advance()
     const auto updateDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - updateStart);
     if (!updateResult.has_value())
     {
+        // 同期実行でも最初の失敗を共有状態へ残し、後続の投入を止める
         Error error = std::move(*updateResult.try_error());
         record_failure(error);
         return Result<bool>::failure(std::move(error));
@@ -173,6 +183,7 @@ Result<bool> FrameController::advance()
         return Result<bool>::failure({ErrorCategory::InvalidState, "FrameController.render.limit"});
     }
     {
+        // Render 完了時点の間隔と所要時間を同じ Lock 内で公開する
         std::lock_guard lock(m_mutex);
         if (m_progress.renderedFrames != 0)
         {
@@ -211,6 +222,7 @@ Result<void> FrameController::register_callbacks(FrameCallback a_update, FrameCa
 /// @brief MainThreadの一回分のFrame進行と容量待機をまとめる
 Result<bool> FrameController::step()
 {
+    // 投入前の通知世代を保持し、容量が空いた通知を取りこぼさない
     const auto generation = m_waiter.generation();
     auto result = advance();
     if (!result.has_value())
@@ -219,6 +231,7 @@ Result<bool> FrameController::step()
     }
     if (m_desc.useWorkerThreads && !*result.try_value())
     {
+        // 容量待ちは短く区切り、Main Thread が次の Step で状態を再確認する
         [[maybe_unused]] const auto waitStatus =
             m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), {});
     }
@@ -228,6 +241,7 @@ Result<bool> FrameController::step()
 /// @brief 協調停止を通知してWorkerをjoinする
 Result<void> FrameController::stop()
 {
+    // 停止要求を共有状態と各 Worker の Stop Token の両方へ渡す
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.stop"});
@@ -246,12 +260,14 @@ Result<void> FrameController::stop()
     }
     m_waiter.notify_all();
 
+    // 両 Worker の終了を待ってから Callback の借用先を解放可能にする
     Result<void> updateResult = m_updateThread ? m_updateThread->join() : Result<void>::success();
     Result<void> renderResult = m_renderThread ? m_renderThread->join() : Result<void>::success();
     m_updateThread.reset();
     m_renderThread.reset();
     m_isStarted = false;
 
+    // Callback の失敗を優先し、次に Worker 自体の終了失敗を返す
     std::lock_guard lock(m_mutex);
     if (m_failure)
     {
@@ -280,6 +296,7 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
 {
     while (!a_stopToken.stop_requested())
     {
+        // 通知世代と投入済み Frame を確認し、未投入なら停止可能な待機へ入る
         const auto generation = m_waiter.generation();
         std::uint64_t frame = 0;
         bool hasFrame = false;
@@ -307,10 +324,12 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
         const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - start);
         if (!result.has_value())
         {
+            // Worker の Error を共有し、Main Thread に次回 Step で通知する
             record_failure(std::move(*result.try_error()));
             return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.update"});
         }
         {
+            // 停止開始後の Update 完了は新たな Render 対象にしない
             std::lock_guard lock(m_mutex);
             if (m_stopRequested || a_stopToken.stop_requested())
             {
@@ -331,6 +350,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
 {
     while (!a_stopToken.stop_requested())
     {
+        // Update 完了済みの Frame だけを順番に取得する
         const auto generation = m_waiter.generation();
         std::uint64_t frame = 0;
         bool hasFrame = false;
@@ -367,6 +387,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             break;
         }
         {
+            // Render の完了情報は停止要求を再確認してから公開する
             std::lock_guard lock(m_mutex);
             if (m_stopRequested || a_stopToken.stop_requested())
             {
@@ -406,6 +427,7 @@ void FrameController::record_failure(Error a_error)
 std::optional<std::chrono::steady_clock::time_point>
 FrameController::wait_for_render_limit(std::stop_token a_stopToken)
 {
+    // 停止要求中に FPS 待機や次回時刻の更新を行わない
     if (a_stopToken.stop_requested())
     {
         return std::nullopt;
@@ -414,6 +436,7 @@ FrameController::wait_for_render_limit(std::stop_token a_stopToken)
     {
         return m_clock.now();
     }
+    // 予定時刻までだけ待機し、遅れた場合は現在の完了時刻から次回を計算する
     const auto now = m_clock.now();
     if (now < m_nextRenderTime &&
         m_waiter.sleep_for(m_nextRenderTime - now, a_stopToken) == WaitStatus::Stopped)
@@ -425,6 +448,7 @@ FrameController::wait_for_render_limit(std::stop_token a_stopToken)
         return std::nullopt;
     }
     const auto completion = m_clock.now();
+    // 切り上げで 1 Frame の間隔を確保する
     const auto interval = (1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps;
     m_nextRenderTime = completion + std::chrono::nanoseconds(interval);
     return completion;

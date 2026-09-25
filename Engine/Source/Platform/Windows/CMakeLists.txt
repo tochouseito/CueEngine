@@ -1,4 +1,6 @@
+# 公開契約の Windows 実装と診断出力を一つの Target にまとめる
 add_library(Cue.Platform.Windows STATIC
+    Private/Diagnostics.cpp
     Private/WindowsPlatform.cpp
     Private/WindowsThreadServices.cpp
 )
@@ -25,8 +27,11 @@ if(MSVC)
     )
 endif()
 
+# Debugger 出力は Debug の実装だけで有効にする
 target_compile_definitions(Cue.Platform.Windows PRIVATE
+    $<$<CONFIG:Debug>:CUE_DEBUG_OUTPUT=1>
     $<$<CONFIG:Release>:CUE_SHIPPING=1>
 )
 
+# Window と Message API を使う実装だけが user32 に依存する
 target_link_libraries(Cue.Platform.Windows PRIVATE user32)

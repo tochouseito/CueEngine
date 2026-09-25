@@ -10,6 +10,7 @@ namespace
 /// @brief 通知の先行、停止、Routine失敗がHostへ伝わることを確認する
 int run_tests()
 {
+    // 実装を一括生成し、各 Service の契約を同じ所有期間で検証する
     auto servicesResult = cue::create_windows_thread_services();
     if (!servicesResult.has_value())
     {
@@ -17,6 +18,7 @@ int run_tests()
     }
     auto services = servicesResult.take_value();
 
+    // Clock は後戻りしない時刻を返す
     const auto firstTime = services.clock->now();
     const auto secondTime = services.clock->now();
     if (firstTime > secondTime)
@@ -24,6 +26,7 @@ int run_tests()
         return 2;
     }
 
+    // 待機開始前に行った通知も世代差から検知できる
     const auto generation = services.waiter->generation();
     services.waiter->notify_all();
     if (services.waiter->wait_for_change(generation, std::chrono::seconds(1), {}) != cue::WaitStatus::Notified)
@@ -31,6 +34,7 @@ int run_tests()
         return 3;
     }
 
+    // 停止済み Token は長い Sleep に入る前に反映される
     std::stop_source stopSource;
     stopSource.request_stop();
     if (services.waiter->sleep_for(std::chrono::seconds(1), stopSource.get_token()) != cue::WaitStatus::Stopped)
@@ -38,6 +42,7 @@ int run_tests()
         return 4;
     }
 
+    // Worker 待機中の停止と、二度目の join の結果を確認する
     std::atomic<bool> wasStopped = false;
     auto threadResult = services.threadFactory->start([&](std::stop_token a_stopToken) {
         const auto observedGeneration = services.waiter->generation();
@@ -56,6 +61,7 @@ int run_tests()
         return 6;
     }
 
+    // Routine が返した Error は join の診断値として保持する
     auto failureThreadResult = services.threadFactory->start([](std::stop_token) {
         return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "TestRoutine.failure", 42});
     });
@@ -74,6 +80,7 @@ int run_tests()
         return 9;
     }
 
+    // 例外と空 Routine も Worker 境界から成功として漏らさない
     auto exceptionThreadResult = services.threadFactory->start([](std::stop_token) -> cue::Result<void> {
         throw std::runtime_error("worker failure");
     });
@@ -92,6 +99,7 @@ int run_tests()
         return 12;
     }
 
+    // 通知がない通常の Sleep は時間切れとして返る
     if (services.waiter->sleep_for(std::chrono::milliseconds(16), {}) != cue::WaitStatus::TimedOut)
     {
         return 13;

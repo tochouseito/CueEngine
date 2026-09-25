@@ -7,12 +7,14 @@
 
 namespace cue
 {
+/// @brief 作成時のTitleとClient Areaの要求Sizeを所有する
 struct WindowDescriptor final
 {
     std::string title;
     WindowSize clientSize;
 };
 
+/// @brief Windowの生成から破棄までをHostへ公開する状態
 enum class WindowState
 {
     Created,

@@ -5,6 +5,7 @@
 
 namespace cue
 {
+/// @brief 呼出側が失敗の種類を判定するための分類
 enum class ErrorCategory
 {
     InvalidArgument,

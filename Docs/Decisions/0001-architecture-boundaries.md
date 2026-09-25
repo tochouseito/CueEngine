@@ -19,7 +19,7 @@
 | Project生成・Hub・再オープン | Project DescriptorとWorkspaceの正本をProject側に置き、HubとEditorは利用者とする | Project IDの維持、別プロセスEditor起動、3構成の生成物 |
 | Scene保存・復旧、Hierarchy・Undo/Redo、Project Files | Authoring Sceneは永続Data、Editor Documentは選択・Command・Dirty状態を所有する。File操作はProject Root内で検証する | Save失敗時の旧正本保全、Stable ID、操作のUndo/Redo、Root外拒否と復旧 |
 | Editor Play・Input・Game View | Authoring SceneからRuntime Sessionへ一方向に実体化する。Hostが入力と表示を接続する | Play/Stop後のAuthoring状態、Input focus、Game/Debug View |
-| Build・Game Module・Package | Build artifactとC ABIの互換性を検証し、ToolsがPackageを作りRuntimeHostが読み込む | 3構成、取消と失敗後の再試行、Build→Package→Run、Dynamic/Monolithic |
+| Build・Game Module・Package | Build artifactとC ABIの互換性を検証し、ToolsがPackageを作り各Platform Hostが読み込む | 3構成、取消と失敗後の再試行、Build→Package→Run、Dynamic/Monolithic |
 | Runtime Scene・Graphics | Runtime Worldから所有値のRender Dataを抽出し、BackendがGPU Resourceを所有する | Legacy M24のCamera/Cube pixelを初期描画基準とし、生成Shipping productのE2Eを追加する。一般Mesh/Material等は別要件 |
 | M19とM25～M28 | Built-in AssetはAccepted ADRの契約と未完了実装を分ける。Script、Thread、Job、Project Assetは初期制約だけ固定する | M19 #386～#388と各Research Issueの決定・実装Gateを別に設ける |
 
@@ -63,12 +63,14 @@ flowchart LR
     EditorHost --> Renderer[Renderer]
     EditorHost --> PlatformWin[Windows Platform implementation]
     EditorHost --> D3D12[D3D12 Backend]
-    RuntimeHost[Runtime Host] --> Runtime[Runtime Session / World]
-    RuntimeHost --> Bridge
-    RuntimeHost --> Extractor
-    RuntimeHost --> Renderer
-    RuntimeHost --> PlatformWin
-    RuntimeHost --> D3D12
+    WindowsHost[Windows Host executable] --> RuntimeCore[Runtime frame application]
+    RuntimeCore --> Runtime[Runtime Session / World]
+    RuntimeCore --> Platform[Platform contract]
+    WindowsHost --> Bridge
+    WindowsHost --> Extractor
+    WindowsHost --> Renderer
+    WindowsHost --> PlatformWin
+    WindowsHost --> D3D12
     ToolHost[Tool Host] --> Tools[Build / Import / Cook / Package tools]
     ToolHost --> PlatformWin
     PlatformWin --> Platform[Platform contract]

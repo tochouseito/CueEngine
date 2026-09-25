@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.2.0)
 
 project(CueEngine LANGUAGES CXX)
 
-# DebugはDebug Runtime、DevelopmentとReleaseはRelease Runtimeを使う
+# Debug は Debug Runtime、Development と Release は Release Runtime を使う
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
@@ -10,6 +10,7 @@ if(MSVC)
     add_compile_options(/MP)
 endif()
 
+# Test の有無を BUILD_TESTING で切り替え、Source の構成は共通に保つ
 include(CTest)
 
 add_subdirectory(Engine/Source)
