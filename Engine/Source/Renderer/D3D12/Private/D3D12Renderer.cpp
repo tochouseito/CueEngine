@@ -1,8 +1,9 @@
-#include <Cue/Renderer/Windows/WindowsRenderer.h>
+#include <Cue/Renderer/D3D12/D3D12Renderer.h>
 
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <utility>
 
 #define WIN32_LEAN_AND_MEAN
@@ -26,7 +27,7 @@ Error gpu_error(const char* a_operation, HRESULT a_result)
 }
 } // namespace
 
-class WindowsRenderer::State final
+class D3D12Renderer::State final
 {
 public:
     struct FrameResource final
@@ -46,25 +47,14 @@ public:
         }
     }
 
-    /// @brief Queue上の全ての処理が完了したことを確認する
-    [[nodiscard]] Result<void> wait_idle()
+    /// @brief 指定したFence値に達するまでCPU側で待機する
+    [[nodiscard]] Result<void> wait_for(std::uint64_t a_value)
     {
-        // Queue作成前の部分失敗では待機対象がない
-        if (!queue || !fence)
+        if (fence->GetCompletedValue() >= a_value)
         {
             return Result<void>::success();
         }
-        const std::uint64_t value = nextFenceValue++;
-        const HRESULT signalResult = queue->Signal(fence.Get(), value);
-        if (FAILED(signalResult))
-        {
-            return Result<void>::failure(gpu_error("ID3D12CommandQueue.Signal", signalResult));
-        }
-        if (fence->GetCompletedValue() >= value)
-        {
-            return Result<void>::success();
-        }
-        const HRESULT eventResult = fence->SetEventOnCompletion(value, fenceEvent);
+        const HRESULT eventResult = fence->SetEventOnCompletion(a_value, fenceEvent);
         if (FAILED(eventResult))
         {
             return Result<void>::failure(gpu_error("ID3D12Fence.SetEventOnCompletion", eventResult));
@@ -84,6 +74,23 @@ public:
         return Result<void>::success();
     }
 
+    /// @brief Queue上の全ての処理が完了したことを確認する
+    [[nodiscard]] Result<void> wait_idle()
+    {
+        // Queue作成前の部分失敗では待機対象がない
+        if (!queue || !fence)
+        {
+            return Result<void>::success();
+        }
+        const std::uint64_t value = nextFenceValue++;
+        const HRESULT signalResult = queue->Signal(fence.Get(), value);
+        if (FAILED(signalResult))
+        {
+            return Result<void>::failure(gpu_error("ID3D12CommandQueue.Signal", signalResult));
+        }
+        return wait_for(value);
+    }
+
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -97,30 +104,33 @@ public:
     std::uint64_t nextFenceValue = 1;
     WindowSize size{};
     bool isWarp = false;
+    std::thread::id renderThreadId;
+    std::uint64_t lastFrame = 0;
+    bool hasRendered = false;
 };
 
 /// @brief 初期化済みGPU Stateを受け取る
-WindowsRenderer::WindowsRenderer(std::unique_ptr<State> a_state) noexcept
+D3D12Renderer::D3D12Renderer(std::unique_ptr<State> a_state) noexcept
     : m_state(std::move(a_state))
 {
 }
 
 /// @brief 呼出側が明示停止を忘れてもGPUを待ってから所有資源を破棄する
-WindowsRenderer::~WindowsRenderer()
+D3D12Renderer::~D3D12Renderer()
 {
     [[maybe_unused]] auto result = shutdown();
 }
 
 /// @brief Hardware優先または明示WARPでDeviceとPresentation資源を生成する
-Result<std::unique_ptr<WindowsRenderer>> WindowsRenderer::create(void* a_nativeWindow, WindowSize a_clientSize,
+Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindow, WindowSize a_clientSize,
                                                                   bool a_useWarp)
 {
-    using RendererResult = Result<std::unique_ptr<WindowsRenderer>>;
+    using RendererResult = Result<std::unique_ptr<D3D12Renderer>>;
 
     // Window生成後の有効なClient AreaだけでSwap Chainを作る
     if (!a_nativeWindow || a_clientSize.width == 0 || a_clientSize.height == 0)
     {
-        return RendererResult::failure({ErrorCategory::InvalidArgument, "WindowsRenderer.create"});
+        return RendererResult::failure({ErrorCategory::InvalidArgument, "D3D12Renderer.create"});
     }
     auto state = std::make_unique<State>();
     state->size = a_clientSize;
@@ -181,7 +191,7 @@ Result<std::unique_ptr<WindowsRenderer>> WindowsRenderer::create(void* a_nativeW
         }
         if (!state->adapter)
         {
-            return RendererResult::failure({ErrorCategory::PlatformFailure, "WindowsRenderer.noHardwareAdapter",
+            return RendererResult::failure({ErrorCategory::PlatformFailure, "D3D12Renderer.noHardwareAdapter",
                                             static_cast<std::int64_t>(DXGI_ERROR_NOT_FOUND)});
         }
     }
@@ -272,12 +282,12 @@ Result<std::unique_ptr<WindowsRenderer>> WindowsRenderer::create(void* a_nativeW
     {
         return RendererResult::failure({ErrorCategory::PlatformFailure, "CreateEventW.GpuFence", GetLastError()});
     }
-    WindowsRenderer renderer(std::move(state));
-    return RendererResult::success(std::make_unique<WindowsRenderer>(std::move(renderer)));
+    D3D12Renderer renderer(std::move(state));
+    return RendererResult::success(std::make_unique<D3D12Renderer>(std::move(renderer)));
 }
 
 /// @brief GPU作業を完了させてからWindow依存資源を破棄する
-Result<void> WindowsRenderer::shutdown()
+Result<void> D3D12Renderer::shutdown()
 {
     if (!m_state)
     {
@@ -288,8 +298,91 @@ Result<void> WindowsRenderer::shutdown()
     return waitResult;
 }
 
+/// @brief Back BufferをClearしてGPU完了条件をFrame単位で記録する
+Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
+{
+    if (!m_state)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.render_frame"});
+    }
+    State& state = *m_state;
+    if (state.renderThreadId == std::thread::id{})
+    {
+        state.renderThreadId = std::this_thread::get_id();
+    }
+    if (state.renderThreadId != std::this_thread::get_id())
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "D3D12Renderer.render_frame"});
+    }
+    if (state.hasRendered && a_frame <= state.lastFrame)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.frameOrder"});
+    }
+
+    // BufferごとのFence完了後だけAllocatorを再利用する
+    const UINT index = state.swapChain->GetCurrentBackBufferIndex();
+    auto& frame = state.frames[index];
+    if (frame.fenceValue != 0)
+    {
+        auto waitResult = state.wait_for(frame.fenceValue);
+        if (!waitResult.has_value())
+        {
+            return waitResult;
+        }
+    }
+    HRESULT result = frame.allocator->Reset();
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12CommandAllocator.Reset", result));
+    }
+    result = state.commandList->Reset(frame.allocator.Get(), nullptr);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Reset", result));
+    }
+
+    // Present可能な状態からRTVへ遷移して単色で塗り、Present状態へ戻す
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = frame.backBuffer.Get();
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    state.commandList->ResourceBarrier(1, &barrier);
+    state.commandList->OMSetRenderTargets(1, &frame.rtv, FALSE, nullptr);
+    constexpr float k_clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
+    state.commandList->ClearRenderTargetView(frame.rtv, k_clearColor, 0, nullptr);
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    state.commandList->ResourceBarrier(1, &barrier);
+    result = state.commandList->Close();
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Close", result));
+    }
+    ID3D12CommandList* lists[] = {state.commandList.Get()};
+    state.queue->ExecuteCommandLists(1, lists);
+
+    // FrameControllerが60 FPSを制御するためPresent側では待機を追加しない
+    result = state.swapChain->Present(0, 0);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("IDXGISwapChain.Present", result));
+    }
+    const std::uint64_t fenceValue = state.nextFenceValue++;
+    result = state.queue->Signal(state.fence.Get(), fenceValue);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12CommandQueue.Signal", result));
+    }
+    frame.fenceValue = fenceValue;
+    state.lastFrame = a_frame;
+    state.hasRendered = true;
+    return Result<void>::success();
+}
+
 /// @brief Adapter選択経路を診断可能にする
-bool WindowsRenderer::is_warp() const noexcept
+bool D3D12Renderer::is_warp() const noexcept
 {
     return m_state && m_state->isWarp;
 }

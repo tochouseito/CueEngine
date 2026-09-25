@@ -24,11 +24,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     {
         cue::WindowsHost host({{"CueEngine Windows Host", {1280, 720}}, {2, true, 60}});
 
-        // Renderer接続前はRender Callbackを空処理にする
-        auto initResult = host.initialize(&update_frame,
-                                          [](std::uint64_t, std::stop_token) {
-                                              return cue::Result<void>::success();
-                                          });
+        // Hostの初期化中にRendererを作り、Render Callbackへ単色描画を登録する
+        auto initResult = host.initialize_renderer(&update_frame);
         if (!initResult.has_value())
         {
             // 部分初期化を回収し、Cleanup の失敗より起動失敗を主原因として残す

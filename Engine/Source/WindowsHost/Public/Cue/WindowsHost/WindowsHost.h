@@ -36,6 +36,11 @@ public:
     /// 構築Threadから一度だけ呼ぶ。失敗時は部分資源を破棄して停止済みにする
     [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render);
 
+    /// @brief 製品用Rendererを作り、Render Callbackへ単色描画を登録する
+    ///
+    /// 構築Threadから一度だけ呼ぶ。GPU初期化失敗時もWindowとServiceを回収する
+    [[nodiscard]] Result<void> initialize_renderer(FrameCallback a_update);
+
     /// @brief Window Eventを処理し、継続中ならRuntimeを1回進める
     ///
     /// Close要求を受けた周回ではFrameを進めない。終了時はfalseを返す
@@ -52,6 +57,10 @@ public:
 
 private:
     class State;
+
+    /// @brief テスト用Callbackと製品用Rendererの初期化経路を共有する
+    [[nodiscard]] Result<void> initialize_impl(FrameCallback a_update, FrameCallback a_render,
+                                               bool a_createRenderer);
 
     enum class Lifecycle
     {

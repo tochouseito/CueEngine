@@ -84,13 +84,13 @@ M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを
 
 ## M03 WindowsHostと共通Runtimeの起動・終了基盤
 
-`CueWindowsHost`の`WindowsHost`は`WindowSystem`、Window、Windows用の時間／Thread Service、共通`Runtime`を所有する。`Runtime`は注入されたServiceを借用して`FrameController`とWorkerを所有し、WindowやWin32型を持たない。MainThreadは`WindowsHost::step()`を呼び、Window Messageで終了要求がなければ内部で`Runtime::step()`へ進む。Close要求を受けた周回ではFrameを進めず、RuntimeのWorkerを停止・joinしてからWindowを破棄する。現在のUpdate／Render Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
+`CueWindowsHost`の`WindowsHost`は`WindowSystem`、Window、Windows用の時間／Thread Service、共通`Runtime`を所有する。`Runtime`は注入されたServiceを借用して`FrameController`とWorkerを所有し、WindowやWin32型を持たない。MainThreadは`WindowsHost::step()`を呼び、Window Messageで終了要求がなければ内部で`Runtime::step()`へ進む。Close要求を受けた周回ではFrameを進めず、RuntimeのWorkerを停止・joinしてからWindowを破棄する。M03完了時点のUpdate／Render Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続だった。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
 
 ```powershell
 & 'out/build/windows-vs2026/bin/Debug/CueWindowsHost.exe'
 ```
 
-自動終了、単一Thread、Render失敗の注入は`Engine/Tests/Platform/WindowsHostProcessTests.cpp`のTest専用子Processで行う。製品用`CueWindowsHost.exe`のMainと`WindowsHostDesc`にはTest専用引数を含めない。描画とPresentはM04で接続する。
+自動終了、単一Thread、Render失敗の注入は`Engine/Tests/Platform/WindowsHostProcessTests.cpp`のTest専用子Processで行う。製品用`CueWindowsHost.exe`のMainと`WindowsHostDesc`にはTest専用引数を含めない。
 
 2026-09-25、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、WindowなしのRuntime起動、WindowsHostの起動・Close、自動終了、単一Thread、Callback失敗のTestを含めて確認した。Debugの`CueWindowsHost.exe`を実際に表示し、タイトルバーのCloseでWindowが消えることも確認した。
 
@@ -103,3 +103,7 @@ M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを
 この表はConsole Smoke削除後の再検証結果。
 
 `CueWindowHost`を削除した後もWindowsHostのProcess Test 4件は継続する。
+
+## M04 最小Renderer
+
+`Cue.Renderer.D3D12`がWindows用のSwap Chain、RTV、Command Allocator、Fenceを所有する。`WindowsHost`はRendererを初期化し、共通`Runtime`のRender Callbackから単色ClearとPresentを実行する。現在は`FrameController`の60 FPS制御を使い、`Present(0, 0)`で二重の待機を避ける。Rendererの所有境界は[ADR-0005](Docs/Decisions/0005-minimal-renderer-presentation.md)を参照する。

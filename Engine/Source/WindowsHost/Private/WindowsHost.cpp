@@ -5,6 +5,7 @@
 
 #include <Cue/Platform/Diagnostics.h>
 #include <Cue/Platform/Windows/WindowsPlatform.h>
+#include <Cue/Renderer/D3D12/D3D12Renderer.h>
 
 namespace cue
 {
@@ -14,6 +15,7 @@ public:
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     WindowsThreadServices services;
+    std::unique_ptr<D3D12Renderer> renderer;
     std::unique_ptr<Runtime> runtime;
     bool isCloseRequested = false;
     bool isDestroyed = false;
@@ -38,6 +40,18 @@ WindowsHost::~WindowsHost()
 /// @brief Windows資源を構築して共通Runtimeを開始する
 Result<void> WindowsHost::initialize(FrameCallback a_update, FrameCallback a_render)
 {
+    return initialize_impl(std::move(a_update), std::move(a_render), false);
+}
+
+/// @brief 製品用RendererのFrame処理をHost初期化中に接続する
+Result<void> WindowsHost::initialize_renderer(FrameCallback a_update)
+{
+    return initialize_impl(std::move(a_update), {}, true);
+}
+
+/// @brief 共通のWindow・Service・Runtime初期化をRenderer有無で組み立てる
+Result<void> WindowsHost::initialize_impl(FrameCallback a_update, FrameCallback a_render, bool a_createRenderer)
+{
     // WindowsHost は構築 Thread でしか操作できない
     if (std::this_thread::get_id() != m_ownerId)
     {
@@ -52,7 +66,7 @@ Result<void> WindowsHost::initialize(FrameCallback a_update, FrameCallback a_ren
     m_lifecycle = Lifecycle::Stopped;
 
     // Callback がない場合は Runtime を開始できない
-    if (!a_update || !a_render)
+    if (!a_update || (!a_createRenderer && !a_render))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.callbacks"});
     }
@@ -100,6 +114,30 @@ Result<void> WindowsHost::initialize(FrameCallback a_update, FrameCallback a_ren
         return rollback(*servicesResult.try_error());
     }
     m_state->services = servicesResult.take_value();
+
+    if (a_createRenderer)
+    {
+        // Native HandleはWindowが生存する間だけ借用し、D3D12型はRenderer実装へ閉じ込める
+        auto handleResult = borrow_windows_window_handle(*m_state->window);
+        if (!handleResult.has_value())
+        {
+            return rollback(*handleResult.try_error());
+        }
+        auto rendererResult = D3D12Renderer::create(handleResult.take_value(), m_state->window->client_size());
+        if (!rendererResult.has_value())
+        {
+            return rollback(*rendererResult.try_error());
+        }
+        m_state->renderer = rendererResult.take_value();
+        D3D12Renderer* renderer = m_state->renderer.get();
+        a_render = [renderer](std::uint64_t a_frame, std::stop_token a_stopToken) {
+            if (a_stopToken.stop_requested())
+            {
+                return Result<void>::success();
+            }
+            return renderer->render_frame(a_frame);
+        };
+    }
 
     // Runtime が借用する Service は、Runtime 停止後まで Host が保持する
     m_state->runtime = std::make_unique<Runtime>(m_desc.frame, *m_state->services.clock,
@@ -210,6 +248,16 @@ Result<void> WindowsHost::shutdown()
             failure = *stopResult.try_error();
         }
         m_state->runtime.reset();
+    }
+    // Render Worker停止後にGPU完了を待ち、Windowより先にSwap Chainを解放する
+    if (m_state->renderer)
+    {
+        auto rendererResult = m_state->renderer->shutdown();
+        if (!rendererResult.has_value() && !failure)
+        {
+            failure = *rendererResult.try_error();
+        }
+        m_state->renderer.reset();
     }
     // Worker の join 完了後に借用されていた Service を解放する
     m_state->services = {};

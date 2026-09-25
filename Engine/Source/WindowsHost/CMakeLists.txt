@@ -11,7 +11,7 @@ target_link_libraries(Cue.WindowsHost
     # 公開 Header の Runtime と Platform 契約だけを利用側へ伝える
     PUBLIC Cue.Runtime Cue.Platform
     # Win32 実装は Host 内部の依存に留める
-    PRIVATE Cue.Platform.Windows
+    PRIVATE Cue.Platform.Windows Cue.Renderer.D3D12
 )
 
 target_compile_features(Cue.WindowsHost PUBLIC cxx_std_20)

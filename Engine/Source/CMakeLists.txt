@@ -4,7 +4,7 @@ add_subdirectory(Runtime)
 
 if(WIN32)
     # WindowsのD3D12 Backendは共通Runtimeと分離する
-    add_subdirectory(Renderer/Windows)
+    add_subdirectory(Renderer/D3D12)
 
     # WindowsHost Library を先に定義し、実行 Target は起動、Step、終了判断を持つ
     add_subdirectory(WindowsHost)
