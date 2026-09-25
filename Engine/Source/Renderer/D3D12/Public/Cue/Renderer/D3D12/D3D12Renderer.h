@@ -8,6 +8,13 @@
 
 namespace cue
 {
+/// @brief 適用済みSurfaceと成功したPresentの診断値を保持する
+struct D3D12RendererProgress final
+{
+    WindowSize surfaceSize{};
+    std::uint64_t presentedFrames = 0;
+};
+
 /// @brief WindowsのSwap ChainとD3D12 Frame Resourceを一意所有する
 ///
 /// Native HandleはWindowが生存する間だけ借用する。生成と停止はHostのMainThreadで行う
@@ -41,6 +48,16 @@ public:
     /// 初回の呼出ThreadをRender Threadとし、以降は同じThreadから直列に呼ぶ
     /// 同一または古いFrame番号を拒否する。失敗後はHostが停止へ進む
     [[nodiscard]] Result<void> render_frame(std::uint64_t a_frame);
+
+    /// @brief MainThreadから最新のWindow表示状態を渡す
+    ///
+    /// 呼出しはRender Callbackと並行できる。最小化中またはSizeが0の間は描画を保留し、復帰後に最新Sizeを適用する
+    [[nodiscard]] Result<void> request_surface(WindowSize a_clientSize, bool a_isMinimized);
+
+    /// @brief Render Threadが適用したSurfaceとPresent数のSnapshotを返す
+    ///
+    /// request_surfaceとrender_frameの並行中も呼べる。shutdownとの並行呼出は行わない
+    [[nodiscard]] Result<D3D12RendererProgress> progress() const;
 
     /// @brief 選択したAdapterがWARPかを返す
     [[nodiscard]] bool is_warp() const noexcept;

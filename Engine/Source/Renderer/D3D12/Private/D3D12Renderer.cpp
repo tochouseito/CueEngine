@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -91,6 +92,70 @@ public:
         return wait_for(value);
     }
 
+    /// @brief GPU完了後に旧Buffer参照を解放してRTVを再生成する
+    [[nodiscard]] Result<void> resize(WindowSize a_size)
+    {
+        if (a_size.width == size.width && a_size.height == size.height)
+        {
+            return Result<void>::success();
+        }
+        auto idleResult = wait_idle();
+        if (!idleResult.has_value())
+        {
+            return idleResult;
+        }
+
+        // Closed Command Listにも旧Buffer参照が残り得るため先に解放する
+        commandList.Reset();
+        for (auto& frame : frames)
+        {
+            frame.backBuffer.Reset();
+            frame.fenceValue = 0;
+        }
+        HRESULT result = swapChain->ResizeBuffers(k_bufferCount, a_size.width, a_size.height,
+                                                   DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("IDXGISwapChain.ResizeBuffers", result));
+        }
+
+        const UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        const auto rtvStart = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        for (UINT index = 0; index < k_bufferCount; ++index)
+        {
+            auto& frame = frames[index];
+            result = swapChain->GetBuffer(index, IID_PPV_ARGS(&frame.backBuffer));
+            if (FAILED(result))
+            {
+                return Result<void>::failure(gpu_error("IDXGISwapChain.GetBuffer", result));
+            }
+            frame.rtv.ptr = rtvStart.ptr + static_cast<SIZE_T>(index) * descriptorSize;
+            device->CreateRenderTargetView(frame.backBuffer.Get(), nullptr, frame.rtv);
+        }
+        result = frames[0].allocator->Reset();
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("ID3D12CommandAllocator.Reset.resize", result));
+        }
+        result = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                           frames[0].allocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("ID3D12Device.CreateCommandList.resize", result));
+        }
+        result = commandList->Close();
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Close.resize", result));
+        }
+        size = a_size;
+        {
+            std::lock_guard lock(surfaceMutex);
+            progress.surfaceSize = a_size;
+        }
+        return Result<void>::success();
+    }
+
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -103,6 +168,10 @@ public:
     HANDLE fenceEvent = nullptr;
     std::uint64_t nextFenceValue = 1;
     WindowSize size{};
+    std::mutex surfaceMutex;
+    WindowSize requestedSize{};
+    D3D12RendererProgress progress{};
+    bool isMinimized = false;
     bool isWarp = false;
     std::thread::id renderThreadId;
     std::uint64_t lastFrame = 0;
@@ -134,6 +203,8 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     auto state = std::make_unique<State>();
     state->size = a_clientSize;
+    state->requestedSize = a_clientSize;
+    state->progress.surfaceSize = a_clientSize;
     state->isWarp = a_useWarp;
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
@@ -319,6 +390,26 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.frameOrder"});
     }
 
+    // MainThreadのResize連打は最後の要求だけを反映し、最小化中はGPU操作を休止する
+    WindowSize requestedSize{};
+    bool isMinimized = false;
+    {
+        std::lock_guard lock(state.surfaceMutex);
+        requestedSize = state.requestedSize;
+        isMinimized = state.isMinimized;
+    }
+    if (isMinimized || requestedSize.width == 0 || requestedSize.height == 0)
+    {
+        state.lastFrame = a_frame;
+        state.hasRendered = true;
+        return Result<void>::success();
+    }
+    auto resizeResult = state.resize(requestedSize);
+    if (!resizeResult.has_value())
+    {
+        return resizeResult;
+    }
+
     // BufferごとのFence完了後だけAllocatorを再利用する
     const UINT index = state.swapChain->GetCurrentBackBufferIndex();
     auto& frame = state.frames[index];
@@ -378,7 +469,38 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     frame.fenceValue = fenceValue;
     state.lastFrame = a_frame;
     state.hasRendered = true;
+    {
+        std::lock_guard lock(state.surfaceMutex);
+        ++state.progress.presentedFrames;
+    }
     return Result<void>::success();
+}
+
+/// @brief Window Eventの最新Sizeと最小化状態をRender Threadへ渡す
+Result<void> D3D12Renderer::request_surface(WindowSize a_clientSize, bool a_isMinimized)
+{
+    if (!m_state)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.request_surface"});
+    }
+    std::lock_guard lock(m_state->surfaceMutex);
+    if (!a_isMinimized)
+    {
+        m_state->requestedSize = a_clientSize;
+    }
+    m_state->isMinimized = a_isMinimized;
+    return Result<void>::success();
+}
+
+/// @brief 適用済みSurfaceとPresent数を同期して返す
+Result<D3D12RendererProgress> D3D12Renderer::progress() const
+{
+    if (!m_state)
+    {
+        return Result<D3D12RendererProgress>::failure({ErrorCategory::InvalidState, "D3D12Renderer.progress"});
+    }
+    std::lock_guard lock(m_state->surfaceMutex);
+    return Result<D3D12RendererProgress>::success(m_state->progress);
 }
 
 /// @brief Adapter選択経路を診断可能にする

@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <stop_token>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace
 {
 /// @brief 通知の先行、停止、Routine失敗がHostへ伝わることを確認する
@@ -98,6 +101,45 @@ int run_tests()
     {
         return 12;
     }
+
+    // Window所有Threadのjoin待機中もWorkerからの同期Messageを処理する
+    auto windowSystemResult = cue::create_windows_window_system();
+    if (!windowSystemResult.has_value())
+    {
+        return 14;
+    }
+    auto windowSystem = windowSystemResult.take_value();
+    auto windowResult = windowSystem->create_window({"Thread Join Message Test", {320, 240}});
+    if (!windowResult.has_value())
+    {
+        return 15;
+    }
+    auto window = windowResult.take_value();
+    auto handleResult = cue::borrow_windows_window_handle(*window);
+    if (!handleResult.has_value())
+    {
+        return 16;
+    }
+    const auto handle = static_cast<HWND>(handleResult.take_value());
+    auto messageThreadResult = services.threadFactory->start([handle](std::stop_token) {
+        SendMessageW(handle, WM_NULL, 0, 0);
+        return cue::Result<void>::success();
+    });
+    if (!messageThreadResult.has_value())
+    {
+        return 17;
+    }
+    auto messageThread = messageThreadResult.take_value();
+    if (!messageThread->join().has_value())
+    {
+        return 17;
+    }
+    if (!window->destroy().has_value())
+    {
+        return 18;
+    }
+    window.reset();
+    windowSystem.reset();
 
     // 通知がない通常の Sleep は時間切れとして返る
     if (services.waiter->sleep_for(std::chrono::milliseconds(16), {}) != cue::WaitStatus::TimedOut)

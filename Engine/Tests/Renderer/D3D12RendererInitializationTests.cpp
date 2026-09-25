@@ -54,6 +54,59 @@ int main()
         return 9;
     }
 
+    // Resize連打の最終Sizeが適用され、最小化中はPresent数が増えないことを確認する
+    if (!renderer->request_surface({800, 600}, false).has_value() ||
+        !renderer->request_surface({1024, 768}, false).has_value() ||
+        !renderer->render_frame(3).has_value())
+    {
+        return 10;
+    }
+    auto resized = renderer->progress();
+    if (!resized.has_value() || resized.try_value()->surfaceSize.width != 1024 ||
+        resized.try_value()->surfaceSize.height != 768 || resized.try_value()->presentedFrames != 4)
+    {
+        return 12;
+    }
+    if (!renderer->request_surface({}, true).has_value() || !renderer->render_frame(4).has_value())
+    {
+        return 13;
+    }
+    auto minimized = renderer->progress();
+    if (!minimized.has_value() || minimized.try_value()->presentedFrames != 4)
+    {
+        return 14;
+    }
+    if (!renderer->request_surface({640, 480}, false).has_value() || !renderer->render_frame(5).has_value())
+    {
+        return 15;
+    }
+    auto restored = renderer->progress();
+    if (!restored.has_value() || restored.try_value()->surfaceSize.width != 640 ||
+        restored.try_value()->surfaceSize.height != 480 || restored.try_value()->presentedFrames != 5)
+    {
+        return 16;
+    }
+    // Client Sizeが0の間はSwap Chainを触らず、非0へ戻った後に描画を再開する
+    if (!renderer->request_surface({}, false).has_value() || !renderer->render_frame(6).has_value())
+    {
+        return 11;
+    }
+    auto zeroSize = renderer->progress();
+    if (!zeroSize.has_value() || zeroSize.try_value()->presentedFrames != 5)
+    {
+        return 17;
+    }
+    if (!renderer->request_surface({640, 480}, false).has_value() ||
+        !renderer->render_frame(7).has_value())
+    {
+        return 18;
+    }
+    auto resumed = renderer->progress();
+    if (!resumed.has_value() || resumed.try_value()->presentedFrames != 6)
+    {
+        return 19;
+    }
+
     // Windowより先にGPU資源を停止し、停止の再呼出を許す
     if (!renderer->shutdown().has_value() || !renderer->shutdown().has_value() ||
         !window->destroy().has_value())
