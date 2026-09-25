@@ -48,6 +48,7 @@ public:
                                              std::chrono::nanoseconds a_duration,
                                              std::stop_token a_stopToken) noexcept override
     {
+        // 待機開始前の通知や停止要求を先に判定して不要な Sleep を避ける
         std::unique_lock lock(m_mutex);
         if (a_stopToken.stop_requested())
         {
@@ -62,6 +63,7 @@ public:
             return WaitStatus::TimedOut;
         }
 
+        // Condition と Stop Token の両方で解除し、解除後に理由を判定する
         m_condition.wait_for(lock, a_stopToken, a_duration,
                              [this, a_observedGeneration]() { return m_generation != a_observedGeneration; });
         if (a_stopToken.stop_requested())
@@ -75,6 +77,7 @@ public:
     [[nodiscard]] WaitStatus sleep_for(std::chrono::nanoseconds a_duration,
                                        std::stop_token a_stopToken) noexcept override
     {
+        // FPS 制御では通常通知で短縮せず、停止要求だけを割り込ませる
         std::unique_lock lock(m_mutex);
         if (a_stopToken.stop_requested())
         {
@@ -100,6 +103,7 @@ public:
     /// @brief Routineを別Threadで開始する
     explicit WindowsThread(ThreadRoutine a_routine)
     {
+        // Worker の Result と例外を保持し、join した Thread へ渡す
         m_thread = std::jthread([this, routine = std::move(a_routine)](std::stop_token a_stopToken) mutable {
             try
             {
@@ -121,6 +125,7 @@ public:
     /// @brief 停止要求後にWorkerの終了を待って破棄する
     ~WindowsThread() override
     {
+        // 明示 join がなくても Routine の捕捉先より先に Worker を止める
         request_stop();
         if (m_thread.joinable())
         {
@@ -137,6 +142,7 @@ public:
     /// @brief Workerの完了とRoutine結果を取得する
     [[nodiscard]] Result<void> join() override
     {
+        // 自分自身を join できず、成功した join だけ完了済みとして記録する
         if (!m_isJoined)
         {
             if (std::this_thread::get_id() == m_thread.get_id())
@@ -154,6 +160,7 @@ public:
             }
         }
 
+        // join 後に Worker が保存した失敗を優先順位付きで返す
         std::lock_guard lock(m_resultMutex);
         if (m_exception)
         {
@@ -186,12 +193,14 @@ public:
     /// @brief Routineを別Threadで開始して所有Handleを返す
     [[nodiscard]] Result<std::unique_ptr<Thread>> start(ThreadRoutine a_routine) override
     {
+        // Routine がなければ Thread を起動せず、呼出側へ入力失敗を返す
         if (!a_routine)
         {
             return Result<std::unique_ptr<Thread>>::failure({ErrorCategory::InvalidArgument, "ThreadFactory.start"});
         }
         try
         {
+            // Thread の一意所有権を抽象 Interface として返す
             std::unique_ptr<Thread> thread = std::make_unique<WindowsThread>(std::move(a_routine));
             return Result<std::unique_ptr<Thread>>::success(std::move(thread));
         }
@@ -213,6 +222,7 @@ Result<WindowsThreadServices> create_windows_thread_services()
 {
     try
     {
+        // Service の寿命は返した構造体の Owner が管理する
         WindowsThreadServices services{};
         services.clock = std::make_unique<WindowsClock>();
         services.waiter = std::make_unique<WindowsWaiter>();

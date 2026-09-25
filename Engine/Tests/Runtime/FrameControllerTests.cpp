@@ -39,6 +39,7 @@ private:
 /// @brief Frame番号の順序と有界な先行数を実Workerで確認する
 int test_worker_frames(cue::WindowsThreadServices& a_services)
 {
+    // Update と Render の記録を共有し、同じ Frame の順序違反を検出する
     std::mutex recordMutex;
     std::array<bool, 6> wasUpdated{};
     std::uint64_t renderedFrames = 0;
@@ -74,6 +75,7 @@ int test_worker_frames(cue::WindowsThreadServices& a_services)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (controller.progress().renderedFrames < wasUpdated.size() && std::chrono::steady_clock::now() < deadline)
     {
+        // 投入数と完了数の差が上限を超えないよう進行を観測する
         const auto generation = a_services.waiter->generation();
         if (controller.progress().submittedFrames < wasUpdated.size())
         {
@@ -95,6 +97,7 @@ int test_worker_frames(cue::WindowsThreadServices& a_services)
     {
         return 4;
     }
+    // Callback の記録と Controller の Snapshot が同じ完了状態を示す
     const auto progress = controller.progress();
     if (progress.submittedFrames != 6 || progress.updatedFrames != 6 || progress.renderedFrames != 6)
     {
@@ -120,6 +123,7 @@ int test_worker_frames(cue::WindowsThreadServices& a_services)
 /// @brief 単一Thread経路が同じFrameのUpdate後にRenderを処理することを確認する
 int test_single_thread(cue::WindowsThreadServices& a_services)
 {
+    // Worker を作らず、Main Thread 上の Update 後に Render が走る条件を作る
     bool wasUpdated = false;
     const auto ownerId = std::this_thread::get_id();
     cue::FrameController controller(
@@ -157,6 +161,7 @@ int test_single_thread(cue::WindowsThreadServices& a_services)
 /// @brief Hostが開始前にCallbackを一度だけ登録できることを確認する
 int test_callback_registration(cue::WindowsThreadServices& a_services)
 {
+    // 登録前の開始と欠けた Callback は拒否する
     cue::FrameController controller({1, false, 0}, *a_services.clock, *a_services.waiter,
                                     *a_services.threadFactory);
     if (controller.start().has_value())
@@ -172,6 +177,7 @@ int test_callback_registration(cue::WindowsThreadServices& a_services)
     }
     bool wasUpdated = false;
     bool wasRendered = false;
+    // 正しい Callback は一度だけ登録でき、開始後の差替えは拒否する
     auto registerResult = controller.register_callbacks(
         [&](std::uint64_t a_frame, std::stop_token) {
             wasUpdated = a_frame == 0;
@@ -212,6 +218,7 @@ int test_callback_registration(cue::WindowsThreadServices& a_services)
 /// @brief Render完了間隔に指定FPSの上限が適用されることを確認する
 int test_fps_limit(cue::WindowsThreadServices& a_services)
 {
+    // 20 FPS の二つ目の完了までに最低限の間隔が空くことを測る
     cue::FrameController controller(
         {1, false, 20}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
         [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
@@ -239,6 +246,7 @@ int test_fps_limit(cue::WindowsThreadServices& a_services)
 /// @brief Worker経路でもRender完了間隔が上限FPSを下回らないことを確認する
 int test_worker_fps_limit(cue::WindowsThreadServices& a_services)
 {
+    // Worker 経路でも Render 完了間隔を Snapshot から確認する
     cue::FrameController controller(
         {1, true, 20}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
         [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
@@ -266,6 +274,7 @@ int test_worker_fps_limit(cue::WindowsThreadServices& a_services)
 /// @brief FPS上限の待機中も停止要求でWorkerを速やかに回収する
 int test_stop_during_fps_limit(cue::WindowsThreadServices& a_services)
 {
+    // 1 FPS の待機中に停止を要求し、1秒待ち切らずに join できることを測る
     std::atomic<int> renderCalls = 0;
     cue::FrameController controller(
         {2, true, 1}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
@@ -298,6 +307,7 @@ int test_stop_during_fps_limit(cue::WindowsThreadServices& a_services)
 /// @brief Workerの失敗がMainThreadへ伝わり停止できることを確認する
 int test_failure(cue::WindowsThreadServices& a_services)
 {
+    // Update Worker で発生した Native 診断値を Main Thread と停止結果で照合する
     cue::FrameController controller(
         {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
         [](std::uint64_t, std::stop_token) {
@@ -330,6 +340,7 @@ int test_failure(cue::WindowsThreadServices& a_services)
 /// @brief Render失敗とCallback例外がMainThreadへ伝わることを確認する
 int test_render_failure(cue::WindowsThreadServices& a_services)
 {
+    // Render Callback の例外は Worker 外へ投げず Result に変換する
     cue::FrameController controller(
         {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
         [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
@@ -359,6 +370,7 @@ int test_render_failure(cue::WindowsThreadServices& a_services)
 /// @brief 二番目のWorker起動失敗で一番目を回収して再試行できることを確認する
 int test_start_rollback(cue::WindowsThreadServices& a_services)
 {
+    // 二番目の Worker だけ失敗させ、最初の Worker が残らないことを確認する
     FailSecondThreadFactory factory(*a_services.threadFactory);
     cue::FrameController controller(
         {2, true}, *a_services.clock, *a_services.waiter, factory,
@@ -379,6 +391,7 @@ int test_start_rollback(cue::WindowsThreadServices& a_services)
 /// @brief 待機中のCallbackを停止要求で解除しWorkerを回収する
 int test_stop_during_callback(cue::WindowsThreadServices& a_services)
 {
+    // Callback 内で停止可能な長い待機を作る
     std::atomic<bool> entered = false;
     cue::FrameController controller(
         {1, true}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
@@ -401,6 +414,7 @@ int test_stop_during_callback(cue::WindowsThreadServices& a_services)
     {
         return 2;
     }
+    // Stop Token により Callback が待機を解除し、期限内に停止する
     const auto stopStart = std::chrono::steady_clock::now();
     if (!controller.stop().has_value())
     {

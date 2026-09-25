@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineの最小Build基盤とWindows Host。`CueEngine` はConsole Smoke、`CueWindowHost` はM02のダミーFrame検証用、`CueRuntimeHost` は製品用Hostの起動・終了基盤。Editor、Graphics、Runtime Worldはまだ含まない。Build定義はCMakeを正本とする。
+新CueEngineの最小Build基盤とWindows Host。`CueWindowsHost` はWindows用の起動・終了基盤。共通`Runtime`がFrame進行を担当する。Editor、Graphics、Runtime Worldはまだ含まない。Build定義はCMakeを正本とする。
 
 ## 開発環境
 
@@ -17,12 +17,10 @@ NuGet restoreと第三者Libraryの取得は不要。Repository RootをVisual St
 cmake --preset windows-vs2026
 cmake --build --preset windows-vs2026-debug
 ctest --preset windows-vs2026-debug --output-on-failure
-& 'out/build/windows-vs2026/bin/Debug/CueEngine.exe'
-& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe'
-& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe'
+& 'out/build/windows-vs2026/bin/Debug/CueWindowsHost.exe'
 ```
 
-DevelopmentとReleaseは、Build/Test Preset名末尾の`debug`をそれぞれ`development`、`release`に置き換える。実行ファイルは`out/build/windows-vs2026/bin/<Configuration>/`に生成される。`CueWindowHost` は1280×720のClient Areaを持つWindowを開き、右上の閉じるボタンで終了する。CTestはConsole Smoke、Foundation、Windows UTF変換、Platform公開Header、Win32 Lifecycle、別ProcessでのWindow表示とCloseを確認する。
+DevelopmentとReleaseは、Build/Test Preset名末尾の`debug`をそれぞれ`development`、`release`に置き換える。実行ファイルは`out/build/windows-vs2026/bin/<Configuration>/`に生成される。`CueWindowsHost` は1280×720のClient Areaを持つWindowを開き、右上の閉じるボタンで終了する。CTestはFoundation、Windows UTF変換、Platform公開Header、Win32 Lifecycle、別ProcessでのWindow表示とCloseを確認する。
 
 日常のDebug Buildは次のScriptでも実行できる。`-Configuration Development`または`Release`も指定できる。
 
@@ -48,6 +46,8 @@ First-party Sourceは`Engine/Source/`、CTest登録は`Engine/Tests/`、Coding R
 
 Windows x64、CMake 4.2.3、Visual Studio 2026（MSVC 19.51.36260.0）、Windows SDK 10.0.26100.0で確認した。
 
+以下はM00完了当時の記録。Console Smoke Targetは現在の構成から削除した。
+
 | 構成 | Configure | Build | CTest | 実行 |
 | --- | --- | --- | --- | --- |
 | Debug | 成功 | 成功 | 1/1成功 | `CueEngine smoke OK` |
@@ -58,7 +58,7 @@ CIと製品Packageの経路はまだ用意していない。CIを追加すると
 
 ## M01 Window到達範囲
 
-`CueWindowHost` がWindowSystemとWindowを所有し、Close要求を受けてWindowを明示的に破棄する。描画、Swap Chain、ImGui、複数Windowは未実装。Platformの公開HeaderはWin32型を公開せず、Windows実装は`Engine/Source/Platform/Windows/`に置く。UTF-8／Windows UTF-16の相互変換は`Engine/Source/Foundation/Windows/`に集約する。
+M01ではWindowSystemとWindowの所有、Close要求後の明示的な破棄を検証した。現在は`CueWindowsHost`が同じ経路を使う。描画、Swap Chain、ImGui、複数Windowは未実装。Platformの公開HeaderはWin32型を公開せず、Windows実装は`Engine/Source/Platform/Windows/`に置く。UTF-8／Windows UTF-16の相互変換は`Engine/Source/Foundation/Windows/`に集約する。
 
 Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、M01追加後のBuildとCTestを確認した。
 
@@ -70,17 +70,11 @@ Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、M
 
 ## M02 Frame制御のダミー実行
 
-Hostの初期化時に`FrameController`へUpdate／RenderのCallbackを登録する。`Main.cpp`はWindow Messageを処理し、終了要求がなければ`FrameController::step()`を直接呼ぶ。終了要求を受けた周回ではFrameを進めず、Workerを停止・joinしてからWindowとSystemを破棄する。UpdateとRenderはそれぞれ別のWorker Threadで各Frameに16ms待機するダミー。Runtime World、Renderer、GPU Submitは接続していない。Frameは最大2件まで先行し、同じFrameのUpdate完了後にRenderを開始する。
+M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを登録し、MainThreadから`step()`を呼ぶ構成を検証した。当時の`CueWindowHost`は両Callbackで各16ms待機するダミーを実行した。M03でWindows用の`CueWindowsHost`へ統合したため、このダミー実行Targetは削除した。`FrameController`のFrame順序、Worker、FPS制御は専用Testで引き続き検証する。
 
-DebuggerにはFrame数、直近のUpdate／Render経過時間、Render完了間隔から求めたFPS、Thread識別子を約60Frameごとに出力する。`FrameController`は既定でRender完了間隔を最大60 FPSに制限し、`maxFps=0`で制限を無効化できる。まだPresentがないため、これは旧EngineのPresent後の制御に対応する暫定的な同期点。処理負荷やOSの待機精度によって60 FPSを保証するものではない。`CueWindowHost.exe --test-frames=4`は4Frameのダミー処理完了後に自動終了するTest用入口。`--single-thread`を追加すると、同じWindow Hostで両CallbackをMainThreadから順に実行する。
+`FrameController`は既定でRender完了間隔を最大60 FPSに制限し、`maxFps=0`で制限を無効化できる。まだPresentがないため、これは旧EngineのPresent後の制御に対応する暫定的な同期点。処理負荷やOSの待機精度によって60 FPSを保証するものではない。
 
-```powershell
-& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe'
-& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe' --test-frames=4
-& 'out/build/windows-vs2026/bin/Debug/CueWindowHost.exe' --test-frames=4 --single-thread
-```
-
-2026-09-24、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で確認した。自動終了Testは4Frame後にWindowとProcessが終了することと、直近のUpdate／Render待機を各15ms以上観測したことを検証する。Window Close Testは別Processへ`WM_CLOSE`を送り、Workerをjoinした後に正常終了する経路を検証する。Worker失敗時の伝播、Frame順序、指定20 FPSでのRender完了間隔40ms以上は`Cue.Runtime.FrameController` Testで確認する。
+2026-09-24、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で確認した。当時のダミー実行Targetでは16ms待機とWindow Closeを検証した。Worker失敗時の伝播、Frame順序、指定20 FPSでのRender完了間隔40ms以上は`Cue.Runtime.FrameController` Testで確認した。次の表はM02完了時点の記録であり、現在のTest件数ではない。
 
 | 構成 | Build | CTest |
 | --- | --- | --- |
@@ -88,22 +82,24 @@ DebuggerにはFrame数、直近のUpdate／Render経過時間、Render完了間�
 | Development | 成功 | 10/10成功 |
 | Release | 成功 | 10/10成功 |
 
-## M03 RuntimeHostの起動・終了基盤
+## M03 WindowsHostと共通Runtimeの起動・終了基盤
 
-`CueRuntimeHost` は`WindowSystem`、Window、時間／Thread Service、`FrameController`を所有する。MainThreadはWindow Messageを処理し、終了要求がなければ`FrameController::step()`を呼ぶ。Close要求を受けた周回ではFrameを進めず、Workerを停止・joinしてからWindowを破棄する。Update／Render Callbackは起動時に登録できる。現在の製品用Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続。`CueWindowHost`の各16msダミー処理はM02の検証用として残す。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
+`CueWindowsHost`の`WindowsHost`は`WindowSystem`、Window、Windows用の時間／Thread Service、共通`Runtime`を所有する。`Runtime`は注入されたServiceを借用して`FrameController`とWorkerを所有し、WindowやWin32型を持たない。MainThreadは`WindowsHost::step()`を呼び、Window Messageで終了要求がなければ内部で`Runtime::step()`へ進む。Close要求を受けた周回ではFrameを進めず、RuntimeのWorkerを停止・joinしてからWindowを破棄する。現在のUpdate／Render Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
 
 ```powershell
-& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe'
-& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe' --test-frames=4
-& 'out/build/windows-vs2026/bin/Debug/CueRuntimeHost.exe' --test-frames=4 --single-thread
+& 'out/build/windows-vs2026/bin/Debug/CueWindowsHost.exe'
 ```
 
-`--test-frames=4`はRender Callbackが4Frame完了した時点で自動終了するTest用入口。`--single-thread`はUpdate／RenderをMainThreadから順に実行する。`--test-fail-render`はRender Callback失敗が非0のProcess終了へ伝播するかを確認するTest専用指定。描画とPresentはM04で接続する。
+自動終了、単一Thread、Render失敗の注入は`Engine/Tests/Platform/WindowsHostProcessTests.cpp`のTest専用子Processで行う。製品用`CueWindowsHost.exe`のMainと`WindowsHostDesc`にはTest専用引数を含めない。描画とPresentはM04で接続する。
 
-2026-09-25、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、起動・Close、自動終了、単一Thread、Callback失敗のProcess Testを含めて確認した。
+2026-09-25、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、WindowなしのRuntime起動、WindowsHostの起動・Close、自動終了、単一Thread、Callback失敗のTestを含めて確認した。Debugの`CueWindowsHost.exe`を実際に表示し、タイトルバーのCloseでWindowが消えることも確認した。
 
 | 構成 | Build | CTest |
 | --- | --- | --- |
-| Debug | 成功 | 15/15成功 |
-| Development | 成功 | 15/15成功 |
-| Release | 成功 | 15/15成功 |
+| Debug | 成功 | 12/12成功 |
+| Development | 成功 | 12/12成功 |
+| Release | 成功 | 12/12成功 |
+
+この表はConsole Smoke削除後の再検証結果。
+
+`CueWindowHost`を削除した後もWindowsHostのProcess Test 4件は継続する。

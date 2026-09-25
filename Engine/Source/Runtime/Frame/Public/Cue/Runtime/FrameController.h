@@ -16,6 +16,7 @@
 
 namespace cue
 {
+/// @brief Frameの先行数、Worker利用、Render間隔の上限を指定する
 struct FrameControllerDesc final
 {
     std::uint32_t maxFramesInFlight = 2;
@@ -24,6 +25,7 @@ struct FrameControllerDesc final
     std::uint32_t maxFps = 60;
 };
 
+/// @brief Main Threadが進行状況を参照するためのSnapshot
 struct FrameProgress final
 {
     std::uint64_t submittedFrames = 0;
@@ -42,7 +44,7 @@ using FrameCallback = std::function<Result<void>(std::uint64_t, std::stop_token)
 
 /// @brief Main、Update、RenderのFrame順序とWorker寿命を管理する
 ///
-/// Hostが一意所有し、借用するClock、Waiter、ThreadFactoryより先に破棄する
+/// Runtimeが一意所有し、借用するClock、Waiter、ThreadFactoryより先に破棄する
 /// start、advance、stop、破棄は構築Threadでのみ行い、再入しない
 /// progressはThread-safe。WorkerはWindowや可変Worldを直接参照しない
 class FrameController final
@@ -61,7 +63,7 @@ public:
     FrameController(const FrameController&) = delete;
     FrameController& operator=(const FrameController&) = delete;
 
-    /// @brief Hostが所有するUpdateとRenderの処理を開始前に一度だけ登録する
+    /// @brief Runtimeから渡されたUpdateとRenderの処理を開始前に一度だけ登録する
     ///
     /// Callbackの借用先はstop完了まで有効に保つ。構築Threadから呼び、失敗時は未登録のままにする
     [[nodiscard]] Result<void> register_callbacks(FrameCallback a_update, FrameCallback a_render);

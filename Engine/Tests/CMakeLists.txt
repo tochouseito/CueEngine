@@ -1,9 +1,4 @@
-add_test(NAME CueEngine.Smoke COMMAND CueEngine)
-
-set_tests_properties(CueEngine.Smoke PROPERTIES
-    PASS_REGULAR_EXPRESSION "CueEngine smoke OK"
-)
-
+# Foundation と公開 Header は Platform 実装なしで単独検証する
 add_executable(CueFoundationResultTests
     Foundation/ResultTests.cpp
 )
@@ -21,15 +16,25 @@ target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 
 if(WIN32)
-    add_executable(CueRuntimeHostTests
-        Runtime/RuntimeHostTests.cpp
+    # Runtime と Host の Test は実際の Windows Service を接続して動かす
+    add_executable(CueRuntimeTests
+        Runtime/RuntimeTests.cpp
     )
 
-    target_link_libraries(CueRuntimeHostTests PRIVATE Cue.RuntimeHost)
+    target_link_libraries(CueRuntimeTests PRIVATE Cue.Runtime Cue.Platform.Windows)
 
-    add_test(NAME Cue.RuntimeHost.Lifecycle COMMAND CueRuntimeHostTests)
+    add_test(NAME Cue.Runtime.Windowless COMMAND CueRuntimeTests)
 
-    set_tests_properties(Cue.RuntimeHost.Lifecycle PROPERTIES TIMEOUT 10)
+    add_executable(CueWindowsHostTests
+        Platform/WindowsHostTests.cpp
+    )
+
+    target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost)
+
+    add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
+
+    # Window を表示する Test が固着しないよう実行時間を制限する
+    set_tests_properties(Cue.WindowsHost.Lifecycle PROPERTIES TIMEOUT 10)
 
     add_executable(CueFrameControllerTests
         Runtime/FrameControllerTests.cpp
@@ -65,29 +70,21 @@ if(WIN32)
 
     add_test(NAME Cue.Platform.Windows.Lifecycle COMMAND CueWindowsWindowLifecycleTests)
 
-    add_executable(CueWindowHostProcessTests
-        Platform/WindowHostProcessTests.cpp
+    add_executable(CueWindowsHostProcessTests
+        Platform/WindowsHostProcessTests.cpp
     )
 
-    target_link_libraries(CueWindowHostProcessTests PRIVATE Cue.Platform.Windows user32)
+    target_link_libraries(CueWindowsHostProcessTests PRIVATE Cue.WindowsHost user32)
 
-    add_test(NAME Cue.WindowHost.Process COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost>)
+    add_test(NAME Cue.WindowsHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost>)
 
-    add_test(NAME Cue.WindowHost.AutoFrames COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost> --auto)
+    add_test(NAME Cue.WindowsHost.AutoFrames COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHostProcessTests> --auto)
 
-    add_test(NAME Cue.WindowHost.SingleThread COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueWindowHost> --auto-single)
+    add_test(NAME Cue.WindowsHost.SingleThread COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHostProcessTests> --auto-single)
 
-    set_tests_properties(Cue.WindowHost.AutoFrames PROPERTIES TIMEOUT 7)
-    set_tests_properties(Cue.WindowHost.SingleThread PROPERTIES TIMEOUT 7)
+    add_test(NAME Cue.WindowsHost.RenderFailure COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHostProcessTests> --expect-render-failure)
 
-    add_test(NAME Cue.RuntimeHost.Process COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost>)
-
-    add_test(NAME Cue.RuntimeHost.AutoFrames COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --auto)
-
-    add_test(NAME Cue.RuntimeHost.SingleThread COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --auto-single)
-
-    add_test(NAME Cue.RuntimeHost.RenderFailure COMMAND CueWindowHostProcessTests $<TARGET_FILE:CueRuntimeHost> --expect-render-failure)
-
-    set_tests_properties(Cue.RuntimeHost.Process Cue.RuntimeHost.AutoFrames Cue.RuntimeHost.SingleThread
-                         Cue.RuntimeHost.RenderFailure PROPERTIES TIMEOUT 7)
+    # 子 Process を使う正常・異常終了の Test も時間制限を共有する
+    set_tests_properties(Cue.WindowsHost.Process Cue.WindowsHost.AutoFrames Cue.WindowsHost.SingleThread
+                         Cue.WindowsHost.RenderFailure PROPERTIES TIMEOUT 7)
 endif()

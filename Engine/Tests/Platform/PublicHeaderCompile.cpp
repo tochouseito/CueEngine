@@ -1,4 +1,5 @@
 #include <Cue/Platform/Clock.h>
+#include <Cue/Platform/Diagnostics.h>
 #include <Cue/Platform/Thread.h>
 #include <Cue/Platform/Waiter.h>
 #include <Cue/Platform/Window.h>

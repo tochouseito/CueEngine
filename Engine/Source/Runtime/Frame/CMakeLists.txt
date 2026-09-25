@@ -1,3 +1,4 @@
+# FrameController は Platform の抽象 Clock、Waiter、Thread を借用する
 add_library(Cue.Runtime.Frame STATIC
     Private/FrameController.cpp
 )

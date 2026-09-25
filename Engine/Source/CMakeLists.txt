@@ -1,21 +1,19 @@
-add_executable(CueEngine
-    Smoke/Main.cpp
-)
-
 add_subdirectory(Foundation)
 add_subdirectory(Platform)
-add_subdirectory(Runtime/Frame)
+add_subdirectory(Runtime)
 
 if(WIN32)
-    add_subdirectory(RuntimeHost)
+    # WindowsHost Library を先に定義し、実行 Target は起動、Step、終了判断を持つ
+    add_subdirectory(WindowsHost)
 
-    add_executable(CueRuntimeHost WIN32
-        RuntimeHost/Main.cpp
+    add_executable(CueWindowsHost WIN32
+        WindowsHost/Main.cpp
     )
 
-    target_link_libraries(CueRuntimeHost PRIVATE Cue.RuntimeHost)
+    target_link_libraries(CueWindowsHost PRIVATE Cue.WindowsHost Cue.Platform.Windows)
 
-    set_target_properties(CueRuntimeHost PROPERTIES
+    # 構成別の実行 File を同じ配置規則で出力する
+    set_target_properties(CueWindowsHost PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
@@ -23,72 +21,19 @@ if(WIN32)
     )
 
     if(MSVC)
-        target_compile_options(CueRuntimeHost PRIVATE
+        # Development は最適化と Debug 情報を併用する
+        target_compile_options(CueWindowsHost PRIVATE
             /utf-8
             $<$<CONFIG:Development>:/O2>
             $<$<CONFIG:Development>:/Zi>
         )
 
-        target_link_options(CueRuntimeHost PRIVATE
+        target_link_options(CueWindowsHost PRIVATE
             $<$<CONFIG:Development>:/DEBUG>
         )
     endif()
 
-    target_compile_definitions(CueRuntimeHost PRIVATE
-        $<$<CONFIG:Release>:CUE_SHIPPING=1>
-    )
-
-    add_executable(CueWindowHost WIN32
-        WindowHost/Main.cpp
-        WindowHost/WindowHost.cpp
-        WindowHost/WindowHost.h
-    )
-
-    target_link_libraries(CueWindowHost PRIVATE Cue.Platform.Windows Cue.Runtime.Frame)
-
-    set_target_properties(CueWindowHost PROPERTIES
-        CXX_STANDARD 20
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-    )
-
-    if(MSVC)
-        target_compile_options(CueWindowHost PRIVATE
-            /utf-8
-            $<$<CONFIG:Development>:/O2>
-            $<$<CONFIG:Development>:/Zi>
-        )
-
-        target_link_options(CueWindowHost PRIVATE
-            $<$<CONFIG:Development>:/DEBUG>
-        )
-    endif()
-
-    target_compile_definitions(CueWindowHost PRIVATE
+    target_compile_definitions(CueWindowsHost PRIVATE
         $<$<CONFIG:Release>:CUE_SHIPPING=1>
     )
 endif()
-
-set_target_properties(CueEngine PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-)
-
-if(MSVC)
-    target_compile_options(CueEngine PRIVATE
-        /utf-8
-        $<$<CONFIG:Development>:/O2>
-        $<$<CONFIG:Development>:/Zi>
-    )
-
-    target_link_options(CueEngine PRIVATE
-        $<$<CONFIG:Development>:/DEBUG>
-    )
-endif()
-
-target_compile_definitions(CueEngine PRIVATE
-    $<$<CONFIG:Release>:CUE_SHIPPING=1>
-)
