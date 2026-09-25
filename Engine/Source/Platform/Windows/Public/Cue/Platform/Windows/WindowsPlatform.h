@@ -28,4 +28,10 @@ struct WindowsThreadServices final
 /// 返却したSystemとWindowは呼出Threadで操作・破棄し、Windowを先に破棄する
 /// 生成失敗では部分的なSystemを公開しない
 [[nodiscard]] Result<std::unique_ptr<WindowSystem>> create_windows_window_system();
+
+/// @brief Windows WindowのNative HandleをWindow生存中だけ借用する
+///
+/// Window生成Threadから呼び、返したPointerはWindow破棄後に使用しない
+/// Win32型はWindows実装内で解釈し、共通Platform契約へ公開しない
+[[nodiscard]] Result<void*> borrow_windows_window_handle(Window& a_window);
 } // namespace cue
