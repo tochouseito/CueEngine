@@ -1,4 +1,4 @@
-#include <Cue/Renderer/Windows/WindowsRenderer.h>
+#include <Cue/Renderer/D3D12/D3D12Renderer.h>
 
 #include <Cue/Platform/Windows/WindowsPlatform.h>
 
@@ -6,7 +6,7 @@
 int main()
 {
     // 無効なHandleはDevice生成前に拒否する
-    auto invalid = cue::WindowsRenderer::create(nullptr, {640, 480}, true);
+    auto invalid = cue::D3D12Renderer::create(nullptr, {640, 480}, true);
     if (invalid.has_value() || invalid.try_error()->category != cue::ErrorCategory::InvalidArgument)
     {
         return 1;
@@ -31,7 +31,7 @@ int main()
     }
 
     // 実Windowに対して明示WARP経路とFrame Resourceの生成を確認する
-    auto rendererResult = cue::WindowsRenderer::create(handleResult.take_value(), window->client_size(), true);
+    auto rendererResult = cue::D3D12Renderer::create(handleResult.take_value(), window->client_size(), true);
     if (!rendererResult.has_value())
     {
         return 5;
@@ -40,6 +40,18 @@ int main()
     if (!renderer->is_warp())
     {
         return 6;
+    }
+
+    // Bufferを繰り返し使用し、同一Frameの二重Submitを拒否する
+    if (!window->show().has_value() || !renderer->render_frame(0).has_value() ||
+        !renderer->render_frame(1).has_value() || !renderer->render_frame(2).has_value())
+    {
+        return 8;
+    }
+    auto duplicate = renderer->render_frame(2);
+    if (duplicate.has_value() || duplicate.try_error()->category != cue::ErrorCategory::InvalidState)
+    {
+        return 9;
     }
 
     // Windowより先にGPU資源を停止し、停止の再呼出を許す

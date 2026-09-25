@@ -11,7 +11,7 @@ M03 の `WindowsHost` は Window と共通 `Runtime` を起動するが、Render
 
 ## 決定
 
-Windows 固有の `WindowsRenderer` が Device、Direct Queue、Swap Chain、Back Buffer、RTV、Command Allocator/List、Fence を一意所有する。`WindowsHost` は Renderer を一意所有し、共通 `Runtime` の Render Callback に Frame 番号を渡す。共通 `Runtime`、`Window`、`FrameController` の公開契約は D3D12 型を知らない。Scene、Material、Texture、ImGui 用の抽象 API は M04 に含めない。
+Windows 固有の `D3D12Renderer` が Device、Direct Queue、Swap Chain、Back Buffer、RTV、Command Allocator/List、Fence を一意所有する。`WindowsHost` は Renderer を一意所有し、共通 `Runtime` の Render Callback に Frame 番号を渡す。共通 `Runtime`、`Window`、`FrameController` の公開契約は D3D12 型を知らない。Scene、Material、Texture、ImGui 用の抽象 API は M04 に含めない。
 
 Windows 固有の Window API は `Window&` から有効期間が Window より短い Native Handle を借用する。Handle は Renderer の初期化時に Swap Chain 作成へ渡す。Win32 型は Windows 実装の `.cpp` 内に閉じ、共通 `Platform` と Renderer の公開 Header は Windows SDK を含まない。Handle は Window の破棄後に使用しない。
 

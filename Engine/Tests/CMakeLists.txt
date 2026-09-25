@@ -17,16 +17,16 @@ add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 
 if(WIN32)
     # WARPで実Windowに対するD3D12初期化と停止を検証する
-    add_executable(CueWindowsRendererInitializationTests
-        Renderer/WindowsRendererInitializationTests.cpp
+    add_executable(CueD3D12RendererInitializationTests
+        Renderer/D3D12RendererInitializationTests.cpp
     )
 
-    target_link_libraries(CueWindowsRendererInitializationTests PRIVATE
-        Cue.Renderer.Windows Cue.Platform.Windows
+    target_link_libraries(CueD3D12RendererInitializationTests PRIVATE
+        Cue.Renderer.D3D12 Cue.Platform.Windows
     )
 
-    add_test(NAME Cue.Renderer.Windows.Initialization COMMAND CueWindowsRendererInitializationTests)
-    set_tests_properties(Cue.Renderer.Windows.Initialization PROPERTIES TIMEOUT 15)
+    add_test(NAME Cue.Renderer.D3D12.Initialization COMMAND CueD3D12RendererInitializationTests)
+    set_tests_properties(Cue.Renderer.D3D12.Initialization PROPERTIES TIMEOUT 15)
 
     # Runtime と Host の Test は実際の Windows Service を接続して動かす
     add_executable(CueRuntimeTests
