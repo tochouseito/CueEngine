@@ -19,7 +19,7 @@ Renderer の Frame 入力は Frame 番号と固定の Clear Color とする。`r
 
 Window Message は MainThread で処理する。Resize／Minimize／Restore の最新要求を Renderer に所有値で渡し、Swap Chain 操作は Render Callback 側で直列に実行する。最小化中または Client Size が 0 の間は描画と `ResizeBuffers` を保留する。Size が変わる場合は GPU 完了を待ち、旧 Back Buffer 参照を解放してから `ResizeBuffers` と RTV 再生成を行う。初期 Size と同じ Event は再生成しない。
 
-Close と失敗時は新規 Frame 投入を止める。`WindowsHost::shutdown()` は `Runtime` の Worker を停止・join してから Renderer の GPU 完了を待ち、Renderer を解放した後に Window を破棄する。途中失敗でも残る資源を回収し、最初の `Error` を主原因として返す。Device Lost と GPU 待機失敗は操作名と HRESULT を `Result` に保持する。
+Close と失敗時は新規 Frame 投入を止める。`WindowsHost::shutdown()` は `Runtime` の Worker を停止・join してから Renderer の GPU 完了を待ち、Renderer を解放した後に Window を破棄する。Render Worker の `Present` / `ResizeBuffers` 中に DXGI が Window 所有 Thread へ同期 Message を送る可能性があるため、Windows の Worker 終了待機中も同 Thread の Message を処理する。途中失敗でも残る資源を回収し、最初の `Error` を主原因として返す。Device Lost と GPU 待機失敗は操作名と HRESULT を `Result` に保持する。
 
 M04 の製品用 Host では `FrameController::maxFps` を Frame 間隔の上限とし、`Present(0, 0)` を用いる。VSync を選ぶ別の構成では `maxFps` を 0 にし、二重の待機を避ける。Buffer 数は FrameController の先行数と独立し、GPU Fence で再利用を制御する。
 

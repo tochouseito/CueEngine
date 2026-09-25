@@ -219,19 +219,16 @@ public:
             }
             else
             {
-                // 復元か通常の Size 変更かを一件の Event として通知する
+                // Client Sizeが0でも通知し、Renderer側の描画を復帰まで保留する
                 RECT clientRect{};
                 if (GetClientRect(a_handle, &clientRect))
                 {
                     const auto width = static_cast<std::uint32_t>(clientRect.right - clientRect.left);
                     const auto height = static_cast<std::uint32_t>(clientRect.bottom - clientRect.top);
-                    if (width != 0 && height != 0)
-                    {
-                        window->m_clientSize = {width, height};
-                        const auto type = window->m_isMinimized ? WindowEventType::Restored : WindowEventType::Resized;
-                        window->m_isMinimized = false;
-                        window->queue_event({type, window->m_clientSize});
-                    }
+                    window->m_clientSize = {width, height};
+                    const auto type = window->m_isMinimized ? WindowEventType::Restored : WindowEventType::Resized;
+                    window->m_isMinimized = false;
+                    window->queue_event({type, window->m_clientSize});
                 }
             }
             return 0;

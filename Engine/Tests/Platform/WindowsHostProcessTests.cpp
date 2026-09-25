@@ -32,6 +32,72 @@ BOOL CALLBACK find_window(HWND a_handle, LPARAM a_context)
     return TRUE;
 }
 
+/// @brief Window状態の反映をProcessをブロックせずに待つ
+bool wait_for_window_state(HWND a_window, HANDLE a_process, bool a_isZoomed, bool a_isIconic,
+                           bool a_checkZoom = true)
+{
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        if (WaitForSingleObject(a_process, 0) != WAIT_TIMEOUT || !IsWindow(a_window))
+        {
+            return false;
+        }
+        if (static_cast<bool>(IsIconic(a_window)) == a_isIconic &&
+            (a_isIconic || !a_checkZoom || static_cast<bool>(IsZoomed(a_window)) == a_isZoomed))
+        {
+            return true;
+        }
+        Sleep(20);
+    }
+    return false;
+}
+
+/// @brief 製品HostへResizeと最小化・復帰を送りProcessの継続を確認する
+int exercise_window_states(HWND a_window, HANDLE a_process)
+{
+    // 別Processへの同期Window操作はそのMessage Threadが止まるとTest自体も止まる
+    RECT originalSize{};
+    if (!GetClientRect(a_window, &originalSize) ||
+        !PostMessageW(a_window, WM_SYSCOMMAND, SC_MAXIMIZE, 0) ||
+        !wait_for_window_state(a_window, a_process, true, false))
+    {
+        return 6;
+    }
+    RECT maximizedSize{};
+    if (!GetClientRect(a_window, &maximizedSize) ||
+        (originalSize.right - originalSize.left == maximizedSize.right - maximizedSize.left &&
+         originalSize.bottom - originalSize.top == maximizedSize.bottom - maximizedSize.top))
+    {
+        return 6;
+    }
+    if (!PostMessageW(a_window, WM_SYSCOMMAND, SC_MINIMIZE, 0) ||
+        !wait_for_window_state(a_window, a_process, false, true))
+    {
+        return 7;
+    }
+    if (!PostMessageW(a_window, WM_SYSCOMMAND, SC_RESTORE, 0) ||
+        !wait_for_window_state(a_window, a_process, false, false, false))
+    {
+        return 8;
+    }
+    // 最大化状態から最小化したWindowは一度のRestoreで最大化へ戻る場合がある
+    if (IsZoomed(a_window) &&
+        (!PostMessageW(a_window, WM_SYSCOMMAND, SC_RESTORE, 0) ||
+         !wait_for_window_state(a_window, a_process, false, false)))
+    {
+        return 8;
+    }
+    RECT restoredSize{};
+    if (!GetClientRect(a_window, &restoredSize) ||
+        restoredSize.right - restoredSize.left != originalSize.right - originalSize.left ||
+        restoredSize.bottom - restoredSize.top != originalSize.bottom - originalSize.top ||
+        WaitForSingleObject(a_process, 200) != WAIT_TIMEOUT)
+    {
+        return 8;
+    }
+    return 0;
+}
+
 /// @brief Test専用の子ProcessでFrame完了またはRender失敗を発生させる
 int run_child(bool a_useWorkerThreads, bool a_failRender)
 {
@@ -121,7 +187,8 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
                              std::wcscmp(a_arguments[2], L"--auto-single") == 0);
     const bool isSingleThread = isAutoMode && std::wcscmp(a_arguments[2], L"--auto-single") == 0;
     const bool isFailureMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--expect-render-failure") == 0;
-    if (a_argumentCount == 3 && !isAutoMode && !isFailureMode)
+    const bool isResizeMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--resize") == 0;
+    if (a_argumentCount == 3 && !isAutoMode && !isFailureMode && !isResizeMode)
     {
         return 1;
     }
@@ -175,16 +242,25 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
             }
         }
 
-        // Title BarのCloseと同じMessageを送り、正常終了を待つ
-        if (!search.handle || !PostMessageW(search.handle, WM_CLOSE, 0, 0))
+        if (!search.handle)
         {
             result = 3;
         }
-        else if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
+        if (result == 0 && isResizeMode)
+        {
+            result = exercise_window_states(search.handle, process.hProcess);
+        }
+
+        // Resizeや復帰後もTitle BarのCloseと同じMessageで正常終了する
+        if (result == 0 && !PostMessageW(search.handle, WM_CLOSE, 0, 0))
+        {
+            result = 3;
+        }
+        else if (result == 0 && WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0)
         {
             result = 4;
         }
-        else
+        else if (result == 0)
         {
             DWORD exitCode = 0;
             if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)

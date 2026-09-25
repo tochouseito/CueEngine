@@ -9,10 +9,58 @@
 #include <thread>
 #include <utility>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace cue
 {
 namespace
 {
+/// @brief Worker終了待ちの間も呼出Thread宛てのWindow Messageを処理する
+Result<void> wait_for_thread_with_messages(HANDLE a_thread)
+{
+    // DXGIの同期SendMessageをRender Workerから受けられるよう、join前にMessage Queueを回す
+    bool hasQuitMessage = false;
+    int quitCode = 0;
+    for (;;)
+    {
+        const DWORD waitStatus = MsgWaitForMultipleObjectsEx(1, &a_thread, INFINITE, QS_ALLINPUT,
+                                                              MWMO_INPUTAVAILABLE);
+        if (waitStatus == WAIT_OBJECT_0)
+        {
+            break;
+        }
+        if (waitStatus != WAIT_OBJECT_0 + 1)
+        {
+            const DWORD nativeCode = GetLastError();
+            if (hasQuitMessage)
+            {
+                PostQuitMessage(quitCode);
+            }
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "Thread.join.wait", nativeCode});
+        }
+
+        // WM_QUITはWindowSystemが終了状態として扱うため、join完了後にQueueへ戻す
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (message.message == WM_QUIT)
+            {
+                hasQuitMessage = true;
+                quitCode = static_cast<int>(message.wParam);
+                continue;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    if (hasQuitMessage)
+    {
+        PostQuitMessage(quitCode);
+    }
+    return Result<void>::success();
+}
+
 class WindowsClock final : public Clock
 {
 public:
@@ -151,6 +199,11 @@ public:
             }
             try
             {
+                auto waitResult = wait_for_thread_with_messages(static_cast<HANDLE>(m_thread.native_handle()));
+                if (!waitResult.has_value())
+                {
+                    return waitResult;
+                }
                 m_thread.join();
                 m_isJoined = true;
             }

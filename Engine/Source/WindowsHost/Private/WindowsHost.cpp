@@ -176,6 +176,7 @@ Result<bool> WindowsHost::step()
 
     // Queue に積まれた Window Event を、この Step の終了判断へ反映する
     WindowEvent event{};
+    std::optional<WindowEvent> latestSurface;
     while (m_state->window->try_pop_event(event))
     {
         if (event.type == WindowEventType::CloseRequested)
@@ -185,6 +186,12 @@ Result<bool> WindowsHost::step()
         else if (event.type == WindowEventType::Destroyed)
         {
             m_state->isDestroyed = true;
+        }
+        else if (event.type == WindowEventType::Resized || event.type == WindowEventType::Minimized ||
+                 event.type == WindowEventType::Restored)
+        {
+            // 一周回のResize連打は最後の表示状態だけをRendererへ渡す
+            latestSurface = event;
         }
     }
 
@@ -199,6 +206,17 @@ Result<bool> WindowsHost::step()
         *pumpResult.try_value() == PumpStatus::QuitRequested)
     {
         return Result<bool>::success(false);
+    }
+
+    if (m_state->renderer && latestSurface)
+    {
+        // Swap Chainの操作はRender Callback側へ送り、MainThreadはD3D12資源を触らない
+        const bool isMinimized = latestSurface->type == WindowEventType::Minimized;
+        auto surfaceResult = m_state->renderer->request_surface(latestSurface->clientSize, isMinimized);
+        if (!surfaceResult.has_value())
+        {
+            return Result<bool>::failure(*surfaceResult.try_error());
+        }
     }
 
     // Window が継続中のときだけ Runtime の次の Frame を進める

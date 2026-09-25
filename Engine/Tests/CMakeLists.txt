@@ -65,6 +65,7 @@ if(WIN32)
     target_link_libraries(CueWindowsThreadServicesTests PRIVATE Cue.Platform.Windows)
 
     add_test(NAME Cue.Platform.Windows.Threading COMMAND CueWindowsThreadServicesTests)
+    set_tests_properties(Cue.Platform.Windows.Threading PROPERTIES TIMEOUT 5)
 
     add_executable(CueWindowsUtfConversionTests
         Foundation/WindowsUtfConversionTests.cpp
@@ -90,6 +91,10 @@ if(WIN32)
 
     add_test(NAME Cue.WindowsHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost>)
 
+    # 製品Hostへ実際のResizeと最小化・復帰を送って終了経路まで確認する
+    add_test(NAME Cue.WindowsHost.ResizeMinimizeRestore
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost> --resize)
+
     add_test(NAME Cue.WindowsHost.AutoFrames COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHostProcessTests> --auto)
 
     add_test(NAME Cue.WindowsHost.SingleThread COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHostProcessTests> --auto-single)
@@ -99,4 +104,5 @@ if(WIN32)
     # 子 Process を使う正常・異常終了の Test も時間制限を共有する
     set_tests_properties(Cue.WindowsHost.Process Cue.WindowsHost.AutoFrames Cue.WindowsHost.SingleThread
                          Cue.WindowsHost.RenderFailure PROPERTIES TIMEOUT 7)
+    set_tests_properties(Cue.WindowsHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
 endif()
