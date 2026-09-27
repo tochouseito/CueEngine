@@ -6,149 +6,70 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <d3d12.h>
-#include <dxgi1_6.h>
-#include <wrl/client.h>
+#include <Cue/Renderer/FrameGraph/FrameGraph.h>
+
+#include "D3D12DeviceContext.h"
+#include "D3D12CommandPool.h"
+#include "D3D12GraphExecutor.h"
+#include "D3D12PipelineCache.h"
+#include "D3D12Presentation.h"
+#include "D3D12StaticMeshPool.h"
+#include "D3D12SurfacePool.h"
+#include "D3D12ViewManager.h"
 
 namespace cue
 {
-namespace
-{
-constexpr UINT k_bufferCount = 2;
-constexpr DWORD k_gpuWaitMilliseconds = 10'000;
-
-/// @brief HRESULTを操作名付きのPlatform Errorへ変換する
-Error gpu_error(const char* a_operation, HRESULT a_result)
-{
-    return {ErrorCategory::PlatformFailure, a_operation, static_cast<std::int64_t>(a_result)};
-}
-} // namespace
-
 class D3D12Renderer::State final
 {
 public:
-    struct FrameResource final
-    {
-        Microsoft::WRL::ComPtr<ID3D12Resource> backBuffer;
-        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
-        std::uint64_t fenceValue = 0;
-    };
-
-    /// @brief Event HandleをCOM資源と同じOwnerで解放する
+    /// @brief GPU Submit の残りがあれば Owner の破棄前に完了を待つ
     ~State()
     {
-        if (fenceEvent)
+        if (device && commands && commands->has_pending_gpu())
         {
-            CloseHandle(fenceEvent);
+            [[maybe_unused]] auto result = device->wait_idle();
         }
     }
 
-    /// @brief 指定したFence値に達するまでCPU側で待機する
-    [[nodiscard]] Result<void> wait_for(std::uint64_t a_value)
-    {
-        if (fence->GetCompletedValue() >= a_value)
-        {
-            return Result<void>::success();
-        }
-        const HRESULT eventResult = fence->SetEventOnCompletion(a_value, fenceEvent);
-        if (FAILED(eventResult))
-        {
-            return Result<void>::failure(gpu_error("ID3D12Fence.SetEventOnCompletion", eventResult));
-        }
-        const DWORD waitResult = WaitForSingleObject(fenceEvent, k_gpuWaitMilliseconds);
-        if (waitResult != WAIT_OBJECT_0)
-        {
-            // Device Lost時は待機の症状よりDeviceのHRESULTを優先して返す
-            const HRESULT removedReason = device ? device->GetDeviceRemovedReason() : S_OK;
-            if (FAILED(removedReason))
-            {
-                return Result<void>::failure(gpu_error("ID3D12Device.GetDeviceRemovedReason", removedReason));
-            }
-            return Result<void>::failure({ErrorCategory::PlatformFailure, "WaitForSingleObject.GpuFence",
-                                          static_cast<std::int64_t>(waitResult == WAIT_FAILED ? GetLastError() : waitResult)});
-        }
-        return Result<void>::success();
-    }
-
-    /// @brief Queue上の全ての処理が完了したことを確認する
-    [[nodiscard]] Result<void> wait_idle()
-    {
-        // Queue作成前の部分失敗では待機対象がない
-        if (!queue || !fence)
-        {
-            return Result<void>::success();
-        }
-        const std::uint64_t value = nextFenceValue++;
-        const HRESULT signalResult = queue->Signal(fence.Get(), value);
-        if (FAILED(signalResult))
-        {
-            return Result<void>::failure(gpu_error("ID3D12CommandQueue.Signal", signalResult));
-        }
-        return wait_for(value);
-    }
-
-    /// @brief GPU完了後に旧Buffer参照を解放してRTVを再生成する
+    /// @brief GPU 完了後に旧 Back Buffer 参照を外して Surface を更新する
     [[nodiscard]] Result<void> resize(WindowSize a_size)
     {
-        if (a_size.width == size.width && a_size.height == size.height)
+        if (!resizePending && a_size.width == presentation->size().width &&
+            a_size.height == presentation->size().height)
         {
             return Result<void>::success();
         }
-        auto idleResult = wait_idle();
-        if (!idleResult.has_value())
-        {
-            return idleResult;
-        }
 
-        // Closed Command Listにも旧Buffer参照が残り得るため先に解放する
-        commandList.Reset();
-        for (auto& frame : frames)
+        // Frame Context の List と Presentation の Buffer は GPU 完了前に解放しない
+        if (commands->has_pending_gpu())
         {
-            frame.backBuffer.Reset();
-            frame.fenceValue = 0;
-        }
-        HRESULT result = swapChain->ResizeBuffers(k_bufferCount, a_size.width, a_size.height,
-                                                   DXGI_FORMAT_R8G8B8A8_UNORM, 0);
-        if (FAILED(result))
-        {
-            return Result<void>::failure(gpu_error("IDXGISwapChain.ResizeBuffers", result));
-        }
-
-        const UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        const auto rtvStart = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        for (UINT index = 0; index < k_bufferCount; ++index)
-        {
-            auto& frame = frames[index];
-            result = swapChain->GetBuffer(index, IID_PPV_ARGS(&frame.backBuffer));
-            if (FAILED(result))
+            auto idleResult = device->wait_idle();
+            if (!idleResult.has_value())
             {
-                return Result<void>::failure(gpu_error("IDXGISwapChain.GetBuffer", result));
+                return idleResult;
             }
-            frame.rtv.ptr = rtvStart.ptr + static_cast<SIZE_T>(index) * descriptorSize;
-            device->CreateRenderTargetView(frame.backBuffer.Get(), nullptr, frame.rtv);
         }
-        result = frames[0].allocator->Reset();
-        if (FAILED(result))
+        // 途中失敗後も同じ Size で再試行し、Command List が欠けた状態を成功扱いしない
+        resizePending = true;
+        commands->release_for_resize();
+        auto resizeResult = presentation->resize(*device, a_size);
+        if (!resizeResult.has_value())
         {
-            return Result<void>::failure(gpu_error("ID3D12CommandAllocator.Reset.resize", result));
+            return resizeResult;
         }
-        result = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                           frames[0].allocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
-        if (FAILED(result))
+        auto surfaceResult = surfaces->resize(*device, a_size);
+        if (!surfaceResult.has_value())
         {
-            return Result<void>::failure(gpu_error("ID3D12Device.CreateCommandList.resize", result));
+            return surfaceResult;
         }
-        result = commandList->Close();
-        if (FAILED(result))
+        auto listResult = commands->recreate_lists(*device);
+        if (!listResult.has_value())
         {
-            return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Close.resize", result));
+            return listResult;
         }
-        size = a_size;
+        resizePending = false;
         {
             std::lock_guard lock(surfaceMutex);
             progress.surfaceSize = a_size;
@@ -156,220 +77,128 @@ public:
         return Result<void>::success();
     }
 
-    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
-    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-    Microsoft::WRL::ComPtr<ID3D12Device> device;
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-    Microsoft::WRL::ComPtr<IDXGISwapChain3> swapChain;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-    Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-    std::array<FrameResource, k_bufferCount> frames;
-    HANDLE fenceEvent = nullptr;
-    std::uint64_t nextFenceValue = 1;
-    WindowSize size{};
+    // 宣言順を Owner の寿命順にする。Command と Presentation は View、Device より先に破棄される
+    std::unique_ptr<detail::D3D12DeviceContext> device;
+    std::unique_ptr<detail::D3D12ViewManager> views;
+    std::unique_ptr<detail::D3D12Presentation> presentation;
+    std::unique_ptr<detail::D3D12SurfacePool> surfaces;
+    std::unique_ptr<detail::D3D12PipelineCache> pipelines;
+    std::unique_ptr<detail::D3D12StaticMeshPool> meshes;
+    std::unique_ptr<detail::D3D12CommandPool> commands;
     std::mutex surfaceMutex;
     WindowSize requestedSize{};
     D3D12RendererProgress progress{};
     bool isMinimized = false;
-    bool isWarp = false;
+    bool resizePending = false;
     std::thread::id renderThreadId;
     std::uint64_t lastFrame = 0;
     bool hasRendered = false;
 };
 
-/// @brief 初期化済みGPU Stateを受け取る
+/// @brief 初期化済み GPU State を受け取る
 D3D12Renderer::D3D12Renderer(std::unique_ptr<State> a_state) noexcept
     : m_state(std::move(a_state))
 {
 }
 
-/// @brief 呼出側が明示停止を忘れてもGPUを待ってから所有資源を破棄する
+/// @brief 呼出側が明示停止を忘れても GPU 完了後に所有資源を破棄する
 D3D12Renderer::~D3D12Renderer()
 {
     [[maybe_unused]] auto result = shutdown();
 }
 
-/// @brief Hardware優先または明示WARPでDeviceとPresentation資源を生成する
+/// @brief Hardware 優先または明示 WARP で Device と Presentation 資源を生成する
 Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindow, WindowSize a_clientSize,
-                                                                  bool a_useWarp)
+                                                               bool a_useWarp)
 {
     using RendererResult = Result<std::unique_ptr<D3D12Renderer>>;
 
-    // Window生成後の有効なClient AreaだけでSwap Chainを作る
+    // Window 生成後の有効な Client Area だけで Swap Chain を作る
     if (!a_nativeWindow || a_clientSize.width == 0 || a_clientSize.height == 0)
     {
         return RendererResult::failure({ErrorCategory::InvalidArgument, "D3D12Renderer.create"});
     }
     auto state = std::make_unique<State>();
-    state->size = a_clientSize;
     state->requestedSize = a_clientSize;
     state->progress.surfaceSize = a_clientSize;
-    state->isWarp = a_useWarp;
 
-#if defined(_DEBUG) && !defined(CUE_SHIPPING)
-    // Debug Layerがインストール済みなら初期化時からD3D12検証を有効にする
-    Microsoft::WRL::ComPtr<ID3D12Debug> debug;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    // 借用元の Device と View Manager を先に生成してから表示と Command Context を作る
+    auto deviceResult = detail::D3D12DeviceContext::create(a_useWarp);
+    if (!deviceResult.has_value())
     {
-        debug->EnableDebugLayer();
+        return RendererResult::failure(*deviceResult.try_error());
     }
-#endif
+    state->device = deviceResult.take_value();
 
-    HRESULT result = CreateDXGIFactory2(0, IID_PPV_ARGS(&state->factory));
-    if (FAILED(result))
+    auto viewsResult = detail::D3D12ViewManager::create(*state->device, 2 * detail::k_backBufferCount);
+    if (!viewsResult.has_value())
     {
-        return RendererResult::failure(gpu_error("CreateDXGIFactory2", result));
+        return RendererResult::failure(*viewsResult.try_error());
     }
+    state->views = viewsResult.take_value();
 
-    // Hardwareを選ぶ場合は高性能優先でD3D12対応Adapterを探す
-    if (a_useWarp)
+    auto presentationResult = detail::D3D12Presentation::create(*state->device, *state->views,
+                                                                  a_nativeWindow, a_clientSize);
+    if (!presentationResult.has_value())
     {
-        result = state->factory->EnumWarpAdapter(IID_PPV_ARGS(&state->adapter));
-        if (FAILED(result))
-        {
-            return RendererResult::failure(gpu_error("IDXGIFactory.EnumWarpAdapter", result));
-        }
+        return RendererResult::failure(*presentationResult.try_error());
     }
-    else
-    {
-        for (UINT index = 0;; ++index)
-        {
-            Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
-            result = state->factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                                 IID_PPV_ARGS(&candidate));
-            if (result == DXGI_ERROR_NOT_FOUND)
-            {
-                break;
-            }
-            if (FAILED(result))
-            {
-                return RendererResult::failure(gpu_error("IDXGIFactory.EnumAdapterByGpuPreference", result));
-            }
-            DXGI_ADAPTER_DESC1 desc{};
-            result = candidate->GetDesc1(&desc);
-            if (FAILED(result))
-            {
-                return RendererResult::failure(gpu_error("IDXGIAdapter.GetDesc1", result));
-            }
-            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
-                SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0,
-                                            __uuidof(ID3D12Device), nullptr)))
-            {
-                state->adapter = std::move(candidate);
-                break;
-            }
-        }
-        if (!state->adapter)
-        {
-            return RendererResult::failure({ErrorCategory::PlatformFailure, "D3D12Renderer.noHardwareAdapter",
-                                            static_cast<std::int64_t>(DXGI_ERROR_NOT_FOUND)});
-        }
-    }
+    state->presentation = presentationResult.take_value();
 
-    result = D3D12CreateDevice(state->adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&state->device));
-    if (FAILED(result))
+    auto surfacesResult = detail::D3D12SurfacePool::create(*state->device, *state->views, a_clientSize);
+    if (!surfacesResult.has_value())
     {
-        return RendererResult::failure(gpu_error("D3D12CreateDevice", result));
+        return RendererResult::failure(*surfacesResult.try_error());
     }
+    state->surfaces = surfacesResult.take_value();
 
-    D3D12_COMMAND_QUEUE_DESC queueDesc{};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    result = state->device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&state->queue));
-    if (FAILED(result))
+    auto pipelineResult = detail::D3D12PipelineCache::create(*state->device);
+    if (!pipelineResult.has_value())
     {
-        return RendererResult::failure(gpu_error("ID3D12Device.CreateCommandQueue", result));
+        return RendererResult::failure(*pipelineResult.try_error());
     }
+    state->pipelines = pipelineResult.take_value();
 
-    // Flip ModelのSwap ChainへDeviceではなくDirect Queueを渡す
-    DXGI_SWAP_CHAIN_DESC1 swapDesc{};
-    swapDesc.Width = a_clientSize.width;
-    swapDesc.Height = a_clientSize.height;
-    swapDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapDesc.BufferCount = k_bufferCount;
-    swapDesc.SampleDesc.Count = 1;
-    swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain;
-    result = state->factory->CreateSwapChainForHwnd(state->queue.Get(), static_cast<HWND>(a_nativeWindow),
-                                                    &swapDesc, nullptr, nullptr, &swapChain);
-    if (FAILED(result))
+    auto meshResult = detail::D3D12StaticMeshPool::create(*state->device);
+    if (!meshResult.has_value())
     {
-        return RendererResult::failure(gpu_error("IDXGIFactory.CreateSwapChainForHwnd", result));
+        return RendererResult::failure(*meshResult.try_error());
     }
-    result = swapChain.As(&state->swapChain);
-    if (FAILED(result))
-    {
-        return RendererResult::failure(gpu_error("IDXGISwapChain.QueryInterface", result));
-    }
+    state->meshes = meshResult.take_value();
 
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    heapDesc.NumDescriptors = k_bufferCount;
-    result = state->device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&state->rtvHeap));
-    if (FAILED(result))
+    auto commandsResult = detail::D3D12CommandPool::create(*state->device);
+    if (!commandsResult.has_value())
     {
-        return RendererResult::failure(gpu_error("ID3D12Device.CreateDescriptorHeap", result));
+        return RendererResult::failure(*commandsResult.try_error());
     }
-    const UINT descriptorSize = state->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    const auto rtvStart = state->rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (UINT index = 0; index < k_bufferCount; ++index)
-    {
-        auto& frame = state->frames[index];
-        result = state->swapChain->GetBuffer(index, IID_PPV_ARGS(&frame.backBuffer));
-        if (FAILED(result))
-        {
-            return RendererResult::failure(gpu_error("IDXGISwapChain.GetBuffer", result));
-        }
-        frame.rtv.ptr = rtvStart.ptr + static_cast<SIZE_T>(index) * descriptorSize;
-        state->device->CreateRenderTargetView(frame.backBuffer.Get(), nullptr, frame.rtv);
-        result = state->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                        IID_PPV_ARGS(&frame.allocator));
-        if (FAILED(result))
-        {
-            return RendererResult::failure(gpu_error("ID3D12Device.CreateCommandAllocator", result));
-        }
-    }
-    result = state->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                               state->frames[0].allocator.Get(), nullptr,
-                                               IID_PPV_ARGS(&state->commandList));
-    if (FAILED(result))
-    {
-        return RendererResult::failure(gpu_error("ID3D12Device.CreateCommandList", result));
-    }
-    result = state->commandList->Close();
-    if (FAILED(result))
-    {
-        return RendererResult::failure(gpu_error("ID3D12GraphicsCommandList.Close", result));
-    }
-
-    result = state->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state->fence));
-    if (FAILED(result))
-    {
-        return RendererResult::failure(gpu_error("ID3D12Device.CreateFence", result));
-    }
-    state->fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!state->fenceEvent)
-    {
-        return RendererResult::failure({ErrorCategory::PlatformFailure, "CreateEventW.GpuFence", GetLastError()});
-    }
+    state->commands = commandsResult.take_value();
     D3D12Renderer renderer(std::move(state));
     return RendererResult::success(std::make_unique<D3D12Renderer>(std::move(renderer)));
 }
 
-/// @brief GPU作業を完了させてからWindow依存資源を破棄する
+/// @brief GPU 作業の完了を確認してから Window 依存資源を破棄する
 Result<void> D3D12Renderer::shutdown()
 {
     if (!m_state)
     {
         return Result<void>::success();
     }
-    auto waitResult = m_state->wait_idle();
+    Result<void> waitResult = Result<void>::success();
+    if (m_state->commands && m_state->commands->has_pending_gpu())
+    {
+        waitResult = m_state->device->wait_idle();
+        if (!waitResult.has_value())
+        {
+            // 完了未確認の資源を解放せず、呼出側が Shutdown を再試行できる状態を残す
+            return waitResult;
+        }
+        m_state->commands->mark_idle();
+    }
     m_state.reset();
     return waitResult;
 }
 
-/// @brief Back BufferをClearしてGPU完了条件をFrame単位で記録する
+/// @brief Graph の Clear、固定 Mesh、Copy Pass を記録し、Frame の GPU 完了条件を残す
 Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
 {
     if (!m_state)
@@ -390,7 +219,7 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.frameOrder"});
     }
 
-    // MainThreadのResize連打は最後の要求だけを反映し、最小化中はGPU操作を休止する
+    // MainThread から届いた最新 Size だけを反映し、最小化中は GPU 操作を保留する
     WindowSize requestedSize{};
     bool isMinimized = false;
     {
@@ -410,63 +239,119 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return resizeResult;
     }
 
-    // BufferごとのFence完了後だけAllocatorを再利用する
-    const UINT index = state.swapChain->GetCurrentBackBufferIndex();
-    auto& frame = state.frames[index];
-    if (frame.fenceValue != 0)
+    const UINT index = state.presentation->current_index();
+    ID3D12Resource* backBuffer = state.presentation->back_buffer(index);
+    auto rtvResult = state.surfaces->color_rtv(index);
+    if (!rtvResult.has_value())
     {
-        auto waitResult = state.wait_for(frame.fenceValue);
-        if (!waitResult.has_value())
+        return Result<void>::failure(*rtvResult.try_error());
+    }
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvResult.take_value();
+
+    // 一時 Color と永続 Depth を Clear し、Copy Pass で Back Buffer へ転送する
+    FrameGraphBuilder graph;
+    auto backBufferHandle = graph.import_resource("BackBuffer", GraphResourceState::Present,
+                                                  GraphResourceState::Present);
+    auto colorHandle = graph.create_resource("Offscreen", GraphResourceLifetime::Transient,
+                                             GraphResourceState::Common, GraphResourceState::Common);
+    auto depthHandle = graph.create_resource("Depth", GraphResourceLifetime::Persistent,
+                                             GraphResourceState::Common, GraphResourceState::Common);
+    if (!backBufferHandle.has_value() || !colorHandle.has_value() || !depthHandle.has_value())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.graphResources"});
+    }
+    const GraphResourceHandle back = backBufferHandle.take_value();
+    const GraphResourceHandle color = colorHandle.take_value();
+    const GraphResourceHandle depth = depthHandle.take_value();
+    auto clearPass = graph.add_pass("Clear", {{color, GraphResourceState::RenderTarget,
+                                                GraphAccess::Write},
+                                               {depth, GraphResourceState::DepthWrite,
+                                                GraphAccess::Write}});
+    auto meshPass = graph.add_pass("FixedMesh", {{color, GraphResourceState::RenderTarget,
+                                                   GraphAccess::Write},
+                                                  {depth, GraphResourceState::DepthWrite,
+                                                   GraphAccess::Write}});
+    auto copyPass = graph.add_pass("CopyToBackBuffer", {{color, GraphResourceState::CopySource,
+                                                          GraphAccess::Read},
+                                                         {back, GraphResourceState::CopyDest,
+                                                          GraphAccess::Write}});
+    if (!clearPass.has_value() || !meshPass.has_value() || !copyPass.has_value())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.graphPasses"});
+    }
+    auto compiled = graph.compile();
+    if (!compiled.has_value())
+    {
+        return Result<void>::failure(*compiled.try_error());
+    }
+
+    auto leaseResult = state.commands->acquire(*state.device, index);
+    if (!leaseResult.has_value())
+    {
+        return Result<void>::failure(*leaseResult.try_error());
+    }
+    const detail::CommandLease lease = leaseResult.take_value();
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = state.surfaces->depth_dsv();
+    ID3D12Resource* offscreen = state.surfaces->color(index);
+    std::vector<detail::GraphPassCallback> callbacks;
+    callbacks.emplace_back([rtv, dsv](ID3D12GraphicsCommandList* a_list) {
+        // Surface は Submit 完了まで State が所有し、Callback は View だけ借用する
+        a_list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        constexpr float k_clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
+        a_list->ClearRenderTargetView(rtv, k_clearColor, 0, nullptr);
+        a_list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        return Result<void>::success();
+    });
+    // Frame 内の Draw 入力は値として固定し、次 Frame の更新に引きずられない
+    const detail::StaticMeshHandle mesh = state.meshes->triangle();
+    const std::array<float, 4> tint = {1.0f, 1.0f, 1.0f, 1.0f};
+    callbacks.emplace_back([&state, index, requestedSize, rtv, dsv, mesh, tint](
+                               ID3D12GraphicsCommandList* a_list) -> Result<void> {
+        auto bindResult = state.pipelines->bind(a_list, index, tint);
+        if (!bindResult.has_value())
         {
-            return waitResult;
+            return bindResult;
         }
-    }
-    HRESULT result = frame.allocator->Reset();
-    if (FAILED(result))
+        D3D12_VIEWPORT viewport{};
+        viewport.Width = static_cast<float>(requestedSize.width);
+        viewport.Height = static_cast<float>(requestedSize.height);
+        viewport.MaxDepth = 1.0f;
+        D3D12_RECT scissor{0, 0, static_cast<LONG>(requestedSize.width),
+                           static_cast<LONG>(requestedSize.height)};
+        a_list->RSSetViewports(1, &viewport);
+        a_list->RSSetScissorRects(1, &scissor);
+        a_list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        return state.meshes->draw(a_list, mesh);
+    });
+    callbacks.emplace_back([backBuffer, offscreen](ID3D12GraphicsCommandList* a_list) {
+        a_list->CopyResource(backBuffer, offscreen);
+        return Result<void>::success();
+    });
+    auto recordResult = detail::D3D12GraphExecutor::record(compiled.take_value(), lease.list,
+                                                             {backBuffer, offscreen, state.surfaces->depth()}, callbacks);
+    if (!recordResult.has_value())
     {
-        return Result<void>::failure(gpu_error("ID3D12CommandAllocator.Reset", result));
-    }
-    result = state.commandList->Reset(frame.allocator.Get(), nullptr);
-    if (FAILED(result))
-    {
-        return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Reset", result));
+        [[maybe_unused]] auto abortResult = state.commands->abort(lease);
+        return recordResult;
     }
 
-    // Present可能な状態からRTVへ遷移して単色で塗り、Present状態へ戻す
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = frame.backBuffer.Get();
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    state.commandList->ResourceBarrier(1, &barrier);
-    state.commandList->OMSetRenderTargets(1, &frame.rtv, FALSE, nullptr);
-    constexpr float k_clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
-    state.commandList->ClearRenderTargetView(frame.rtv, k_clearColor, 0, nullptr);
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    state.commandList->ResourceBarrier(1, &barrier);
-    result = state.commandList->Close();
-    if (FAILED(result))
+    auto submitResult = state.commands->submit(*state.device, lease);
+    if (!submitResult.has_value())
     {
-        return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Close", result));
+        [[maybe_unused]] auto abortResult = state.commands->abort(lease);
+        return submitResult;
     }
-    ID3D12CommandList* lists[] = {state.commandList.Get()};
-    state.queue->ExecuteCommandLists(1, lists);
-
-    // FrameControllerが60 FPSを制御するためPresent側では待機を追加しない
-    result = state.swapChain->Present(0, 0);
-    if (FAILED(result))
+    // FrameController が 60 FPS を制御するため Present 側では待機を追加しない
+    auto presentResult = state.presentation->present();
+    if (!presentResult.has_value())
     {
-        return Result<void>::failure(gpu_error("IDXGISwapChain.Present", result));
+        return presentResult;
     }
-    const std::uint64_t fenceValue = state.nextFenceValue++;
-    result = state.queue->Signal(state.fence.Get(), fenceValue);
-    if (FAILED(result))
+    auto retireResult = state.commands->retire(*state.device, lease);
+    if (!retireResult.has_value())
     {
-        return Result<void>::failure(gpu_error("ID3D12CommandQueue.Signal", result));
+        return retireResult;
     }
-    frame.fenceValue = fenceValue;
     state.lastFrame = a_frame;
     state.hasRendered = true;
     {
@@ -476,7 +361,7 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     return Result<void>::success();
 }
 
-/// @brief Window Eventの最新Sizeと最小化状態をRender Threadへ渡す
+/// @brief Window Event の最新 Size と最小化状態を Render Thread へ渡す
 Result<void> D3D12Renderer::request_surface(WindowSize a_clientSize, bool a_isMinimized)
 {
     if (!m_state)
@@ -492,7 +377,7 @@ Result<void> D3D12Renderer::request_surface(WindowSize a_clientSize, bool a_isMi
     return Result<void>::success();
 }
 
-/// @brief 適用済みSurfaceとPresent数を同期して返す
+/// @brief 適用済み Surface と Present 数を同期して返す
 Result<D3D12RendererProgress> D3D12Renderer::progress() const
 {
     if (!m_state)
@@ -503,9 +388,9 @@ Result<D3D12RendererProgress> D3D12Renderer::progress() const
     return Result<D3D12RendererProgress>::success(m_state->progress);
 }
 
-/// @brief Adapter選択経路を診断可能にする
+/// @brief Adapter 選択経路を診断可能にする
 bool D3D12Renderer::is_warp() const noexcept
 {
-    return m_state && m_state->isWarp;
+    return m_state && m_state->device->is_warp();
 }
 } // namespace cue

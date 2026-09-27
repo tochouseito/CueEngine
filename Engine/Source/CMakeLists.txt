@@ -1,6 +1,7 @@
 add_subdirectory(Foundation)
 add_subdirectory(Platform)
 add_subdirectory(Runtime)
+add_subdirectory(Renderer/FrameGraph)
 
 if(WIN32)
     # WindowsのD3D12 Backendは共通Runtimeと分離する
