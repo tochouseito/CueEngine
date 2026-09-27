@@ -5,6 +5,8 @@
 - Issue: [M04-01](https://github.com/tochouseito/CueEngine/issues/19)
 - 関連: [ADR-0001](0001-architecture-boundaries.md)、[ADR-0003](0003-frame-thread-contract.md)、[ADR-0004](0004-runtime-host-lifecycle.md)
 
+後続の Clear／固定 Mesh／Copy Pass は [ADR-0006](0006-framegraph-and-fixed-mesh.md) で定める
+
 ## 背景
 
 M03 の `WindowsHost` は Window と共通 `Runtime` を起動するが、Render Callback は空処理である。M04 は単色 Clear と Present を実 Window へ接続する。D3D12 の所有権と GPU 完了条件を `FrameController` の CPU 側の進行数だけで代用できない。
@@ -12,6 +14,8 @@ M03 の `WindowsHost` は Window と共通 `Runtime` を起動するが、Render
 ## 決定
 
 Windows 固有の `D3D12Renderer` が Device、Direct Queue、Swap Chain、Back Buffer、RTV、Command Allocator/List、Fence を一意所有する。`WindowsHost` は Renderer を一意所有し、共通 `Runtime` の Render Callback に Frame 番号を渡す。共通 `Runtime`、`Window`、`FrameController` の公開契約は D3D12 型を知らない。Scene、Material、Texture、ImGui 用の抽象 API は M04 に含めない。
+
+内部の所有者は `D3D12DeviceContext`（Factory、Adapter、Device、Direct Queue、Fence）、`D3D12ViewManager`（RTV Heap と世代付き Slot）、`D3D12Presentation`（Swap Chain、Back Buffer と借用 RTV Slot）、`D3D12CommandPool`（Buffer Slot ごとの Frame Context、Allocator、Command List、再利用 Fence 値）に分ける。生成はこの順、破棄は逆順とする。Renderer は初期化、Resize、Submit／Present、停止の順序だけを調整し、GPU Resource の個別所有を持たない。Command Context の借用期間は一回の Frame 記録中とし、Allocator は対応する Fence 完了後に限り再利用する。Resize 前は Queue 完了を確認して Command List を解放し、旧 Back Buffer を手放してから RTV を書き直す。DSV と Shader-visible View は実際に使用する Pass の Issue で View Manager に追加する。
 
 Windows 固有の Window API は `Window&` から有効期間が Window より短い Native Handle を借用する。Handle は Renderer の初期化時に Swap Chain 作成へ渡す。Win32 型は Windows 実装の `.cpp` 内に閉じ、共通 `Platform` と Renderer の公開 Header は Windows SDK を含まない。Handle は Window の破棄後に使用しない。
 

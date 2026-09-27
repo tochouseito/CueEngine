@@ -108,10 +108,36 @@ int main()
     }
 
     // Windowより先にGPU資源を停止し、停止の再呼出を許す
-    if (!renderer->shutdown().has_value() || !renderer->shutdown().has_value() ||
-        !window->destroy().has_value())
+    if (!renderer->shutdown().has_value() || !renderer->shutdown().has_value())
     {
         return 7;
+    }
+    auto stoppedFrame = renderer->render_frame(8);
+    if (stoppedFrame.has_value() || stoppedFrame.try_error()->category != cue::ErrorCategory::InvalidState)
+    {
+        return 20;
+    }
+
+    // 明示停止を省いても GPU 完了を待ってから Window 依存資源を回収する
+    auto implicitHandle = cue::borrow_windows_window_handle(*window);
+    if (!implicitHandle.has_value())
+    {
+        return 21;
+    }
+    auto implicitResult = cue::D3D12Renderer::create(implicitHandle.take_value(), window->client_size(), true);
+    if (!implicitResult.has_value())
+    {
+        return 22;
+    }
+    auto implicitRenderer = implicitResult.take_value();
+    if (!implicitRenderer->render_frame(0).has_value())
+    {
+        return 23;
+    }
+    implicitRenderer.reset();
+    if (!window->destroy().has_value())
+    {
+        return 24;
     }
     window.reset();
     system.reset();

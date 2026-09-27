@@ -1,6 +1,14 @@
 # D3D12資源とWindows PresentationをWindows専用Targetに閉じ込める
 add_library(Cue.Renderer.D3D12 STATIC
+    Private/D3D12CommandPool.cpp
+    Private/D3D12DeviceContext.cpp
+    Private/D3D12GraphExecutor.cpp
+    Private/D3D12PipelineCache.cpp
+    Private/D3D12SurfacePool.cpp
+    Private/D3D12StaticMeshPool.cpp
+    Private/D3D12Presentation.cpp
     Private/D3D12Renderer.cpp
+    Private/D3D12ViewManager.cpp
 )
 
 target_include_directories(Cue.Renderer.D3D12 PUBLIC
@@ -9,7 +17,7 @@ target_include_directories(Cue.Renderer.D3D12 PUBLIC
 
 target_link_libraries(Cue.Renderer.D3D12
     PUBLIC Cue.Platform
-    PRIVATE d3d12 dxgi
+    PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxgi
 )
 
 target_compile_features(Cue.Renderer.D3D12 PUBLIC cxx_std_20)

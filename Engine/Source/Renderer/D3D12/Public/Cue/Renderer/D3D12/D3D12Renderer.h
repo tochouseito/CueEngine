@@ -15,10 +15,10 @@ struct D3D12RendererProgress final
     std::uint64_t presentedFrames = 0;
 };
 
-/// @brief WindowsのSwap ChainとD3D12 Frame Resourceを一意所有する
+/// @brief Windows の表示資源と D3D12 の実行資源を内部 Owner に分けて一意所有する
 ///
-/// Native HandleはWindowが生存する間だけ借用する。生成と停止はHostのMainThreadで行う
-/// 描画操作は後続Issueで直列のRender Callbackへ接続する
+/// Native Handle は Window が生存する間だけ借用する。生成と停止は Host の MainThread で行う
+/// 描画は Runtime の直列 Render Callback から行い、停止前にその Worker を join する
 class D3D12Renderer final
 {
 public:
@@ -40,10 +40,10 @@ public:
 
     /// @brief GPU完了を待ってFrame Resourceを解放する
     ///
-    /// Render Callback停止後に呼ぶ。再呼出は成功する。失敗時も所有資源を回収する
+    /// Render Callback停止後に呼ぶ。再呼出は成功する。GPU待機失敗時は所有資源を保持し再試行できる
     [[nodiscard]] Result<void> shutdown();
 
-    /// @brief 指定Frameの単色ClearをSubmitし、現在のBack BufferをPresentする
+    /// @brief 指定FrameのClear、固定Mesh、Copy PassをSubmitしてPresentする
     ///
     /// 初回の呼出ThreadをRender Threadとし、以降は同じThreadから直列に呼ぶ
     /// 同一または古いFrame番号を拒否する。失敗後はHostが停止へ進む
