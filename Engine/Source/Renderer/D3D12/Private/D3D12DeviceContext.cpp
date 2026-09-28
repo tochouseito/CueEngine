@@ -41,6 +41,7 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
 {
     using DeviceResult = Result<std::unique_ptr<D3D12DeviceContext>>;
     auto context = std::make_unique<D3D12DeviceContext>();
+    bool hasDebugLayer = false;
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
 
@@ -49,6 +50,7 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
     {
         debug->EnableDebugLayer();
+        hasDebugLayer = true;
 
         // GPU Validation の有効化
         Microsoft::WRL::ComPtr<ID3D12Debug1> gpuValidation;
@@ -67,8 +69,14 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
     }
 #endif
 
-    // DXGI Factory の生成
-    HRESULT result = CreateDXGIFactory2(0, IID_PPV_ARGS(&context->m_factory));
+    // D3D12 Debug Layer が使える場合だけ DXGI の Debug Factory も要求する
+    const UINT factoryFlags = hasDebugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0;
+    HRESULT result = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&context->m_factory));
+    if (result == DXGI_ERROR_SDK_COMPONENT_MISSING && factoryFlags != 0)
+    {
+        // DXGI Debug Component だけがない環境では通常 Factory で描画を継続する
+        result = CreateDXGIFactory2(0, IID_PPV_ARGS(&context->m_factory));
+    }
     if (FAILED(result))
     {
         return DeviceResult::failure(gpu_error("CreateDXGIFactory2", result));
@@ -137,6 +145,32 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
     {
         return DeviceResult::failure(gpu_error("ID3D12Device.SetName", result));
     }
+
+#if defined(_DEBUG) && !defined(CUE_SHIPPING)
+    if (hasDebugLayer)
+    {
+        Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+        result = context->m_device.As(&infoQueue);
+        if (result != E_NOINTERFACE && FAILED(result))
+        {
+            return DeviceResult::failure(gpu_error("ID3D12Device.QueryInterface.InfoQueue", result));
+        }
+        if (infoQueue)
+        {
+            // 警告は保存し、実行を止めるのは破損と Error に限定する
+            result = infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("ID3D12InfoQueue.SetBreakOnSeverity.Corruption", result));
+            }
+            result = infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("ID3D12InfoQueue.SetBreakOnSeverity.Error", result));
+            }
+        }
+    }
+#endif
 
     return DeviceResult::success(std::move(context));
 }

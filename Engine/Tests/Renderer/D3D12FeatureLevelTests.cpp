@@ -2,6 +2,8 @@
 
 #include <iterator>
 
+#include <d3d12sdklayers.h>
+
 /// @brief 選択した機能レベルが Driver の最大対応レベルと一致することを確認する
 int main()
 {
@@ -31,5 +33,14 @@ int main()
     {
         return 3;
     }
+#if defined(_DEBUG) && !defined(CUE_SHIPPING)
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+    if (SUCCEEDED(device->device()->QueryInterface(IID_PPV_ARGS(&infoQueue))) &&
+        (!infoQueue->GetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION) ||
+         !infoQueue->GetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR)))
+    {
+        return 4;
+    }
+#endif
     return 0;
 }
