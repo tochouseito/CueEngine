@@ -6,10 +6,21 @@ add_library(Cue.Renderer.D3D12 STATIC
     Private/D3D12PipelineCache.cpp
     Private/D3D12SurfacePool.cpp
     Private/D3D12StaticMeshPool.cpp
+    Private/D3D12TrianglePass.cpp
     Private/D3D12Presentation.cpp
     Private/D3D12QueueContext.cpp
     Private/D3D12Renderer.cpp
     Private/D3D12ViewManager.cpp
+)
+
+# Shader の変更時は CMake が再構成し、実行時に参照する Build Directory へ配置する
+configure_file(${CMAKE_SOURCE_DIR}/Engine/Shader/FixedMesh.hlsl
+    ${CMAKE_CURRENT_BINARY_DIR}/Shader/FixedMesh.hlsl COPYONLY)
+configure_file(Private/FixedMeshShaderPath.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/Generated/FixedMeshShaderPath.h @ONLY)
+
+target_include_directories(Cue.Renderer.D3D12 PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/Generated
 )
 
 target_include_directories(Cue.Renderer.D3D12 PUBLIC

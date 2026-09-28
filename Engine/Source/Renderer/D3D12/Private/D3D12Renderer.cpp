@@ -1,6 +1,5 @@
 #include <Cue/Renderer/D3D12/D3D12Renderer.h>
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -18,6 +17,7 @@
 #include "D3D12QueueContext.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
+#include "D3D12TrianglePass.h"
 #include "D3D12ViewManager.h"
 
 namespace cue
@@ -271,14 +271,16 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     const GraphResourceHandle back = backBufferHandle.take_value();
     const GraphResourceHandle color = colorHandle.take_value();
     const GraphResourceHandle depth = depthHandle.take_value();
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = state.surfaces->depth_dsv();
+    const detail::TrianglePassContext triangleContext{*state.pipelines, *state.meshes, color, depth,
+                                                      state.meshes->triangle(), requestedSize, index, rtv, dsv,
+                                                      {1.0f, 1.0f, 1.0f, 1.0f}};
+    const detail::D3D12TrianglePass trianglePass(triangleContext);
     auto clearPass = graph.add_pass("Clear", {{color, GraphResourceState::RenderTarget,
                                                 GraphAccess::Write},
                                                {depth, GraphResourceState::DepthWrite,
                                                 GraphAccess::Write}});
-    auto meshPass = graph.add_pass("FixedMesh", {{color, GraphResourceState::RenderTarget,
-                                                   GraphAccess::Write},
-                                                  {depth, GraphResourceState::DepthWrite,
-                                                   GraphAccess::Write}});
+    auto meshPass = trianglePass.setup(graph);
     auto copyPass = graph.add_pass("CopyToBackBuffer", {{color, GraphResourceState::CopySource,
                                                           GraphAccess::Read},
                                                          {back, GraphResourceState::CopyDest,
@@ -299,7 +301,6 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure(*leaseResult.try_error());
     }
     const detail::CommandLease lease = leaseResult.take_value();
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = state.surfaces->depth_dsv();
     ID3D12Resource* offscreen = state.surfaces->color(index);
     std::vector<detail::GraphPassCallback> callbacks;
     callbacks.emplace_back([rtv, dsv](ID3D12GraphicsCommandList* a_list) {
@@ -310,26 +311,9 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         a_list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         return Result<void>::success();
     });
-    // Frame 内の Draw 入力は値として固定し、次 Frame の更新に引きずられない
-    const detail::StaticMeshHandle mesh = state.meshes->triangle();
-    const std::array<float, 4> tint = {1.0f, 1.0f, 1.0f, 1.0f};
-    callbacks.emplace_back([&state, index, requestedSize, rtv, dsv, mesh, tint](
-                               ID3D12GraphicsCommandList* a_list) -> Result<void> {
-        auto bindResult = state.pipelines->bind(a_list, index, tint);
-        if (!bindResult.has_value())
-        {
-            return bindResult;
-        }
-        D3D12_VIEWPORT viewport{};
-        viewport.Width = static_cast<float>(requestedSize.width);
-        viewport.Height = static_cast<float>(requestedSize.height);
-        viewport.MaxDepth = 1.0f;
-        D3D12_RECT scissor{0, 0, static_cast<LONG>(requestedSize.width),
-                           static_cast<LONG>(requestedSize.height)};
-        a_list->RSSetViewports(1, &viewport);
-        a_list->RSSetScissorRects(1, &scissor);
-        a_list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        return state.meshes->draw(a_list, mesh);
+    // Pass はこの同期 Record が完了するまで生存し、State の資源を借用する
+    callbacks.emplace_back([&trianglePass](ID3D12GraphicsCommandList* a_list) {
+        return trianglePass.execute(a_list);
     });
     callbacks.emplace_back([backBuffer, offscreen](ID3D12GraphicsCommandList* a_list) {
         a_list->CopyResource(backBuffer, offscreen);

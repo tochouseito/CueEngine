@@ -59,7 +59,7 @@ if(WIN32)
     add_executable(CueD3D12FixedMeshPixelTests Renderer/D3D12FixedMeshPixelTests.cpp)
     target_include_directories(CueD3D12FixedMeshPixelTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
-    target_link_libraries(CueD3D12FixedMeshPixelTests PRIVATE Cue.Renderer.D3D12)
+    target_link_libraries(CueD3D12FixedMeshPixelTests PRIVATE Cue.Renderer.D3D12 Cue.Renderer.FrameGraph)
     add_test(NAME Cue.Renderer.D3D12.FixedMeshPixel COMMAND CueD3D12FixedMeshPixelTests)
     set_tests_properties(Cue.Renderer.D3D12.FixedMeshPixel PROPERTIES TIMEOUT 15)
 

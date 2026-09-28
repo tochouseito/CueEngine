@@ -8,42 +8,26 @@
 
 #include <d3dcompiler.h>
 
+#include "FixedMeshShaderPath.h"
+
 namespace cue::detail
 {
 namespace
 {
-// 固定 Mesh の最小 Shader。Compile 結果は PSO 作成前に検査する
-constexpr char k_meshShader[] = R"(
-cbuffer DrawConstants : register(b0) { float4 tint; };
-struct VertexInput { float3 position : POSITION; float3 color : COLOR; };
-struct PixelInput { float4 position : SV_POSITION; float3 color : COLOR; };
-PixelInput VSMain(VertexInput input)
-{
-    PixelInput output;
-    output.position = float4(input.position, 1.0);
-    output.color = input.color * tint.rgb;
-    return output;
-}
-float4 PSMain(PixelInput input) : SV_TARGET
-{
-    return float4(input.color, 1.0);
-}
-)";
-
-/// @brief 埋込み Shader を指定 Entry Point で Compile して Error を返す
+/// @brief 配置済み Shader ファイルを指定 Entry Point で Compile して Error を返す
 Result<Microsoft::WRL::ComPtr<ID3DBlob>> compile_shader(const char* a_entry, const char* a_target)
 {
     using BlobResult = Result<Microsoft::WRL::ComPtr<ID3DBlob>>;
     Microsoft::WRL::ComPtr<ID3DBlob> shader;
     Microsoft::WRL::ComPtr<ID3DBlob> errors;
-    const HRESULT result = D3DCompile(k_meshShader, sizeof(k_meshShader) - 1, "FixedMesh", nullptr, nullptr,
-                                      a_entry, a_target, D3DCOMPILE_ENABLE_STRICTNESS, 0, &shader, &errors);
+    const HRESULT result = D3DCompileFromFile(k_fixedMeshShaderPath, nullptr, nullptr, a_entry, a_target,
+                                              D3DCOMPILE_ENABLE_STRICTNESS, 0, &shader, &errors);
     if (FAILED(result))
     {
         const auto details = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()),
                                                   errors->GetBufferSize()) : std::string{};
         return BlobResult::failure({ErrorCategory::PlatformFailure,
-                                    std::string("D3DCompile.FixedMesh.") + a_entry + ": " + details,
+                                    std::string("D3DCompileFromFile.FixedMesh.") + a_entry + ": " + details,
                                     static_cast<std::int64_t>(result)});
     }
     return BlobResult::success(std::move(shader));
@@ -124,9 +108,9 @@ Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12Devi
     pso.SampleMask = UINT_MAX;
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.RasterizerState.DepthClipEnable = true;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthEnable = true;
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
     result = a_device.device()->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&cache->m_pipeline));
