@@ -27,8 +27,8 @@ public:
     /// @brief Factory から GPU 実行基盤を順に初期化する
     D3D12DeviceContext() = default;
 
-    /// @brief Hardware 優先または明示 WARP で GPU の実行基盤を生成する
-    [[nodiscard]] static Result<std::unique_ptr<D3D12DeviceContext>> create(bool a_useWarp);
+    /// @brief Hardware を優先し、対応 Adapter がなければ WARP を試す
+    [[nodiscard]] static Result<std::unique_ptr<D3D12DeviceContext>> create();
 
     /// @brief Event を閉じてから COM 資源を解放する
     ~D3D12DeviceContext();
@@ -57,6 +57,9 @@ public:
     /// @brief 選択した Adapter の種類を診断する
     [[nodiscard]] bool is_warp() const noexcept;
 
+    /// @brief Device 生成時に選択した最高の機能レベルを返す
+    [[nodiscard]] D3D_FEATURE_LEVEL feature_level() const noexcept;
+
 private:
     Microsoft::WRL::ComPtr<IDXGIFactory6> m_factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter1> m_adapter;
@@ -66,5 +69,6 @@ private:
     HANDLE m_fenceEvent = nullptr;
     std::uint64_t m_nextFenceValue = 1;
     bool m_isWarp = false;
+    D3D_FEATURE_LEVEL m_featureLevel = {};
 };
 } // namespace cue::detail

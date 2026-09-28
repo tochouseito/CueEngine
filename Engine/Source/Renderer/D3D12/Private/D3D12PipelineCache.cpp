@@ -101,6 +101,11 @@ Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12Devi
     {
         return CacheResult::failure(gpu_error("ID3D12Device.CreateRootSignature", result));
     }
+    result = cache->m_rootSignature->SetName(L"CueEngine Fixed Mesh Root Signature");
+    if (FAILED(result))
+    {
+        return CacheResult::failure(gpu_error("ID3D12RootSignature.SetName", result));
+    }
     constexpr D3D12_INPUT_ELEMENT_DESC k_input[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
@@ -129,6 +134,11 @@ Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12Devi
     {
         return CacheResult::failure(gpu_error("ID3D12Device.CreateGraphicsPipelineState", result));
     }
+    result = cache->m_pipeline->SetName(L"CueEngine Fixed Mesh Pipeline");
+    if (FAILED(result))
+    {
+        return CacheResult::failure(gpu_error("ID3D12PipelineState.SetName", result));
+    }
 
     // Slot ごとに 256 Byte を確保し、Shader-visible CBV を分離する
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
@@ -139,6 +149,11 @@ Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12Devi
     if (FAILED(result))
     {
         return CacheResult::failure(gpu_error("ID3D12Device.CreateDescriptorHeap.CBV", result));
+    }
+    result = cache->m_cbvHeap->SetName(L"CueEngine Fixed Mesh CBV Heap");
+    if (FAILED(result))
+    {
+        return CacheResult::failure(gpu_error("ID3D12DescriptorHeap.SetName.CBV", result));
     }
     D3D12_HEAP_PROPERTIES upload{};
     upload.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -155,6 +170,11 @@ Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12Devi
     if (FAILED(result))
     {
         return CacheResult::failure(gpu_error("ID3D12Device.CreateCommittedResource.CBV", result));
+    }
+    result = cache->m_constants->SetName(L"CueEngine Fixed Mesh Constants");
+    if (FAILED(result))
+    {
+        return CacheResult::failure(gpu_error("ID3D12Resource.SetName.CBV", result));
     }
     result = cache->m_constants->Map(0, nullptr, reinterpret_cast<void**>(&cache->m_mappedConstants));
     if (FAILED(result))

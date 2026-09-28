@@ -1,5 +1,9 @@
 #include "D3D12Presentation.h"
 
+#include <string>
+
+#include <d3dcommon.h>
+
 namespace cue::detail
 {
 /// @brief View Manager より短い寿命で表示資源を作る
@@ -49,6 +53,13 @@ Result<std::unique_ptr<D3D12Presentation>> D3D12Presentation::create(D3D12Device
     {
         return PresentationResult::failure(gpu_error("IDXGISwapChain.QueryInterface", result));
     }
+    constexpr char k_swapChainName[] = "CueEngine Swap Chain";
+    result = presentation->m_swapChain->SetPrivateData(WKPDID_D3DDebugObjectName,
+                                                       sizeof(k_swapChainName) - 1, k_swapChainName);
+    if (FAILED(result))
+    {
+        return PresentationResult::failure(gpu_error("IDXGISwapChain.SetPrivateData", result));
+    }
 
     auto buffersResult = presentation->acquire_buffers(a_device.device());
     if (!buffersResult.has_value())
@@ -87,10 +98,16 @@ Result<void> D3D12Presentation::acquire_buffers(ID3D12Device* a_device)
 {
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
-        const HRESULT result = m_swapChain->GetBuffer(index, IID_PPV_ARGS(&m_backBuffers[index]));
+        HRESULT result = m_swapChain->GetBuffer(index, IID_PPV_ARGS(&m_backBuffers[index]));
         if (FAILED(result))
         {
             return Result<void>::failure(gpu_error("IDXGISwapChain.GetBuffer", result));
+        }
+        const std::wstring name = L"CueEngine Back Buffer " + std::to_wstring(index);
+        result = m_backBuffers[index]->SetName(name.c_str());
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("ID3D12Resource.SetName.BackBuffer", result));
         }
         if (m_rtvSlots[index].generation == 0)
         {

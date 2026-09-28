@@ -52,6 +52,11 @@ Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12De
     {
         return PoolResult::failure(gpu_error("ID3D12Device.CreateCommittedResource.Mesh", result));
     }
+    result = pool->m_geometry->SetName(L"CueEngine Fixed Mesh Geometry");
+    if (FAILED(result))
+    {
+        return PoolResult::failure(gpu_error("ID3D12Resource.SetName.Mesh", result));
+    }
     D3D12_HEAP_PROPERTIES uploadHeap{};
     uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
     Microsoft::WRL::ComPtr<ID3D12Resource> upload;
@@ -60,6 +65,11 @@ Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12De
     if (FAILED(result))
     {
         return PoolResult::failure(gpu_error("ID3D12Device.CreateCommittedResource.MeshUpload", result));
+    }
+    result = upload->SetName(L"CueEngine Fixed Mesh Upload");
+    if (FAILED(result))
+    {
+        return PoolResult::failure(gpu_error("ID3D12Resource.SetName.MeshUpload", result));
     }
     void* mapped = nullptr;
     result = upload->Map(0, nullptr, &mapped);
@@ -77,12 +87,22 @@ Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12De
     {
         return PoolResult::failure(gpu_error("ID3D12Device.CreateCommandAllocator.MeshUpload", result));
     }
+    result = allocator->SetName(L"CueEngine Fixed Mesh Upload Allocator");
+    if (FAILED(result))
+    {
+        return PoolResult::failure(gpu_error("ID3D12CommandAllocator.SetName.MeshUpload", result));
+    }
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
     result = a_device.device()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
                                                   IID_PPV_ARGS(&list));
     if (FAILED(result))
     {
         return PoolResult::failure(gpu_error("ID3D12Device.CreateCommandList.MeshUpload", result));
+    }
+    result = list->SetName(L"CueEngine Fixed Mesh Upload Command List");
+    if (FAILED(result))
+    {
+        return PoolResult::failure(gpu_error("ID3D12GraphicsCommandList.SetName.MeshUpload", result));
     }
     list->CopyBufferRegion(pool->m_geometry.Get(), 0, upload.Get(), 0, k_totalBytes);
     D3D12_RESOURCE_BARRIER barrier{};

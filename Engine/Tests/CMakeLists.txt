@@ -21,7 +21,7 @@ target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.FrameGraph)
 add_test(NAME Cue.Renderer.FrameGraph COMMAND CueFrameGraphTests)
 
 if(WIN32)
-    # WARPで実Windowに対するD3D12初期化と停止を検証する
+    # 利用可能な Adapter で実 Window に対する D3D12 初期化と停止を検証する
     add_executable(CueD3D12RendererInitializationTests
         Renderer/D3D12RendererInitializationTests.cpp
     )
@@ -33,7 +33,15 @@ if(WIN32)
     add_test(NAME Cue.Renderer.D3D12.Initialization COMMAND CueD3D12RendererInitializationTests)
     set_tests_properties(Cue.Renderer.D3D12.Initialization PROPERTIES TIMEOUT 15)
 
-    # 内部 Owner の Slot 失効と Direct Queue Context の再利用条件を WARP で検証する
+    # 選択した Device の最高機能レベルを Runtime の報告値と照合する
+    add_executable(CueD3D12FeatureLevelTests Renderer/D3D12FeatureLevelTests.cpp)
+    target_include_directories(CueD3D12FeatureLevelTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
+    target_link_libraries(CueD3D12FeatureLevelTests PRIVATE Cue.Renderer.D3D12)
+    add_test(NAME Cue.Renderer.D3D12.FeatureLevel COMMAND CueD3D12FeatureLevelTests)
+    set_tests_properties(Cue.Renderer.D3D12.FeatureLevel PROPERTIES TIMEOUT 15)
+
+    # 内部 Owner の Slot 失効と Direct Queue Context の再利用条件を検証する
     add_executable(CueD3D12ResourceOwnershipTests
         Renderer/D3D12ResourceOwnershipTests.cpp
     )
@@ -47,7 +55,7 @@ if(WIN32)
     add_test(NAME Cue.Renderer.D3D12.Ownership COMMAND CueD3D12ResourceOwnershipTests)
     set_tests_properties(Cue.Renderer.D3D12.Ownership PROPERTIES TIMEOUT 15)
 
-    # 固定 Mesh の描画結果を WARP の Readback Pixel で確認する
+    # 固定 Mesh の描画結果を選択した Adapter の Readback Pixel で確認する
     add_executable(CueD3D12FixedMeshPixelTests Renderer/D3D12FixedMeshPixelTests.cpp)
     target_include_directories(CueD3D12FixedMeshPixelTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)

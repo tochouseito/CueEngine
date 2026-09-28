@@ -1,6 +1,7 @@
 #include "D3D12SurfacePool.h"
 
 #include <array>
+#include <string>
 #include <utility>
 
 namespace cue::detail
@@ -84,15 +85,21 @@ Result<void> D3D12SurfacePool::resize(D3D12DeviceContext& a_device, WindowSize a
     depthClear.Format = DXGI_FORMAT_D32_FLOAT;
     depthClear.DepthStencil.Depth = 1.0f;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, k_backBufferCount> color;
-    for (auto& surface : color)
+    for (UINT index = 0; index < k_backBufferCount; ++index)
     {
         const auto desc = texture_desc(a_size, DXGI_FORMAT_R8G8B8A8_UNORM,
                                        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         const HRESULT result = a_device.device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
-            &desc, D3D12_RESOURCE_STATE_COMMON, &colorClear, IID_PPV_ARGS(&surface));
+            &desc, D3D12_RESOURCE_STATE_COMMON, &colorClear, IID_PPV_ARGS(&color[index]));
         if (FAILED(result))
         {
             return Result<void>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Color", result));
+        }
+        const std::wstring name = L"CueEngine Offscreen Color " + std::to_wstring(index);
+        const HRESULT nameResult = color[index]->SetName(name.c_str());
+        if (FAILED(nameResult))
+        {
+            return Result<void>::failure(gpu_error("ID3D12Resource.SetName.Color", nameResult));
         }
     }
     Microsoft::WRL::ComPtr<ID3D12Resource> depth;
@@ -103,6 +110,11 @@ Result<void> D3D12SurfacePool::resize(D3D12DeviceContext& a_device, WindowSize a
     if (FAILED(depthResult))
     {
         return Result<void>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Depth", depthResult));
+    }
+    const HRESULT depthNameResult = depth->SetName(L"CueEngine Depth Surface");
+    if (FAILED(depthNameResult))
+    {
+        return Result<void>::failure(gpu_error("ID3D12Resource.SetName.Depth", depthNameResult));
     }
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
