@@ -15,6 +15,7 @@
 #include "D3D12PipelineCache.h"
 #include "D3D12Presentation.h"
 #include "D3D12QueueContext.h"
+#include "D3D12QueuePool.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
 #include "D3D12TrianglePass.h"
@@ -28,9 +29,9 @@ public:
     /// @brief GPU Submit の残りがあれば Owner の破棄前に完了を待つ
     ~State()
     {
-        if (queue && commands && commands->has_pending_gpu())
+        if (queues && commands && commands->has_pending_gpu())
         {
-            [[maybe_unused]] auto result = queue->wait_idle();
+            [[maybe_unused]] auto result = queues->wait_idle();
         }
     }
 
@@ -46,7 +47,7 @@ public:
         // Frame Context の List と Presentation の Buffer は GPU 完了前に解放しない
         if (commands->has_pending_gpu())
         {
-            auto idleResult = queue->wait_idle();
+            auto idleResult = queues->wait_idle();
             if (!idleResult.has_value())
             {
                 return idleResult;
@@ -78,9 +79,10 @@ public:
         return Result<void>::success();
     }
 
-    // 宣言順を Owner の寿命順にする。Queue は Device より先に破棄される
+    // 宣言順を Owner の寿命順にする。Queue Pool は Device より先に破棄される
     std::unique_ptr<detail::D3D12DeviceContext> device;
-    std::unique_ptr<detail::D3D12QueueContext> queue;
+    std::unique_ptr<detail::D3D12QueuePool> queues;
+    detail::D3D12QueueContext* queue = nullptr;
     std::unique_ptr<detail::D3D12ViewManager> views;
     std::unique_ptr<detail::D3D12Presentation> presentation;
     std::unique_ptr<detail::D3D12SurfacePool> surfaces;
@@ -131,12 +133,13 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     state->device = deviceResult.take_value();
 
-    auto queueResult = detail::D3D12QueueContext::create(*state->device);
+    auto queueResult = detail::D3D12QueuePool::create(*state->device);
     if (!queueResult.has_value())
     {
         return RendererResult::failure(*queueResult.try_error());
     }
-    state->queue = queueResult.take_value();
+    state->queues = queueResult.take_value();
+    state->queue = &state->queues->context(GpuQueueType::Graphics);
 
     auto viewsResult = detail::D3D12ViewManager::create(*state->device, 2 * detail::k_backBufferCount);
     if (!viewsResult.has_value())
@@ -194,7 +197,7 @@ Result<void> D3D12Renderer::shutdown()
     Result<void> waitResult = Result<void>::success();
     if (m_state->commands && m_state->commands->has_pending_gpu())
     {
-        waitResult = m_state->queue->wait_idle();
+        waitResult = m_state->queues->wait_idle();
         if (!waitResult.has_value())
         {
             // 完了未確認の資源を解放せず、呼出側が Shutdown を再試行できる状態を残す

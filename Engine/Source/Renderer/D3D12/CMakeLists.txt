@@ -9,6 +9,7 @@ add_library(Cue.Renderer.D3D12 STATIC
     Private/D3D12TrianglePass.cpp
     Private/D3D12Presentation.cpp
     Private/D3D12QueueContext.cpp
+    Private/D3D12QueuePool.cpp
     Private/D3D12Renderer.cpp
     Private/D3D12ViewManager.cpp
 )
@@ -28,7 +29,7 @@ target_include_directories(Cue.Renderer.D3D12 PUBLIC
 )
 
 target_link_libraries(Cue.Renderer.D3D12
-    PUBLIC Cue.Platform
+    PUBLIC Cue.Platform Cue.Renderer.RHI
     PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxcompiler dxgi dxguid
 )
 
