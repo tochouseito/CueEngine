@@ -19,6 +19,8 @@ Windows 固有の `D3D12Renderer` が Device、Direct Queue、Swap Chain、Back 
 
 Windows 固有の Window API は `Window&` から有効期間が Window より短い Native Handle を借用する。Handle は Renderer の初期化時に Swap Chain 作成へ渡す。Win32 型は Windows 実装の `.cpp` 内に閉じ、共通 `Platform` と Renderer の公開 Header は Windows SDK を含まない。Handle は Window の破棄後に使用しない。
 
+Debug 構成では D3D12 Debug Layer が有効な場合に DXGI Debug Factory を要求する。DXGI Debug Component がない場合だけ通常 Factory で再試行する。Device 生成後の InfoQueue は破損と Error で停止し、Warning は記録する。Development と Release では Debug Layer の取得を要求しない。
+
 Renderer の Frame 入力は Frame 番号と固定の Clear Color とする。`render_frame` は直列化された Render Callback 上で、現在の Surface 状態を適用し、Back Buffer を `PRESENT` から `RENDER_TARGET` へ遷移させて Clear し、`PRESENT` へ戻して Submit／Present する。`FrameController` が報告する Render 完了は CPU Callback の完了であり、GPU 完了ではない。Allocator と Back Buffer は対応する Fence 値の完了後だけ再利用する。
 
 Window Message は MainThread で処理する。Resize／Minimize／Restore の最新要求を Renderer に所有値で渡し、Swap Chain 操作は Render Callback 側で直列に実行する。最小化中または Client Size が 0 の間は描画と `ResizeBuffers` を保留する。Size が変わる場合は GPU 完了を待ち、旧 Back Buffer 参照を解放してから `ResizeBuffers` と RTV 再生成を行う。初期 Size と同じ Event は再生成しない。
