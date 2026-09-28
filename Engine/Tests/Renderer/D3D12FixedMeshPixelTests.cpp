@@ -26,11 +26,11 @@ void transition(ID3D12GraphicsCommandList* a_list, ID3D12Resource* a_resource,
 }
 } // namespace
 
-/// @brief WARP で固定 Mesh を描き、中心 Pixel と背景の違いを Readback で確認する
+/// @brief 利用可能な Adapter で固定 Mesh を描き、中心 Pixel と背景の違いを Readback で確認する
 int main()
 {
     using namespace cue::detail;
-    auto deviceResult = D3D12DeviceContext::create(true);
+    auto deviceResult = D3D12DeviceContext::create();
     if (!deviceResult.has_value())
     {
         return 1;

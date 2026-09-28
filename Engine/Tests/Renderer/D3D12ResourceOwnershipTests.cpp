@@ -1,10 +1,10 @@
 #include "D3D12CommandPool.h"
 #include "D3D12ViewManager.h"
 
-/// @brief RTV Slot の失効と Command Context の貸出・GPU 完了条件を WARP で確認する
+/// @brief RTV Slot の失効と Command Context の貸出・GPU 完了条件を利用可能な Adapter で確認する
 int main()
 {
-    auto deviceResult = cue::detail::D3D12DeviceContext::create(true);
+    auto deviceResult = cue::detail::D3D12DeviceContext::create();
     if (!deviceResult.has_value())
     {
         return 1;

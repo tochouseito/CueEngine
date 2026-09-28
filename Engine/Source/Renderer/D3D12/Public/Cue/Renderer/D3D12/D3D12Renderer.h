@@ -22,13 +22,12 @@ struct D3D12RendererProgress final
 class D3D12Renderer final
 {
 public:
-    /// @brief Hardwareまたは明示的なWARP AdapterでGPU資源を作る
+    /// @brief Hardware を優先し、対応 Adapter がなければ WARP で GPU 資源を作る
     ///
     /// a_nativeWindowはWindows Windowの有効なNative Handleを非所有で借用する
     /// 失敗時は部分生成資源を公開せず、操作名とHRESULTを返す
     [[nodiscard]] static Result<std::unique_ptr<D3D12Renderer>> create(void* a_nativeWindow,
-                                                                           WindowSize a_clientSize,
-                                                                           bool a_useWarp = false);
+                                                                         WindowSize a_clientSize);
 
     /// @brief 明示停止されていないGPU資源も回収する
     ~D3D12Renderer();

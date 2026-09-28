@@ -2,11 +2,11 @@
 
 #include <Cue/Platform/Windows/WindowsPlatform.h>
 
-/// @brief WARPで実WindowのD3D12資源を生成しGPU待機後に解放する
+/// @brief 利用可能な Adapter で実 Window の D3D12 資源を生成し GPU 待機後に解放する
 int main()
 {
     // 無効なHandleはDevice生成前に拒否する
-    auto invalid = cue::D3D12Renderer::create(nullptr, {640, 480}, true);
+    auto invalid = cue::D3D12Renderer::create(nullptr, {640, 480});
     if (invalid.has_value() || invalid.try_error()->category != cue::ErrorCategory::InvalidArgument)
     {
         return 1;
@@ -30,18 +30,13 @@ int main()
         return 4;
     }
 
-    // 実Windowに対して明示WARP経路とFrame Resourceの生成を確認する
-    auto rendererResult = cue::D3D12Renderer::create(handleResult.take_value(), window->client_size(), true);
+    // 実 Window に対して選択された Adapter で Frame Resource を生成する
+    auto rendererResult = cue::D3D12Renderer::create(handleResult.take_value(), window->client_size());
     if (!rendererResult.has_value())
     {
         return 5;
     }
     auto renderer = rendererResult.take_value();
-    if (!renderer->is_warp())
-    {
-        return 6;
-    }
-
     // Bufferを繰り返し使用し、同一Frameの二重Submitを拒否する
     if (!window->show().has_value() || !renderer->render_frame(0).has_value() ||
         !renderer->render_frame(1).has_value() || !renderer->render_frame(2).has_value())
@@ -124,7 +119,7 @@ int main()
     {
         return 21;
     }
-    auto implicitResult = cue::D3D12Renderer::create(implicitHandle.take_value(), window->client_size(), true);
+    auto implicitResult = cue::D3D12Renderer::create(implicitHandle.take_value(), window->client_size());
     if (!implicitResult.has_value())
     {
         return 22;

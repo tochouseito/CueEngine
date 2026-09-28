@@ -17,7 +17,7 @@ target_include_directories(Cue.Renderer.D3D12 PUBLIC
 
 target_link_libraries(Cue.Renderer.D3D12
     PUBLIC Cue.Platform
-    PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxgi
+    PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxgi dxguid
 )
 
 target_compile_features(Cue.Renderer.D3D12 PUBLIC cxx_std_20)

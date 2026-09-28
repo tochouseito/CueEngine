@@ -107,9 +107,8 @@ D3D12Renderer::~D3D12Renderer()
     [[maybe_unused]] auto result = shutdown();
 }
 
-/// @brief Hardware 優先または明示 WARP で Device と Presentation 資源を生成する
-Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindow, WindowSize a_clientSize,
-                                                               bool a_useWarp)
+/// @brief Hardware を優先し、対応 Adapter がなければ WARP で表示資源を生成する
+Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindow, WindowSize a_clientSize)
 {
     using RendererResult = Result<std::unique_ptr<D3D12Renderer>>;
 
@@ -123,7 +122,7 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     state->progress.surfaceSize = a_clientSize;
 
     // 借用元の Device と View Manager を先に生成してから表示と Command Context を作る
-    auto deviceResult = detail::D3D12DeviceContext::create(a_useWarp);
+    auto deviceResult = detail::D3D12DeviceContext::create();
     if (!deviceResult.has_value())
     {
         return RendererResult::failure(*deviceResult.try_error());

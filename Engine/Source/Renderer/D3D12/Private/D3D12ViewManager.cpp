@@ -22,6 +22,11 @@ Result<std::unique_ptr<D3D12ViewManager>> D3D12ViewManager::create(D3D12DeviceCo
     {
         return ManagerResult::failure(gpu_error("ID3D12Device.CreateDescriptorHeap.RTV", result));
     }
+    const HRESULT rtvNameResult = manager->m_rtvHeap->SetName(L"CueEngine RTV Heap");
+    if (FAILED(rtvNameResult))
+    {
+        return ManagerResult::failure(gpu_error("ID3D12DescriptorHeap.SetName.RTV", rtvNameResult));
+    }
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     heapDesc.NumDescriptors = 1;
     const HRESULT depthResult = a_device.device()->CreateDescriptorHeap(&heapDesc,
@@ -29,6 +34,11 @@ Result<std::unique_ptr<D3D12ViewManager>> D3D12ViewManager::create(D3D12DeviceCo
     if (FAILED(depthResult))
     {
         return ManagerResult::failure(gpu_error("ID3D12Device.CreateDescriptorHeap.DSV", depthResult));
+    }
+    const HRESULT dsvNameResult = manager->m_dsvHeap->SetName(L"CueEngine DSV Heap");
+    if (FAILED(dsvNameResult))
+    {
+        return ManagerResult::failure(gpu_error("ID3D12DescriptorHeap.SetName.DSV", dsvNameResult));
     }
     manager->m_rtvStride = a_device.device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     manager->m_slots.resize(a_rtvCapacity);

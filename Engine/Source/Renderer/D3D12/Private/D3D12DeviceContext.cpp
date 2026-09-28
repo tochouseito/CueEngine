@@ -1,12 +1,40 @@
 #include "D3D12DeviceContext.h"
 
+#include <string_view>
 #include <utility>
+
+#include <d3d12sdklayers.h>
+#include <d3dcommon.h>
 
 namespace cue::detail
 {
 namespace
 {
 constexpr DWORD k_gpuWaitMilliseconds = 10'000;
+constexpr D3D_FEATURE_LEVEL k_featureLevels[] = {
+    D3D_FEATURE_LEVEL_12_2,
+    D3D_FEATURE_LEVEL_12_1,
+    D3D_FEATURE_LEVEL_12_0,
+    D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_11_0,
+};
+
+/// @brief Adapter が対応する最高の機能レベルで Device を生成する
+HRESULT create_device(IDXGIAdapter1* a_adapter, Microsoft::WRL::ComPtr<ID3D12Device>& a_device,
+                      D3D_FEATURE_LEVEL& a_featureLevel)
+{
+    HRESULT result = E_FAIL;
+    for (D3D_FEATURE_LEVEL level : k_featureLevels)
+    {
+        result = D3D12CreateDevice(a_adapter, level, IID_PPV_ARGS(&a_device));
+        if (SUCCEEDED(result))
+        {
+            a_featureLevel = level;
+            return result;
+        }
+    }
+    return result;
+}
 } // namespace
 
 /// @brief Event を閉じてから COM 資源を解放する
@@ -18,78 +46,106 @@ D3D12DeviceContext::~D3D12DeviceContext()
     }
 }
 
-/// @brief Hardware 優先または明示 WARP で GPU の実行基盤を生成する
-Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create(bool a_useWarp)
+/// @brief Hardware を優先し、対応 Adapter がなければ WARP で GPU の実行基盤を生成する
+Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
 {
     using DeviceResult = Result<std::unique_ptr<D3D12DeviceContext>>;
     auto context = std::make_unique<D3D12DeviceContext>();
-    context->m_isWarp = a_useWarp;
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
-    // Device 作成前に Debug Layer を有効にする
+
+    // Debug Layer の有効化
     Microsoft::WRL::ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
     {
         debug->EnableDebugLayer();
+
+        // GPU Validation の有効化
+        Microsoft::WRL::ComPtr<ID3D12Debug1> gpuValidation;
+        if (SUCCEEDED(debug.As(&gpuValidation)))
+        {
+            gpuValidation->SetEnableGPUBasedValidation(true);
+        }
+    }
+
+    // DRED の有効化
+    Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> deviceRemoved;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&deviceRemoved))))
+    {
+        deviceRemoved->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        deviceRemoved->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
     }
 #endif
 
+    // DXGI Factory の生成
     HRESULT result = CreateDXGIFactory2(0, IID_PPV_ARGS(&context->m_factory));
     if (FAILED(result))
     {
         return DeviceResult::failure(gpu_error("CreateDXGIFactory2", result));
     }
-
-    if (a_useWarp)
+    constexpr char k_factoryName[] = "CueEngine DXGI Factory";
+    result = context->m_factory->SetPrivateData(WKPDID_D3DDebugObjectName, sizeof(k_factoryName) - 1, k_factoryName);
+    if (FAILED(result))
     {
+        return DeviceResult::failure(gpu_error("IDXGIFactory.SetPrivateData", result));
+    }
+
+    // D3D12 対応の Hardware Adapter だけを高性能順で採用する
+    for (UINT index = 0;; ++index)
+    {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
+        result = context->m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                                  IID_PPV_ARGS(&candidate));
+        if (result == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        if (FAILED(result))
+        {
+            return DeviceResult::failure(gpu_error("IDXGIFactory.EnumAdapterByGpuPreference", result));
+        }
+        DXGI_ADAPTER_DESC1 desc{};
+        result = candidate->GetDesc1(&desc);
+        if (FAILED(result))
+        {
+            return DeviceResult::failure(gpu_error("IDXGIAdapter.GetDesc1", result));
+        }
+        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+            SUCCEEDED(create_device(candidate.Get(), context->m_device, context->m_featureLevel)))
+        {
+            context->m_adapter = std::move(candidate);
+            break;
+        }
+    }
+    if (!context->m_adapter)
+    {
+        // 使用可能な Hardware Device がない場合だけ WARP を試し、列挙自体の失敗は隠さない
         result = context->m_factory->EnumWarpAdapter(IID_PPV_ARGS(&context->m_adapter));
         if (FAILED(result))
         {
             return DeviceResult::failure(gpu_error("IDXGIFactory.EnumWarpAdapter", result));
         }
-    }
-    else
-    {
-        // D3D12 対応の Hardware Adapter だけを高性能順で採用する
-        for (UINT index = 0;; ++index)
+        result = create_device(context->m_adapter.Get(), context->m_device, context->m_featureLevel);
+        if (FAILED(result))
         {
-            Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
-            result = context->m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                                      IID_PPV_ARGS(&candidate));
-            if (result == DXGI_ERROR_NOT_FOUND)
-            {
-                break;
-            }
-            if (FAILED(result))
-            {
-                return DeviceResult::failure(gpu_error("IDXGIFactory.EnumAdapterByGpuPreference", result));
-            }
-            DXGI_ADAPTER_DESC1 desc{};
-            result = candidate->GetDesc1(&desc);
-            if (FAILED(result))
-            {
-                return DeviceResult::failure(gpu_error("IDXGIAdapter.GetDesc1", result));
-            }
-            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
-                SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0,
-                                            __uuidof(ID3D12Device), nullptr)))
-            {
-                context->m_adapter = std::move(candidate);
-                break;
-            }
+            return DeviceResult::failure(gpu_error("D3D12CreateDevice", result));
         }
-        if (!context->m_adapter)
-        {
-            return DeviceResult::failure({ErrorCategory::PlatformFailure, "D3D12Renderer.noHardwareAdapter",
-                                          static_cast<std::int64_t>(DXGI_ERROR_NOT_FOUND)});
-        }
+        context->m_isWarp = true;
     }
-
-    result = D3D12CreateDevice(context->m_adapter.Get(), D3D_FEATURE_LEVEL_11_0,
-                               IID_PPV_ARGS(&context->m_device));
+    constexpr std::string_view k_warpAdapterName = "CueEngine WARP Adapter";
+    constexpr std::string_view k_hardwareAdapterName = "CueEngine Hardware Adapter";
+    const std::string_view adapterName = context->m_isWarp ? k_warpAdapterName : k_hardwareAdapterName;
+    result = context->m_adapter->SetPrivateData(WKPDID_D3DDebugObjectName,
+                                                static_cast<UINT>(adapterName.size()), adapterName.data());
     if (FAILED(result))
     {
-        return DeviceResult::failure(gpu_error("D3D12CreateDevice", result));
+        return DeviceResult::failure(gpu_error("IDXGIAdapter.SetPrivateData", result));
+    }
+
+    result = context->m_device->SetName(L"CueEngine D3D12 Device");
+    if (FAILED(result))
+    {
+        return DeviceResult::failure(gpu_error("ID3D12Device.SetName", result));
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
@@ -99,10 +155,20 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create(bool a_us
     {
         return DeviceResult::failure(gpu_error("ID3D12Device.CreateCommandQueue", result));
     }
+    result = context->m_queue->SetName(L"CueEngine Direct Queue");
+    if (FAILED(result))
+    {
+        return DeviceResult::failure(gpu_error("ID3D12CommandQueue.SetName", result));
+    }
     result = context->m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&context->m_fence));
     if (FAILED(result))
     {
         return DeviceResult::failure(gpu_error("ID3D12Device.CreateFence", result));
+    }
+    result = context->m_fence->SetName(L"CueEngine Frame Fence");
+    if (FAILED(result))
+    {
+        return DeviceResult::failure(gpu_error("ID3D12Fence.SetName", result));
     }
     context->m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!context->m_fenceEvent)
@@ -185,5 +251,11 @@ IDXGIFactory6* D3D12DeviceContext::factory() const noexcept
 bool D3D12DeviceContext::is_warp() const noexcept
 {
     return m_isWarp;
+}
+
+/// @brief Device 生成時に選択した最高の機能レベルを返す
+D3D_FEATURE_LEVEL D3D12DeviceContext::feature_level() const noexcept
+{
+    return m_featureLevel;
 }
 } // namespace cue::detail

@@ -1,5 +1,6 @@
 #include "D3D12CommandPool.h"
 
+#include <string>
 #include <utility>
 
 namespace cue::detail
@@ -9,13 +10,20 @@ Result<std::unique_ptr<D3D12CommandPool>> D3D12CommandPool::create(D3D12DeviceCo
 {
     using PoolResult = Result<std::unique_ptr<D3D12CommandPool>>;
     auto pool = std::make_unique<D3D12CommandPool>();
-    for (auto& context : pool->m_contexts)
+    for (UINT index = 0; index < k_backBufferCount; ++index)
     {
+        auto& context = pool->m_contexts[index];
         const HRESULT result = a_device.device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                                            IID_PPV_ARGS(&context.allocator));
         if (FAILED(result))
         {
             return PoolResult::failure(gpu_error("ID3D12Device.CreateCommandAllocator", result));
+        }
+        const std::wstring name = L"CueEngine Frame Allocator " + std::to_wstring(index);
+        const HRESULT nameResult = context.allocator->SetName(name.c_str());
+        if (FAILED(nameResult))
+        {
+            return PoolResult::failure(gpu_error("ID3D12CommandAllocator.SetName", nameResult));
         }
     }
     auto listsResult = pool->recreate_lists(a_device);
@@ -133,8 +141,9 @@ void D3D12CommandPool::release_for_resize() noexcept
 /// @brief Resize 後に Context の Command List を再生成する
 Result<void> D3D12CommandPool::recreate_lists(D3D12DeviceContext& a_device)
 {
-    for (auto& context : m_contexts)
+    for (UINT index = 0; index < k_backBufferCount; ++index)
     {
+        auto& context = m_contexts[index];
         const HRESULT resetResult = context.allocator->Reset();
         if (FAILED(resetResult))
         {
@@ -146,6 +155,12 @@ Result<void> D3D12CommandPool::recreate_lists(D3D12DeviceContext& a_device)
         if (FAILED(result))
         {
             return Result<void>::failure(gpu_error("ID3D12Device.CreateCommandList", result));
+        }
+        const std::wstring name = L"CueEngine Frame Command List " + std::to_wstring(index);
+        result = context.list->SetName(name.c_str());
+        if (FAILED(result))
+        {
+            return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.SetName", result));
         }
         result = context.list->Close();
         if (FAILED(result))
