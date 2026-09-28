@@ -3,6 +3,7 @@
 #include "D3D12QueueContext.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
+#include "D3D12TrianglePass.h"
 #include "D3D12ViewManager.h"
 
 #include <array>
@@ -86,24 +87,37 @@ int main()
     }
     const auto rtv = rtvResult.take_value();
     const auto dsv = surfaces->depth_dsv();
+    cue::FrameGraphBuilder graph;
+    auto colorHandle = graph.create_resource("TriangleColor", cue::GraphResourceLifetime::Transient,
+                                             cue::GraphResourceState::Common, cue::GraphResourceState::Common);
+    auto depthHandle = graph.create_resource("TriangleDepth", cue::GraphResourceLifetime::Persistent,
+                                             cue::GraphResourceState::Common, cue::GraphResourceState::Common);
+    if (!colorHandle.has_value() || !depthHandle.has_value())
+    {
+        return 22;
+    }
+    const TrianglePassContext passContext{*pipeline, *meshes, colorHandle.take_value(), depthHandle.take_value(),
+                                          meshes->triangle(), {64, 64}, 0, rtv, dsv,
+                                          {1.0f, 1.0f, 1.0f, 1.0f}};
+    const D3D12TrianglePass trianglePass(passContext);
+    if (!trianglePass.setup(graph).has_value())
+    {
+        return 23;
+    }
+    auto graphResult = graph.compile();
+    if (!graphResult.has_value() || graphResult.try_value()->passes.size() != 1 ||
+        graphResult.try_value()->passes[0].name != trianglePass.name() ||
+        graphResult.try_value()->passes[0].barriers.size() != 2)
+    {
+        return 24;
+    }
     transition(list.Get(), surfaces->color(0), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
     transition(list.Get(), surfaces->depth(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
     constexpr float clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
     list->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
     list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    if (!pipeline->bind(list.Get(), 0, {1.0f, 1.0f, 1.0f, 1.0f}).has_value())
-    {
-        return 9;
-    }
-    D3D12_VIEWPORT viewport{};
-    viewport.Width = 64.0f;
-    viewport.Height = 64.0f;
-    viewport.MaxDepth = 1.0f;
-    const D3D12_RECT scissor{0, 0, 64, 64};
-    list->RSSetViewports(1, &viewport);
-    list->RSSetScissorRects(1, &scissor);
-    if (!meshes->draw(list.Get(), meshes->triangle()).has_value())
+    if (!trianglePass.execute(list.Get()).has_value())
     {
         return 10;
     }
