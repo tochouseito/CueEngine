@@ -2,6 +2,7 @@
 
 #include "D3D12DeviceContext.h"
 #include "D3D12Presentation.h"
+#include "D3D12QueueContext.h"
 
 #include <array>
 #include <cstdint>
@@ -31,16 +32,16 @@ public:
     [[nodiscard]] static Result<std::unique_ptr<D3D12CommandPool>> create(D3D12DeviceContext& a_device);
 
     /// @brief 対応する Fence 完了後だけ Context を貸し出す
-    [[nodiscard]] Result<CommandLease> acquire(D3D12DeviceContext& a_device, UINT a_slot);
+    [[nodiscard]] Result<CommandLease> acquire(D3D12QueueContext& a_queue, UINT a_slot);
 
     /// @brief 記録済み Context を閉じて Direct Queue へ投入する
-    [[nodiscard]] Result<void> submit(D3D12DeviceContext& a_device, CommandLease a_lease);
+    [[nodiscard]] Result<void> submit(D3D12QueueContext& a_queue, CommandLease a_lease);
 
     /// @brief Submit 前の記録失敗時に貸出 List を閉じる
     [[nodiscard]] Result<void> abort(CommandLease a_lease);
 
     /// @brief Present 後の Queue 位置を Context の再利用条件として記録する
-    [[nodiscard]] Result<void> retire(D3D12DeviceContext& a_device, CommandLease a_lease);
+    [[nodiscard]] Result<void> retire(D3D12QueueContext& a_queue, CommandLease a_lease);
 
     /// @brief GPU 完了後に旧 Back Buffer を参照し得る List を全て解放する
     void release_for_resize() noexcept;

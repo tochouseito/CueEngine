@@ -39,7 +39,8 @@ D3D12_RESOURCE_DESC buffer_desc()
 } // namespace
 
 /// @brief Triangle を Upload Heap から Default Heap に転送し、完了後に Upload を解放する
-Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12DeviceContext& a_device)
+Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12DeviceContext& a_device,
+                                                                          D3D12QueueContext& a_queue)
 {
     using PoolResult = Result<std::unique_ptr<D3D12StaticMeshPool>>;
     auto pool = std::make_unique<D3D12StaticMeshPool>();
@@ -119,8 +120,8 @@ Result<std::unique_ptr<D3D12StaticMeshPool>> D3D12StaticMeshPool::create(D3D12De
         return PoolResult::failure(gpu_error("ID3D12GraphicsCommandList.Close.MeshUpload", result));
     }
     ID3D12CommandList* lists[] = {list.Get()};
-    a_device.queue()->ExecuteCommandLists(1, lists);
-    auto waitResult = a_device.wait_idle();
+    a_queue.queue()->ExecuteCommandLists(1, lists);
+    auto waitResult = a_queue.wait_idle();
     if (!waitResult.has_value())
     {
         return PoolResult::failure(*waitResult.try_error());
@@ -158,13 +159,13 @@ Result<void> D3D12StaticMeshPool::draw(ID3D12GraphicsCommandList* a_list, Static
 }
 
 /// @brief Queue 完了を確認してから Handle と Buffer を破棄する
-Result<void> D3D12StaticMeshPool::destroy(D3D12DeviceContext& a_device, StaticMeshHandle a_handle)
+Result<void> D3D12StaticMeshPool::destroy(D3D12QueueContext& a_queue, StaticMeshHandle a_handle)
 {
     if (!m_isAllocated || a_handle.index != 0 || a_handle.generation != m_generation)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12StaticMeshPool.destroy"});
     }
-    auto waitResult = a_device.wait_idle();
+    auto waitResult = a_queue.wait_idle();
     if (!waitResult.has_value())
     {
         return waitResult;

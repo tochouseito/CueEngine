@@ -26,6 +26,7 @@ D3D12Presentation::~D3D12Presentation()
 
 /// @brief 有効な Window Handle に結び付く表示資源を作る
 Result<std::unique_ptr<D3D12Presentation>> D3D12Presentation::create(D3D12DeviceContext& a_device,
+                                                                       D3D12QueueContext& a_queue,
                                                                        D3D12ViewManager& a_views,
                                                                        void* a_nativeWindow, WindowSize a_size)
 {
@@ -42,7 +43,7 @@ Result<std::unique_ptr<D3D12Presentation>> D3D12Presentation::create(D3D12Device
     swapDesc.SampleDesc.Count = 1;
     swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain;
-    HRESULT result = a_device.factory()->CreateSwapChainForHwnd(a_device.queue(), static_cast<HWND>(a_nativeWindow),
+    HRESULT result = a_device.factory()->CreateSwapChainForHwnd(a_queue.queue(), static_cast<HWND>(a_nativeWindow),
                                                                  &swapDesc, nullptr, nullptr, &swapChain);
     if (FAILED(result))
     {

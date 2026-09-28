@@ -1,6 +1,7 @@
 #pragma once
 
 #include "D3D12DeviceContext.h"
+#include "D3D12QueueContext.h"
 #include "D3D12ViewManager.h"
 
 #include <Cue/Platform/WindowEvent.h>
@@ -29,6 +30,7 @@ public:
     ///
     /// Device Context は本体より長く、Window は本体の停止まで生存する
     [[nodiscard]] static Result<std::unique_ptr<D3D12Presentation>> create(D3D12DeviceContext& a_device,
+                                                                              D3D12QueueContext& a_queue,
                                                                               D3D12ViewManager& a_views,
                                                                               void* a_nativeWindow,
                                                                               WindowSize a_size);

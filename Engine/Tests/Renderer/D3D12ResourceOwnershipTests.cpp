@@ -1,4 +1,5 @@
 #include "D3D12CommandPool.h"
+#include "D3D12QueueContext.h"
 #include "D3D12ViewManager.h"
 
 /// @brief RTV Slot の失効と Command Context の貸出・GPU 完了条件を利用可能な Adapter で確認する
@@ -10,6 +11,12 @@ int main()
         return 1;
     }
     auto device = deviceResult.take_value();
+    auto queueResult = cue::detail::D3D12QueueContext::create(*device);
+    if (!queueResult.has_value())
+    {
+        return 15;
+    }
+    auto queue = queueResult.take_value();
 
     auto viewsResult = cue::detail::D3D12ViewManager::create(*device, 2);
     if (!viewsResult.has_value())
@@ -46,31 +53,31 @@ int main()
         return 7;
     }
     auto pool = poolResult.take_value();
-    auto firstLease = pool->acquire(*device, 0);
-    if (!firstLease.has_value() || pool->acquire(*device, 0).has_value())
+    auto firstLease = pool->acquire(*queue, 0);
+    if (!firstLease.has_value() || pool->acquire(*queue, 0).has_value())
     {
         return 8;
     }
     const cue::detail::CommandLease lease = firstLease.take_value();
-    if (!pool->submit(*device, lease).has_value() || pool->submit(*device, lease).has_value() ||
-        !pool->retire(*device, lease).has_value())
+    if (!pool->submit(*queue, lease).has_value() || pool->submit(*queue, lease).has_value() ||
+        !pool->retire(*queue, lease).has_value())
     {
         return 9;
     }
 
     // 同じ Slot の再貸出は記録した Fence の完了後だけ許す
-    auto reusedLease = pool->acquire(*device, 0);
+    auto reusedLease = pool->acquire(*queue, 0);
     if (!reusedLease.has_value())
     {
         return 10;
     }
     const cue::detail::CommandLease reused = reusedLease.take_value();
-    if (pool->submit(*device, lease).has_value() || !pool->submit(*device, reused).has_value() ||
-        !pool->retire(*device, reused).has_value())
+    if (pool->submit(*queue, lease).has_value() || !pool->submit(*queue, reused).has_value() ||
+        !pool->retire(*queue, reused).has_value())
     {
         return 10;
     }
-    if (!device->wait_idle().has_value())
+    if (!queue->wait_idle().has_value())
     {
         return 11;
     }
@@ -79,14 +86,14 @@ int main()
     {
         return 12;
     }
-    auto otherLease = pool->acquire(*device, 1);
+    auto otherLease = pool->acquire(*queue, 1);
     if (!otherLease.has_value())
     {
         return 13;
     }
     const cue::detail::CommandLease other = otherLease.take_value();
-    if (!pool->submit(*device, other).has_value() || !pool->retire(*device, other).has_value() ||
-        !device->wait_idle().has_value())
+    if (!pool->submit(*queue, other).has_value() || !pool->retire(*queue, other).has_value() ||
+        !queue->wait_idle().has_value())
     {
         return 14;
     }

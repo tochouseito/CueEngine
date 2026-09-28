@@ -15,6 +15,7 @@
 #include "D3D12GraphExecutor.h"
 #include "D3D12PipelineCache.h"
 #include "D3D12Presentation.h"
+#include "D3D12QueueContext.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
 #include "D3D12ViewManager.h"
@@ -27,9 +28,9 @@ public:
     /// @brief GPU Submit の残りがあれば Owner の破棄前に完了を待つ
     ~State()
     {
-        if (device && commands && commands->has_pending_gpu())
+        if (queue && commands && commands->has_pending_gpu())
         {
-            [[maybe_unused]] auto result = device->wait_idle();
+            [[maybe_unused]] auto result = queue->wait_idle();
         }
     }
 
@@ -45,7 +46,7 @@ public:
         // Frame Context の List と Presentation の Buffer は GPU 完了前に解放しない
         if (commands->has_pending_gpu())
         {
-            auto idleResult = device->wait_idle();
+            auto idleResult = queue->wait_idle();
             if (!idleResult.has_value())
             {
                 return idleResult;
@@ -77,8 +78,9 @@ public:
         return Result<void>::success();
     }
 
-    // 宣言順を Owner の寿命順にする。Command と Presentation は View、Device より先に破棄される
+    // 宣言順を Owner の寿命順にする。Queue は Device より先に破棄される
     std::unique_ptr<detail::D3D12DeviceContext> device;
+    std::unique_ptr<detail::D3D12QueueContext> queue;
     std::unique_ptr<detail::D3D12ViewManager> views;
     std::unique_ptr<detail::D3D12Presentation> presentation;
     std::unique_ptr<detail::D3D12SurfacePool> surfaces;
@@ -121,13 +123,20 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     state->requestedSize = a_clientSize;
     state->progress.surfaceSize = a_clientSize;
 
-    // 借用元の Device と View Manager を先に生成してから表示と Command Context を作る
+    // 借用元の Device と Queue を先に生成してから表示と Command Context を作る
     auto deviceResult = detail::D3D12DeviceContext::create();
     if (!deviceResult.has_value())
     {
         return RendererResult::failure(*deviceResult.try_error());
     }
     state->device = deviceResult.take_value();
+
+    auto queueResult = detail::D3D12QueueContext::create(*state->device);
+    if (!queueResult.has_value())
+    {
+        return RendererResult::failure(*queueResult.try_error());
+    }
+    state->queue = queueResult.take_value();
 
     auto viewsResult = detail::D3D12ViewManager::create(*state->device, 2 * detail::k_backBufferCount);
     if (!viewsResult.has_value())
@@ -136,7 +145,7 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     state->views = viewsResult.take_value();
 
-    auto presentationResult = detail::D3D12Presentation::create(*state->device, *state->views,
+    auto presentationResult = detail::D3D12Presentation::create(*state->device, *state->queue, *state->views,
                                                                   a_nativeWindow, a_clientSize);
     if (!presentationResult.has_value())
     {
@@ -158,7 +167,7 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     state->pipelines = pipelineResult.take_value();
 
-    auto meshResult = detail::D3D12StaticMeshPool::create(*state->device);
+    auto meshResult = detail::D3D12StaticMeshPool::create(*state->device, *state->queue);
     if (!meshResult.has_value())
     {
         return RendererResult::failure(*meshResult.try_error());
@@ -185,7 +194,7 @@ Result<void> D3D12Renderer::shutdown()
     Result<void> waitResult = Result<void>::success();
     if (m_state->commands && m_state->commands->has_pending_gpu())
     {
-        waitResult = m_state->device->wait_idle();
+        waitResult = m_state->queue->wait_idle();
         if (!waitResult.has_value())
         {
             // 完了未確認の資源を解放せず、呼出側が Shutdown を再試行できる状態を残す
@@ -284,7 +293,7 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure(*compiled.try_error());
     }
 
-    auto leaseResult = state.commands->acquire(*state.device, index);
+    auto leaseResult = state.commands->acquire(*state.queue, index);
     if (!leaseResult.has_value())
     {
         return Result<void>::failure(*leaseResult.try_error());
@@ -334,7 +343,7 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return recordResult;
     }
 
-    auto submitResult = state.commands->submit(*state.device, lease);
+    auto submitResult = state.commands->submit(*state.queue, lease);
     if (!submitResult.has_value())
     {
         [[maybe_unused]] auto abortResult = state.commands->abort(lease);
@@ -346,7 +355,7 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     {
         return presentResult;
     }
-    auto retireResult = state.commands->retire(*state.device, lease);
+    auto retireResult = state.commands->retire(*state.queue, lease);
     if (!retireResult.has_value())
     {
         return retireResult;
