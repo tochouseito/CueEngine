@@ -5,21 +5,32 @@
 
 namespace cue::detail
 {
-/// @brief Back Buffer 数の Direct Queue 用 Context を生成する
-Result<std::unique_ptr<D3D12CommandPool>> D3D12CommandPool::create(D3D12DeviceContext& a_device)
+/// @brief Back Buffer 数の指定 Queue 用 Context を生成する
+Result<std::unique_ptr<D3D12CommandPool>> D3D12CommandPool::create(D3D12DeviceContext& a_device,
+                                                                     GpuQueueType a_type)
 {
     using PoolResult = Result<std::unique_ptr<D3D12CommandPool>>;
+    if (a_type != GpuQueueType::Graphics && a_type != GpuQueueType::Compute &&
+        a_type != GpuQueueType::Copy)
+    {
+        return PoolResult::failure({ErrorCategory::InvalidArgument, "D3D12CommandPool.create.type"});
+    }
+    const auto listType = a_type == GpuQueueType::Graphics ? D3D12_COMMAND_LIST_TYPE_DIRECT
+                          : a_type == GpuQueueType::Compute ? D3D12_COMMAND_LIST_TYPE_COMPUTE
+                                                            : D3D12_COMMAND_LIST_TYPE_COPY;
     auto pool = std::make_unique<D3D12CommandPool>();
+    pool->m_type = a_type;
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
         auto& context = pool->m_contexts[index];
-        const HRESULT result = a_device.device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+        const HRESULT result = a_device.device()->CreateCommandAllocator(listType,
                                                                            IID_PPV_ARGS(&context.allocator));
         if (FAILED(result))
         {
             return PoolResult::failure(gpu_error("ID3D12Device.CreateCommandAllocator", result));
         }
-        const std::wstring name = L"CueEngine Frame Allocator " + std::to_wstring(index);
+        const std::wstring name = L"CueEngine Command Allocator " +
+                                  std::to_wstring(static_cast<int>(a_type)) + L" " + std::to_wstring(index);
         const HRESULT nameResult = context.allocator->SetName(name.c_str());
         if (FAILED(nameResult))
         {
@@ -38,7 +49,7 @@ Result<std::unique_ptr<D3D12CommandPool>> D3D12CommandPool::create(D3D12DeviceCo
 Result<CommandLease> D3D12CommandPool::acquire(D3D12QueueContext& a_queue, UINT a_slot)
 {
     using LeaseResult = Result<CommandLease>;
-    if (a_slot >= k_backBufferCount || !m_contexts[a_slot].list ||
+    if (a_queue.type() != m_type || a_slot >= k_backBufferCount || !m_contexts[a_slot].list ||
         m_contexts[a_slot].status != ContextStatus::Idle)
     {
         return LeaseResult::failure({ErrorCategory::InvalidState, "D3D12CommandPool.acquire"});
@@ -71,10 +82,10 @@ Result<CommandLease> D3D12CommandPool::acquire(D3D12QueueContext& a_queue, UINT 
     return LeaseResult::success({a_slot, context.generation, context.list.Get()});
 }
 
-/// @brief 記録済み Context を閉じて Direct Queue へ投入する
+/// @brief 記録済み Context を閉じて対応 Queue へ投入する
 Result<void> D3D12CommandPool::submit(D3D12QueueContext& a_queue, CommandLease a_lease)
 {
-    if (!is_lease(a_lease, ContextStatus::Recording))
+    if (a_queue.type() != m_type || !is_lease(a_lease, ContextStatus::Recording))
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12CommandPool.submit"});
     }
@@ -113,7 +124,7 @@ Result<void> D3D12CommandPool::abort(CommandLease a_lease)
 /// @brief Present 後の Queue 位置を Context の再利用条件として記録する
 Result<void> D3D12CommandPool::retire(D3D12QueueContext& a_queue, CommandLease a_lease)
 {
-    if (!is_lease(a_lease, ContextStatus::Submitted))
+    if (a_queue.type() != m_type || !is_lease(a_lease, ContextStatus::Submitted))
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12CommandPool.retire"});
     }
@@ -141,6 +152,9 @@ void D3D12CommandPool::release_for_resize() noexcept
 /// @brief Resize 後に Context の Command List を再生成する
 Result<void> D3D12CommandPool::recreate_lists(D3D12DeviceContext& a_device)
 {
+    const auto listType = m_type == GpuQueueType::Graphics ? D3D12_COMMAND_LIST_TYPE_DIRECT
+                          : m_type == GpuQueueType::Compute ? D3D12_COMMAND_LIST_TYPE_COMPUTE
+                                                            : D3D12_COMMAND_LIST_TYPE_COPY;
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
         auto& context = m_contexts[index];
@@ -149,14 +163,15 @@ Result<void> D3D12CommandPool::recreate_lists(D3D12DeviceContext& a_device)
         {
             return Result<void>::failure(gpu_error("ID3D12CommandAllocator.Reset.resize", resetResult));
         }
-        HRESULT result = a_device.device()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+        HRESULT result = a_device.device()->CreateCommandList(0, listType,
                                                                 context.allocator.Get(), nullptr,
                                                                 IID_PPV_ARGS(&context.list));
         if (FAILED(result))
         {
             return Result<void>::failure(gpu_error("ID3D12Device.CreateCommandList", result));
         }
-        const std::wstring name = L"CueEngine Frame Command List " + std::to_wstring(index);
+        const std::wstring name = L"CueEngine Command List " +
+                                  std::to_wstring(static_cast<int>(m_type)) + L" " + std::to_wstring(index);
         result = context.list->SetName(name.c_str());
         if (FAILED(result))
         {

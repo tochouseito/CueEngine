@@ -18,21 +18,39 @@ D3D12QueueContext::~D3D12QueueContext()
     }
 }
 
-/// @brief Device より短い寿命の Direct Queue を生成する
-Result<std::unique_ptr<D3D12QueueContext>> D3D12QueueContext::create(D3D12DeviceContext& a_device)
+/// @brief Device より短い寿命の指定種類の Queue を生成する
+Result<std::unique_ptr<D3D12QueueContext>> D3D12QueueContext::create(D3D12DeviceContext& a_device,
+                                                                       GpuQueueType a_type)
 {
     using QueueResult = Result<std::unique_ptr<D3D12QueueContext>>;
     auto context = std::make_unique<D3D12QueueContext>();
     context->m_device = a_device.device();
+    context->m_type = a_type;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    switch (a_type)
+    {
+    case GpuQueueType::Graphics:
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        break;
+    case GpuQueueType::Compute:
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        break;
+    case GpuQueueType::Copy:
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+        break;
+    default:
+        return QueueResult::failure({ErrorCategory::InvalidArgument, "D3D12QueueContext.create.type"});
+    }
     HRESULT result = context->m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&context->m_queue));
     if (FAILED(result))
     {
         return QueueResult::failure(gpu_error("ID3D12Device.CreateCommandQueue", result));
     }
-    result = context->m_queue->SetName(L"CueEngine Direct Queue");
+    const wchar_t* queueName = a_type == GpuQueueType::Graphics ? L"CueEngine Graphics Queue"
+                              : a_type == GpuQueueType::Compute  ? L"CueEngine Compute Queue"
+                                                                  : L"CueEngine Copy Queue";
+    result = context->m_queue->SetName(queueName);
     if (FAILED(result))
     {
         return QueueResult::failure(gpu_error("ID3D12CommandQueue.SetName", result));
@@ -42,7 +60,10 @@ Result<std::unique_ptr<D3D12QueueContext>> D3D12QueueContext::create(D3D12Device
     {
         return QueueResult::failure(gpu_error("ID3D12Device.CreateFence", result));
     }
-    result = context->m_fence->SetName(L"CueEngine Frame Fence");
+    const wchar_t* fenceName = a_type == GpuQueueType::Graphics ? L"CueEngine Graphics Fence"
+                              : a_type == GpuQueueType::Compute  ? L"CueEngine Compute Fence"
+                                                                  : L"CueEngine Copy Fence";
+    result = context->m_fence->SetName(fenceName);
     if (FAILED(result))
     {
         return QueueResult::failure(gpu_error("ID3D12Fence.SetName", result));
@@ -58,6 +79,10 @@ Result<std::unique_ptr<D3D12QueueContext>> D3D12QueueContext::create(D3D12Device
 /// @brief 指定 Fence 値の GPU 完了を確認する
 Result<void> D3D12QueueContext::wait_for(std::uint64_t a_value) const
 {
+    if (!has_issued(a_value))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12QueueContext.wait_for.value"});
+    }
     if (m_fence->GetCompletedValue() >= a_value)
     {
         return Result<void>::success();
@@ -97,12 +122,13 @@ Result<void> D3D12QueueContext::wait_idle()
 /// @brief Queue 上の現在位置を Fence に記録する
 Result<std::uint64_t> D3D12QueueContext::signal()
 {
-    const std::uint64_t value = m_nextFenceValue++;
+    const std::uint64_t value = m_nextFenceValue;
     const HRESULT result = m_queue->Signal(m_fence.Get(), value);
     if (FAILED(result))
     {
         return Result<std::uint64_t>::failure(gpu_error("ID3D12CommandQueue.Signal", result));
     }
+    ++m_nextFenceValue;
     return Result<std::uint64_t>::success(value);
 }
 
@@ -110,5 +136,32 @@ Result<std::uint64_t> D3D12QueueContext::signal()
 ID3D12CommandQueue* D3D12QueueContext::queue() const noexcept
 {
     return m_queue.Get();
+}
+
+/// @brief 発行元 Fence が指定値へ進むまで受信 Queue の後続処理を停止する
+Result<void> D3D12QueueContext::wait_on(const D3D12QueueContext& a_source, std::uint64_t a_value)
+{
+    if (m_device != a_source.m_device || !a_source.has_issued(a_value))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12QueueContext.wait_on"});
+    }
+    const HRESULT result = m_queue->Wait(a_source.m_fence.Get(), a_value);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12CommandQueue.Wait", result));
+    }
+    return Result<void>::success();
+}
+
+/// @brief 発行済みの正の Fence 値だけを受け入れる
+bool D3D12QueueContext::has_issued(std::uint64_t a_value) const noexcept
+{
+    return a_value != 0 && a_value < m_nextFenceValue;
+}
+
+/// @brief Queue と Command Pool の適合を検査するための種別を返す
+GpuQueueType D3D12QueueContext::type() const noexcept
+{
+    return m_type;
 }
 } // namespace cue::detail

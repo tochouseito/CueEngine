@@ -11,7 +11,7 @@ add_executable(CuePlatformHeaderCompile
     Platform/PublicHeaderCompile.cpp
 )
 
-target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
+target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform Cue.Renderer.RHI)
 
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 

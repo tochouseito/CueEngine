@@ -10,7 +10,7 @@
 
 namespace cue::detail
 {
-/// @brief 一回の Frame 記録中だけ借用する Direct Queue の Command Context
+/// @brief 一回の記録中だけ借用する Queue 対応の Command Context
 struct CommandLease final
 {
     UINT slot = 0;
@@ -18,7 +18,7 @@ struct CommandLease final
     ID3D12GraphicsCommandList* list = nullptr;
 };
 
-/// @brief Buffer Slot ごとの Allocator、List、Fence 再利用条件を所有する
+/// @brief Queue 種別と Buffer Slot ごとの Allocator、List、Fence 再利用条件を所有する
 class D3D12CommandPool final
 {
 public:
@@ -28,13 +28,14 @@ public:
     D3D12CommandPool(const D3D12CommandPool&) = delete;
     D3D12CommandPool& operator=(const D3D12CommandPool&) = delete;
 
-    /// @brief Back Buffer 数の Direct Queue 用 Context を生成する
-    [[nodiscard]] static Result<std::unique_ptr<D3D12CommandPool>> create(D3D12DeviceContext& a_device);
+    /// @brief Back Buffer 数の指定 Queue 用 Context を生成する
+    [[nodiscard]] static Result<std::unique_ptr<D3D12CommandPool>> create(
+        D3D12DeviceContext& a_device, GpuQueueType a_type = GpuQueueType::Graphics);
 
     /// @brief 対応する Fence 完了後だけ Context を貸し出す
     [[nodiscard]] Result<CommandLease> acquire(D3D12QueueContext& a_queue, UINT a_slot);
 
-    /// @brief 記録済み Context を閉じて Direct Queue へ投入する
+    /// @brief 記録済み Context を閉じて対応 Queue へ投入する
     [[nodiscard]] Result<void> submit(D3D12QueueContext& a_queue, CommandLease a_lease);
 
     /// @brief Submit 前の記録失敗時に貸出 List を閉じる
@@ -76,6 +77,7 @@ private:
     [[nodiscard]] bool is_lease(CommandLease a_lease, ContextStatus a_status) const noexcept;
 
     std::array<FrameContext, k_backBufferCount> m_contexts;
+    GpuQueueType m_type = GpuQueueType::Graphics;
     bool m_hasPendingGpu = false;
 };
 } // namespace cue::detail
