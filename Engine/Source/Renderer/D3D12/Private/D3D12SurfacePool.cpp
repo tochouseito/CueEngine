@@ -1,39 +1,29 @@
 #include "D3D12SurfacePool.h"
 
 #include <array>
-#include <string>
-#include <utility>
 
 namespace cue::detail
 {
-namespace
-{
-/// @brief Color と Depth に共通する 2D Texture 設定を作る
-D3D12_RESOURCE_DESC texture_desc(WindowSize a_size, DXGI_FORMAT a_format, D3D12_RESOURCE_FLAGS a_flags)
-{
-    D3D12_RESOURCE_DESC desc{};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = a_size.width;
-    desc.Height = a_size.height;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.Format = a_format;
-    desc.SampleDesc.Count = 1;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags = a_flags;
-    return desc;
-}
-} // namespace
-
-/// @brief View Manager を借用し、全 Surface より長く存続させる
-D3D12SurfacePool::D3D12SurfacePool(D3D12ViewManager& a_views) noexcept
-    : m_views(a_views)
+/// @brief View と Resource の Manager を Surface より長く存続させる
+D3D12SurfacePool::D3D12SurfacePool(D3D12ViewManager& a_views, D3D12ResourcePool& a_resources) noexcept
+    : m_views(a_views), m_resources(a_resources)
 {
 }
 
-/// @brief 割り当てた RTV Slot を Surface の寿命末尾で返す
+/// @brief GPU 完了後に Surface と RTV Slot を Manager へ返す
 D3D12SurfacePool::~D3D12SurfacePool()
 {
+    for (const auto handle : m_color)
+    {
+        if (handle.owner)
+        {
+            [[maybe_unused]] auto released = m_resources.destroy(handle);
+        }
+    }
+    if (m_depth.owner)
+    {
+        [[maybe_unused]] auto released = m_resources.destroy(m_depth);
+    }
     for (auto slot : m_colorSlots)
     {
         if (slot.generation != 0)
@@ -46,6 +36,7 @@ D3D12SurfacePool::~D3D12SurfacePool()
 /// @brief 各 Frame Slot の Color と永続 Depth を生成する
 Result<std::unique_ptr<D3D12SurfacePool>> D3D12SurfacePool::create(D3D12DeviceContext& a_device,
                                                                      D3D12ViewManager& a_views,
+                                                                     D3D12ResourcePool& a_resources,
                                                                      WindowSize a_size)
 {
     using PoolResult = Result<std::unique_ptr<D3D12SurfacePool>>;
@@ -53,7 +44,7 @@ Result<std::unique_ptr<D3D12SurfacePool>> D3D12SurfacePool::create(D3D12DeviceCo
     {
         return PoolResult::failure({ErrorCategory::InvalidArgument, "D3D12SurfacePool.create"});
     }
-    auto pool = std::make_unique<D3D12SurfacePool>(a_views);
+    auto pool = std::make_unique<D3D12SurfacePool>(a_views, a_resources);
     for (auto& slot : pool->m_colorSlots)
     {
         auto allocated = a_views.allocate_rtv();
@@ -78,72 +69,107 @@ Result<void> D3D12SurfacePool::resize(D3D12DeviceContext& a_device, WindowSize a
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12SurfacePool.resize"});
     }
-    D3D12_HEAP_PROPERTIES heap{};
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    const D3D12_CLEAR_VALUE colorClear{DXGI_FORMAT_R8G8B8A8_UNORM, {0.07f, 0.13f, 0.25f, 1.0f}};
-    D3D12_CLEAR_VALUE depthClear{};
-    depthClear.Format = DXGI_FORMAT_D32_FLOAT;
-    depthClear.DepthStencil.Depth = 1.0f;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, k_backBufferCount> color;
+    std::array<GpuResourceHandle, k_backBufferCount> color{};
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
-        const auto desc = texture_desc(a_size, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                       D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        const HRESULT result = a_device.device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
-            &desc, D3D12_RESOURCE_STATE_COMMON, &colorClear, IID_PPV_ARGS(&color[index]));
-        if (FAILED(result))
+        auto created = m_resources.create_texture({a_size.width, a_size.height,
+                                                   GpuTextureFormat::Rgba8Unorm});
+        if (!created.has_value())
         {
-            return Result<void>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Color", result));
+            for (const auto handle : color)
+            {
+                if (handle.owner)
+                {
+                    [[maybe_unused]] auto released = m_resources.destroy(handle);
+                }
+            }
+            return Result<void>::failure(*created.try_error());
         }
-        const std::wstring name = L"CueEngine Offscreen Color " + std::to_wstring(index);
-        const HRESULT nameResult = color[index]->SetName(name.c_str());
-        if (FAILED(nameResult))
+        color[index] = created.take_value();
+    }
+    auto depthResult = m_resources.create_texture({a_size.width, a_size.height,
+                                                   GpuTextureFormat::Depth32Float});
+    if (!depthResult.has_value())
+    {
+        for (const auto handle : color)
         {
-            return Result<void>::failure(gpu_error("ID3D12Resource.SetName.Color", nameResult));
+            [[maybe_unused]] auto released = m_resources.destroy(handle);
         }
+        return Result<void>::failure(*depthResult.try_error());
     }
-    Microsoft::WRL::ComPtr<ID3D12Resource> depth;
-    const auto depthDesc = texture_desc(a_size, DXGI_FORMAT_D32_FLOAT,
-                                        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-    const HRESULT depthResult = a_device.device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
-        &depthDesc, D3D12_RESOURCE_STATE_COMMON, &depthClear, IID_PPV_ARGS(&depth));
-    if (FAILED(depthResult))
-    {
-        return Result<void>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Depth", depthResult));
-    }
-    const HRESULT depthNameResult = depth->SetName(L"CueEngine Depth Surface");
-    if (FAILED(depthNameResult))
-    {
-        return Result<void>::failure(gpu_error("ID3D12Resource.SetName.Depth", depthNameResult));
-    }
+    const auto depth = depthResult.take_value();
+    std::array<ID3D12Resource*, k_backBufferCount> colorResources{};
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, k_backBufferCount> colorViews{};
     for (UINT index = 0; index < k_backBufferCount; ++index)
     {
-        auto writeResult = m_views.write_rtv(a_device.device(), m_colorSlots[index], color[index].Get());
-        if (!writeResult.has_value())
+        auto resource = m_resources.resource(color[index]);
+        auto view = m_views.cpu_handle(m_colorSlots[index]);
+        if (!resource.has_value() || !view.has_value())
         {
-            return writeResult;
+            for (const auto handle : color)
+            {
+                [[maybe_unused]] auto released = m_resources.destroy(handle);
+            }
+            [[maybe_unused]] auto released = m_resources.destroy(depth);
+            return Result<void>::failure({ErrorCategory::InvalidState, "D3D12SurfacePool.resize.view"});
+        }
+        colorResources[index] = *resource.try_value();
+        colorViews[index] = view.take_value();
+    }
+    auto depthResource = m_resources.resource(depth);
+    if (!depthResource.has_value())
+    {
+        for (const auto handle : color)
+        {
+            [[maybe_unused]] auto released = m_resources.destroy(handle);
+        }
+        [[maybe_unused]] auto released = m_resources.destroy(depth);
+        return Result<void>::failure(*depthResource.try_error());
+    }
+    // 全 Handle を検証してから Descriptor を書き換え、失敗時は旧 View を残す
+    for (UINT index = 0; index < k_backBufferCount; ++index)
+    {
+        a_device.device()->CreateRenderTargetView(colorResources[index], nullptr, colorViews[index]);
+    }
+    a_device.device()->CreateDepthStencilView(*depthResource.try_value(), nullptr, m_views.dsv_handle());
+    const auto oldColor = m_color;
+    const auto oldDepth = m_depth;
+    m_color = color;
+    m_depth = depth;
+    for (const auto handle : oldColor)
+    {
+        if (handle.owner)
+        {
+            auto released = m_resources.destroy(handle);
+            if (!released.has_value())
+            {
+                return released;
+            }
         }
     }
-    auto depthViewResult = m_views.write_dsv(a_device.device(), depth.Get());
-    if (!depthViewResult.has_value())
+    if (oldDepth.owner)
     {
-        return depthViewResult;
+        return m_resources.destroy(oldDepth);
     }
-    m_color = std::move(color);
-    m_depth = std::move(depth);
     return Result<void>::success();
 }
 
 /// @brief Frame Slot に対応する Color Surface を返す
 ID3D12Resource* D3D12SurfacePool::color(UINT a_slot) const noexcept
 {
-    return a_slot < k_backBufferCount ? m_color[a_slot].Get() : nullptr;
+    if (a_slot >= k_backBufferCount)
+    {
+        return nullptr;
+    }
+    auto borrowed = m_resources.resource(m_color[a_slot]);
+    return borrowed.has_value() ? *borrowed.try_value() : nullptr;
 }
 
 /// @brief Depth Surface を返す
 ID3D12Resource* D3D12SurfacePool::depth() const noexcept
 {
-    return m_depth.Get();
+    auto borrowed = m_resources.resource(m_depth);
+    return borrowed.has_value() ? *borrowed.try_value() : nullptr;
 }
 
 /// @brief Frame Slot に対応する Color RTV を返す

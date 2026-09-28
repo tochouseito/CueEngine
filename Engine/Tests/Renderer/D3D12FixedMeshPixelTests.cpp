@@ -1,6 +1,8 @@
 #include "D3D12DeviceContext.h"
 #include "D3D12PipelineCache.h"
 #include "D3D12QueueContext.h"
+#include "D3D12QueuePool.h"
+#include "D3D12ResourcePool.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
 #include "D3D12TrianglePass.h"
@@ -50,7 +52,19 @@ int main()
         return 2;
     }
     auto views = viewsResult.take_value();
-    auto surfacesResult = D3D12SurfacePool::create(*device, *views, {64, 64});
+    auto queuesResult = D3D12QueuePool::create(*device);
+    if (!queuesResult.has_value())
+    {
+        return 22;
+    }
+    auto queues = queuesResult.take_value();
+    auto resourcesResult = D3D12ResourcePool::create(*device, *queues);
+    if (!resourcesResult.has_value())
+    {
+        return 23;
+    }
+    auto resources = resourcesResult.take_value();
+    auto surfacesResult = D3D12SurfacePool::create(*device, *views, *resources, {64, 64});
     if (!surfacesResult.has_value())
     {
         return 3;

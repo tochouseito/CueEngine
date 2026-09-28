@@ -6,6 +6,7 @@
 #include <Cue/Platform/WindowEvent.h>
 #include <Cue/Platform/WindowSystem.h>
 #include <Cue/Renderer/RHI/GpuExecution.h>
+#include <Cue/Renderer/RHI/GpuResources.h>
 
 #include <type_traits>
 
@@ -21,6 +22,7 @@ int main()
     static_assert(std::is_abstract_v<cue::Thread>);
     static_assert(std::is_abstract_v<cue::ThreadFactory>);
     static_assert(std::is_abstract_v<cue::IGpuExecution>);
+    static_assert(std::is_abstract_v<cue::IGpuResources>);
     cue::WindowDescriptor descriptor{"CueEngine", {1280, 720}};
     return descriptor.clientSize.width == 1280 ? 0 : 1;
 }
