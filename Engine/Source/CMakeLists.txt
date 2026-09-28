@@ -15,6 +15,7 @@ if(WIN32)
     )
 
     target_link_libraries(CueWindowsHost PRIVATE Cue.WindowsHost Cue.Platform.Windows)
+    cue_stage_dxc_runtime(CueWindowsHost)
 
     # 構成別の実行 File を同じ配置規則で出力する
     set_target_properties(CueWindowsHost PROPERTIES

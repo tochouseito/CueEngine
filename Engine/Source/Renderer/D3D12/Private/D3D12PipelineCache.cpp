@@ -7,6 +7,7 @@
 #include <utility>
 
 #include <d3dcompiler.h>
+#include <dxcapi.h>
 
 #include "FixedMeshShaderPath.h"
 
@@ -15,20 +16,57 @@ namespace cue::detail
 namespace
 {
 /// @brief 配置済み Shader ファイルを指定 Entry Point で Compile して Error を返す
-Result<Microsoft::WRL::ComPtr<ID3DBlob>> compile_shader(const char* a_entry, const char* a_target)
+Result<Microsoft::WRL::ComPtr<IDxcBlob>> compile_shader(const wchar_t* a_entry, const wchar_t* a_target)
 {
-    using BlobResult = Result<Microsoft::WRL::ComPtr<ID3DBlob>>;
-    Microsoft::WRL::ComPtr<ID3DBlob> shader;
-    Microsoft::WRL::ComPtr<ID3DBlob> errors;
-    const HRESULT result = D3DCompileFromFile(k_fixedMeshShaderPath, nullptr, nullptr, a_entry, a_target,
-                                              D3DCOMPILE_ENABLE_STRICTNESS, 0, &shader, &errors);
+    using BlobResult = Result<Microsoft::WRL::ComPtr<IDxcBlob>>;
+    Microsoft::WRL::ComPtr<IDxcUtils> utils;
+    HRESULT result = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
     if (FAILED(result))
     {
-        const auto details = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()),
-                                                  errors->GetBufferSize()) : std::string{};
+        return BlobResult::failure(gpu_error("DxcCreateInstance.Utils", result));
+    }
+    Microsoft::WRL::ComPtr<IDxcCompiler3> compiler;
+    result = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler));
+    if (FAILED(result))
+    {
+        return BlobResult::failure(gpu_error("DxcCreateInstance.Compiler", result));
+    }
+    Microsoft::WRL::ComPtr<IDxcBlobEncoding> source;
+    result = utils->LoadFile(k_fixedMeshShaderPath, nullptr, &source);
+    if (FAILED(result))
+    {
+        return BlobResult::failure(gpu_error("IDxcUtils.LoadFile.FixedMesh", result));
+    }
+    DxcBuffer buffer{source->GetBufferPointer(), source->GetBufferSize(), DXC_CP_UTF8};
+    const wchar_t* arguments[] = {L"-E", a_entry, L"-T", a_target, L"-HV", L"2021"};
+    Microsoft::WRL::ComPtr<IDxcResult> compilation;
+    result = compiler->Compile(&buffer, arguments, static_cast<UINT32>(std::size(arguments)),
+                               nullptr, IID_PPV_ARGS(&compilation));
+    if (FAILED(result))
+    {
+        return BlobResult::failure(gpu_error("IDxcCompiler3.Compile.FixedMesh", result));
+    }
+    HRESULT status = S_OK;
+    result = compilation->GetStatus(&status);
+    if (FAILED(result))
+    {
+        return BlobResult::failure(gpu_error("IDxcResult.GetStatus.FixedMesh", result));
+    }
+    if (FAILED(status))
+    {
+        Microsoft::WRL::ComPtr<IDxcBlobUtf8> errors;
+        compilation->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
+        const auto details = errors ? std::string(errors->GetStringPointer(), errors->GetStringLength())
+                                    : std::string{};
         return BlobResult::failure({ErrorCategory::PlatformFailure,
-                                    std::string("D3DCompileFromFile.FixedMesh.") + a_entry + ": " + details,
-                                    static_cast<std::int64_t>(result)});
+                                    std::string("DXC.FixedMesh: ") + details,
+                                    static_cast<std::int64_t>(status)});
+    }
+    Microsoft::WRL::ComPtr<IDxcBlob> shader;
+    result = compilation->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&shader), nullptr);
+    if (FAILED(result))
+    {
+        return BlobResult::failure(gpu_error("IDxcResult.GetOutput.FixedMesh", result));
     }
     return BlobResult::success(std::move(shader));
 }
@@ -47,12 +85,20 @@ D3D12PipelineCache::~D3D12PipelineCache()
 Result<std::unique_ptr<D3D12PipelineCache>> D3D12PipelineCache::create(D3D12DeviceContext& a_device)
 {
     using CacheResult = Result<std::unique_ptr<D3D12PipelineCache>>;
-    auto vertexResult = compile_shader("VSMain", "vs_5_1");
+    D3D12_FEATURE_DATA_SHADER_MODEL shaderModel{D3D_SHADER_MODEL_6_0};
+    const HRESULT support = a_device.device()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL,
+                                                                     &shaderModel, sizeof(shaderModel));
+    if (FAILED(support) || shaderModel.HighestShaderModel < D3D_SHADER_MODEL_6_0)
+    {
+        return CacheResult::failure({ErrorCategory::PlatformFailure, "D3D12.ShaderModel6.Required",
+                                     static_cast<std::int64_t>(support)});
+    }
+    auto vertexResult = compile_shader(L"VSMain", L"vs_6_0");
     if (!vertexResult.has_value())
     {
         return CacheResult::failure(*vertexResult.try_error());
     }
-    auto pixelResult = compile_shader("PSMain", "ps_5_1");
+    auto pixelResult = compile_shader(L"PSMain", L"ps_6_0");
     if (!pixelResult.has_value())
     {
         return CacheResult::failure(*pixelResult.try_error());

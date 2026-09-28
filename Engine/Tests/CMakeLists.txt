@@ -29,6 +29,7 @@ if(WIN32)
     target_link_libraries(CueD3D12RendererInitializationTests PRIVATE
         Cue.Renderer.D3D12 Cue.Platform.Windows
     )
+    cue_stage_dxc_runtime(CueD3D12RendererInitializationTests)
 
     add_test(NAME Cue.Renderer.D3D12.Initialization COMMAND CueD3D12RendererInitializationTests)
     set_tests_properties(Cue.Renderer.D3D12.Initialization PROPERTIES TIMEOUT 15)
@@ -38,6 +39,7 @@ if(WIN32)
     target_include_directories(CueD3D12FeatureLevelTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
     target_link_libraries(CueD3D12FeatureLevelTests PRIVATE Cue.Renderer.D3D12)
+    cue_stage_dxc_runtime(CueD3D12FeatureLevelTests)
     add_test(NAME Cue.Renderer.D3D12.FeatureLevel COMMAND CueD3D12FeatureLevelTests)
     set_tests_properties(Cue.Renderer.D3D12.FeatureLevel PROPERTIES TIMEOUT 15)
 
@@ -51,6 +53,7 @@ if(WIN32)
     )
 
     target_link_libraries(CueD3D12ResourceOwnershipTests PRIVATE Cue.Renderer.D3D12)
+    cue_stage_dxc_runtime(CueD3D12ResourceOwnershipTests)
 
     add_test(NAME Cue.Renderer.D3D12.Ownership COMMAND CueD3D12ResourceOwnershipTests)
     set_tests_properties(Cue.Renderer.D3D12.Ownership PROPERTIES TIMEOUT 15)
@@ -60,6 +63,7 @@ if(WIN32)
     target_include_directories(CueD3D12FixedMeshPixelTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
     target_link_libraries(CueD3D12FixedMeshPixelTests PRIVATE Cue.Renderer.D3D12 Cue.Renderer.FrameGraph)
+    cue_stage_dxc_runtime(CueD3D12FixedMeshPixelTests)
     add_test(NAME Cue.Renderer.D3D12.FixedMeshPixel COMMAND CueD3D12FixedMeshPixelTests)
     set_tests_properties(Cue.Renderer.D3D12.FixedMeshPixel PROPERTIES TIMEOUT 15)
 
@@ -77,6 +81,7 @@ if(WIN32)
     )
 
     target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost)
+    cue_stage_dxc_runtime(CueWindowsHostTests)
 
     add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
 
@@ -123,6 +128,7 @@ if(WIN32)
     )
 
     target_link_libraries(CueWindowsHostProcessTests PRIVATE Cue.WindowsHost user32)
+    cue_stage_dxc_runtime(CueWindowsHostProcessTests)
 
     add_test(NAME Cue.WindowsHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost>)
 
