@@ -29,8 +29,25 @@ target_include_directories(Cue.Renderer.D3D12 PUBLIC
 
 target_link_libraries(Cue.Renderer.D3D12
     PUBLIC Cue.Platform
-    PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxgi dxguid
+    PRIVATE Cue.Renderer.FrameGraph d3d12 d3dcompiler dxcompiler dxgi dxguid
 )
+
+# DXC の Import Library は Windows SDK から Link し、同じ SDK の実行時 DLL を配置する
+find_file(CUE_DXC_COMPILER_DLL dxcompiler.dll REQUIRED
+    PATHS "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+          "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+    NO_DEFAULT_PATH)
+find_file(CUE_DXC_VALIDATOR_DLL dxil.dll REQUIRED
+    PATHS "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+          "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+    NO_DEFAULT_PATH)
+
+function(cue_stage_dxc_runtime a_target)
+    add_custom_command(TARGET ${a_target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CUE_DXC_COMPILER_DLL}" "$<TARGET_FILE_DIR:${a_target}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CUE_DXC_VALIDATOR_DLL}" "$<TARGET_FILE_DIR:${a_target}>"
+        VERBATIM)
+endfunction()
 
 target_compile_features(Cue.Renderer.D3D12 PUBLIC cxx_std_20)
 

@@ -5,7 +5,7 @@
 ## 開発環境
 
 - Windows x64
-- Visual Studio 2026の「Desktop development with C++」WorkloadとWindows SDK
+- Visual Studio 2026の「Desktop development with C++」WorkloadとWindows SDK（DXC の dxcompiler.lib、dxcompiler.dll、dxil.dll を含むもの）
 - CMake 4.2.0以上（`Visual Studio 18 2026` Generator）
 - PowerShell 7（`scripts/codex_build.ps1`を使う場合）
 
