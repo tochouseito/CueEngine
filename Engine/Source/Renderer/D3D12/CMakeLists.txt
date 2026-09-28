@@ -7,6 +7,7 @@ add_library(Cue.Renderer.D3D12 STATIC
     Private/D3D12SurfacePool.cpp
     Private/D3D12StaticMeshPool.cpp
     Private/D3D12Presentation.cpp
+    Private/D3D12QueueContext.cpp
     Private/D3D12Renderer.cpp
     Private/D3D12ViewManager.cpp
 )

@@ -35,7 +35,7 @@ Result<std::unique_ptr<D3D12CommandPool>> D3D12CommandPool::create(D3D12DeviceCo
 }
 
 /// @brief 対応する Fence 完了後だけ Context を貸し出す
-Result<CommandLease> D3D12CommandPool::acquire(D3D12DeviceContext& a_device, UINT a_slot)
+Result<CommandLease> D3D12CommandPool::acquire(D3D12QueueContext& a_queue, UINT a_slot)
 {
     using LeaseResult = Result<CommandLease>;
     if (a_slot >= k_backBufferCount || !m_contexts[a_slot].list ||
@@ -46,7 +46,7 @@ Result<CommandLease> D3D12CommandPool::acquire(D3D12DeviceContext& a_device, UIN
     auto& context = m_contexts[a_slot];
     if (context.fenceValue != 0)
     {
-        auto waitResult = a_device.wait_for(context.fenceValue);
+        auto waitResult = a_queue.wait_for(context.fenceValue);
         if (!waitResult.has_value())
         {
             return LeaseResult::failure(*waitResult.try_error());
@@ -72,7 +72,7 @@ Result<CommandLease> D3D12CommandPool::acquire(D3D12DeviceContext& a_device, UIN
 }
 
 /// @brief 記録済み Context を閉じて Direct Queue へ投入する
-Result<void> D3D12CommandPool::submit(D3D12DeviceContext& a_device, CommandLease a_lease)
+Result<void> D3D12CommandPool::submit(D3D12QueueContext& a_queue, CommandLease a_lease)
 {
     if (!is_lease(a_lease, ContextStatus::Recording))
     {
@@ -85,7 +85,7 @@ Result<void> D3D12CommandPool::submit(D3D12DeviceContext& a_device, CommandLease
         return Result<void>::failure(gpu_error("ID3D12GraphicsCommandList.Close", result));
     }
     ID3D12CommandList* lists[] = {context.list.Get()};
-    a_device.queue()->ExecuteCommandLists(1, lists);
+    a_queue.queue()->ExecuteCommandLists(1, lists);
     context.status = ContextStatus::Submitted;
     m_hasPendingGpu = true;
     return Result<void>::success();
@@ -111,13 +111,13 @@ Result<void> D3D12CommandPool::abort(CommandLease a_lease)
 }
 
 /// @brief Present 後の Queue 位置を Context の再利用条件として記録する
-Result<void> D3D12CommandPool::retire(D3D12DeviceContext& a_device, CommandLease a_lease)
+Result<void> D3D12CommandPool::retire(D3D12QueueContext& a_queue, CommandLease a_lease)
 {
     if (!is_lease(a_lease, ContextStatus::Submitted))
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12CommandPool.retire"});
     }
-    auto valueResult = a_device.signal();
+    auto valueResult = a_queue.signal();
     if (!valueResult.has_value())
     {
         return Result<void>::failure(*valueResult.try_error());

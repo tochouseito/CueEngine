@@ -10,7 +10,6 @@ namespace cue::detail
 {
 namespace
 {
-constexpr DWORD k_gpuWaitMilliseconds = 10'000;
 constexpr D3D_FEATURE_LEVEL k_featureLevels[] = {
     D3D_FEATURE_LEVEL_12_2,
     D3D_FEATURE_LEVEL_12_1,
@@ -36,15 +35,6 @@ HRESULT create_device(IDXGIAdapter1* a_adapter, Microsoft::WRL::ComPtr<ID3D12Dev
     return result;
 }
 } // namespace
-
-/// @brief Event を閉じてから COM 資源を解放する
-D3D12DeviceContext::~D3D12DeviceContext()
-{
-    if (m_fenceEvent)
-    {
-        CloseHandle(m_fenceEvent);
-    }
-}
 
 /// @brief Hardware を優先し、対応 Adapter がなければ WARP で GPU の実行基盤を生成する
 Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
@@ -148,97 +138,13 @@ Result<std::unique_ptr<D3D12DeviceContext>> D3D12DeviceContext::create()
         return DeviceResult::failure(gpu_error("ID3D12Device.SetName", result));
     }
 
-    D3D12_COMMAND_QUEUE_DESC queueDesc{};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    result = context->m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&context->m_queue));
-    if (FAILED(result))
-    {
-        return DeviceResult::failure(gpu_error("ID3D12Device.CreateCommandQueue", result));
-    }
-    result = context->m_queue->SetName(L"CueEngine Direct Queue");
-    if (FAILED(result))
-    {
-        return DeviceResult::failure(gpu_error("ID3D12CommandQueue.SetName", result));
-    }
-    result = context->m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&context->m_fence));
-    if (FAILED(result))
-    {
-        return DeviceResult::failure(gpu_error("ID3D12Device.CreateFence", result));
-    }
-    result = context->m_fence->SetName(L"CueEngine Frame Fence");
-    if (FAILED(result))
-    {
-        return DeviceResult::failure(gpu_error("ID3D12Fence.SetName", result));
-    }
-    context->m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!context->m_fenceEvent)
-    {
-        return DeviceResult::failure({ErrorCategory::PlatformFailure, "CreateEventW.GpuFence", GetLastError()});
-    }
     return DeviceResult::success(std::move(context));
-}
-
-/// @brief 指定 Fence 値の GPU 完了を確認する
-Result<void> D3D12DeviceContext::wait_for(std::uint64_t a_value) const
-{
-    if (m_fence->GetCompletedValue() >= a_value)
-    {
-        return Result<void>::success();
-    }
-    const HRESULT eventResult = m_fence->SetEventOnCompletion(a_value, m_fenceEvent);
-    if (FAILED(eventResult))
-    {
-        return Result<void>::failure(gpu_error("ID3D12Fence.SetEventOnCompletion", eventResult));
-    }
-    const DWORD waitResult = WaitForSingleObject(m_fenceEvent, k_gpuWaitMilliseconds);
-    if (waitResult != WAIT_OBJECT_0)
-    {
-        // Device Lost 時は待機結果より Device の原因を優先する
-        const HRESULT removedReason = m_device->GetDeviceRemovedReason();
-        if (FAILED(removedReason))
-        {
-            return Result<void>::failure(gpu_error("ID3D12Device.GetDeviceRemovedReason", removedReason));
-        }
-        const DWORD errorCode = waitResult == WAIT_FAILED ? GetLastError() : waitResult;
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "WaitForSingleObject.GpuFence",
-                                      static_cast<std::int64_t>(errorCode)});
-    }
-    return Result<void>::success();
-}
-
-/// @brief Direct Queue に完了印を入れ、先行する全処理を待つ
-Result<void> D3D12DeviceContext::wait_idle()
-{
-    auto valueResult = signal();
-    if (!valueResult.has_value())
-    {
-        return Result<void>::failure(*valueResult.try_error());
-    }
-    return wait_for(valueResult.take_value());
-}
-
-/// @brief Direct Queue 上の現在位置を Fence に記録する
-Result<std::uint64_t> D3D12DeviceContext::signal()
-{
-    const std::uint64_t value = m_nextFenceValue++;
-    const HRESULT result = m_queue->Signal(m_fence.Get(), value);
-    if (FAILED(result))
-    {
-        return Result<std::uint64_t>::failure(gpu_error("ID3D12CommandQueue.Signal", result));
-    }
-    return Result<std::uint64_t>::success(value);
 }
 
 /// @brief Presentation と Frame Context が存続する間だけ Device を借用する
 ID3D12Device* D3D12DeviceContext::device() const noexcept
 {
     return m_device.Get();
-}
-
-/// @brief Presentation と Frame Context が存続する間だけ Queue を借用する
-ID3D12CommandQueue* D3D12DeviceContext::queue() const noexcept
-{
-    return m_queue.Get();
 }
 
 /// @brief Presentation 作成中だけ Factory を借用する

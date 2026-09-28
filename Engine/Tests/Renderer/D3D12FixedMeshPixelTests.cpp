@@ -1,5 +1,6 @@
 #include "D3D12DeviceContext.h"
 #include "D3D12PipelineCache.h"
+#include "D3D12QueueContext.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
 #include "D3D12ViewManager.h"
@@ -36,6 +37,12 @@ int main()
         return 1;
     }
     auto device = deviceResult.take_value();
+    auto queueResult = D3D12QueueContext::create(*device);
+    if (!queueResult.has_value())
+    {
+        return 21;
+    }
+    auto queue = queueResult.take_value();
     auto viewsResult = D3D12ViewManager::create(*device, 2);
     if (!viewsResult.has_value())
     {
@@ -54,7 +61,7 @@ int main()
         return 4;
     }
     auto pipeline = pipelineResult.take_value();
-    auto meshesResult = D3D12StaticMeshPool::create(*device);
+    auto meshesResult = D3D12StaticMeshPool::create(*device, *queue);
     if (!meshesResult.has_value())
     {
         return 5;
@@ -136,8 +143,8 @@ int main()
         return 12;
     }
     ID3D12CommandList* lists[] = {list.Get()};
-    device->queue()->ExecuteCommandLists(1, lists);
-    if (!device->wait_idle().has_value())
+    queue->queue()->ExecuteCommandLists(1, lists);
+    if (!queue->wait_idle().has_value())
     {
         return 13;
     }
@@ -186,7 +193,7 @@ int main()
         }
     }
     const auto handle = meshes->triangle();
-    if (!meshes->destroy(*device, handle).has_value() ||
+    if (!meshes->destroy(*queue, handle).has_value() ||
         meshes->draw(list.Get(), handle).has_value())
     {
         return 16;
