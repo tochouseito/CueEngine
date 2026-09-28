@@ -1,6 +1,7 @@
 #pragma once
 
 #include "D3D12Presentation.h"
+#include "D3D12ResourcePool.h"
 
 #include <array>
 #include <memory>
@@ -14,11 +15,12 @@ class D3D12SurfacePool final
 {
 public:
     /// @brief View Manager を借用し、全 Surface より長く存続させる
-    explicit D3D12SurfacePool(D3D12ViewManager& a_views) noexcept;
+    D3D12SurfacePool(D3D12ViewManager& a_views, D3D12ResourcePool& a_resources) noexcept;
 
     /// @brief View Manager の Slot を借り、初回 Surface を生成する
     [[nodiscard]] static Result<std::unique_ptr<D3D12SurfacePool>> create(D3D12DeviceContext& a_device,
                                                                             D3D12ViewManager& a_views,
+                                                                            D3D12ResourcePool& a_resources,
                                                                             WindowSize a_size);
 
     /// @brief GPU 完了後に RTV Slot を返す
@@ -44,8 +46,9 @@ public:
 
 private:
     D3D12ViewManager& m_views;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, k_backBufferCount> m_color;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_depth;
+    D3D12ResourcePool& m_resources;
+    std::array<GpuResourceHandle, k_backBufferCount> m_color;
+    GpuResourceHandle m_depth;
     std::array<RtvSlot, k_backBufferCount> m_colorSlots{};
 };
 } // namespace cue::detail

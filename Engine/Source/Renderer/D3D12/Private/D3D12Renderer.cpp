@@ -16,6 +16,7 @@
 #include "D3D12Presentation.h"
 #include "D3D12QueueContext.h"
 #include "D3D12QueuePool.h"
+#include "D3D12ResourcePool.h"
 #include "D3D12StaticMeshPool.h"
 #include "D3D12SurfacePool.h"
 #include "D3D12TrianglePass.h"
@@ -83,6 +84,7 @@ public:
     std::unique_ptr<detail::D3D12DeviceContext> device;
     std::unique_ptr<detail::D3D12QueuePool> queues;
     detail::D3D12QueueContext* queue = nullptr;
+    std::unique_ptr<detail::D3D12ResourcePool> resources;
     std::unique_ptr<detail::D3D12ViewManager> views;
     std::unique_ptr<detail::D3D12Presentation> presentation;
     std::unique_ptr<detail::D3D12SurfacePool> surfaces;
@@ -141,6 +143,13 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     state->queues = queueResult.take_value();
     state->queue = &state->queues->context(GpuQueueType::Graphics);
 
+    auto resourcesResult = detail::D3D12ResourcePool::create(*state->device, *state->queues);
+    if (!resourcesResult.has_value())
+    {
+        return RendererResult::failure(*resourcesResult.try_error());
+    }
+    state->resources = resourcesResult.take_value();
+
     auto viewsResult = detail::D3D12ViewManager::create(*state->device, 2 * detail::k_backBufferCount);
     if (!viewsResult.has_value())
     {
@@ -156,7 +165,8 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     state->presentation = presentationResult.take_value();
 
-    auto surfacesResult = detail::D3D12SurfacePool::create(*state->device, *state->views, a_clientSize);
+    auto surfacesResult = detail::D3D12SurfacePool::create(*state->device, *state->views,
+                                                             *state->resources, a_clientSize);
     if (!surfacesResult.has_value())
     {
         return RendererResult::failure(*surfacesResult.try_error());

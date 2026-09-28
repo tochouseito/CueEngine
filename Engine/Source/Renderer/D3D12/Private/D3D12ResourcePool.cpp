@@ -1,0 +1,404 @@
+#include "D3D12ResourcePool.h"
+
+#include <cstddef>
+#include <cstring>
+#include <string>
+#include <utility>
+
+namespace cue::detail
+{
+namespace
+{
+constexpr std::array<D3D12_DESCRIPTOR_HEAP_TYPE, 3> k_heapTypes = {
+    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV};
+
+/// @brief Buffer と Texture の空でない共通 Resource Desc を作る
+D3D12_RESOURCE_DESC buffer_desc(std::uint64_t a_size)
+{
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = a_size;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    return desc;
+}
+} // namespace
+
+/// @brief 三種類の Descriptor Heap を同じ容量で作る
+Result<std::unique_ptr<D3D12ResourcePool>> D3D12ResourcePool::create(D3D12DeviceContext& a_device,
+                                                                       D3D12QueuePool& a_queues,
+                                                                       UINT a_viewCapacity)
+{
+    using PoolResult = Result<std::unique_ptr<D3D12ResourcePool>>;
+    if (a_viewCapacity == 0)
+    {
+        return PoolResult::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.create.capacity"});
+    }
+    auto pool = std::make_unique<D3D12ResourcePool>();
+    pool->m_device = a_device.device();
+    pool->m_queues = &a_queues;
+    for (std::size_t kind = 0; kind < k_heapTypes.size(); ++kind)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC desc{};
+        desc.Type = k_heapTypes[kind];
+        desc.NumDescriptors = a_viewCapacity;
+        desc.Flags = kind == static_cast<std::size_t>(GpuViewKind::ShaderResource)
+                         ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        const HRESULT result = pool->m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&pool->m_heaps[kind]));
+        if (FAILED(result))
+        {
+            return PoolResult::failure(gpu_error("ID3D12Device.CreateDescriptorHeap.GpuResources", result));
+        }
+        const std::wstring name = L"CueEngine GPU Resource Views " + std::to_wstring(kind);
+        const HRESULT nameResult = pool->m_heaps[kind]->SetName(name.c_str());
+        if (FAILED(nameResult))
+        {
+            return PoolResult::failure(gpu_error("ID3D12DescriptorHeap.SetName.GpuResources", nameResult));
+        }
+        pool->m_strides[kind] = pool->m_device->GetDescriptorHandleIncrementSize(k_heapTypes[kind]);
+        pool->m_views[kind].resize(a_viewCapacity);
+    }
+    return PoolResult::success(std::move(pool));
+}
+
+/// @brief Memory 種別に合わせた Heap と初期状態で Buffer を生成する
+Result<GpuResourceHandle> D3D12ResourcePool::create_buffer(GpuBufferDesc a_desc)
+{
+    if (a_desc.size == 0 || (a_desc.memory != GpuMemory::Device && a_desc.memory != GpuMemory::Upload &&
+                             a_desc.memory != GpuMemory::Readback))
+    {
+        return Result<GpuResourceHandle>::failure({ErrorCategory::InvalidArgument,
+                                                    "D3D12ResourcePool.create_buffer"});
+    }
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = a_desc.memory == GpuMemory::Device ? D3D12_HEAP_TYPE_DEFAULT
+                : a_desc.memory == GpuMemory::Upload ? D3D12_HEAP_TYPE_UPLOAD : D3D12_HEAP_TYPE_READBACK;
+    const auto state = a_desc.memory == GpuMemory::Upload ? D3D12_RESOURCE_STATE_GENERIC_READ
+                       : a_desc.memory == GpuMemory::Readback ? D3D12_RESOURCE_STATE_COPY_DEST
+                                                                : D3D12_RESOURCE_STATE_COMMON;
+    const auto desc = buffer_desc(a_desc.size);
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    const HRESULT result = m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                              state, nullptr, IID_PPV_ARGS(&resource));
+    if (FAILED(result))
+    {
+        return Result<GpuResourceHandle>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Buffer", result));
+    }
+    const HRESULT nameResult = resource->SetName(L"CueEngine GPU Buffer");
+    if (FAILED(nameResult))
+    {
+        return Result<GpuResourceHandle>::failure(gpu_error("ID3D12Resource.SetName.Buffer", nameResult));
+    }
+    return Result<GpuResourceHandle>::success(store(std::move(resource), false,
+                                                    GpuTextureFormat::Rgba8Unorm, a_desc.memory));
+}
+
+/// @brief Color または Depth の独立した Default Heap Texture を生成する
+Result<GpuResourceHandle> D3D12ResourcePool::create_texture(GpuTextureDesc a_desc)
+{
+    if (a_desc.width == 0 || a_desc.height == 0 ||
+        (a_desc.format != GpuTextureFormat::Rgba8Unorm && a_desc.format != GpuTextureFormat::Depth32Float))
+    {
+        return Result<GpuResourceHandle>::failure({ErrorCategory::InvalidArgument,
+                                                    "D3D12ResourcePool.create_texture"});
+    }
+    const bool isDepth = a_desc.format == GpuTextureFormat::Depth32Float;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = a_desc.width;
+    desc.Height = a_desc.height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = isDepth ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Flags = isDepth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_CLEAR_VALUE clear{};
+    clear.Format = desc.Format;
+    if (isDepth)
+    {
+        clear.DepthStencil.Depth = 1.0f;
+    }
+    else
+    {
+        clear.Color[0] = 0.07f;
+        clear.Color[1] = 0.13f;
+        clear.Color[2] = 0.25f;
+        clear.Color[3] = 1.0f;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    const HRESULT result = m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_COMMON, &clear, IID_PPV_ARGS(&resource));
+    if (FAILED(result))
+    {
+        return Result<GpuResourceHandle>::failure(gpu_error("ID3D12Device.CreateCommittedResource.Texture", result));
+    }
+    const HRESULT nameResult = resource->SetName(isDepth ? L"CueEngine GPU Depth Texture"
+                                                       : L"CueEngine GPU Color Texture");
+    if (FAILED(nameResult))
+    {
+        return Result<GpuResourceHandle>::failure(gpu_error("ID3D12Resource.SetName.Texture", nameResult));
+    }
+    return Result<GpuResourceHandle>::success(store(std::move(resource), true, a_desc.format, GpuMemory::Device));
+}
+
+/// @brief Upload Buffer の境界を検証して CPU Data を書く
+Result<void> D3D12ResourcePool::write_buffer(GpuResourceHandle a_buffer, std::uint64_t a_offset,
+                                             const void* a_data, std::uint64_t a_size)
+{
+    if (!owns(a_buffer) || !a_data || a_size == 0)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.write_buffer"});
+    }
+    auto& record = m_resources[a_buffer.index];
+    const auto width = record.resource->GetDesc().Width;
+    if (record.isTexture || record.memory != GpuMemory::Upload || a_offset > width || a_size > width - a_offset)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.write_buffer.range"});
+    }
+    D3D12_RANGE readRange{0, 0};
+    void* mapped = nullptr;
+    const HRESULT result = record.resource->Map(0, &readRange, &mapped);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12Resource.Map.Upload", result));
+    }
+    std::memcpy(static_cast<std::byte*>(mapped) + a_offset, a_data, static_cast<std::size_t>(a_size));
+    D3D12_RANGE writtenRange{static_cast<SIZE_T>(a_offset), static_cast<SIZE_T>(a_offset + a_size)};
+    record.resource->Unmap(0, &writtenRange);
+    return Result<void>::success();
+}
+
+/// @brief Readback Buffer の GPU 完了後だけ CPU Data を読む
+Result<void> D3D12ResourcePool::read_buffer(GpuResourceHandle a_buffer, std::uint64_t a_offset,
+                                            void* a_data, std::uint64_t a_size)
+{
+    if (!owns(a_buffer) || !a_data || a_size == 0)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.read_buffer"});
+    }
+    auto& record = m_resources[a_buffer.index];
+    const auto width = record.resource->GetDesc().Width;
+    if (record.isTexture || record.memory != GpuMemory::Readback || a_offset > width || a_size > width - a_offset)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.read_buffer.range"});
+    }
+    auto idle = m_queues->wait_idle();
+    if (!idle.has_value())
+    {
+        return idle;
+    }
+    D3D12_RANGE readRange{static_cast<SIZE_T>(a_offset), static_cast<SIZE_T>(a_offset + a_size)};
+    void* mapped = nullptr;
+    const HRESULT result = record.resource->Map(0, &readRange, &mapped);
+    if (FAILED(result))
+    {
+        return Result<void>::failure(gpu_error("ID3D12Resource.Map.Readback", result));
+    }
+    std::memcpy(a_data, static_cast<const std::byte*>(mapped) + a_offset, static_cast<std::size_t>(a_size));
+    D3D12_RANGE writtenRange{0, 0};
+    record.resource->Unmap(0, &writtenRange);
+    return Result<void>::success();
+}
+
+/// @brief Format に適合する Descriptor を空き Slot へ作る
+Result<GpuViewHandle> D3D12ResourcePool::create_view(GpuResourceHandle a_resource, GpuViewKind a_kind)
+{
+    if (!owns(a_resource) || !is_view_kind(a_kind))
+    {
+        return Result<GpuViewHandle>::failure({ErrorCategory::InvalidArgument, "D3D12ResourcePool.create_view"});
+    }
+    const auto& record = m_resources[a_resource.index];
+    if (!record.isTexture ||
+        (record.format == GpuTextureFormat::Depth32Float && a_kind != GpuViewKind::DepthStencil) ||
+        (record.format == GpuTextureFormat::Rgba8Unorm && a_kind == GpuViewKind::DepthStencil))
+    {
+        return Result<GpuViewHandle>::failure({ErrorCategory::InvalidArgument,
+                                                "D3D12ResourcePool.create_view.format"});
+    }
+    const auto kind = static_cast<std::size_t>(a_kind);
+    for (std::uint32_t index = 0; index < m_views[kind].size(); ++index)
+    {
+        auto& view = m_views[kind][index];
+        if (view.isAllocated)
+        {
+            continue;
+        }
+        auto handle = m_heaps[kind]->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += static_cast<SIZE_T>(index) * m_strides[kind];
+        switch (a_kind)
+        {
+        case GpuViewKind::RenderTarget:
+            m_device->CreateRenderTargetView(record.resource.Get(), nullptr, handle);
+            break;
+        case GpuViewKind::DepthStencil:
+            m_device->CreateDepthStencilView(record.resource.Get(), nullptr, handle);
+            break;
+        case GpuViewKind::ShaderResource:
+            m_device->CreateShaderResourceView(record.resource.Get(), nullptr, handle);
+            break;
+        }
+        view.isAllocated = true;
+        view.resource = a_resource;
+        ++view.generation;
+        if (view.generation == 0)
+        {
+            ++view.generation;
+        }
+        return Result<GpuViewHandle>::success({a_kind, index, view.generation, this});
+    }
+    return Result<GpuViewHandle>::failure({ErrorCategory::InvalidState, "D3D12ResourcePool.viewCapacity"});
+}
+
+/// @brief Queue 完了後に View Slot を無効化する
+Result<void> D3D12ResourcePool::destroy_view(GpuViewHandle a_view)
+{
+    if (!owns(a_view))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12ResourcePool.destroy_view"});
+    }
+    auto idle = m_queues->wait_idle();
+    if (!idle.has_value())
+    {
+        return idle;
+    }
+    m_views[static_cast<std::size_t>(a_view.kind)][a_view.index].isAllocated = false;
+    return Result<void>::success();
+}
+
+/// @brief View が残っていない資源だけを Queue 完了後に解放する
+Result<void> D3D12ResourcePool::destroy(GpuResourceHandle a_resource)
+{
+    if (!owns(a_resource))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12ResourcePool.destroy"});
+    }
+    for (const auto& views : m_views)
+    {
+        for (const auto& view : views)
+        {
+            if (view.isAllocated && view.resource.index == a_resource.index &&
+                view.resource.generation == a_resource.generation)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState,
+                                              "D3D12ResourcePool.destroy.activeView"});
+            }
+        }
+    }
+    auto idle = m_queues->wait_idle();
+    if (!idle.has_value())
+    {
+        return idle;
+    }
+    m_resources[a_resource.index].resource.Reset();
+    return Result<void>::success();
+}
+
+/// @brief 所有権検証後に物理資源を借用する
+Result<ID3D12Resource*> D3D12ResourcePool::resource(GpuResourceHandle a_resource) const
+{
+    if (!owns(a_resource))
+    {
+        return Result<ID3D12Resource*>::failure({ErrorCategory::InvalidState, "D3D12ResourcePool.resource"});
+    }
+    return Result<ID3D12Resource*>::success(m_resources[a_resource.index].resource.Get());
+}
+
+/// @brief 世代付き View から CPU Descriptor を得る
+Result<D3D12_CPU_DESCRIPTOR_HANDLE> D3D12ResourcePool::cpu_handle(GpuViewHandle a_view) const
+{
+    if (!owns(a_view))
+    {
+        return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::failure({ErrorCategory::InvalidState,
+                                                               "D3D12ResourcePool.cpu_handle"});
+    }
+    const auto kind = static_cast<std::size_t>(a_view.kind);
+    auto handle = m_heaps[kind]->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += static_cast<SIZE_T>(a_view.index) * m_strides[kind];
+    return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::success(handle);
+}
+
+/// @brief ShaderResource View のみ GPU-visible Descriptor を返す
+Result<D3D12_GPU_DESCRIPTOR_HANDLE> D3D12ResourcePool::gpu_handle(GpuViewHandle a_view) const
+{
+    if (!owns(a_view) || a_view.kind != GpuViewKind::ShaderResource)
+    {
+        return Result<D3D12_GPU_DESCRIPTOR_HANDLE>::failure({ErrorCategory::InvalidState,
+                                                               "D3D12ResourcePool.gpu_handle"});
+    }
+    const auto kind = static_cast<std::size_t>(a_view.kind);
+    auto handle = m_heaps[kind]->GetGPUDescriptorHandleForHeapStart();
+    handle.ptr += static_cast<UINT64>(a_view.index) * m_strides[kind];
+    return Result<D3D12_GPU_DESCRIPTOR_HANDLE>::success(handle);
+}
+
+/// @brief ShaderResource Heap を Backend の Bind 処理へ貸し出す
+ID3D12DescriptorHeap* D3D12ResourcePool::shader_heap() const noexcept
+{
+    return m_heaps[static_cast<std::size_t>(GpuViewKind::ShaderResource)].Get();
+}
+
+/// @brief enum 値を Heap 添字へ使う前に検証する
+bool D3D12ResourcePool::is_view_kind(GpuViewKind a_kind) noexcept
+{
+    return static_cast<std::size_t>(a_kind) < k_heapTypes.size();
+}
+
+/// @brief 外部 Pool または古い世代の Resource Handle を拒否する
+bool D3D12ResourcePool::owns(GpuResourceHandle a_resource) const noexcept
+{
+    return a_resource.owner == this && a_resource.index < m_resources.size() &&
+           m_resources[a_resource.index].generation == a_resource.generation &&
+           m_resources[a_resource.index].resource;
+}
+
+/// @brief 外部 Pool または古い世代の View Handle を拒否する
+bool D3D12ResourcePool::owns(GpuViewHandle a_view) const noexcept
+{
+    if (a_view.owner != this || !is_view_kind(a_view.kind))
+    {
+        return false;
+    }
+    const auto kind = static_cast<std::size_t>(a_view.kind);
+    return a_view.index < m_views[kind].size() && m_views[kind][a_view.index].isAllocated &&
+           m_views[kind][a_view.index].generation == a_view.generation;
+}
+
+/// @brief 解放済み Slot の世代を進めて古い Handle を無効化する
+GpuResourceHandle D3D12ResourcePool::store(Microsoft::WRL::ComPtr<ID3D12Resource> a_resource,
+                                           bool a_isTexture, GpuTextureFormat a_format, GpuMemory a_memory)
+{
+    for (std::uint32_t index = 0; index < m_resources.size(); ++index)
+    {
+        auto& record = m_resources[index];
+        if (record.resource)
+        {
+            continue;
+        }
+        record.resource = std::move(a_resource);
+        record.isTexture = a_isTexture;
+        record.format = a_format;
+        record.memory = a_memory;
+        ++record.generation;
+        if (record.generation == 0)
+        {
+            ++record.generation;
+        }
+        return {index, record.generation, this};
+    }
+    const auto index = static_cast<std::uint32_t>(m_resources.size());
+    ResourceRecord record;
+    record.resource = std::move(a_resource);
+    record.isTexture = a_isTexture;
+    record.format = a_format;
+    record.memory = a_memory;
+    record.generation = 1;
+    m_resources.push_back(std::move(record));
+    return {index, 1, this};
+}
+} // namespace cue::detail

@@ -1,6 +1,7 @@
 #include "D3D12CommandPool.h"
 #include "D3D12QueueContext.h"
 #include "D3D12QueuePool.h"
+#include "D3D12ResourcePool.h"
 #include "D3D12ViewManager.h"
 
 #include <cstdint>
@@ -205,6 +206,92 @@ int main()
     if (actual != k_expected || !execution.wait_idle().has_value())
     {
         return 29;
+    }
+
+    // Buffer、Color/Depth Texture、SRV と古い Handle の失効を RHI 経由で確認する
+    auto resourcesResult = cue::detail::D3D12ResourcePool::create(*device, *queues, 2);
+    if (!resourcesResult.has_value())
+    {
+        return 30;
+    }
+    auto resources = resourcesResult.take_value();
+    cue::IGpuResources& resourceApi = *resources;
+    auto bufferResult = resourceApi.create_buffer({sizeof(k_expected), cue::GpuMemory::Upload});
+    auto colorResult = resourceApi.create_texture({16, 16, cue::GpuTextureFormat::Rgba8Unorm});
+    auto depthResult = resourceApi.create_texture({16, 16, cue::GpuTextureFormat::Depth32Float});
+    if (!bufferResult.has_value() || !colorResult.has_value() || !depthResult.has_value())
+    {
+        return 31;
+    }
+    const auto bufferHandle = bufferResult.take_value();
+    const auto colorHandle = colorResult.take_value();
+    const auto depthHandle = depthResult.take_value();
+    if (!resourceApi.write_buffer(bufferHandle, 0, &k_expected, sizeof(k_expected)).has_value() ||
+        resourceApi.read_buffer(bufferHandle, 0, &actual, sizeof(actual)).has_value())
+    {
+        return 32;
+    }
+    auto managedReadback = resourceApi.create_buffer({sizeof(k_expected), cue::GpuMemory::Readback});
+    if (!managedReadback.has_value())
+    {
+        return 39;
+    }
+    const auto readbackHandle = managedReadback.take_value();
+    auto uploadPhysical = resources->resource(bufferHandle);
+    auto readbackPhysical = resources->resource(readbackHandle);
+    auto managedCopyLease = copyPool->acquire(copyQueue, 1);
+    if (!uploadPhysical.has_value() || !readbackPhysical.has_value() || !managedCopyLease.has_value())
+    {
+        return 40;
+    }
+    const auto managedLease = managedCopyLease.take_value();
+    managedLease.list->CopyBufferRegion(*readbackPhysical.try_value(), 0,
+                                        *uploadPhysical.try_value(), 0, sizeof(k_expected));
+    if (!copyPool->submit(copyQueue, managedLease).has_value() ||
+        !copyPool->retire(copyQueue, managedLease).has_value() ||
+        !resourceApi.read_buffer(readbackHandle, 0, &actual, sizeof(actual)).has_value() ||
+        actual != k_expected)
+    {
+        return 41;
+    }
+    auto rtvResult = resourceApi.create_view(colorHandle, cue::GpuViewKind::RenderTarget);
+    auto srvResult = resourceApi.create_view(colorHandle, cue::GpuViewKind::ShaderResource);
+    auto dsvResult = resourceApi.create_view(depthHandle, cue::GpuViewKind::DepthStencil);
+    if (!rtvResult.has_value() || !srvResult.has_value() || !dsvResult.has_value() ||
+        resourceApi.create_view(depthHandle, cue::GpuViewKind::ShaderResource).has_value())
+    {
+        return 33;
+    }
+    const auto rtv = rtvResult.take_value();
+    const auto srv = srvResult.take_value();
+    const auto dsv = dsvResult.take_value();
+    if (!resources->cpu_handle(rtv).has_value() || !resources->cpu_handle(dsv).has_value() ||
+        !resources->gpu_handle(srv).has_value() || resourceApi.destroy(colorHandle).has_value())
+    {
+        return 34;
+    }
+    if (!resourceApi.destroy_view(rtv).has_value() || resourceApi.destroy_view(rtv).has_value() ||
+        !resourceApi.destroy_view(srv).has_value() || !resourceApi.destroy_view(dsv).has_value())
+    {
+        return 35;
+    }
+    if (!resourceApi.destroy(colorHandle).has_value() || !resourceApi.destroy(depthHandle).has_value() ||
+        !resourceApi.destroy(bufferHandle).has_value() || !resourceApi.destroy(readbackHandle).has_value() ||
+        resources->resource(colorHandle).has_value())
+    {
+        return 36;
+    }
+    auto replacementResult = resourceApi.create_texture({16, 16, cue::GpuTextureFormat::Rgba8Unorm});
+    if (!replacementResult.has_value())
+    {
+        return 37;
+    }
+    const auto replacementHandle = replacementResult.take_value();
+    if (replacementHandle.index != bufferHandle.index ||
+        replacementHandle.generation == bufferHandle.generation ||
+        !resourceApi.destroy(replacementHandle).has_value())
+    {
+        return 38;
     }
     return 0;
 }
