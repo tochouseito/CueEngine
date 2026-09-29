@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Cue/Foundation/Result.h>
+#include <Cue/Renderer/RHI/GpuExecution.h>
 
 #include <cstdint>
 #include <string>
@@ -24,6 +25,7 @@ enum class GraphResourceState
     RenderTarget,
     DepthWrite,
     ShaderResource,
+    ComputeShaderResource,
     CopySource,
     CopyDest,
     UnorderedAccess
@@ -73,15 +75,17 @@ struct GraphBarrier final
     GraphResourceState after;
 };
 
-/// @brief 元の Pass Index と実行直前の Barrier を保持する
+/// @brief 元の Pass Index、Queue、依存元と実行直前の Barrier を保持する
 struct GraphPassPlan final
 {
     std::uint32_t sourceIndex = 0;
     std::string name;
     std::vector<GraphBarrier> barriers;
+    GpuQueueType queue = GpuQueueType::Graphics;
+    std::vector<std::uint32_t> predecessors;
 };
 
-/// @brief 一つの Graph の直列実行順と最終状態への遷移を所有する
+/// @brief 一つの Graph の依存順と最終状態への遷移を所有する
 struct CompiledFrameGraph final
 {
     std::vector<GraphPassPlan> passes;
@@ -117,6 +121,10 @@ public:
     /// @brief Resource 使用を明示した Pass を登録する
     [[nodiscard]] Result<GraphPassHandle> add_pass(std::string a_name, std::vector<GraphResourceUse> a_uses);
 
+    /// @brief 実行 Queue を指定して Pass を登録する。Copy Queue は Copy 状態のみ使用できる
+    [[nodiscard]] Result<GraphPassHandle> add_pass(std::string a_name, std::vector<GraphResourceUse> a_uses,
+                                                    GpuQueueType a_queue);
+
     /// @brief 先行 Pass を明示し、循環は compile で拒否する
     [[nodiscard]] Result<void> add_dependency(GraphPassHandle a_before, GraphPassHandle a_after);
 
@@ -136,6 +144,7 @@ private:
     {
         std::string name;
         std::vector<GraphResourceUse> uses;
+        GpuQueueType queue = GpuQueueType::Graphics;
     };
 
     /// @brief Resource Handle がこの Graph の現行 Index を指すか確認する

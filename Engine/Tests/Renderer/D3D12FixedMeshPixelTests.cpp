@@ -1,5 +1,7 @@
 #include "D3D12DeviceContext.h"
+#include "D3D12CommandRecorder.h"
 #include "D3D12PipelineCache.h"
+#include "D3D12PipelineLibrary.h"
 #include "D3D12QueueContext.h"
 #include "D3D12QueuePool.h"
 #include "D3D12ResourcePool.h"
@@ -40,12 +42,6 @@ int main()
         return 1;
     }
     auto device = deviceResult.take_value();
-    auto queueResult = D3D12QueueContext::create(*device);
-    if (!queueResult.has_value())
-    {
-        return 21;
-    }
-    auto queue = queueResult.take_value();
     auto viewsResult = D3D12ViewManager::create(*device, 2);
     if (!viewsResult.has_value())
     {
@@ -58,6 +54,7 @@ int main()
         return 22;
     }
     auto queues = queuesResult.take_value();
+    auto* queue = &queues->context(cue::GpuQueueType::Graphics);
     auto resourcesResult = D3D12ResourcePool::create(*device, *queues);
     if (!resourcesResult.has_value())
     {
@@ -70,13 +67,14 @@ int main()
         return 3;
     }
     auto surfaces = surfacesResult.take_value();
-    auto pipelineResult = D3D12PipelineCache::create(*device);
+    auto library = D3D12PipelineLibrary::create(*device, *queues);
+    auto pipelineResult = D3D12PipelineCache::create(*device, *resources, *library);
     if (!pipelineResult.has_value())
     {
         return 4;
     }
     auto pipeline = pipelineResult.take_value();
-    auto meshesResult = D3D12StaticMeshPool::create(*device, *queue);
+    auto meshesResult = D3D12StaticMeshPool::create(*device, *resources);
     if (!meshesResult.has_value())
     {
         return 5;
@@ -111,7 +109,8 @@ int main()
         return 22;
     }
     const TrianglePassContext passContext{*pipeline, *meshes, colorHandle.take_value(), depthHandle.take_value(),
-                                          meshes->triangle(), {64, 64}, 0, rtv, dsv,
+                                          meshes->triangle(), {64, 64}, 0,
+                                          surfaces->color_view(0), surfaces->depth_view(),
                                           {1.0f, 1.0f, 1.0f, 1.0f}};
     const D3D12TrianglePass trianglePass(passContext);
     if (!trianglePass.setup(graph).has_value())
@@ -131,7 +130,8 @@ int main()
     constexpr float clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
     list->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
     list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    if (!trianglePass.execute(list.Get()).has_value())
+    D3D12CommandRecorder recorder(list.Get(), cue::GpuQueueType::Graphics, *resources, *library);
+    if (!trianglePass.execute(recorder).has_value())
     {
         return 10;
     }
@@ -191,8 +191,13 @@ int main()
         return 15;
     }
     // 同期後の Resize が旧 View を失効させず、新しい Surface を指すことを確認する
+    const auto oldColorView = surfaces->color_view(0);
+    const auto oldDepthView = surfaces->depth_view();
     if (!surfaces->resize(*device, {80, 48}).has_value() || surfaces->color(0)->GetDesc().Width != 80 ||
-        surfaces->depth()->GetDesc().Height != 48 || !surfaces->color_rtv(0).has_value())
+        surfaces->depth()->GetDesc().Height != 48 || !surfaces->color_rtv(0).has_value() ||
+        resources->cpu_handle(oldColorView).has_value() || resources->cpu_handle(oldDepthView).has_value() ||
+        !resources->cpu_handle(surfaces->color_view(0)).has_value() ||
+        !resources->cpu_handle(surfaces->depth_view()).has_value())
     {
         return 17;
     }
@@ -221,8 +226,8 @@ int main()
         }
     }
     const auto handle = meshes->triangle();
-    if (!meshes->destroy(*queue, handle).has_value() ||
-        meshes->draw(list.Get(), handle).has_value())
+    if (!meshes->destroy(handle).has_value() ||
+        meshes->draw(recorder, handle).has_value())
     {
         return 16;
     }

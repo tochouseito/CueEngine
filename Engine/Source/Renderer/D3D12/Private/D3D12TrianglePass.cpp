@@ -22,26 +22,23 @@ Result<GraphPassHandle> D3D12TrianglePass::setup(FrameGraphBuilder& a_builder) c
 }
 
 /// @brief PSO と Mesh を設定して固定三角形を描画する
-Result<void> D3D12TrianglePass::execute(ID3D12GraphicsCommandList* a_list) const
+Result<void> D3D12TrianglePass::execute(IGpuCommandRecorder& a_commands) const
 {
-    if (!a_list)
-    {
-        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12TrianglePass.execute"});
-    }
-    auto bindResult = m_context.pipelines.bind(a_list, m_context.slot, m_context.tint);
+    auto bindResult = m_context.pipelines.bind(a_commands, m_context.slot, m_context.tint);
     if (!bindResult.has_value())
     {
         return bindResult;
     }
-    D3D12_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(m_context.size.width);
-    viewport.Height = static_cast<float>(m_context.size.height);
-    viewport.MaxDepth = 1.0f;
-    const D3D12_RECT scissor{0, 0, static_cast<LONG>(m_context.size.width),
-                             static_cast<LONG>(m_context.size.height)};
-    a_list->RSSetViewports(1, &viewport);
-    a_list->RSSetScissorRects(1, &scissor);
-    a_list->OMSetRenderTargets(1, &m_context.rtv, false, &m_context.dsv);
-    return m_context.meshes.draw(a_list, m_context.mesh);
+    auto viewportResult = a_commands.set_viewport(m_context.size.width, m_context.size.height);
+    if (!viewportResult.has_value())
+    {
+        return viewportResult;
+    }
+    auto targetsResult = a_commands.set_render_targets(m_context.colorView, m_context.depthView);
+    if (!targetsResult.has_value())
+    {
+        return targetsResult;
+    }
+    return m_context.meshes.draw(a_commands, m_context.mesh);
 }
 } // namespace cue::detail

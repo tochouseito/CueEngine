@@ -257,23 +257,70 @@ int main()
     auto rtvResult = resourceApi.create_view(colorHandle, cue::GpuViewKind::RenderTarget);
     auto srvResult = resourceApi.create_view(colorHandle, cue::GpuViewKind::ShaderResource);
     auto dsvResult = resourceApi.create_view(depthHandle, cue::GpuViewKind::DepthStencil);
+    auto depthSrvResult = resourceApi.create_view(depthHandle, cue::GpuViewKind::ShaderResource);
     if (!rtvResult.has_value() || !srvResult.has_value() || !dsvResult.has_value() ||
-        resourceApi.create_view(depthHandle, cue::GpuViewKind::ShaderResource).has_value())
+        !depthSrvResult.has_value())
     {
         return 33;
     }
     const auto rtv = rtvResult.take_value();
     const auto srv = srvResult.take_value();
     const auto dsv = dsvResult.take_value();
+    const auto depthSrv = depthSrvResult.take_value();
     if (!resources->cpu_handle(rtv).has_value() || !resources->cpu_handle(dsv).has_value() ||
         !resources->gpu_handle(srv).has_value() || resourceApi.destroy(colorHandle).has_value())
     {
         return 34;
     }
     if (!resourceApi.destroy_view(rtv).has_value() || resourceApi.destroy_view(rtv).has_value() ||
-        !resourceApi.destroy_view(srv).has_value() || !resourceApi.destroy_view(dsv).has_value())
+        !resourceApi.destroy_view(srv).has_value() || !resourceApi.destroy_view(dsv).has_value() ||
+        !resourceApi.destroy_view(depthSrv).has_value())
     {
         return 35;
+    }
+    // 共通 Shader-visible Heap の容量、CBV 整列、UAV 許可と世代を確認する
+    auto constantsResult = resourceApi.create_buffer({256, cue::GpuMemory::Upload});
+    auto storageResult = resourceApi.create_buffer({16, cue::GpuMemory::Device, true});
+    auto uavColorResult = resourceApi.create_texture({16, 16, cue::GpuTextureFormat::Rgba8Unorm, true});
+    if (!constantsResult.has_value() || !storageResult.has_value() || !uavColorResult.has_value())
+    {
+        return 42;
+    }
+    const auto constants = constantsResult.take_value();
+    const auto storage = storageResult.take_value();
+    const auto uavColor = uavColorResult.take_value();
+    if (resourceApi.create_view(constants, {cue::GpuViewKind::ConstantBuffer, 4, 252}).has_value() ||
+        resourceApi.create_view(bufferHandle, {cue::GpuViewKind::UnorderedAccess, 0, 4}).has_value())
+    {
+        return 43;
+    }
+    auto cbvResult = resourceApi.create_view(constants, {cue::GpuViewKind::ConstantBuffer, 0, 256});
+    auto bufferUavResult = resourceApi.create_view(storage, {cue::GpuViewKind::UnorderedAccess, 0, 16});
+    if (!cbvResult.has_value() || !bufferUavResult.has_value() ||
+        resourceApi.create_view(uavColor, cue::GpuViewKind::UnorderedAccess).has_value())
+    {
+        return 44;
+    }
+    const auto cbv = cbvResult.take_value();
+    const auto bufferUav = bufferUavResult.take_value();
+    if (!resources->gpu_handle(cbv).has_value() || !resources->gpu_handle(bufferUav).has_value() ||
+        !resourceApi.destroy_view(cbv).has_value() || resources->gpu_handle(cbv).has_value())
+    {
+        return 45;
+    }
+    auto textureUavResult = resourceApi.create_view(uavColor, cue::GpuViewKind::UnorderedAccess);
+    if (!textureUavResult.has_value())
+    {
+        return 46;
+    }
+    const auto textureUav = textureUavResult.take_value();
+    if (textureUav.index != cbv.index || textureUav.generation == cbv.generation ||
+        !resourceApi.destroy_view(bufferUav).has_value() ||
+        !resourceApi.destroy_view(textureUav).has_value() ||
+        !resourceApi.destroy(constants).has_value() || !resourceApi.destroy(storage).has_value() ||
+        !resourceApi.destroy(uavColor).has_value())
+    {
+        return 47;
     }
     if (!resourceApi.destroy(colorHandle).has_value() || !resourceApi.destroy(depthHandle).has_value() ||
         !resourceApi.destroy(bufferHandle).has_value() || !resourceApi.destroy(readbackHandle).has_value() ||

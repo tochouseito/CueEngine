@@ -5,12 +5,13 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 namespace cue::detail
 {
 /// @brief Frame Slot ごとの一時 Color Surface と Resize 間で永続する Depth Surface を所有する
 ///
-/// Surface の交換と破棄は Direct Queue の完了後だけ許可する。SRV は現在の Copy Pass で不要
+/// Surface の交換と破棄は全 Queue の完了後だけ許可する。SRV は現在の Copy Pass で不要
 class D3D12SurfacePool final
 {
 public:
@@ -44,11 +45,34 @@ public:
     /// @brief 現行 Depth の DSV を借用する
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE depth_dsv() const noexcept;
 
+    /// @brief 共通 Command Recorder に渡す Color View を借用する
+    [[nodiscard]] GpuViewHandle color_view(UINT a_slot) const noexcept;
+
+    /// @brief 共通 Command Recorder に渡す Depth View を借用する
+    [[nodiscard]] GpuViewHandle depth_view() const noexcept;
+
+    /// @brief Presentation への Copy 元となる Color Resource Handle を借用する
+    [[nodiscard]] GpuResourceHandle color_resource(UINT a_slot) const noexcept;
+
 private:
+    struct RetiredSurface final
+    {
+        std::array<GpuResourceHandle, k_backBufferCount> color;
+        GpuResourceHandle depth;
+        std::array<GpuViewHandle, k_backBufferCount> colorViews;
+        GpuViewHandle depthView;
+    };
+
+    /// @brief 旧 Surface の回収失敗時も Handle を維持して次回 Resize で再試行する
+    [[nodiscard]] Result<void> collect_retired();
+
     D3D12ViewManager& m_views;
     D3D12ResourcePool& m_resources;
     std::array<GpuResourceHandle, k_backBufferCount> m_color;
     GpuResourceHandle m_depth;
+    std::array<GpuViewHandle, k_backBufferCount> m_colorViews;
+    GpuViewHandle m_depthView;
     std::array<RtvSlot, k_backBufferCount> m_colorSlots{};
+    std::vector<RetiredSurface> m_retired;
 };
 } // namespace cue::detail

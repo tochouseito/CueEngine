@@ -109,7 +109,10 @@ Result<void> D3D12ViewManager::write_dsv(ID3D12Device* a_device, ID3D12Resource*
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12ViewManager.write_dsv"});
     }
-    a_device->CreateDepthStencilView(a_resource, nullptr, dsv_handle());
+    D3D12_DEPTH_STENCIL_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_D32_FLOAT;
+    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    a_device->CreateDepthStencilView(a_resource, &desc, dsv_handle());
     return Result<void>::success();
 }
 

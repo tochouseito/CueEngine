@@ -44,6 +44,9 @@ public:
     /// @brief この Queue で発行済みの Fence 値かを確認する
     [[nodiscard]] bool has_issued(std::uint64_t a_value) const noexcept;
 
+    /// @brief CPU を待機させずに Fence 完了を調べる
+    [[nodiscard]] bool is_complete(std::uint64_t a_value) const noexcept;
+
     /// @brief Command Context と Queue の種類を照合する
     [[nodiscard]] GpuQueueType type() const noexcept;
 

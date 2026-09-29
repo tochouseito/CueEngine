@@ -2,6 +2,9 @@
 
 #include "D3D12DeviceContext.h"
 #include "D3D12QueueContext.h"
+#include "D3D12ResourcePool.h"
+
+#include <Cue/Renderer/RHI/GpuCommands.h>
 
 #include <cstdint>
 #include <memory>
@@ -21,19 +24,26 @@ class D3D12StaticMeshPool final
 public:
     /// @brief Upload 完了を Fence で確認してから Default Buffer を公開する
     [[nodiscard]] static Result<std::unique_ptr<D3D12StaticMeshPool>> create(D3D12DeviceContext& a_device,
-                                                                              D3D12QueueContext& a_queue);
+                                                                              D3D12ResourcePool& a_resources);
+
+    /// @brief GPU 完了後に幾何 Buffer を Resource Pool へ返す
+    ~D3D12StaticMeshPool();
 
     /// @brief 現在登録されている Triangle を借用する Handle を返す
     [[nodiscard]] StaticMeshHandle triangle() const noexcept;
 
     /// @brief Render Pass 内で VB／IB を設定して固定 Mesh を描画する
-    [[nodiscard]] Result<void> draw(ID3D12GraphicsCommandList* a_list, StaticMeshHandle a_handle) const;
+    [[nodiscard]] Result<void> draw(IGpuCommandRecorder& a_commands, StaticMeshHandle a_handle) const;
 
     /// @brief GPU 完了後に Buffer と Handle を失効させる
-    [[nodiscard]] Result<void> destroy(D3D12QueueContext& a_queue, StaticMeshHandle a_handle);
+    [[nodiscard]] Result<void> destroy(StaticMeshHandle a_handle);
 
 private:
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_geometry;
+    D3D12ResourcePool* m_resources = nullptr;
+    GpuResourceHandle m_geometry;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_upload;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_uploadAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_uploadList;
     std::uint64_t m_generation = 1;
     bool m_isAllocated = false;
 };

@@ -11,8 +11,10 @@
 
 #include "D3D12DeviceContext.h"
 #include "D3D12CommandPool.h"
+#include "D3D12CommandRecorder.h"
 #include "D3D12GraphExecutor.h"
 #include "D3D12PipelineCache.h"
+#include "D3D12PipelineLibrary.h"
 #include "D3D12Presentation.h"
 #include "D3D12QueueContext.h"
 #include "D3D12QueuePool.h"
@@ -30,7 +32,7 @@ public:
     /// @brief GPU Submit の残りがあれば Owner の破棄前に完了を待つ
     ~State()
     {
-        if (queues && commands && commands->has_pending_gpu())
+        if (queues)
         {
             [[maybe_unused]] auto result = queues->wait_idle();
         }
@@ -46,17 +48,16 @@ public:
         }
 
         // Frame Context の List と Presentation の Buffer は GPU 完了前に解放しない
-        if (commands->has_pending_gpu())
+        auto idleResult = queues->wait_idle();
+        if (!idleResult.has_value())
         {
-            auto idleResult = queues->wait_idle();
-            if (!idleResult.has_value())
-            {
-                return idleResult;
-            }
+            return idleResult;
         }
         // 途中失敗後も同じ Size で再試行し、Command List が欠けた状態を成功扱いしない
         resizePending = true;
         commands->release_for_resize();
+        computeCommands->release_for_resize();
+        copyCommands->release_for_resize();
         auto resizeResult = presentation->resize(*device, a_size);
         if (!resizeResult.has_value())
         {
@@ -71,6 +72,16 @@ public:
         if (!listResult.has_value())
         {
             return listResult;
+        }
+        auto computeListResult = computeCommands->recreate_lists(*device);
+        if (!computeListResult.has_value())
+        {
+            return computeListResult;
+        }
+        auto copyListResult = copyCommands->recreate_lists(*device);
+        if (!copyListResult.has_value())
+        {
+            return copyListResult;
         }
         resizePending = false;
         {
@@ -88,9 +99,12 @@ public:
     std::unique_ptr<detail::D3D12ViewManager> views;
     std::unique_ptr<detail::D3D12Presentation> presentation;
     std::unique_ptr<detail::D3D12SurfacePool> surfaces;
+    std::unique_ptr<detail::D3D12PipelineLibrary> pipelineLibrary;
     std::unique_ptr<detail::D3D12PipelineCache> pipelines;
     std::unique_ptr<detail::D3D12StaticMeshPool> meshes;
     std::unique_ptr<detail::D3D12CommandPool> commands;
+    std::unique_ptr<detail::D3D12CommandPool> computeCommands;
+    std::unique_ptr<detail::D3D12CommandPool> copyCommands;
     std::mutex surfaceMutex;
     WindowSize requestedSize{};
     D3D12RendererProgress progress{};
@@ -99,6 +113,7 @@ public:
     std::thread::id renderThreadId;
     std::uint64_t lastFrame = 0;
     bool hasRendered = false;
+    bool isFaulted = false;
 };
 
 /// @brief 初期化済み GPU State を受け取る
@@ -173,14 +188,16 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
     }
     state->surfaces = surfacesResult.take_value();
 
-    auto pipelineResult = detail::D3D12PipelineCache::create(*state->device);
+    state->pipelineLibrary = detail::D3D12PipelineLibrary::create(*state->device, *state->queues);
+    auto pipelineResult = detail::D3D12PipelineCache::create(*state->device, *state->resources,
+                                                               *state->pipelineLibrary);
     if (!pipelineResult.has_value())
     {
         return RendererResult::failure(*pipelineResult.try_error());
     }
     state->pipelines = pipelineResult.take_value();
 
-    auto meshResult = detail::D3D12StaticMeshPool::create(*state->device, *state->queue);
+    auto meshResult = detail::D3D12StaticMeshPool::create(*state->device, *state->resources);
     if (!meshResult.has_value())
     {
         return RendererResult::failure(*meshResult.try_error());
@@ -193,6 +210,18 @@ Result<std::unique_ptr<D3D12Renderer>> D3D12Renderer::create(void* a_nativeWindo
         return RendererResult::failure(*commandsResult.try_error());
     }
     state->commands = commandsResult.take_value();
+    auto computeCommandsResult = detail::D3D12CommandPool::create(*state->device, GpuQueueType::Compute);
+    if (!computeCommandsResult.has_value())
+    {
+        return RendererResult::failure(*computeCommandsResult.try_error());
+    }
+    state->computeCommands = computeCommandsResult.take_value();
+    auto copyCommandsResult = detail::D3D12CommandPool::create(*state->device, GpuQueueType::Copy);
+    if (!copyCommandsResult.has_value())
+    {
+        return RendererResult::failure(*copyCommandsResult.try_error());
+    }
+    state->copyCommands = copyCommandsResult.take_value();
     D3D12Renderer renderer(std::move(state));
     return RendererResult::success(std::make_unique<D3D12Renderer>(std::move(renderer)));
 }
@@ -205,7 +234,7 @@ Result<void> D3D12Renderer::shutdown()
         return Result<void>::success();
     }
     Result<void> waitResult = Result<void>::success();
-    if (m_state->commands && m_state->commands->has_pending_gpu())
+    if (m_state->queues)
     {
         waitResult = m_state->queues->wait_idle();
         if (!waitResult.has_value())
@@ -214,6 +243,8 @@ Result<void> D3D12Renderer::shutdown()
             return waitResult;
         }
         m_state->commands->mark_idle();
+        m_state->computeCommands->mark_idle();
+        m_state->copyCommands->mark_idle();
     }
     m_state.reset();
     return waitResult;
@@ -227,6 +258,11 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.render_frame"});
     }
     State& state = *m_state;
+    // 部分 Submit 後の失敗では Graph の初期状態を保証できないため、停止まで再投入しない
+    if (state.isFaulted)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "D3D12Renderer.faulted"});
+    }
     if (state.renderThreadId == std::thread::id{})
     {
         state.renderThreadId = std::this_thread::get_id();
@@ -261,13 +297,20 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     }
 
     const UINT index = state.presentation->current_index();
-    ID3D12Resource* backBuffer = state.presentation->back_buffer(index);
-    auto rtvResult = state.surfaces->color_rtv(index);
-    if (!rtvResult.has_value())
+    // Slot に対応する Upload CBV と Surface の再書込み前に前回 Frame の GPU 使用を終える
+    auto graphicsIdle = state.commands->wait_for_slot(*state.queue, index);
+    auto computeIdle = state.computeCommands->wait_for_slot(state.queues->context(GpuQueueType::Compute), index);
+    auto copyIdle = state.copyCommands->wait_for_slot(state.queues->context(GpuQueueType::Copy), index);
+    if (!graphicsIdle.has_value() || !computeIdle.has_value() || !copyIdle.has_value())
     {
-        return Result<void>::failure(*rtvResult.try_error());
+        return Result<void>::failure(!graphicsIdle.has_value() ? *graphicsIdle.try_error()
+                                     : !computeIdle.has_value() ? *computeIdle.try_error()
+                                                                : *copyIdle.try_error());
     }
-    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvResult.take_value();
+    ID3D12Resource* backBuffer = state.presentation->back_buffer(index);
+    const GpuViewHandle colorView = state.surfaces->color_view(index);
+    const GpuViewHandle depthView = state.surfaces->depth_view();
+    const GpuResourceHandle colorResource = state.surfaces->color_resource(index);
 
     // 一時 Color と永続 Depth を Clear し、Copy Pass で Back Buffer へ転送する
     FrameGraphBuilder graph;
@@ -284,9 +327,9 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
     const GraphResourceHandle back = backBufferHandle.take_value();
     const GraphResourceHandle color = colorHandle.take_value();
     const GraphResourceHandle depth = depthHandle.take_value();
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = state.surfaces->depth_dsv();
     const detail::TrianglePassContext triangleContext{*state.pipelines, *state.meshes, color, depth,
-                                                      state.meshes->triangle(), requestedSize, index, rtv, dsv,
+                                                      state.meshes->triangle(), requestedSize, index,
+                                                      colorView, depthView,
                                                       {1.0f, 1.0f, 1.0f, 1.0f}};
     const detail::D3D12TrianglePass trianglePass(triangleContext);
     auto clearPass = graph.add_pass("Clear", {{color, GraphResourceState::RenderTarget,
@@ -308,54 +351,49 @@ Result<void> D3D12Renderer::render_frame(std::uint64_t a_frame)
         return Result<void>::failure(*compiled.try_error());
     }
 
-    auto leaseResult = state.commands->acquire(*state.queue, index);
-    if (!leaseResult.has_value())
-    {
-        return Result<void>::failure(*leaseResult.try_error());
-    }
-    const detail::CommandLease lease = leaseResult.take_value();
     ID3D12Resource* offscreen = state.surfaces->color(index);
     std::vector<detail::GraphPassCallback> callbacks;
-    callbacks.emplace_back([rtv, dsv](ID3D12GraphicsCommandList* a_list) {
-        // Surface は Submit 完了まで State が所有し、Callback は View だけ借用する
-        a_list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        constexpr float k_clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
-        a_list->ClearRenderTargetView(rtv, k_clearColor, 0, nullptr);
-        a_list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-        return Result<void>::success();
+    callbacks.emplace_back([&state, colorView, depthView](ID3D12GraphicsCommandList* a_list) {
+        detail::D3D12CommandRecorder recorder(a_list, GpuQueueType::Graphics,
+                                              *state.resources, *state.pipelineLibrary);
+        auto targets = recorder.set_render_targets(colorView, depthView);
+        if (!targets.has_value())
+        {
+            return targets;
+        }
+        auto clearColor = recorder.clear_color(colorView, {0.07f, 0.13f, 0.25f, 1.0f});
+        if (!clearColor.has_value())
+        {
+            return clearColor;
+        }
+        return recorder.clear_depth(depthView, 1.0f);
     });
     // Pass はこの同期 Record が完了するまで生存し、State の資源を借用する
-    callbacks.emplace_back([&trianglePass](ID3D12GraphicsCommandList* a_list) {
-        return trianglePass.execute(a_list);
+    callbacks.emplace_back([&state, &trianglePass](ID3D12GraphicsCommandList* a_list) {
+        detail::D3D12CommandRecorder recorder(a_list, GpuQueueType::Graphics,
+                                              *state.resources, *state.pipelineLibrary);
+        return trianglePass.execute(recorder);
     });
-    callbacks.emplace_back([backBuffer, offscreen](ID3D12GraphicsCommandList* a_list) {
-        a_list->CopyResource(backBuffer, offscreen);
-        return Result<void>::success();
+    callbacks.emplace_back([&state, backBuffer, colorResource](ID3D12GraphicsCommandList* a_list) {
+        detail::D3D12CommandRecorder recorder(a_list, GpuQueueType::Graphics,
+                                              *state.resources, *state.pipelineLibrary);
+        return recorder.copy_to_back_buffer(backBuffer, colorResource);
     });
-    auto recordResult = detail::D3D12GraphExecutor::record(compiled.take_value(), lease.list,
-                                                             {backBuffer, offscreen, state.surfaces->depth()}, callbacks);
-    if (!recordResult.has_value())
+    auto executeResult = detail::D3D12GraphExecutor::execute(
+        compiled.take_value(), *state.queues,
+        {state.commands.get(), state.computeCommands.get(), state.copyCommands.get()}, index,
+        {backBuffer, offscreen, state.surfaces->depth()}, callbacks);
+    if (!executeResult.has_value())
     {
-        [[maybe_unused]] auto abortResult = state.commands->abort(lease);
-        return recordResult;
-    }
-
-    auto submitResult = state.commands->submit(*state.queue, lease);
-    if (!submitResult.has_value())
-    {
-        [[maybe_unused]] auto abortResult = state.commands->abort(lease);
-        return submitResult;
+        state.isFaulted = true;
+        return executeResult;
     }
     // FrameController が 60 FPS を制御するため Present 側では待機を追加しない
     auto presentResult = state.presentation->present();
     if (!presentResult.has_value())
     {
+        state.isFaulted = true;
         return presentResult;
-    }
-    auto retireResult = state.commands->retire(*state.queue, lease);
-    if (!retireResult.has_value())
-    {
-        return retireResult;
     }
     state.lastFrame = a_frame;
     state.hasRendered = true;
