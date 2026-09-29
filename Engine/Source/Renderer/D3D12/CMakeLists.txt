@@ -1,9 +1,11 @@
 # D3D12資源とWindows PresentationをWindows専用Targetに閉じ込める
 add_library(Cue.Renderer.D3D12 STATIC
+    Private/D3D12CommandRecorder.cpp
     Private/D3D12CommandPool.cpp
     Private/D3D12DeviceContext.cpp
     Private/D3D12GraphExecutor.cpp
     Private/D3D12PipelineCache.cpp
+    Private/D3D12PipelineLibrary.cpp
     Private/D3D12SurfacePool.cpp
     Private/D3D12StaticMeshPool.cpp
     Private/D3D12TrianglePass.cpp

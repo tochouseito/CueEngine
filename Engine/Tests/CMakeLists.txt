@@ -67,6 +67,15 @@ if(WIN32)
     add_test(NAME Cue.Renderer.D3D12.FixedMeshPixel COMMAND CueD3D12FixedMeshPixelTests)
     set_tests_properties(Cue.Renderer.D3D12.FixedMeshPixel PROPERTIES TIMEOUT 15)
 
+    # Copy→Compute→Graphics の Queue 間依存と Readback 結果を実 GPU で確認する
+    add_executable(CueD3D12MultiQueueGraphTests Renderer/D3D12MultiQueueGraphTests.cpp)
+    target_include_directories(CueD3D12MultiQueueGraphTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
+    target_link_libraries(CueD3D12MultiQueueGraphTests PRIVATE Cue.Renderer.D3D12 Cue.Renderer.FrameGraph)
+    cue_stage_dxc_runtime(CueD3D12MultiQueueGraphTests)
+    add_test(NAME Cue.Renderer.D3D12.MultiQueueGraph COMMAND CueD3D12MultiQueueGraphTests)
+    set_tests_properties(Cue.Renderer.D3D12.MultiQueueGraph PROPERTIES TIMEOUT 15)
+
     # Runtime と Host の Test は実際の Windows Service を接続して動かす
     add_executable(CueRuntimeTests
         Runtime/RuntimeTests.cpp

@@ -23,13 +23,16 @@ enum class GpuViewKind : std::uint8_t
 {
     RenderTarget,
     DepthStencil,
-    ShaderResource
+    ShaderResource,
+    ConstantBuffer,
+    UnorderedAccess
 };
 
 struct GpuBufferDesc final
 {
     std::uint64_t size = 0;
     GpuMemory memory = GpuMemory::Device;
+    bool allowUnorderedAccess = false;
 };
 
 struct GpuTextureDesc final
@@ -37,6 +40,17 @@ struct GpuTextureDesc final
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
+    bool allowUnorderedAccess = false;
+};
+
+/// @brief Buffer View は Byte 範囲と要素 Stride を指定し、Texture View は全体を対象にする
+/// @details stride が 0 の SRV／UAV Buffer は 32 bit Raw View として扱う
+struct GpuViewDesc final
+{
+    GpuViewKind kind = GpuViewKind::ShaderResource;
+    std::uint64_t bufferOffset = 0;
+    std::uint64_t bufferSize = 0;
+    std::uint32_t structureStride = 0;
 };
 
 class IGpuResources;
@@ -79,9 +93,16 @@ public:
     [[nodiscard]] virtual Result<void> read_buffer(GpuResourceHandle a_buffer, std::uint64_t a_offset,
                                                    void* a_data, std::uint64_t a_size) = 0;
 
-    /// @brief Texture に対応する View を生成する
+    /// @brief Resource と範囲に対応する View を生成する
     [[nodiscard]] virtual Result<GpuViewHandle> create_view(GpuResourceHandle a_resource,
-                                                              GpuViewKind a_kind) = 0;
+                                                              GpuViewDesc a_desc) = 0;
+
+    /// @brief 全体 Texture View を簡潔に作る
+    [[nodiscard]] virtual Result<GpuViewHandle> create_view(GpuResourceHandle a_resource,
+                                                              GpuViewKind a_kind)
+    {
+        return create_view(a_resource, GpuViewDesc{a_kind});
+    }
 
     /// @brief GPU 完了後に View を解放する
     [[nodiscard]] virtual Result<void> destroy_view(GpuViewHandle a_view) = 0;

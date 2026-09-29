@@ -1,5 +1,8 @@
 #include "D3D12GraphExecutor.h"
 
+#include <array>
+#include <vector>
+
 namespace cue::detail
 {
 namespace
@@ -19,7 +22,10 @@ Result<D3D12_RESOURCE_STATES> resource_state(GraphResourceState a_state)
     case GraphResourceState::DepthWrite:
         return StateResult::success(D3D12_RESOURCE_STATE_DEPTH_WRITE);
     case GraphResourceState::ShaderResource:
-        return StateResult::success(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        return StateResult::success(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    case GraphResourceState::ComputeShaderResource:
+        return StateResult::success(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     case GraphResourceState::CopySource:
         return StateResult::success(D3D12_RESOURCE_STATE_COPY_SOURCE);
     case GraphResourceState::CopyDest:
@@ -29,6 +35,22 @@ Result<D3D12_RESOURCE_STATES> resource_state(GraphResourceState a_state)
     default:
         return StateResult::failure({ErrorCategory::InvalidArgument, "D3D12GraphExecutor.resource_state"});
     }
+}
+
+/// @brief 制限のある Queue で Resource Barrier を記録できる状態か確認する
+bool supports_state(GpuQueueType a_queue, GraphResourceState a_state)
+{
+    if (a_queue == GpuQueueType::Graphics)
+    {
+        return true;
+    }
+    if (a_queue == GpuQueueType::Copy)
+    {
+        return a_state == GraphResourceState::Common || a_state == GraphResourceState::Present ||
+               a_state == GraphResourceState::CopySource || a_state == GraphResourceState::CopyDest;
+    }
+    return a_state != GraphResourceState::RenderTarget && a_state != GraphResourceState::DepthWrite &&
+           a_state != GraphResourceState::ShaderResource;
 }
 } // namespace
 
@@ -44,6 +66,10 @@ Result<void> D3D12GraphExecutor::record(const CompiledFrameGraph& a_graph,
     }
     for (const auto& pass : a_graph.passes)
     {
+        if (pass.queue != GpuQueueType::Graphics)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12GraphExecutor.record.queue"});
+        }
         if (pass.sourceIndex >= a_callbacks.size() || !a_callbacks[pass.sourceIndex])
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "D3D12GraphExecutor.passCallback"});
@@ -68,6 +94,187 @@ Result<void> D3D12GraphExecutor::record(const CompiledFrameGraph& a_graph,
         if (!barrierResult.has_value())
         {
             return barrierResult;
+        }
+    }
+    return Result<void>::success();
+}
+
+/// @brief 各 Pass を専用 Context へ記録し、依存先 Queue の Fence を GPU 側で待つ
+Result<void> D3D12GraphExecutor::execute(const CompiledFrameGraph& a_graph, D3D12QueuePool& a_queues,
+                                         const std::array<D3D12CommandPool*, 3>& a_pools, UINT a_slot,
+                                         const std::vector<ID3D12Resource*>& a_resources,
+                                         const std::vector<GraphPassCallback>& a_callbacks)
+{
+    if (a_slot >= k_backBufferCount || !a_pools[0] || !a_pools[1] || !a_pools[2])
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12GraphExecutor.execute"});
+    }
+    std::vector<GpuFencePoint> completed(a_callbacks.size());
+    for (const auto& pass : a_graph.passes)
+    {
+        const auto queueIndex = static_cast<std::size_t>(pass.queue);
+        if (queueIndex >= a_pools.size() || pass.sourceIndex >= a_callbacks.size() ||
+            !a_callbacks[pass.sourceIndex])
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "D3D12GraphExecutor.execute.pass"});
+        }
+        auto& queue = a_queues.context(pass.queue);
+        for (const auto predecessor : pass.predecessors)
+        {
+            if (predecessor >= completed.size() || completed[predecessor].value == 0)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "D3D12GraphExecutor.execute.dependency"});
+            }
+            if (completed[predecessor].queue != pass.queue)
+            {
+                auto waitResult = a_queues.wait_gpu(pass.queue, completed[predecessor]);
+                if (!waitResult.has_value())
+                {
+                    return waitResult;
+                }
+            }
+        }
+
+        // Copy／Compute Queue が扱えない遷移だけ Graphics Queue で先に記録する
+        std::vector<const GraphBarrier*> graphicsBarriers;
+        for (const auto& barrier : pass.barriers)
+        {
+            if (barrier.kind == GraphBarrierKind::Transition &&
+                (!supports_state(pass.queue, barrier.before) || !supports_state(pass.queue, barrier.after)))
+            {
+                graphicsBarriers.push_back(&barrier);
+            }
+        }
+        if (!graphicsBarriers.empty())
+        {
+            auto& graphics = a_queues.context(GpuQueueType::Graphics);
+            for (const auto predecessor : pass.predecessors)
+            {
+                if (completed[predecessor].queue != GpuQueueType::Graphics)
+                {
+                    auto waitResult = a_queues.wait_gpu(GpuQueueType::Graphics, completed[predecessor]);
+                    if (!waitResult.has_value())
+                    {
+                        return waitResult;
+                    }
+                }
+            }
+            auto graphicsLeaseResult = a_pools[0]->acquire_batch(graphics, a_slot);
+            if (!graphicsLeaseResult.has_value())
+            {
+                return Result<void>::failure(*graphicsLeaseResult.try_error());
+            }
+            const auto graphicsLease = graphicsLeaseResult.take_value();
+            for (const auto* barrier : graphicsBarriers)
+            {
+                auto result = record_barrier(*barrier, graphicsLease.list, a_resources);
+                if (!result.has_value())
+                {
+                    [[maybe_unused]] auto abortResult = a_pools[0]->abort(graphicsLease);
+                    return result;
+                }
+            }
+            auto submitResult = a_pools[0]->submit(graphics, graphicsLease);
+            if (!submitResult.has_value())
+            {
+                [[maybe_unused]] auto abortResult = a_pools[0]->abort(graphicsLease);
+                return submitResult;
+            }
+            auto fenceResult = a_pools[0]->retire_fence(graphics, graphicsLease);
+            if (!fenceResult.has_value())
+            {
+                return Result<void>::failure(*fenceResult.try_error());
+            }
+            if (pass.queue != GpuQueueType::Graphics)
+            {
+                auto waitResult = queue.wait_on(graphics, fenceResult.take_value());
+                if (!waitResult.has_value())
+                {
+                    return waitResult;
+                }
+            }
+        }
+
+        auto leaseResult = a_pools[queueIndex]->acquire_batch(queue, a_slot);
+        if (!leaseResult.has_value())
+        {
+            return Result<void>::failure(*leaseResult.try_error());
+        }
+        const auto lease = leaseResult.take_value();
+        for (const auto& barrier : pass.barriers)
+        {
+            if (barrier.kind == GraphBarrierKind::Transition &&
+                (!supports_state(pass.queue, barrier.before) || !supports_state(pass.queue, barrier.after)))
+            {
+                continue;
+            }
+            auto result = record_barrier(barrier, lease.list, a_resources);
+            if (!result.has_value())
+            {
+                [[maybe_unused]] auto abortResult = a_pools[queueIndex]->abort(lease);
+                return result;
+            }
+        }
+        auto recordResult = a_callbacks[pass.sourceIndex](lease.list);
+        if (!recordResult.has_value())
+        {
+            [[maybe_unused]] auto abortResult = a_pools[queueIndex]->abort(lease);
+            return recordResult;
+        }
+        auto submitResult = a_pools[queueIndex]->submit(queue, lease);
+        if (!submitResult.has_value())
+        {
+            [[maybe_unused]] auto abortResult = a_pools[queueIndex]->abort(lease);
+            return submitResult;
+        }
+        auto fenceResult = a_pools[queueIndex]->retire_fence(queue, lease);
+        if (!fenceResult.has_value())
+        {
+            return Result<void>::failure(*fenceResult.try_error());
+        }
+        completed[pass.sourceIndex] = {pass.queue, fenceResult.take_value(), &a_queues};
+    }
+
+    // Graph 終端の状態を Graphics Queue で確定し、別 Queue の書込み完了を GPU 上で待つ
+    if (!a_graph.finalBarriers.empty())
+    {
+        auto& graphics = a_queues.context(GpuQueueType::Graphics);
+        for (const auto& fence : completed)
+        {
+            if (fence.value != 0 && fence.queue != GpuQueueType::Graphics)
+            {
+                auto waitResult = a_queues.wait_gpu(GpuQueueType::Graphics, fence);
+                if (!waitResult.has_value())
+                {
+                    return waitResult;
+                }
+            }
+        }
+        auto leaseResult = a_pools[0]->acquire_batch(graphics, a_slot);
+        if (!leaseResult.has_value())
+        {
+            return Result<void>::failure(*leaseResult.try_error());
+        }
+        const auto lease = leaseResult.take_value();
+        for (const auto& barrier : a_graph.finalBarriers)
+        {
+            auto result = record_barrier(barrier, lease.list, a_resources);
+            if (!result.has_value())
+            {
+                [[maybe_unused]] auto abortResult = a_pools[0]->abort(lease);
+                return result;
+            }
+        }
+        auto submitResult = a_pools[0]->submit(graphics, lease);
+        if (!submitResult.has_value())
+        {
+            [[maybe_unused]] auto abortResult = a_pools[0]->abort(lease);
+            return submitResult;
+        }
+        auto retireResult = a_pools[0]->retire(graphics, lease);
+        if (!retireResult.has_value())
+        {
+            return retireResult;
         }
     }
     return Result<void>::success();

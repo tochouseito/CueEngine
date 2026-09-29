@@ -83,7 +83,13 @@ Result<void> D3D12QueueContext::wait_for(std::uint64_t a_value) const
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "D3D12QueueContext.wait_for.value"});
     }
-    if (m_fence->GetCompletedValue() >= a_value)
+    const UINT64 completed = m_fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+    {
+        return Result<void>::failure(gpu_error("ID3D12Device.GetDeviceRemovedReason",
+                                               m_device->GetDeviceRemovedReason()));
+    }
+    if (completed >= a_value)
     {
         return Result<void>::success();
     }
@@ -104,6 +110,11 @@ Result<void> D3D12QueueContext::wait_for(std::uint64_t a_value) const
         const DWORD errorCode = waitResult == WAIT_FAILED ? GetLastError() : waitResult;
         return Result<void>::failure({ErrorCategory::PlatformFailure, "WaitForSingleObject.GpuFence",
                                       static_cast<std::int64_t>(errorCode)});
+    }
+    if (m_fence->GetCompletedValue() == UINT64_MAX)
+    {
+        return Result<void>::failure(gpu_error("ID3D12Device.GetDeviceRemovedReason",
+                                               m_device->GetDeviceRemovedReason()));
     }
     return Result<void>::success();
 }
@@ -157,6 +168,17 @@ Result<void> D3D12QueueContext::wait_on(const D3D12QueueContext& a_source, std::
 bool D3D12QueueContext::has_issued(std::uint64_t a_value) const noexcept
 {
     return a_value != 0 && a_value < m_nextFenceValue;
+}
+
+/// @brief 再利用できる Command Context を探すため Fence を確認する
+bool D3D12QueueContext::is_complete(std::uint64_t a_value) const noexcept
+{
+    if (a_value == 0)
+    {
+        return true;
+    }
+    const UINT64 completed = m_fence->GetCompletedValue();
+    return has_issued(a_value) && completed != UINT64_MAX && completed >= a_value;
 }
 
 /// @brief Queue と Command Pool の適合を検査するための種別を返す

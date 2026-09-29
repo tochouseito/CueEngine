@@ -9,7 +9,7 @@
 
 namespace cue::detail
 {
-/// @brief D3D12 固有の記録処理を持つ FrameGraph Pass の契約
+/// @brief GPU 命令を RHI Recorder に記録する FrameGraph Pass の契約
 class D3D12FrameGraphPass
 {
 public:
@@ -23,7 +23,7 @@ public:
     [[nodiscard]] virtual Result<GraphPassHandle> setup(FrameGraphBuilder& a_builder) const = 0;
 
     /// @brief Graph の Barrier 適用後に描画命令を記録する
-    [[nodiscard]] virtual Result<void> execute(ID3D12GraphicsCommandList* a_list) const = 0;
+    [[nodiscard]] virtual Result<void> execute(IGpuCommandRecorder& a_commands) const = 0;
 };
 
 /// @brief 一 Frame の三角形 Pass が借用する資源と描画値
@@ -36,8 +36,8 @@ struct TrianglePassContext final
     StaticMeshHandle mesh;
     WindowSize size;
     UINT slot;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    GpuViewHandle colorView;
+    GpuViewHandle depthView;
     std::array<float, 4> tint;
 };
 
@@ -55,7 +55,7 @@ public:
     [[nodiscard]] Result<GraphPassHandle> setup(FrameGraphBuilder& a_builder) const override;
 
     /// @brief PSO と Mesh を設定して固定三角形を描画する
-    [[nodiscard]] Result<void> execute(ID3D12GraphicsCommandList* a_list) const override;
+    [[nodiscard]] Result<void> execute(IGpuCommandRecorder& a_commands) const override;
 
 private:
     TrianglePassContext m_context;

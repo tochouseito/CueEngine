@@ -21,6 +21,7 @@ bool is_valid_use(const GraphResourceUse& a_use)
     case GraphResourceState::CopyDest:
         return a_use.access == GraphAccess::Write;
     case GraphResourceState::ShaderResource:
+    case GraphResourceState::ComputeShaderResource:
     case GraphResourceState::CopySource:
         return a_use.access == GraphAccess::Read;
     case GraphResourceState::UnorderedAccess:
@@ -79,14 +80,28 @@ Result<GraphResourceHandle> FrameGraphBuilder::create_resource(std::string a_nam
 /// @brief Resource 使用を明示した Pass を登録する
 Result<GraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, std::vector<GraphResourceUse> a_uses)
 {
+    return add_pass(std::move(a_name), std::move(a_uses), GpuQueueType::Graphics);
+}
+
+/// @brief Queue が扱える状態と Resource 使用を検証して Pass を登録する
+Result<GraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, std::vector<GraphResourceUse> a_uses,
+                                                     GpuQueueType a_queue)
+{
     using HandleResult = Result<GraphPassHandle>;
-    if (a_name.empty() || a_uses.empty())
+    if (a_name.empty() || a_uses.empty() || static_cast<std::uint32_t>(a_queue) >
+        static_cast<std::uint32_t>(GpuQueueType::Copy))
     {
         return HandleResult::failure({ErrorCategory::InvalidArgument, "FrameGraph.add_pass"});
     }
     for (std::size_t index = 0; index < a_uses.size(); ++index)
     {
-        if (!owns(a_uses[index].resource) || !is_valid_use(a_uses[index]))
+        if (!owns(a_uses[index].resource) || !is_valid_use(a_uses[index]) ||
+            (a_queue == GpuQueueType::Copy && a_uses[index].state != GraphResourceState::CopySource &&
+             a_uses[index].state != GraphResourceState::CopyDest) ||
+            (a_queue == GpuQueueType::Compute &&
+             (a_uses[index].state == GraphResourceState::RenderTarget ||
+              a_uses[index].state == GraphResourceState::DepthWrite ||
+              a_uses[index].state == GraphResourceState::ShaderResource)))
         {
             return HandleResult::failure({ErrorCategory::InvalidArgument, "FrameGraph.passUse"});
         }
@@ -99,7 +114,7 @@ Result<GraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, std::vec
         }
     }
     const auto index = static_cast<std::uint32_t>(m_passes.size());
-    m_passes.push_back({std::move(a_name), std::move(a_uses)});
+    m_passes.push_back({std::move(a_name), std::move(a_uses), a_queue});
     return HandleResult::success({index, m_graphId});
 }
 
@@ -123,6 +138,28 @@ Result<CompiledFrameGraph> FrameGraphBuilder::compile() const
     for (const auto& [before, after] : m_dependencies)
     {
         edges[before][after] = true;
+    }
+
+    // Queue をまたぐ同一 Resource の読み取りも状態遷移と所有順を確定させる
+    for (std::size_t before = 0; before < passCount; ++before)
+    {
+        for (std::size_t after = before + 1; after < passCount; ++after)
+        {
+            if (m_passes[before].queue == m_passes[after].queue)
+            {
+                continue;
+            }
+            for (const auto& earlierUse : m_passes[before].uses)
+            {
+                for (const auto& laterUse : m_passes[after].uses)
+                {
+                    if (earlierUse.resource.index == laterUse.resource.index)
+                    {
+                        edges[before][after] = true;
+                    }
+                }
+            }
+        }
     }
 
     // 登録順の Resource Hazard を明示依存へ加え、複数 Reader の後の Writer も追い越させない
@@ -194,6 +231,14 @@ Result<CompiledFrameGraph> FrameGraphBuilder::compile() const
     for (const std::uint32_t index : order)
     {
         GraphPassPlan plan{index, m_passes[index].name, {}};
+        plan.queue = m_passes[index].queue;
+        for (std::size_t predecessor = 0; predecessor < passCount; ++predecessor)
+        {
+            if (edges[predecessor][index])
+            {
+                plan.predecessors.push_back(static_cast<std::uint32_t>(predecessor));
+            }
+        }
         for (const auto& use : m_passes[index].uses)
         {
             const std::size_t resource = use.resource.index;
