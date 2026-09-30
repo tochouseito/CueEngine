@@ -21,6 +21,7 @@ struct GpuFencePoint final
     GpuQueueType queue = GpuQueueType::Graphics;
     std::uint64_t value = 0;
     const IGpuExecution* owner = nullptr;
+    std::uint32_t queueIndex = 0;
 };
 
 /// @brief GPU Queue と Fence の同期契約。実装と Device は呼出側より長く生存させる

@@ -3,6 +3,10 @@
 #include <Cue/Foundation/Result.h>
 
 #include <cstdint>
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace cue
 {
@@ -16,7 +20,14 @@ enum class GpuMemory : std::uint8_t
 enum class GpuTextureFormat : std::uint8_t
 {
     Rgba8Unorm,
-    Depth32Float
+    Depth32Float,
+    Rgba8Srgb,
+    Bc6hUf16,
+    Bc7Unorm,
+    Bc7UnormSrgb,
+    R32Uint,
+    Depth24Stencil8,
+    R24UnormX8Typeless
 };
 
 enum class GpuViewKind : std::uint8_t
@@ -28,11 +39,57 @@ enum class GpuViewKind : std::uint8_t
     UnorderedAccess
 };
 
+enum class GpuBufferType : std::uint8_t
+{
+    Vertex,
+    Index,
+    Constant,
+    Structured,
+    UnorderedAccess,
+    Raw,
+    Readback,
+    Unknown
+};
+
+enum class GpuTextureType : std::uint8_t
+{
+    Texture2D,
+    Texture3D,
+    CubeMap
+};
+
+enum class GpuTextureKind : std::uint8_t
+{
+    Automatic,
+    Default,
+    RenderTarget,
+    DepthStencil
+};
+
 struct GpuBufferDesc final
 {
     std::uint64_t size = 0;
     GpuMemory memory = GpuMemory::Device;
     bool allowUnorderedAccess = false;
+    std::string name;
+    GpuBufferType type = GpuBufferType::Unknown;
+    std::uint32_t defaultHeapCount = 0;
+    std::uint32_t uploadHeapCount = 0;
+    std::uint32_t readbackHeapCount = 0;
+    std::uint32_t stride = 0;
+    std::uint32_t elementCount = 0;
+    std::uint32_t alignment = 0;
+};
+
+/// @brief Manager が所有する Map 済み Buffer の非所有 Pointer 群
+/// @details 呼出側は GPU と同期し、元の Buffer を破棄する前に Pointer の使用を終える
+struct GpuBufferCpuView final
+{
+    std::uint32_t alignment = 0;
+    std::uint32_t stride = 0;
+    std::uint32_t elementCount = 0;
+    std::uint64_t byteSize = 0;
+    std::vector<std::byte*> mappedData;
 };
 
 struct GpuTextureDesc final
@@ -41,6 +98,25 @@ struct GpuTextureDesc final
     std::uint32_t height = 0;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
     bool allowUnorderedAccess = false;
+    std::string name;
+    std::uint32_t bufferCount = 1;
+    GpuTextureType type = GpuTextureType::Texture2D;
+    GpuTextureKind kind = GpuTextureKind::Automatic;
+    std::uint16_t mipLevels = 1;
+    std::uint16_t arraySize = 1;
+    std::uint32_t sampleCount = 1;
+    float clearColor[4] = {0.07f, 0.13f, 0.25f, 1.0f};
+    float clearDepth = 1.0f;
+    std::uint8_t clearStencil = 0;
+};
+
+/// @brief 生成時の各 Mip／Array Slice の初期内容を示す非所有 Data
+struct GpuTextureSubresourceData final
+{
+    const std::byte* data = nullptr;
+    std::uint64_t dataSize = 0;
+    std::uint32_t rowPitch = 0;
+    std::uint32_t slicePitch = 0;
 };
 
 /// @brief Buffer View は Byte 範囲と要素 Stride を指定し、Texture View は全体を対象にする
@@ -51,6 +127,14 @@ struct GpuViewDesc final
     std::uint64_t bufferOffset = 0;
     std::uint64_t bufferSize = 0;
     std::uint32_t structureStride = 0;
+    std::string name;
+    GpuMemory memory = GpuMemory::Device;
+    std::uint32_t resourceIndex = 0;
+    std::uint32_t firstElement = 0;
+    std::uint32_t numElements = 0;
+    std::uint32_t mipSlice = 0;
+    std::uint32_t mipLevels = 0;
+    std::optional<GpuTextureFormat> format;
 };
 
 class IGpuResources;

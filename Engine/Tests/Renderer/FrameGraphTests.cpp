@@ -1,6 +1,32 @@
 #include <Cue/Renderer/FrameGraph/FrameGraph.h>
+#include <Cue/Renderer/FrameGraph/FrameGraphRuntime.h>
+
+#include <memory>
 
 #define CHECK(a_condition) do { if (!(a_condition)) { return __LINE__; } } while (false)
+
+/// @brief setup 失敗で Resource だけを追加した Graph が再利用されないことを確認する Pass
+class FaultingPass final : public cue::FrameGraphPass
+{
+public:
+    /// @brief 診断用の Pass 名を返す
+    [[nodiscard]] const char* name() const noexcept override { return "Faulting"; }
+
+    /// @brief Builder の部分変更後に失敗させる
+    [[nodiscard]] cue::Result<cue::GraphPassHandle> setup(cue::FrameGraphBuilder& a_builder) const override
+    {
+        [[maybe_unused]] auto resource = a_builder.create_resource("Partial", cue::GraphResourceLifetime::Transient,
+                                                                    cue::GraphResourceState::Common,
+                                                                    cue::GraphResourceState::Common);
+        return cue::Result<cue::GraphPassHandle>::failure({cue::ErrorCategory::InvalidState, "FaultingPass.setup"});
+    }
+
+    /// @brief setup が失敗するため実行されない
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext&) const override
+    {
+        return cue::Result<void>::success();
+    }
+};
 
 /// @brief Back Buffer の遷移と Pass 順序を検証する
 int main()
@@ -75,5 +101,8 @@ int main()
     auto uavPlan = uav.compile();
     CHECK(uavPlan.has_value());
     CHECK(uavPlan.try_value()->passes[1].barriers[0].kind == GraphBarrierKind::UnorderedAccess);
+    FrameGraph runtimeGraph;
+    CHECK(!runtimeGraph.add_pass(std::make_unique<FaultingPass>()).has_value());
+    CHECK(!runtimeGraph.build().has_value());
     return 0;
 }

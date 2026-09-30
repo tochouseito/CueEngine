@@ -3,6 +3,7 @@
 #include <Cue/Foundation/Result.h>
 #include <Cue/Renderer/RHI/GpuExecution.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -28,7 +29,8 @@ enum class GraphResourceState
     ComputeShaderResource,
     CopySource,
     CopyDest,
-    UnorderedAccess
+    UnorderedAccess,
+    IndirectArgument
 };
 
 enum class GraphAccess
@@ -83,6 +85,7 @@ struct GraphPassPlan final
     std::vector<GraphBarrier> barriers;
     GpuQueueType queue = GpuQueueType::Graphics;
     std::vector<std::uint32_t> predecessors;
+    std::vector<GraphResourceUse> uses;
 };
 
 /// @brief 一つの Graph の依存順と最終状態への遷移を所有する
@@ -90,6 +93,20 @@ struct CompiledFrameGraph final
 {
     std::vector<GraphPassPlan> passes;
     std::vector<GraphBarrier> finalBarriers;
+};
+
+/// @brief CPU 側の Graph 記録と Submit にかかった直近 Frame の計測値
+struct FrameGraphExecutionStats final
+{
+    struct PassStats final
+    {
+        std::string name;
+        GpuQueueType queue = GpuQueueType::Graphics;
+        double cpuExecuteMs = 0.0;
+    };
+
+    double totalExecuteMs = 0.0;
+    std::vector<PassStats> passStats;
 };
 
 /// @brief Frame 単位の Resource と Pass 宣言を検証して実行計画を作る
@@ -130,6 +147,22 @@ public:
 
     /// @brief 依存順、不正使用、Barrier を確定し、失敗時は Builder を変更しない
     [[nodiscard]] Result<CompiledFrameGraph> compile() const;
+
+    /// @brief FrameGraph が Pass 登録数を検証するための現在数を返す
+    [[nodiscard]] std::size_t pass_count() const noexcept { return m_passes.size(); }
+
+    /// @brief 物理 Resource 対応表が必要とする宣言済み Resource 数を返す
+    [[nodiscard]] std::size_t resource_count() const noexcept { return m_resources.size(); }
+
+    /// @brief 物理 Resource 対応表が別 Graph の Handle を拒否するための識別子を返す
+    [[nodiscard]] std::uint64_t graph_id() const noexcept { return m_graphId; }
+
+    /// @brief Backend が Surface の終了状態を検証するため返す
+    [[nodiscard]] Result<GraphResourceState> final_state(GraphResourceHandle a_handle) const;
+
+    /// @brief Backend が共有 Surface の初期状態を検証するため返す
+    [[nodiscard]] Result<GraphResourceState> initial_state(GraphResourceHandle a_handle) const;
+
 
 private:
     struct ResourceRecord final

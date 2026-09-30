@@ -22,6 +22,9 @@ struct GpuShaderDesc final
     std::string entry;
     GpuShaderStage stage = GpuShaderStage::Vertex;
     std::string profile;
+    std::string name;
+    std::string filePath;
+    bool enableDebugInfo = true;
 };
 
 /// @brief 一つの Root Descriptor Table に置く View の種類と Register
@@ -32,16 +35,48 @@ struct GpuRootBinding final
     std::uint32_t registerSpace = 0;
 };
 
+enum class GpuRootParameterType : std::uint8_t
+{
+    Cbv,
+    Srv,
+    Uav,
+    TableCbv,
+    TableSrv,
+    TableUav,
+    Constants32
+};
+
+enum class GpuShaderVisibility : std::uint8_t
+{
+    All,
+    Vertex,
+    Pixel
+};
+
+/// @brief Root Descriptor、Descriptor Table、32 bit 定数の配置を指定する
+struct GpuRootParameterDesc final
+{
+    GpuRootParameterType type = GpuRootParameterType::Cbv;
+    GpuShaderVisibility visibility = GpuShaderVisibility::All;
+    std::uint32_t shaderRegister = 0;
+    std::uint32_t descriptorCount = 1;
+    std::uint32_t registerSpace = 0;
+};
+
 struct GpuRootSignatureDesc final
 {
     std::vector<GpuRootBinding> bindings;
+    std::string name;
+    std::vector<GpuRootParameterDesc> parameters;
 };
 
 enum class GpuVertexFormat : std::uint8_t
 {
+    Float1,
     Float2,
     Float3,
-    Float4
+    Float4,
+    Uint4
 };
 
 struct GpuVertexElement final
@@ -63,7 +98,21 @@ enum class GpuCullMode : std::uint8_t
 enum class GpuBlendMode : std::uint8_t
 {
     Opaque,
-    Alpha
+    Alpha,
+    Additive
+};
+
+enum class GpuFillMode : std::uint8_t
+{
+    Solid,
+    Wireframe
+};
+
+enum class GpuPrimitiveTopology : std::uint8_t
+{
+    Point,
+    Line,
+    Triangle
 };
 
 class IGpuPipelines;
@@ -110,12 +159,26 @@ struct GpuGraphicsPipelineDesc final
     GpuTextureFormat depthFormat = GpuTextureFormat::Depth32Float;
     GpuCullMode cullMode = GpuCullMode::Back;
     GpuBlendMode blendMode = GpuBlendMode::Opaque;
+    std::string name;
+    GpuFillMode fillMode = GpuFillMode::Solid;
+    GpuPrimitiveTopology topology = GpuPrimitiveTopology::Triangle;
+    bool depthWrite = true;
+    bool frontCounterClockwise = false;
+    bool depthClip = true;
+    std::int32_t depthBias = 0;
+    float depthBiasClamp = 0.0f;
+    float slopeScaledDepthBias = 0.0f;
+    std::vector<GpuTextureFormat> colorFormats;
+    std::vector<GpuBlendMode> blendModes;
+    bool useColorTarget = true;
+    std::uint32_t sampleCount = 1;
 };
 
 struct GpuComputePipelineDesc final
 {
     GpuRootSignatureHandle rootSignature;
     GpuShaderHandle computeShader;
+    std::string name;
 };
 
 /// @brief Shader、Root Signature、PSO の所有契約

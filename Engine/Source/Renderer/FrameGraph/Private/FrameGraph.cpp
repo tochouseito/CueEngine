@@ -23,6 +23,7 @@ bool is_valid_use(const GraphResourceUse& a_use)
     case GraphResourceState::ShaderResource:
     case GraphResourceState::ComputeShaderResource:
     case GraphResourceState::CopySource:
+    case GraphResourceState::IndirectArgument:
         return a_use.access == GraphAccess::Read;
     case GraphResourceState::UnorderedAccess:
         return true;
@@ -232,6 +233,7 @@ Result<CompiledFrameGraph> FrameGraphBuilder::compile() const
     {
         GraphPassPlan plan{index, m_passes[index].name, {}};
         plan.queue = m_passes[index].queue;
+        plan.uses = m_passes[index].uses;
         for (std::size_t predecessor = 0; predecessor < passCount; ++predecessor)
         {
             if (edges[predecessor][index])
@@ -282,6 +284,28 @@ Result<CompiledFrameGraph> FrameGraphBuilder::compile() const
 bool FrameGraphBuilder::owns(GraphResourceHandle a_handle) const noexcept
 {
     return a_handle.graphId == m_graphId && a_handle.index < m_resources.size();
+}
+
+/// @brief 外部 Graph の Handle を拒否して宣言済みの最終状態を返す
+Result<GraphResourceState> FrameGraphBuilder::final_state(GraphResourceHandle a_handle) const
+{
+    if (!owns(a_handle))
+    {
+        return Result<GraphResourceState>::failure({ErrorCategory::InvalidArgument,
+                                                     "FrameGraph.final_state"});
+    }
+    return Result<GraphResourceState>::success(m_resources[a_handle.index].final);
+}
+
+/// @brief 前 Frame が COMMON へ戻した共有 Surface の開始状態と照合する
+Result<GraphResourceState> FrameGraphBuilder::initial_state(GraphResourceHandle a_handle) const
+{
+    if (!owns(a_handle))
+    {
+        return Result<GraphResourceState>::failure({ErrorCategory::InvalidArgument,
+                                                     "FrameGraph.initial_state"});
+    }
+    return Result<GraphResourceState>::success(m_resources[a_handle.index].initial);
 }
 
 /// @brief Pass Handle がこの Graph の現行 Index を指すか確認する
