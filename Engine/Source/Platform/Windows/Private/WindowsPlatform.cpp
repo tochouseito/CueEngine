@@ -1,4 +1,4 @@
-#include <Cue/Platform/Windows/WindowsPlatform.h>
+#include <Platform/Windows/WindowsPlatform.h>
 
 #include <cstdint>
 #include <deque>
@@ -12,7 +12,7 @@
 #define NOMINMAX
 #include <windows.h>
 
-#include <Cue/Foundation/Windows/UtfConversion.h>
+#include <Foundation/Windows/UtfConversion.h>
 
 namespace cue
 {

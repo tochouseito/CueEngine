@@ -1,6 +1,0 @@
-#pragma once
-
-namespace cue::detail
-{
-inline constexpr wchar_t k_fixedMeshShaderPath[] = L"@CMAKE_CURRENT_BINARY_DIR@/Shader/FixedMesh.hlsl";
-} // namespace cue::detail

@@ -1,15 +1,15 @@
-#include <Cue/Renderer/RHI/BackendFactory.h>
-
-#include <Cue/Renderer/DX12/DX12Backend.h>
+#include <RHI/BackendFactory.h>
 
 #include <utility>
 
+#include <DX12/DX12Backend.h>
+
 namespace cue
 {
-/// @brief Windows の Native Window を DX12 Backend の静的生成関数へ渡す
-Result<std::unique_ptr<IBackend>> create_backend(void* a_nativeWindow, WindowSize a_clientSize)
+/// @brief 現在の Windows Backend として DX12Backend を生成する
+Result<std::unique_ptr<IBackend>> create_backend()
 {
-    auto backendResult = DX12Backend::create(a_nativeWindow, a_clientSize);
+    auto backendResult = dx12::DX12Backend::create();
     if (!backendResult.has_value())
     {
         return Result<std::unique_ptr<IBackend>>::failure(*backendResult.try_error());

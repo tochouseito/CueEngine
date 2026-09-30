@@ -1,12 +1,15 @@
-#include "DX12RenderDevice.h"
+#include <DX12/DX12RenderDevice.h>
 
+#include <cstdint>
 #include <string_view>
 #include <utility>
 
 #include <d3d12sdklayers.h>
 #include <d3dcommon.h>
 
-namespace cue::detail
+#include <Platform/Diagnostics.h>
+
+namespace cue::dx12
 {
 namespace
 {
@@ -18,41 +21,52 @@ constexpr D3D_FEATURE_LEVEL k_featureLevels[] = {
     D3D_FEATURE_LEVEL_11_0,
 };
 
-/// @brief Adapter が対応する最高の機能レベルで Device を生成する
+/// @brief 対応する最高の Feature Level で Device を生成する
 HRESULT create_device(IDXGIAdapter1* a_adapter, Microsoft::WRL::ComPtr<ID3D12Device>& a_device,
                       D3D_FEATURE_LEVEL& a_featureLevel)
 {
     HRESULT result = E_FAIL;
     for (D3D_FEATURE_LEVEL level : k_featureLevels)
     {
-        result = D3D12CreateDevice(a_adapter, level, IID_PPV_ARGS(&a_device));
+        Microsoft::WRL::ComPtr<ID3D12Device> candidate;
+        result = D3D12CreateDevice(a_adapter, level, IID_PPV_ARGS(&candidate));
         if (SUCCEEDED(result))
         {
+            a_device = std::move(candidate);
             a_featureLevel = level;
             return result;
         }
     }
     return result;
 }
+
+/// @brief HRESULT を操作名とともに共通 Error へ変換する
+Error gpu_error(const char* a_operation, HRESULT a_result)
+{
+    return {ErrorCategory::PlatformFailure, a_operation, static_cast<std::int64_t>(a_result)};
+}
 } // namespace
 
-/// @brief Hardware を優先し、対応 Adapter がなければ WARP で GPU の実行基盤を生成する
-Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
+/// @brief create の内部でのみ Device を持たない中間状態を作る
+DX12RenderDevice::DX12RenderDevice(CreateToken)
+{
+}
+
+/// @brief DXGI Factory、Adapter、D3D12 Device を順に構築する
+Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelection a_selection)
 {
     using DeviceResult = Result<std::unique_ptr<DX12RenderDevice>>;
-    auto context = std::make_unique<DX12RenderDevice>();
+    auto context = std::make_unique<DX12RenderDevice>(CreateToken{});
     bool hasDebugLayer = false;
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
-
-    // Debug Layer の有効化
+    // 利用可能な Debug Layer と GPU Validation を Device 生成前に有効化する
     Microsoft::WRL::ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
     {
         debug->EnableDebugLayer();
         hasDebugLayer = true;
 
-        // GPU Validation の有効化
         Microsoft::WRL::ComPtr<ID3D12Debug1> gpuValidation;
         if (SUCCEEDED(debug.As(&gpuValidation)))
         {
@@ -60,7 +74,7 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
         }
     }
 
-    // DRED の有効化
+    // Device Removed 時の原因を追跡できるよう DRED を先に設定する
     Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> deviceRemoved;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&deviceRemoved))))
     {
@@ -69,12 +83,11 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
     }
 #endif
 
-    // DX12 Debug Layer が使える場合だけ DXGI の Debug Factory も要求する
+    // DXGI Debug Component だけがない場合は通常 Factory で継続する
     const UINT factoryFlags = hasDebugLayer ? DXGI_CREATE_FACTORY_DEBUG : 0;
     HRESULT result = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&context->m_factory));
     if (result == DXGI_ERROR_SDK_COMPONENT_MISSING && factoryFlags != 0)
     {
-        // DXGI Debug Component だけがない環境では通常 Factory で描画を継続する
         result = CreateDXGIFactory2(0, IID_PPV_ARGS(&context->m_factory));
     }
     if (FAILED(result))
@@ -85,39 +98,44 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
     result = context->m_factory->SetPrivateData(WKPDID_D3DDebugObjectName, sizeof(k_factoryName) - 1, k_factoryName);
     if (FAILED(result))
     {
-        return DeviceResult::failure(gpu_error("IDXGIFactory.SetPrivateData", result));
+        report_error("DX12RenderDevice", gpu_error("IDXGIFactory.SetPrivateData", result),
+                     DiagnosticSeverity::Warning);
     }
 
-    // DX12 対応の Hardware Adapter だけを高性能順で採用する
-    for (UINT index = 0;; ++index)
+    // Hardware Adapter を高性能順で調べ、Device を作れた候補だけ採用する
+    if (a_selection == AdapterSelection::HardwarePreferred)
     {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
-        result = context->m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                                  IID_PPV_ARGS(&candidate));
-        if (result == DXGI_ERROR_NOT_FOUND)
+        for (UINT index = 0;; ++index)
         {
-            break;
-        }
-        if (FAILED(result))
-        {
-            return DeviceResult::failure(gpu_error("IDXGIFactory.EnumAdapterByGpuPreference", result));
-        }
-        DXGI_ADAPTER_DESC1 desc{};
-        result = candidate->GetDesc1(&desc);
-        if (FAILED(result))
-        {
-            return DeviceResult::failure(gpu_error("IDXGIAdapter.GetDesc1", result));
-        }
-        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
-            SUCCEEDED(create_device(candidate.Get(), context->m_device, context->m_featureLevel)))
-        {
-            context->m_adapter = std::move(candidate);
-            break;
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
+            result = context->m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                                      IID_PPV_ARGS(&candidate));
+            if (result == DXGI_ERROR_NOT_FOUND)
+            {
+                break;
+            }
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("IDXGIFactory.EnumAdapterByGpuPreference", result));
+            }
+            DXGI_ADAPTER_DESC1 desc{};
+            result = candidate->GetDesc1(&desc);
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("IDXGIAdapter.GetDesc1", result));
+            }
+            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+                SUCCEEDED(create_device(candidate.Get(), context->m_device, context->m_featureLevel)))
+            {
+                context->m_adapter = std::move(candidate);
+                break;
+            }
         }
     }
+
     if (!context->m_adapter)
     {
-        // 使用可能な Hardware Device がない場合だけ WARP を試し、列挙自体の失敗は隠さない
+        // Hardware が利用できない環境だけ WARP を試す
         result = context->m_factory->EnumWarpAdapter(IID_PPV_ARGS(&context->m_adapter));
         if (FAILED(result))
         {
@@ -130,20 +148,23 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
         }
         context->m_isWarp = true;
     }
-    constexpr std::string_view k_warpAdapterName = "CueEngine WARP Adapter";
-    constexpr std::string_view k_hardwareAdapterName = "CueEngine Hardware Adapter";
-    const std::string_view adapterName = context->m_isWarp ? k_warpAdapterName : k_hardwareAdapterName;
+
+    // 選択結果を PIX と Debug Layer で識別できる名前にする
+    constexpr std::string_view k_warpName = "CueEngine WARP Adapter";
+    constexpr std::string_view k_hardwareName = "CueEngine Hardware Adapter";
+    const std::string_view adapterName = context->m_isWarp ? k_warpName : k_hardwareName;
     result = context->m_adapter->SetPrivateData(WKPDID_D3DDebugObjectName,
                                                 static_cast<UINT>(adapterName.size()), adapterName.data());
     if (FAILED(result))
     {
-        return DeviceResult::failure(gpu_error("IDXGIAdapter.SetPrivateData", result));
+        report_error("DX12RenderDevice", gpu_error("IDXGIAdapter.SetPrivateData", result),
+                     DiagnosticSeverity::Warning);
     }
-
     result = context->m_device->SetName(L"CueEngine DX12 Device");
     if (FAILED(result))
     {
-        return DeviceResult::failure(gpu_error("ID3D12Device.SetName", result));
+        report_error("DX12RenderDevice", gpu_error("ID3D12Device.SetName", result),
+                     DiagnosticSeverity::Warning);
     }
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
@@ -157,7 +178,7 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
         }
         if (infoQueue)
         {
-            // 警告は保存し、実行を止めるのは破損と Error に限定する
+            // GPU 検証の Warning も見落とさず、発生箇所で停止する
             result = infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
             if (FAILED(result))
             {
@@ -168,6 +189,16 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
             {
                 return DeviceResult::failure(gpu_error("ID3D12InfoQueue.SetBreakOnSeverity.Error", result));
             }
+            result = infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("ID3D12InfoQueue.SetBreakOnSeverity.Warning", result));
+            }
+            result = infoQueue->SetBreakOnID(D3D12_MESSAGE_ID_FENCE_ZERO_WAIT, true);
+            if (FAILED(result))
+            {
+                return DeviceResult::failure(gpu_error("ID3D12InfoQueue.SetBreakOnID.FENCE_ZERO_WAIT", result));
+            }
         }
     }
 #endif
@@ -175,33 +206,39 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create()
     return DeviceResult::success(std::move(context));
 }
 
-/// @brief Presentation と Frame Context が存続する間だけ Device を借用する
+/// @brief 本体の生存中だけ Device を借用する
 ID3D12Device* DX12RenderDevice::device() const noexcept
 {
     return m_device.Get();
 }
 
-/// @brief Presentation 作成中だけ Factory を借用する
+/// @brief 本体の生存中だけ Factory を借用する
 IDXGIFactory6* DX12RenderDevice::factory() const noexcept
 {
     return m_factory.Get();
 }
 
-/// @brief 選択した Adapter の種類を診断する
+/// @brief 本体の生存中だけ Adapter を借用する
+IDXGIAdapter1* DX12RenderDevice::adapter() const noexcept
+{
+    return m_adapter.Get();
+}
+
+/// @brief 選択した Adapter が WARP か返す
 bool DX12RenderDevice::is_warp() const noexcept
 {
     return m_isWarp;
 }
 
-/// @brief Device の生成時に選択した Adapter 種別を共通契約へ渡す
+/// @brief 共通契約で Software Adapter の選択結果を返す
 bool DX12RenderDevice::is_software_adapter() const noexcept
 {
-    return is_warp();
+    return m_isWarp;
 }
 
-/// @brief Device 生成時に選択した最高の機能レベルを返す
+/// @brief Device 生成時に採用した Feature Level を返す
 D3D_FEATURE_LEVEL DX12RenderDevice::feature_level() const noexcept
 {
     return m_featureLevel;
 }
-} // namespace cue::detail
+} // namespace cue::dx12
