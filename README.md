@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineの最小Build基盤とWindows Host。`CueWindowsHost` はWindows用の起動・終了基盤。共通`Runtime`がFrame進行を担当する。Editor、Graphics、Runtime Worldはまだ含まない。Build定義はCMakeを正本とする。
+新CueEngineのBuild基盤、Windows Host、DX12 Renderer。`CueWindowsHost` はWindows用の起動・終了基盤。共通`Runtime`がFrame進行を担当する。EditorとRuntime Worldはまだ含まない。Build定義はCMakeを正本とする。
 
 ## 開発環境
 
@@ -106,4 +106,4 @@ M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを
 
 ## M04 最小Renderer
 
-`Cue.Renderer.D3D12`がWindows用のSwap Chain、RTV、Command Allocator、Fenceを所有する。`WindowsHost`はRendererを初期化し、共通`Runtime`のRender Callbackから単色ClearとPresentを実行する。現在は`FrameController`の60 FPS制御を使い、`Present(0, 0)`で二重の待機を避ける。Rendererの所有境界は[ADR-0005](Docs/Decisions/0005-minimal-renderer-presentation.md)を参照する。
+`Cue.Renderer.DX12`の`DX12Backend`がWindows用のSwap Chain、RTV、Command Allocator、Fenceを所有する。`WindowsHost`は`IBackend`経由で描画を呼び、共通`Runtime`のRender Callbackから単色ClearとPresentを実行する。現在は`FrameController`の60 FPS制御を使い、`Present(0, 0)`で二重の待機を避ける。Rendererの所有境界は[ADR-0005](Docs/Decisions/0005-minimal-renderer-presentation.md)を参照する。

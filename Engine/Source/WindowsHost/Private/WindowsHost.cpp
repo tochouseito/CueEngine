@@ -5,7 +5,7 @@
 
 #include <Cue/Platform/Diagnostics.h>
 #include <Cue/Platform/Windows/WindowsPlatform.h>
-#include <Cue/Renderer/D3D12/D3D12Renderer.h>
+#include <Cue/Renderer/RHI/BackendFactory.h>
 
 namespace cue
 {
@@ -15,7 +15,7 @@ public:
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     WindowsThreadServices services;
-    std::unique_ptr<D3D12Renderer> renderer;
+    std::unique_ptr<IBackend> renderer;
     std::unique_ptr<Runtime> runtime;
     bool isCloseRequested = false;
     bool isDestroyed = false;
@@ -117,19 +117,19 @@ Result<void> WindowsHost::initialize_impl(FrameCallback a_update, FrameCallback 
 
     if (a_createRenderer)
     {
-        // Native HandleはWindowが生存する間だけ借用し、D3D12型はRenderer実装へ閉じ込める
+        // Native HandleはWindowが生存する間だけ借用し、DX12型はRenderer実装へ閉じ込める
         auto handleResult = borrow_windows_window_handle(*m_state->window);
         if (!handleResult.has_value())
         {
             return rollback(*handleResult.try_error());
         }
-        auto rendererResult = D3D12Renderer::create(handleResult.take_value(), m_state->window->client_size());
+        auto rendererResult = create_backend(handleResult.take_value(), m_state->window->client_size());
         if (!rendererResult.has_value())
         {
             return rollback(*rendererResult.try_error());
         }
         m_state->renderer = rendererResult.take_value();
-        D3D12Renderer* renderer = m_state->renderer.get();
+        IBackend* renderer = m_state->renderer.get();
         a_render = [renderer](std::uint64_t a_frame, std::stop_token a_stopToken) {
             if (a_stopToken.stop_requested())
             {
@@ -210,7 +210,7 @@ Result<bool> WindowsHost::step()
 
     if (m_state->renderer && latestSurface)
     {
-        // Swap Chainの操作はRender Callback側へ送り、MainThreadはD3D12資源を触らない
+        // Swap Chainの操作はRender Callback側へ送り、MainThreadはDX12資源を触らない
         const bool isMinimized = latestSurface->type == WindowEventType::Minimized;
         auto surfaceResult = m_state->renderer->request_surface(latestSurface->clientSize, isMinimized);
         if (!surfaceResult.has_value())

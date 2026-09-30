@@ -20,61 +20,68 @@ add_executable(CueFrameGraphTests Renderer/FrameGraphTests.cpp)
 target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.FrameGraph)
 add_test(NAME Cue.Renderer.FrameGraph COMMAND CueFrameGraphTests)
 
+# Legacy の SlotUploader の整列配置と Frame 単位の更新契約を検証する
+add_executable(CueSlotUploaderTests Renderer/SlotUploaderTests.cpp)
+target_link_libraries(CueSlotUploaderTests PRIVATE Cue.Renderer.RHI)
+add_test(NAME Cue.Renderer.SlotUploader COMMAND CueSlotUploaderTests)
+
 if(WIN32)
-    # 利用可能な Adapter で実 Window に対する D3D12 初期化と停止を検証する
-    add_executable(CueD3D12RendererInitializationTests
-        Renderer/D3D12RendererInitializationTests.cpp
+    # 利用可能な Adapter で実 Window に対する DX12 初期化と停止を検証する
+    add_executable(CueDX12BackendInitializationTests
+        Renderer/DX12BackendInitializationTests.cpp
     )
 
-    target_link_libraries(CueD3D12RendererInitializationTests PRIVATE
-        Cue.Renderer.D3D12 Cue.Platform.Windows
+    target_link_libraries(CueDX12BackendInitializationTests PRIVATE
+        Cue.Renderer.DX12 Cue.Renderer.FrameGraph Cue.Platform.Windows
     )
-    cue_stage_dxc_runtime(CueD3D12RendererInitializationTests)
+    cue_stage_dxc_runtime(CueDX12BackendInitializationTests)
 
-    add_test(NAME Cue.Renderer.D3D12.Initialization COMMAND CueD3D12RendererInitializationTests)
-    set_tests_properties(Cue.Renderer.D3D12.Initialization PROPERTIES TIMEOUT 15)
+    add_test(NAME Cue.Renderer.DX12.Initialization COMMAND CueDX12BackendInitializationTests)
+    set_tests_properties(Cue.Renderer.DX12.Initialization PROPERTIES TIMEOUT 15)
 
     # 選択した Device の最高機能レベルを Runtime の報告値と照合する
-    add_executable(CueD3D12FeatureLevelTests Renderer/D3D12FeatureLevelTests.cpp)
-    target_include_directories(CueD3D12FeatureLevelTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
-    target_link_libraries(CueD3D12FeatureLevelTests PRIVATE Cue.Renderer.D3D12)
-    cue_stage_dxc_runtime(CueD3D12FeatureLevelTests)
-    add_test(NAME Cue.Renderer.D3D12.FeatureLevel COMMAND CueD3D12FeatureLevelTests)
-    set_tests_properties(Cue.Renderer.D3D12.FeatureLevel PROPERTIES TIMEOUT 15)
+    add_executable(CueDX12FeatureLevelTests Renderer/DX12FeatureLevelTests.cpp)
+    target_include_directories(CueDX12FeatureLevelTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/DX12/Private)
+    target_link_libraries(CueDX12FeatureLevelTests PRIVATE Cue.Renderer.DX12)
+    cue_stage_dxc_runtime(CueDX12FeatureLevelTests)
+    add_test(NAME Cue.Renderer.DX12.FeatureLevel COMMAND CueDX12FeatureLevelTests)
+    set_tests_properties(Cue.Renderer.DX12.FeatureLevel PROPERTIES TIMEOUT 15)
 
     # 内部 Owner の Slot 失効と Direct Queue Context の再利用条件を検証する
-    add_executable(CueD3D12ResourceOwnershipTests
-        Renderer/D3D12ResourceOwnershipTests.cpp
+    add_executable(CueDX12ResourceOwnershipTests
+        Renderer/DX12ResourceOwnershipTests.cpp
     )
 
-    target_include_directories(CueD3D12ResourceOwnershipTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private
+    target_include_directories(CueDX12ResourceOwnershipTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/DX12/Private
     )
 
-    target_link_libraries(CueD3D12ResourceOwnershipTests PRIVATE Cue.Renderer.D3D12)
-    cue_stage_dxc_runtime(CueD3D12ResourceOwnershipTests)
+    target_link_libraries(CueDX12ResourceOwnershipTests PRIVATE Cue.Renderer.DX12)
+    cue_stage_dxc_runtime(CueDX12ResourceOwnershipTests)
 
-    add_test(NAME Cue.Renderer.D3D12.Ownership COMMAND CueD3D12ResourceOwnershipTests)
-    set_tests_properties(Cue.Renderer.D3D12.Ownership PROPERTIES TIMEOUT 15)
+    add_test(NAME Cue.Renderer.DX12.Ownership COMMAND CueDX12ResourceOwnershipTests)
+    set_tests_properties(Cue.Renderer.DX12.Ownership PROPERTIES TIMEOUT 15)
 
     # 固定 Mesh の描画結果を選択した Adapter の Readback Pixel で確認する
-    add_executable(CueD3D12FixedMeshPixelTests Renderer/D3D12FixedMeshPixelTests.cpp)
-    target_include_directories(CueD3D12FixedMeshPixelTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
-    target_link_libraries(CueD3D12FixedMeshPixelTests PRIVATE Cue.Renderer.D3D12 Cue.Renderer.FrameGraph)
-    cue_stage_dxc_runtime(CueD3D12FixedMeshPixelTests)
-    add_test(NAME Cue.Renderer.D3D12.FixedMeshPixel COMMAND CueD3D12FixedMeshPixelTests)
-    set_tests_properties(Cue.Renderer.D3D12.FixedMeshPixel PROPERTIES TIMEOUT 15)
+    add_executable(CueDX12FixedMeshPixelTests Renderer/DX12FixedMeshPixelTests.cpp)
+    target_include_directories(CueDX12FixedMeshPixelTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/DX12/Private)
+    target_link_libraries(CueDX12FixedMeshPixelTests PRIVATE Cue.Renderer.DX12 Cue.Renderer.FrameGraph)
+    cue_stage_dxc_runtime(CueDX12FixedMeshPixelTests)
+    add_test(NAME Cue.Renderer.DX12.FixedMeshPixel COMMAND CueDX12FixedMeshPixelTests)
+    set_tests_properties(Cue.Renderer.DX12.FixedMeshPixel PROPERTIES TIMEOUT 15)
 
     # Copy→Compute→Graphics の Queue 間依存と Readback 結果を実 GPU で確認する
-    add_executable(CueD3D12MultiQueueGraphTests Renderer/D3D12MultiQueueGraphTests.cpp)
-    target_include_directories(CueD3D12MultiQueueGraphTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/D3D12/Private)
-    target_link_libraries(CueD3D12MultiQueueGraphTests PRIVATE Cue.Renderer.D3D12 Cue.Renderer.FrameGraph)
-    cue_stage_dxc_runtime(CueD3D12MultiQueueGraphTests)
-    add_test(NAME Cue.Renderer.D3D12.MultiQueueGraph COMMAND CueD3D12MultiQueueGraphTests)
-    set_tests_properties(Cue.Renderer.D3D12.MultiQueueGraph PROPERTIES TIMEOUT 15)
+    add_executable(CueDX12MultiQueueGraphTests Renderer/DX12MultiQueueGraphTests.cpp)
+    target_include_directories(CueDX12MultiQueueGraphTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/Renderer/DX12/Private)
+    target_link_libraries(CueDX12MultiQueueGraphTests PRIVATE Cue.Renderer.DX12 Cue.Renderer.FrameGraph)
+    target_compile_definitions(CueDX12MultiQueueGraphTests PRIVATE
+        CUE_TEST_SHADER_PATH="${CMAKE_SOURCE_DIR}/Engine/Shader/FixedMesh.hlsl")
+    cue_stage_dxc_runtime(CueDX12MultiQueueGraphTests)
+    add_test(NAME Cue.Renderer.DX12.MultiQueueGraph COMMAND CueDX12MultiQueueGraphTests)
+    set_tests_properties(Cue.Renderer.DX12.MultiQueueGraph PROPERTIES TIMEOUT 15)
 
     # Runtime と Host の Test は実際の Windows Service を接続して動かす
     add_executable(CueRuntimeTests
