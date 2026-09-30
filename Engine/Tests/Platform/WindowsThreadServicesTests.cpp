@@ -1,4 +1,4 @@
-#include <Cue/Platform/Windows/WindowsPlatform.h>
+#include <Platform/Windows/WindowsPlatform.h>
 
 #include <atomic>
 #include <chrono>

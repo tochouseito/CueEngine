@@ -1,11 +1,11 @@
 # CueEngine
 
-新CueEngineのBuild基盤、Windows Host、DX12 Renderer。`CueWindowsHost` はWindows用の起動・終了基盤。共通`Runtime`がFrame進行を担当する。EditorとRuntime Worldはまだ含まない。Build定義はCMakeを正本とする。
+新CueEngineのBuild基盤とWindows用のWindow表示基盤。`CueWindowsHost`はWindowとDX12 Backendの生成、Message処理、終了を担当する。`Runtime`と`FrameController`は独立したModuleとして残し、現在のHostには接続していない。RendererはBackendによるDX12 Device生成まで再導入しており、描画、Editor、Runtime Worldは現在含まない。Build定義はCMakeを正本とする。
 
 ## 開発環境
 
 - Windows x64
-- Visual Studio 2026の「Desktop development with C++」WorkloadとWindows SDK（DXC の dxcompiler.lib、dxcompiler.dll、dxil.dll を含むもの）
+- Visual Studio 2026の「Desktop development with C++」WorkloadとWindows SDK
 - CMake 4.2.0以上（`Visual Studio 18 2026` Generator）
 - PowerShell 7（`scripts/codex_build.ps1`を使う場合）
 
@@ -38,7 +38,7 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 | Development | 開発時の動作確認。Release Runtime、最適化、Debug Symbol、Assert有効 |
 | Release | 製品条件の検証。Release Runtime、最適化、`CUE_SHIPPING=1`、Assert無効 |
 
-First-party Sourceは`Engine/Source/`、CTest登録は`Engine/Tests/`、Coding Rulesは`Engine/Documents/`、設計決定は`Docs/Decisions/`に置く。第三者Libraryはまだ導入していない。導入時の`ThirdParty/`配置と依存取得方法は[ADR-0002](Docs/Decisions/0002-build-system-source-of-truth.md)に従う。
+First-party Sourceは`Engine/Source/`、CTest登録は`Engine/Tests/`、Coding Rulesは`Engine/Documents/`、設計決定は`Docs/Decisions/`に置く。各Moduleの公開Headerは`Public/<Module名>/`に置き、`Cue/`を含めずにIncludeする。第三者Libraryはまだ導入していない。導入時の`ThirdParty/`配置と依存取得方法は[ADR-0002](Docs/Decisions/0002-build-system-source-of-truth.md)に従う。
 
 この基盤の設計境界は[ADR-0001](Docs/Decisions/0001-architecture-boundaries.md)、記述規約は[CODING_RULES.md](Engine/Documents/CODING_RULES.md)を参照する。
 
@@ -84,13 +84,13 @@ M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを
 
 ## M03 WindowsHostと共通Runtimeの起動・終了基盤
 
-`CueWindowsHost`の`WindowsHost`は`WindowSystem`、Window、Windows用の時間／Thread Service、共通`Runtime`を所有する。`Runtime`は注入されたServiceを借用して`FrameController`とWorkerを所有し、WindowやWin32型を持たない。MainThreadは`WindowsHost::step()`を呼び、Window Messageで終了要求がなければ内部で`Runtime::step()`へ進む。Close要求を受けた周回ではFrameを進めず、RuntimeのWorkerを停止・joinしてからWindowを破棄する。M03完了時点のUpdate／Render Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続だった。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
+以下はM03完了当時の構成であり、現在のWindowsHostはWindowだけを所有する。`CueWindowsHost`の`WindowsHost`は`WindowSystem`、Window、Windows用の時間／Thread Service、共通`Runtime`を所有する。`Runtime`は注入されたServiceを借用して`FrameController`とWorkerを所有し、WindowやWin32型を持たない。MainThreadは`WindowsHost::step()`を呼び、Window Messageで終了要求がなければ内部で`Runtime::step()`へ進む。Close要求を受けた周回ではFrameを進めず、RuntimeのWorkerを停止・joinしてからWindowを破棄する。M03完了時点のUpdate／Render Callbackは空処理で、Runtime World、Renderer、GPU Submitは未接続だった。設計契約は[ADR-0004](Docs/Decisions/0004-runtime-host-lifecycle.md)を参照する。
 
 ```powershell
 & 'out/build/windows-vs2026/bin/Debug/CueWindowsHost.exe'
 ```
 
-自動終了、単一Thread、Render失敗の注入は`Engine/Tests/Platform/WindowsHostProcessTests.cpp`のTest専用子Processで行う。製品用`CueWindowsHost.exe`のMainと`WindowsHostDesc`にはTest専用引数を含めない。
+当時の自動終了、単一Thread、Render失敗の注入にはTest専用子Processを使用した。現在のProcess Testは製品Windowの表示、状態変更、Closeを確認する。
 
 2026-09-25、Windows x64、CMake 4.2.3、Visual Studio 2026、Windows SDK 10.0.26100.0で、WindowなしのRuntime起動、WindowsHostの起動・Close、自動終了、単一Thread、Callback失敗のTestを含めて確認した。Debugの`CueWindowsHost.exe`を実際に表示し、タイトルバーのCloseでWindowが消えることも確認した。
 
@@ -102,8 +102,14 @@ M02ではHostの初期化時に`FrameController`へUpdate／RenderのCallbackを
 
 この表はConsole Smoke削除後の再検証結果。
 
-`CueWindowHost`を削除した後もWindowsHostのProcess Test 4件は継続する。
+上記のTest件数と構成はM03当時の記録。
 
 ## M04 最小Renderer
 
-`Cue.Renderer.DX12`の`DX12Backend`がWindows用のSwap Chain、RTV、Command Allocator、Fenceを所有する。`WindowsHost`は`IBackend`経由で描画を呼び、共通`Runtime`のRender Callbackから単色ClearとPresentを実行する。現在は`FrameController`の60 FPS制御を使い、`Present(0, 0)`で二重の待機を避ける。Rendererの所有境界は[ADR-0005](Docs/Decisions/0005-minimal-renderer-presentation.md)を参照する。
+M04では`Cue.Renderer.DX12`と`DX12Backend`によるSwap Chain、RTV、Command Allocator、Fenceの実装を検証した。この構成は段階的な再設計のためSourceとBuildから削除した。当時の設計記録は[ADR-0005](Docs/Decisions/0005-minimal-renderer-presentation.md)を参照する。
+
+## Renderer再構築
+
+`Cue.Renderer.RHI`はPlatform型を含まない`IRenderDevice`契約を公開する。`Cue.Renderer.DX12`はこれを実装し、DXGI Factory、Adapter、D3D12 Deviceを所有する`DX12RenderDevice`を提供する。Hardware Adapterを高性能順で試し、対応するDeviceがなければWARPを使用する。検証用にWARPを明示選択することもできる。Debug構成では利用可能なDebug Layer、GPU Validation、DREDとInfoQueueを設定する。生成失敗はHRESULTを含む`Result`で返し、診断用の名前付け失敗はWarningとして扱う。
+
+`Cue.Renderer.RHI`の`create_backend()`は現在のWindows用実装として`DX12Backend`を生成する。Backendの生成中に`DX12RenderDevice::create()`を呼び、成功したDeviceを一意所有する。`CueWindowsHost.exe`はWindow生成後にBackendを作り、終了時はBackendを停止してからWindowを破棄する。Swap Chain、FrameGraph、Command／Queue Poolと描画処理は後続の移植対象となる。

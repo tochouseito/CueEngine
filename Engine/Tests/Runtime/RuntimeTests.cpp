@@ -1,5 +1,5 @@
-#include <Cue/Platform/Windows/WindowsPlatform.h>
-#include <Cue/Runtime/Runtime.h>
+#include <Platform/Windows/WindowsPlatform.h>
+#include <Runtime/Runtime.h>
 
 #include <cstdint>
 #include <stop_token>

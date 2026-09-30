@@ -1,5 +1,5 @@
-#include <Cue/Platform/Windows/WindowsPlatform.h>
-#include <Cue/Runtime/FrameController.h>
+#include <Platform/Windows/WindowsPlatform.h>
+#include <Runtime/FrameController.h>
 
 #include <array>
 #include <atomic>

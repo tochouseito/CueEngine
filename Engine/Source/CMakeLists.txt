@@ -1,14 +1,13 @@
 add_subdirectory(Foundation)
 add_subdirectory(Platform)
-add_subdirectory(Runtime)
-add_subdirectory(Renderer/FrameGraph)
 add_subdirectory(Renderer/RHI)
+add_subdirectory(Runtime)
 
 if(WIN32)
-    # WindowsのDX12 Backendは共通Runtimeと分離する
+    # DX12 Device は WindowHost と独立して生成・検証する
     add_subdirectory(Renderer/DX12)
 
-    # WindowsHost Library を先に定義し、実行 Target は起動、Step、終了判断を持つ
+    # WindowsHost Library を先に定義し、実行 Target は Window の起動と終了を扱う
     add_subdirectory(WindowsHost)
 
     add_executable(CueWindowsHost WIN32
@@ -16,7 +15,6 @@ if(WIN32)
     )
 
     target_link_libraries(CueWindowsHost PRIVATE Cue.WindowsHost Cue.Platform.Windows)
-    cue_stage_dxc_runtime(CueWindowsHost)
 
     # 構成別の実行 File を同じ配置規則で出力する
     set_target_properties(CueWindowsHost PROPERTIES

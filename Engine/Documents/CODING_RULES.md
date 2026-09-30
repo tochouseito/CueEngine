@@ -32,7 +32,9 @@
 
 ## File配置と依存
 
-- First-partyのEngine Sourceと公開Header、内部Headerは`Engine/Source/`を正本とし、責務を持つModuleのDirectoryに置く。公開Headerと内部HeaderをBuild Targetの公開範囲で区別し、他Moduleの内部Headerへ直接依存しない。
+- First-partyのEngine Sourceと公開Header、内部Headerは`Engine/Source/`を正本とし、責務を持つModuleのDirectoryに置く。各Moduleは`Public/`と`Private/`で公開範囲を分け、他Moduleの`Private/`へ直接依存しない。
+- 公開Headerは各Moduleの`Public/`以下に公開APIを識別する論理Pathで置き、その論理PathでIncludeする。Pathの先頭は`Foundation/`、`Platform/`、`Runtime/`、`WindowsHost/`などの公開Module名とする。Repository名の`Cue/`やSource側の階層をInclude Pathに重ねない。例: `Platform/Public/Platform/Window.h`を`#include <Platform/Window.h>`で参照する。
+- Module間の依存はCMake Targetの`PUBLIC`／`PRIVATE`で表し、各Targetの公開Include DirectoryはそのModuleの`Public/`に限定する。実装用Headerは`Private/`に置き、公開Include Directoryへ追加しない。Moduleの分割は責務と依存方向で決め、単にFolder階層を増やすための中間Moduleは作らない。
 - Engine Testは`Engine/Tests/`に、設計決定は`Docs/Decisions/`に、調査記録は`Docs/Research/`に、開発者向け規約は`Engine/Documents/`に置く。TargetとTestは利用経路が生じたIssueで追加し、空のModuleは作らない。
 - File名とDirectory名はPascalCaseを基本とする。`CMakeLists.txt`、`README.md`、`.clang-format`、`AGENTS.md`などToolや慣習に指定された名前は例外とする。
 - Runtimeの公開契約へEditor、ImGui、Win32、DirectX 12の具体型を漏らさない。Authoring Scene、Editor Document、Runtime World、Render Data、GPU Resourceの所有境界はADR-0001に従う。
@@ -78,4 +80,4 @@
 | Build | ADR-0002へ整合 | CMakeを正本とし、固定名のSolutionを前提にしない |
 | 全Lambdaへの`/// @brief` | 変更 | 非自明な契約を持つLambdaに限定し、短い局所処理は周辺Codeで意図を示す |
 
-現行の`CueEngine/CueEngine.cpp`はVisual Studioの雛形で、Tab、Globalな`using namespace std;`、`main`の`/// @brief`不足がある。`CueEngine/`のSource配置、CMakeの2 Space等も本規約と一致しない。これらはIssue #5で最小TargetとBuild構成を作る際に、触れる範囲で移行する。本IssueではBuild定義や雛形を変更しない。3構成のPreset、Test配置、公開Headerの実際のTarget境界はIssue #5以降の実装で検証する。
+既存Moduleの公開Headerも上記の配置とInclude Pathへ揃える。構成別Presetと公開HeaderのTarget境界はBuildとTestで検証する。

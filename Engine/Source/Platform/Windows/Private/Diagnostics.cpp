@@ -1,4 +1,4 @@
-#include <Cue/Platform/Diagnostics.h>
+#include <Platform/Diagnostics.h>
 
 #if defined(CUE_DEBUG_OUTPUT)
 #include <cstdio>
