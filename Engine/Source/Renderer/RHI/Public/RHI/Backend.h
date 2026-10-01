@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Foundation/Result.h>
+#include <RHI/Command.h>
+#include <RHI/GpuResourcePool.h>
 #include <RHI/Queue.h>
 #include <RHI/RenderDevice.h>
 
@@ -30,6 +32,12 @@ public:
 
     /// @brief Backend が稼働する間だけ QueuePool を借用し、停止後は nullptr を返す
     [[nodiscard]] virtual IQueuePool* get_queue_pool() noexcept = 0;
+
+    /// @brief Backend が稼働する間だけ CommandPool を借用し、停止後は nullptr を返す
+    [[nodiscard]] virtual ICommandPool* get_command_pool() noexcept = 0;
+
+    /// @brief Backend が稼働する間だけ GPU ResourcePool を借用し、停止後は nullptr を返す
+    [[nodiscard]] virtual IGpuResourcePool* get_resource_pool() noexcept = 0;
 
 protected:
     /// @brief 具体 Backend の生成経路だけが基底契約を構築する

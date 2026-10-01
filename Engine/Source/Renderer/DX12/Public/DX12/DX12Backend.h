@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 #include <Foundation/Result.h>
@@ -9,10 +10,38 @@ namespace cue::dx12
 {
 class DX12RenderDevice;
 class DX12QueuePool;
+class DX12CommandPool;
+class DX12GpuResourcePool;
+class DX12DescriptorAllocator;
+struct DX12DescriptorHeapState;
+
+/// @brief Backend が所有する Descriptor Heap の用途
+enum class DX12DescriptorHeapRole
+{
+    CpuView,
+    ShaderView,
+    CpuSampler,
+    ShaderSampler,
+    Rtv,
+    Dsv,
+    Count,
+};
+
+/// @brief DX12 Backend が起動時に確保する Descriptor 数
+struct DX12DescriptorHeapConfig final
+{
+    std::uint32_t cpuViewCapacity = 1024;
+    std::uint32_t shaderViewCapacity = 1024;
+    std::uint32_t cpuSamplerCapacity = 64;
+    std::uint32_t shaderSamplerCapacity = 64;
+    std::uint32_t rtvCapacity = 64;
+    std::uint32_t dsvCapacity = 32;
+};
 
 /// @brief DX12 Device と後続の GPU 資源を一意所有する Backend
 ///
-/// Device と QueuePool を所有する。生成、停止、破棄は同一 Thread から直列に行う
+/// Device、Descriptor Heap、QueuePool、CommandPool、ResourcePool を所有する
+/// 生成、停止、破棄は同一 Thread から直列に行う
 class DX12Backend final : public IBackend
 {
     struct CreateToken final
@@ -20,12 +49,18 @@ class DX12Backend final : public IBackend
     };
 
 public:
-    /// @brief create が成功した Device と QueuePool の所有権を受け取る
+    /// @brief create が成功した Device、Descriptor Heap、各 Pool の所有権を受け取る
     DX12Backend(CreateToken, std::unique_ptr<DX12RenderDevice> a_device,
-                std::unique_ptr<DX12QueuePool> a_queuePool) noexcept;
+                std::shared_ptr<DX12DescriptorHeapState> a_descriptors,
+                std::unique_ptr<DX12QueuePool> a_queuePool,
+                std::unique_ptr<DX12CommandPool> a_commandPool,
+                std::unique_ptr<DX12GpuResourcePool> a_resourcePool) noexcept;
 
-    /// @brief Device と QueuePool を生成し、成功時だけ Backend を公開する
-    [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create();
+    /// @brief Device、Descriptor Heap、各 Pool を生成し、成功時だけ Backend を公開する
+    ///
+    /// 容量 0 は拒否し、途中失敗時は生成済みの Heap と Device を解放する
+    [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create(
+        const DX12DescriptorHeapConfig& a_descriptorConfig = {});
 
     /// @brief 明示停止されていない Queue の GPU 作業も待って解放する
     ~DX12Backend() override;
@@ -44,8 +79,23 @@ public:
     /// @brief 稼働中だけ QueuePool を借用させる
     [[nodiscard]] IQueuePool* get_queue_pool() noexcept override;
 
+    /// @brief 稼働中だけ CommandPool を借用させる
+    [[nodiscard]] ICommandPool* get_command_pool() noexcept override;
+
+    /// @brief 稼働中だけ ResourcePool を借用させる
+    [[nodiscard]] IGpuResourcePool* get_resource_pool() noexcept override;
+
+    /// @brief 稼働中だけ指定用途の DescriptorAllocator を借用させる
+    ///
+    /// 停止後の再取得は nullptr。取得済み Pointer は同じ Backend の Queue または Command Lease が残る間だけ有効
+    /// Allocator の公開操作は複数 Thread から呼べる。最後の Lease の返却後は Pointer を使わない
+    [[nodiscard]] DX12DescriptorAllocator* get_descriptor_allocator(DX12DescriptorHeapRole a_role) noexcept;
+
 private:
     std::unique_ptr<DX12RenderDevice> m_device;
+    std::shared_ptr<DX12DescriptorHeapState> m_descriptors;
     std::unique_ptr<DX12QueuePool> m_queuePool;
+    std::unique_ptr<DX12CommandPool> m_commandPool;
+    std::unique_ptr<DX12GpuResourcePool> m_resourcePool;
 };
 } // namespace cue::dx12

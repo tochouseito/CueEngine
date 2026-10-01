@@ -1,5 +1,6 @@
 #include <DX12/DX12QueuePool.h>
 
+#include <exception>
 #include <limits>
 #include <optional>
 #include <string>
@@ -115,16 +116,45 @@ QueueType DX12GpuCommandQueue::type() const noexcept
     return m_type;
 }
 
+/// @brief Command 提出元と Queue の Device が一致するか検証するために返す
+ID3D12Device* DX12GpuCommandQueue::device() const noexcept
+{
+    return m_device.Get();
+}
+
+/// @brief Queue の Lease が解放されても Fence を生存させる参照を返す
+Microsoft::WRL::ComPtr<ID3D12Fence> DX12GpuCommandQueue::completion_fence() const noexcept
+{
+    return m_fence;
+}
+
 /// @brief 正常に Signal できた値だけを次の待機対象として記録する
 Result<std::uint64_t> DX12GpuCommandQueue::signal()
 {
     std::lock_guard lock(m_mutex);
-    return signal_locked();
+    if (m_isPoisoned)
+    {
+        return Result<std::uint64_t>::failure({ErrorCategory::Fatal, "DX12GpuCommandQueue.signal.poisoned"});
+    }
+    auto result = signal_locked();
+    if (!result.has_value())
+    {
+        m_isPoisoned = true;
+        auto error = *result.try_error();
+        error.category = ErrorCategory::Fatal;
+        return Result<std::uint64_t>::failure(std::move(error));
+    }
+    return result;
 }
 
 /// @brief Command 投入と Fence 発行の間に別の投入を割り込ませない
-Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* const> a_lists)
+Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* const> a_lists,
+                                                 bool* a_mayHaveExecuted)
 {
+    if (a_mayHaveExecuted)
+    {
+        *a_mayHaveExecuted = false;
+    }
     if (a_lists.empty() || a_lists.size() > (std::numeric_limits<UINT>::max)())
     {
         return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.submit.count"});
@@ -135,16 +165,46 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* c
         {
             return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.submit.type"});
         }
+        // 異なる Device の CommandList を GPU へ提出する前に拒否する
+        Microsoft::WRL::ComPtr<ID3D12Device> listDevice;
+        const HRESULT deviceResult = list->GetDevice(IID_PPV_ARGS(&listDevice));
+        if (FAILED(deviceResult))
+        {
+            return Result<std::uint64_t>::failure(queue_error("ID3D12DeviceChild.GetDevice", deviceResult));
+        }
+        if (listDevice.Get() != m_device.Get())
+        {
+            return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.submit.device"});
+        }
     }
 
     std::lock_guard lock(m_mutex);
+    if (m_isPoisoned)
+    {
+        return Result<std::uint64_t>::failure({ErrorCategory::Fatal, "DX12GpuCommandQueue.submit.poisoned"});
+    }
     if (m_fenceValue.load() == (std::numeric_limits<std::uint64_t>::max)())
     {
-        return Result<std::uint64_t>::failure({ErrorCategory::InvalidState, "DX12GpuCommandQueue.submit.overflow"});
+        m_isPoisoned = true;
+        return Result<std::uint64_t>::failure({ErrorCategory::Fatal, "DX12GpuCommandQueue.submit.overflow"});
+    }
+    // 呼出直前からは HRESULT がないため、Signal 失敗時にも投入済みとして扱う
+    if (a_mayHaveExecuted)
+    {
+        *a_mayHaveExecuted = true;
     }
     m_queue->ExecuteCommandLists(static_cast<UINT>(a_lists.size()), a_lists.data());
     // Signal 失敗時も作業自体は投入済みなので、呼出側は Resource を保持して停止する
-    return signal_locked();
+    auto signalResult = signal_locked();
+    if (!signalResult.has_value())
+    {
+        m_isPoisoned = true;
+        m_hasUnknownSubmission = true;
+        auto error = *signalResult.try_error();
+        error.category = ErrorCategory::Fatal;
+        return Result<std::uint64_t>::failure(std::move(error));
+    }
+    return signalResult;
 }
 
 /// @brief Queue の排他保持中に次の Fence 値を発行する
@@ -162,6 +222,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::signal_locked()
         return Result<std::uint64_t>::failure(queue_error("ID3D12CommandQueue.Signal", result));
     }
     m_fenceValue.store(nextValue);
+    m_hasUnfencedWait = false;
     return Result<std::uint64_t>::success(nextValue);
 }
 
@@ -229,11 +290,19 @@ Result<void> DX12GpuCommandQueue::wait_for_queue(IQueueContext& a_queue, std::ui
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.wait_for_queue"});
     }
     std::lock_guard lock(m_mutex);
+    if (m_isPoisoned)
+    {
+        return Result<void>::failure({ErrorCategory::Fatal, "DX12GpuCommandQueue.wait_for_queue.poisoned"});
+    }
     const HRESULT result = m_queue->Wait(other->m_fence.Get(), a_fenceValue);
     if (FAILED(result))
     {
-        return Result<void>::failure(queue_error("ID3D12CommandQueue.Wait", result));
+        m_isPoisoned = true;
+        auto error = queue_error("ID3D12CommandQueue.Wait", result);
+        error.category = ErrorCategory::Fatal;
+        return Result<void>::failure(std::move(error));
     }
+    m_hasUnfencedWait = true;
     return Result<void>::success();
 }
 
@@ -252,17 +321,65 @@ Result<std::uint64_t> DX12GpuCommandQueue::get_timestamp_frequency() const
 /// @brief 最終投入点を Signal して GPU の作業完了を確認する
 Result<void> DX12GpuCommandQueue::wait_idle()
 {
-    auto signalResult = signal();
+    // 致命的な提出後も、停止処理だけは後続 Signal で完了を証明できるようにする
+    bool hadUnknownSubmission = false;
+    Result<std::uint64_t> signalResult = [&] {
+        std::lock_guard lock(m_mutex);
+        hadUnknownSubmission = m_hasUnknownSubmission;
+        auto result = signal_locked();
+        if (!result.has_value())
+        {
+            m_isPoisoned = true;
+        }
+        return result;
+    }();
     if (!signalResult.has_value())
     {
-        return Result<void>::failure(*signalResult.try_error());
+        auto error = *signalResult.try_error();
+        error.category = ErrorCategory::Fatal;
+        return Result<void>::failure(std::move(error));
     }
-    return wait_for_fence(signalResult.take_value());
+    auto waitResult = wait_for_fence(signalResult.take_value());
+    if (!waitResult.has_value())
+    {
+        std::lock_guard lock(m_mutex);
+        m_isPoisoned = true;
+        auto error = *waitResult.try_error();
+        error.category = ErrorCategory::Fatal;
+        return Result<void>::failure(std::move(error));
+    }
+    if (hadUnknownSubmission)
+    {
+        std::lock_guard lock(m_mutex);
+        m_hasUnknownSubmission = false;
+    }
+    return Result<void>::success();
+}
+
+/// @brief Queue が致命的な失敗後に新規作業を拒否しているか返す
+bool DX12GpuCommandQueue::is_poisoned() const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    return m_isPoisoned;
+}
+
+/// @brief 最後の Fence または Fence 不明の提出が未完了か調べる
+bool DX12GpuCommandQueue::has_unconfirmed_work() const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    if (m_hasUnknownSubmission || m_hasUnfencedWait)
+    {
+        return true;
+    }
+    const std::uint64_t lastFence = m_fenceValue.load();
+    return lastFence != 0 && !is_fence_complete(lastFence);
 }
 
 /// @brief Pool と Lease の間で Queue と貸出状態を共有する
 struct DX12QueuePool::State
 {
+    // 最後の Lease が GPU 完了を確認するまで Backend の Descriptor Heap を保持する
+    std::shared_ptr<const void> gpuLifetime;
     std::array<std::unique_ptr<DX12GpuCommandQueue>, k_queueCount> queues{};
     std::array<bool, k_queueCount> borrowed{};
     std::mutex mutex;
@@ -278,6 +395,14 @@ struct DX12QueuePool::State
             if (!result.has_value())
             {
                 report_error("DX12QueuePool.State", *result.try_error(), DiagnosticSeverity::Error);
+                for (const auto& queue : queues)
+                {
+                    if (queue && queue->has_unconfirmed_work())
+                    {
+                        // GPU 完了を証明できない Queue を破棄しない
+                        std::terminate();
+                    }
+                }
             }
         }
     }
@@ -323,7 +448,8 @@ DX12QueuePool::~DX12QueuePool()
 }
 
 /// @brief 全 Queue を先に作り、失敗時は生成済み Queue を自動解放する
-Result<std::unique_ptr<DX12QueuePool>> DX12QueuePool::create(DX12RenderDevice& a_device)
+Result<std::unique_ptr<DX12QueuePool>> DX12QueuePool::create(DX12RenderDevice& a_device,
+                                                              std::shared_ptr<const void> a_gpuLifetime)
 {
     using PoolResult = Result<std::unique_ptr<DX12QueuePool>>;
     if (!a_device.device())
@@ -332,6 +458,7 @@ Result<std::unique_ptr<DX12QueuePool>> DX12QueuePool::create(DX12RenderDevice& a
     }
     auto pool = std::make_unique<DX12QueuePool>(CreateToken{});
     pool->m_state = std::make_shared<State>();
+    pool->m_state->gpuLifetime = std::move(a_gpuLifetime);
     for (std::size_t index = 0; index < k_queueCount; ++index)
     {
         const QueueType type = index < k_graphicsCount ? QueueType::Graphics
@@ -358,7 +485,7 @@ Result<queueLease> DX12QueuePool::acquire(QueueType a_type)
     {
         return Result<queueLease>::failure({ErrorCategory::InvalidArgument, "DX12QueuePool.acquire.type"});
     }
-    const auto state = m_state;
+    auto state = m_state;
     std::lock_guard lock(state->mutex);
     if (state->stopping)
     {
@@ -366,11 +493,16 @@ Result<queueLease> DX12QueuePool::acquire(QueueType a_type)
     }
     for (std::size_t index = 0; index < k_queueCount; ++index)
     {
-        if (!state->borrowed[index] && state->queues[index]->type() == a_type)
+        if (!state->borrowed[index] && !state->queues[index]->is_poisoned() &&
+            state->queues[index]->type() == a_type)
         {
-            queueLease lease(state->queues[index].get(), [state, index](IQueueContext*) {
-                std::lock_guard leaseLock(state->mutex);
-                state->borrowed[index] = false;
+            queueLease lease(state->queues[index].get(), [state, index](IQueueContext*) mutable {
+                {
+                    std::lock_guard leaseLock(state->mutex);
+                    state->borrowed[index] = false;
+                }
+                // reset() 後も Deleter 自体は残るため、共有所有をここで明示的に終える
+                state.reset();
             });
             state->borrowed[index] = true;
             state->waitedIdle = false;

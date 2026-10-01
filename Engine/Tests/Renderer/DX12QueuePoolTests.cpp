@@ -196,6 +196,13 @@ int main()
         return 20;
     }
     ID3D12CommandList* submitted[] = {list.Get()};
+    // Queue 種類の不一致は ExecuteCommandLists 前に拒否される
+    auto* nativeGraphics = dynamic_cast<cue::dx12::DX12GpuCommandQueue*>(graphics.get());
+    bool mayHaveExecuted = true;
+    if (!nativeGraphics || nativeGraphics->submit(submitted, &mayHaveExecuted).has_value() || mayHaveExecuted)
+    {
+        return 29;
+    }
     auto transferFenceResult = nativeCopy->submit(submitted);
     if (!transferFenceResult.has_value() ||
         !graphics->wait_for_queue(*copies[0], transferFenceResult.take_value()).has_value())
@@ -242,6 +249,42 @@ int main()
         pool->acquire(cue::QueueType::Graphics).has_value())
     {
         return 15;
+    }
+
+    // Backend が Pool を破棄しても、Queue Lease が GPU 完了まで依存 Object を保持する
+    auto lifetime = std::make_shared<int>(1);
+    std::weak_ptr<int> weakLifetime = lifetime;
+    auto lifetimePoolResult = cue::dx12::DX12QueuePool::create(*device, lifetime);
+    if (!lifetimePoolResult.has_value())
+    {
+        return 30;
+    }
+    auto lifetimePool = lifetimePoolResult.take_value();
+    lifetime.reset();
+    auto lifetimeLeaseResult = lifetimePool->acquire(cue::QueueType::Graphics);
+    if (!lifetimeLeaseResult.has_value())
+    {
+        return 31;
+    }
+    auto lifetimeLease = lifetimeLeaseResult.take_value();
+    if (lifetimePool->shutdown().has_value())
+    {
+        return 32;
+    }
+    lifetimePool.reset();
+    if (weakLifetime.expired())
+    {
+        return 33;
+    }
+    auto lifetimeFence = lifetimeLease->signal();
+    if (!lifetimeFence.has_value() || !lifetimeLease->wait_for_fence(lifetimeFence.take_value()).has_value())
+    {
+        return 34;
+    }
+    lifetimeLease.reset();
+    if (!weakLifetime.expired())
+    {
+        return 35;
     }
     return 0;
 }

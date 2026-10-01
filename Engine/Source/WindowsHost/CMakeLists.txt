@@ -8,10 +8,10 @@ target_include_directories(Cue.WindowsHost PUBLIC
 )
 
 target_link_libraries(Cue.WindowsHost
-    # 公開 Header の Platform 契約だけを利用側へ伝える
-    PUBLIC Cue.Platform
+    # 公開 Header の Platform と Frame 契約を利用側へ伝える
+    PUBLIC Cue.Platform Cue.Runtime.Frame
     # Win32 と DX12 の実装は Host 内部の依存に留める
-    PRIVATE Cue.Platform.Windows Cue.Renderer.DX12
+    PRIVATE Cue.Platform.Windows Cue.Renderer.DX12 Cue.Runtime
 )
 
 target_compile_features(Cue.WindowsHost PUBLIC cxx_std_20)

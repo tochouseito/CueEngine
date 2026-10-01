@@ -1,20 +1,39 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <thread>
 
+#include <Foundation/Result.h>
 #include <Platform/Window.h>
+#include <Runtime/FrameController.h>
 
 namespace cue
 {
-/// @brief Windows の Window と Renderer Backend を所有し、終了まで Message を処理する
+/// @brief SwapChain 構築時に適用する表示設定
+struct PresentationConfig final
+{
+    std::uint32_t bufferCount = 2;
+    bool isVSyncEnabled = false;
+    bool isTearingAllowed = false;
+};
+
+/// @brief 将来の設定 File 読込から Host へ渡す起動設定
+struct WindowsHostConfig final
+{
+    WindowDescriptor window;
+    FrameControllerDesc frame;
+    PresentationConfig presentation;
+};
+
+/// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
 ///
 /// 構築 Thread が初期化、Message Pump、停止、破棄を行い、再入しない
 class WindowsHost final
 {
 public:
-    /// @brief Window 設定と構築 Thread を保持する
-    explicit WindowsHost(WindowDescriptor a_descriptor);
+    /// @brief Frame と将来の SwapChain 設定を所有値で保持する
+    explicit WindowsHost(WindowsHostConfig a_config);
 
     /// @brief 明示停止がない場合も Window を解放する
     ~WindowsHost();
@@ -22,7 +41,7 @@ public:
     WindowsHost(const WindowsHost&) = delete;
     WindowsHost& operator=(const WindowsHost&) = delete;
 
-    /// @brief Window と Renderer Backend を作成して表示する
+    /// @brief Window、Renderer Backend、Runtime を作成して表示する
     ///
     /// 構築 Thread から一度だけ呼ぶ。失敗時は部分資源を破棄して停止済みにする
     [[nodiscard]] Result<void> initialize();
@@ -32,7 +51,12 @@ public:
     /// 構築 Thread から呼ぶ。失敗時も shutdown を呼ぶ
     [[nodiscard]] Result<bool> step();
 
-    /// @brief Backend を停止してから Window を破棄し、Message を回収する
+    /// @brief 実行中の CPU Frame 進行状態を構築 Thread へ返す
+    ///
+    /// Runtime 停止後は InvalidState を返す。GPU 完了状態は表さない
+    [[nodiscard]] Result<FrameProgress> frame_progress() const;
+
+    /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
     ///
     /// 構築 Thread から複数回呼べる。失敗しても残る解放を続け、最初の Error を返す
     [[nodiscard]] Result<void> shutdown();
@@ -47,7 +71,7 @@ private:
         Stopped,
     };
 
-    WindowDescriptor m_descriptor;
+    WindowsHostConfig m_config;
     std::thread::id m_ownerId;
     std::unique_ptr<State> m_state;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;

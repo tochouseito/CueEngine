@@ -1,4 +1,5 @@
 #include <exception>
+#include <utility>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -11,7 +12,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     try
     {
-        cue::WindowsHost host({"CueEngine Windows Host", {1280, 720}});
+        // 設定 File の導入までは起動設定を所有値で構築する
+        cue::WindowsHostConfig config{{"CueEngine Windows Host", {1280, 720}}, {}, {}};
+        cue::WindowsHost host(std::move(config));
 
         // Window を生成して表示する
         auto initResult = host.initialize();
@@ -26,7 +29,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             return 1;
         }
 
-        // Window の終了要求を受けるまで Message を処理する
+        // Window の終了要求まで Message と Frame を同じ Main Loop で進める
         while (true)
         {
             auto stepResult = host.step();
@@ -43,18 +46,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             if (!*stepResult.try_value())
             {
                 break;
-            }
-
-            // 描画や Frame 処理がない間は次の Window Message まで待機する
-            if (!WaitMessage())
-            {
-                auto stopResult = host.shutdown();
-                if (!stopResult.has_value())
-                {
-                    cue::report_error("CueWindowsHost cleanup", *stopResult.try_error(), cue::DiagnosticSeverity::Error);
-                }
-                cue::report_message("CueWindowsHost", "WaitMessage failed", cue::DiagnosticSeverity::Fatal);
-                return 1;
             }
         }
 

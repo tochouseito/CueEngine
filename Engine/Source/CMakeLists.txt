@@ -1,6 +1,7 @@
 add_subdirectory(Foundation)
 add_subdirectory(Platform)
 add_subdirectory(Renderer/RHI)
+add_subdirectory(Renderer/FrameGraph)
 add_subdirectory(Runtime)
 
 if(WIN32)

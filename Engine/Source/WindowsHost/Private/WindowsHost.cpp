@@ -1,12 +1,14 @@
 #include <WindowsHost/WindowsHost.h>
 
 #include <optional>
+#include <stop_token>
 #include <utility>
 
 #include <Platform/Diagnostics.h>
 #include <Platform/Windows/WindowsPlatform.h>
 #include <Platform/WindowSystem.h>
 #include <RHI/BackendFactory.h>
+#include <Runtime/Runtime.h>
 
 namespace cue
 {
@@ -16,13 +18,15 @@ public:
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     std::unique_ptr<IBackend> backend;
+    WindowsThreadServices services;
+    std::unique_ptr<Runtime> runtime;
     bool isCloseRequested = false;
     bool isDestroyed = false;
 };
 
-/// @brief Window 設定と構築 Thread を固定する
-WindowsHost::WindowsHost(WindowDescriptor a_descriptor)
-    : m_descriptor(std::move(a_descriptor)), m_ownerId(std::this_thread::get_id())
+/// @brief 起動設定と構築 Thread を固定する
+WindowsHost::WindowsHost(WindowsHostConfig a_config)
+    : m_config(std::move(a_config)), m_ownerId(std::this_thread::get_id())
 {
 }
 
@@ -36,7 +40,7 @@ WindowsHost::~WindowsHost()
     }
 }
 
-/// @brief Windows の Window と Renderer Backend を順に構築する
+/// @brief Windows の Window、Renderer Backend、Runtime を順に構築する
 Result<void> WindowsHost::initialize()
 {
     // Win32 の Window は構築 Thread でしか操作できない
@@ -49,6 +53,13 @@ Result<void> WindowsHost::initialize()
         return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.initialize"});
     }
     m_lifecycle = Lifecycle::Stopped;
+
+    // FrameController の許容先行数と Flip Model の最小 BackBuffer 数を表示前に検証する
+    if (m_config.frame.maxFramesInFlight == 0 || m_config.frame.maxFramesInFlight > 2 ||
+        m_config.presentation.bufferCount < 2)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.config"});
+    }
 
     // 部分初期化の失敗時は元の Error を返し、Cleanup の失敗は別に診断する
     auto rollback = [this](Error a_error) {
@@ -70,7 +81,7 @@ Result<void> WindowsHost::initialize()
     m_state->system = systemResult.take_value();
 
     // Window を作成し、表示に失敗した場合も所有先から回収する
-    auto windowResult = m_state->system->create_window(m_descriptor);
+    auto windowResult = m_state->system->create_window(m_config.window);
     if (!windowResult.has_value())
     {
         return rollback(*windowResult.try_error());
@@ -85,7 +96,26 @@ Result<void> WindowsHost::initialize()
     }
     m_state->backend = backendResult.take_value();
 
-    // GPU 初期化に成功した後で Window を表示する
+    // Runtime が借りる時間と Worker Service を、Runtime より長く生存させる
+    auto servicesResult = create_windows_thread_services();
+    if (!servicesResult.has_value())
+    {
+        return rollback(*servicesResult.try_error());
+    }
+    m_state->services = servicesResult.take_value();
+
+    m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock,
+                                                 *m_state->services.waiter, *m_state->services.threadFactory);
+    // Resource と描画の接続までは Frame 順序だけを動作させる
+    auto runtimeResult = m_state->runtime->initialize(
+        [](std::uint64_t, std::stop_token) { return Result<void>::success(); },
+        [](std::uint64_t, std::stop_token) { return Result<void>::success(); });
+    if (!runtimeResult.has_value())
+    {
+        return rollback(*runtimeResult.try_error());
+    }
+
+    // GPU と Frame の初期化に成功した後で Window を表示する
     auto showResult = m_state->window->show();
     if (!showResult.has_value())
     {
@@ -132,11 +162,35 @@ Result<bool> WindowsHost::step()
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.quit"});
     }
-    return Result<bool>::success(!m_state->isCloseRequested && !m_state->isDestroyed &&
-                                 *pumpResult.try_value() != PumpStatus::QuitRequested);
+    if (m_state->isCloseRequested || m_state->isDestroyed || *pumpResult.try_value() == PumpStatus::QuitRequested)
+    {
+        return Result<bool>::success(false);
+    }
+
+    // 終了 Event がない周回だけ次の Frame を進める。枠が満杯なら次の周回で再試行する
+    auto frameResult = m_state->runtime->step();
+    if (!frameResult.has_value())
+    {
+        return Result<bool>::failure(*frameResult.try_error());
+    }
+    return Result<bool>::success(true);
 }
 
-/// @brief Backend を停止してから Window を破棄し、Destroyed と Quit の通知まで処理する
+/// @brief 実行中だけ CPU Frame の進行を構築 Thread に公開する
+Result<FrameProgress> WindowsHost::frame_progress() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameProgress>::failure({ErrorCategory::WrongThread, "WindowsHost.frame_progress"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameProgress>::failure({ErrorCategory::InvalidState, "WindowsHost.frame_progress"});
+    }
+    return m_state->runtime->progress();
+}
+
+/// @brief Runtime、Backend、Window を順に停止して Destroyed と Quit を処理する
 Result<void> WindowsHost::shutdown()
 {
     if (std::this_thread::get_id() != m_ownerId)
@@ -149,12 +203,21 @@ Result<void> WindowsHost::shutdown()
         return Result<void>::success();
     }
 
-    // 最初の失敗を保持しつつ、Backend、Window、System の解放を続ける
+    // Worker の Callback を止めてから GPU と Window の所有先を解放する
     std::optional<Error> failure;
+    if (m_state->runtime)
+    {
+        auto runtimeResult = m_state->runtime->shutdown();
+        if (!runtimeResult.has_value())
+        {
+            failure = *runtimeResult.try_error();
+        }
+        m_state->runtime.reset();
+    }
     if (m_state->backend)
     {
         auto backendResult = m_state->backend->shutdown();
-        if (!backendResult.has_value())
+        if (!backendResult.has_value() && !failure)
         {
             failure = *backendResult.try_error();
         }
@@ -195,6 +258,7 @@ Result<void> WindowsHost::shutdown()
     // System が借用する Window の参照を先に失効させる
     m_state->window.reset();
     m_state->system.reset();
+    m_state->services = {};
     m_state.reset();
     return failure ? Result<void>::failure(*failure) : Result<void>::success();
 }
