@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Foundation/Result.h>
+#include <RHI/Queue.h>
 #include <RHI/RenderDevice.h>
 
 namespace cue
@@ -26,6 +27,9 @@ public:
 
     /// @brief Backend が稼働する間だけ Device を借用し、停止後は nullptr を返す
     [[nodiscard]] virtual IRenderDevice* get_render_device() noexcept = 0;
+
+    /// @brief Backend が稼働する間だけ QueuePool を借用し、停止後は nullptr を返す
+    [[nodiscard]] virtual IQueuePool* get_queue_pool() noexcept = 0;
 
 protected:
     /// @brief 具体 Backend の生成経路だけが基底契約を構築する

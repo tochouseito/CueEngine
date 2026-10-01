@@ -12,6 +12,11 @@ add_executable(CuePlatformHeaderCompile Platform/PublicHeaderCompile.cpp)
 target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
 
+# Queue の公開契約を DX12／Win32 の実装 Header なしで Compile する
+add_executable(CueRHIQueueHeaderCompile Renderer/RHIQueueHeaderCompile.cpp)
+target_link_libraries(CueRHIQueueHeaderCompile PRIVATE Cue.Renderer.RHI)
+add_test(NAME Cue.Renderer.RHI.QueueHeader COMMAND CueRHIQueueHeaderCompile)
+
 if(WIN32)
     # 共通 Factory から DX12 Backend を生成し、Device の所有と停止を検証する
     add_executable(CueDX12BackendTests Renderer/DX12BackendTests.cpp)
@@ -24,6 +29,12 @@ if(WIN32)
     target_link_libraries(CueDX12RenderDeviceTests PRIVATE Cue.Renderer.DX12)
     add_test(NAME Cue.Renderer.DX12.RenderDevice COMMAND CueDX12RenderDeviceTests)
     set_tests_properties(Cue.Renderer.DX12.RenderDevice PROPERTIES TIMEOUT 15)
+
+    # 複数 Queue の貸出、GPU Fence 同期、返却後の再利用を WARP で検証する
+    add_executable(CueDX12QueuePoolTests Renderer/DX12QueuePoolTests.cpp)
+    target_link_libraries(CueDX12QueuePoolTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.QueuePool COMMAND CueDX12QueuePoolTests)
+    set_tests_properties(Cue.Renderer.DX12.QueuePool PROPERTIES TIMEOUT 15)
 
     # Runtime と Host は実際の Windows Service と Window で検証する
     add_executable(CueRuntimeTests Runtime/RuntimeTests.cpp)

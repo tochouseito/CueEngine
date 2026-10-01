@@ -1,8 +1,9 @@
-# DX12 固有の Device 作成と所有を独立した Module にする
+# DX12 固有の Device と QueuePool の作成・所有を独立した Module にする
 add_library(Cue.Renderer.DX12 STATIC
     Private/BackendFactory.cpp
     Private/DX12Backend.cpp
     Private/DX12RenderDevice.cpp
+    Private/DX12QueuePool.cpp
 )
 
 target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
