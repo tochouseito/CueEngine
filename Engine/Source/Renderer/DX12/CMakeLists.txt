@@ -10,6 +10,7 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12FullscreenPipeline.cpp
     Private/DX12GpuResource.cpp
     Private/DX12GpuResourcePool.cpp
+    Private/DX12MainFrameGraph.cpp
     Private/DX12PlacedResourceAllocator.cpp
     Private/DX12RenderDevice.cpp
     Private/DX12QueuePool.cpp
