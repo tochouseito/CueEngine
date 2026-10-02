@@ -8,7 +8,8 @@
 
 #include <DX12/DX12FrameGraphExecutor.h>
 #include <Foundation/Result.h>
-#include <FrameGraph/FrameGraphBuilder.h>
+#include <FrameGraph/FrameGraph.h>
+#include <RHI/GpuResourcePool.h>
 
 namespace cue
 {
@@ -19,92 +20,90 @@ namespace cue::dx12
 {
 class DX12DescriptorAllocator;
 class DX12FinalColorFrames;
-class DX12FullscreenPipeline;
 class DX12GpuCommandContext;
 class DX12RenderDevice;
 class DX12SwapChain;
 
-/// @brief 固定 Pass の間へ追加する描画 Pass と記録 Callback
+/// @brief 固定 Clear と表示の間へ任意の Pass を追加する
 ///
-/// Callback が借用する外部資源は Graph の記録完了まで呼出側が保持する
-struct DX12MainGraphPass final
-{
-    FrameGraphPassHandle handle;
-    dx12FrameGraphPassCallback callback;
-};
+/// 追加する Pass は FrameGraph が所有し、Graph の記録と同じ Thread で実行する
+using dx12MainGraphConfigure = std::function<Result<void>(FrameGraph&, FrameGraphResourceHandle)>;
 
-/// @brief FinalColorTexture を受け取り、追加 Pass と Callback を登録する
-using dx12MainGraphConfigure =
-    std::function<Result<void>(FrameGraphBuilder &, FrameGraphResourceHandle, std::vector<DX12MainGraphPass> &)>;
-
-/// @brief FinalColor Clear と Back Buffer 表示を一つの本番 Graph に固定する
+/// @brief 旧 FrameGraphPass 契約で本番描画 Graph を構築・記録する
 ///
-/// SwapChain と Descriptor Allocator は借用し、本体より長く生存させる
-/// 記録、提出完了の登録、停止は Thread をまたぐ場合も直列に呼ぶ
-/// Present は本体が呼ばず、呼出側が記録済み Command の提出後に呼ぶ
-class DX12MainFrameGraph final
+/// SwapChain と Allocator を借用する。Present と Queue 提出は呼出側が行う
+class DX12MainFrameGraph final : public IFrameGraphRecorder
 {
     struct CreateToken final
     {
     };
 
-  public:
-    /// @brief 検証済み Plan と物理 Resource の所有権を受け取る
-    DX12MainFrameGraph(CreateToken, FrameGraphPlan a_plan, FrameGraphResourceHandle a_finalColor,
-                       FrameGraphResourceHandle a_backBuffer, FrameGraphPassHandle a_clearPass,
-                       FrameGraphPassHandle a_displayPass, std::vector<dx12FrameGraphPassCallback> a_customCallbacks,
-                       std::unique_ptr<DX12FinalColorFrames> a_frames,
-                       std::unique_ptr<DX12FullscreenPipeline> a_pipeline, DX12SwapChain &a_swapChain,
-                       DX12DescriptorAllocator &a_srvAllocator, std::array<float, 4> a_clearColor,
-                       std::uint32_t a_width, std::uint32_t a_height) noexcept;
+public:
+    /// @brief Graph と枠ごとの物理 Resource の所有権を受け取る
+    DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
+                       FrameGraphResourceHandle a_finalColor, FrameGraphResourceHandle a_backBuffer,
+                       std::unique_ptr<DX12FinalColorFrames> a_frames, DX12SwapChain& a_swapChain);
 
-    /// @brief SwapChain の形状から二つの固定 Pass と枠ごとの FinalColor を生成する
-    ///
-    /// Resize 後は旧 Graph の GPU 完了と shutdown を確認してから再生成する
-    /// a_configure は Clear と表示の間へ Pass を加え、全追加 Pass の Callback を登録する
-    /// 失敗時は部分生成物を公開しない
+    /// @brief SwapChain と同じ形状の FinalColorTexture を枠ごとに用意する
     [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create(
-        DX12RenderDevice &a_device, DX12SwapChain &a_swapChain, std::uint32_t a_frameCount,
-        DX12DescriptorAllocator &a_rtvAllocator, DX12DescriptorAllocator &a_srvAllocator,
+        DX12RenderDevice& a_device, DX12SwapChain& a_swapChain, std::uint32_t a_frameCount,
+        DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
         std::array<float, 4> a_clearColor, dx12MainGraphConfigure a_configure = {});
 
-    /// @brief GPU 完了を待って所有 Resource を解放する
-    ~DX12MainFrameGraph();
+    /// @brief GPU 完了後に資源を解放する
+    ~DX12MainFrameGraph() override;
 
-    DX12MainFrameGraph(const DX12MainFrameGraph &) = delete;
-    DX12MainFrameGraph &operator=(const DX12MainFrameGraph &) = delete;
+    DX12MainFrameGraph(const DX12MainFrameGraph&) = delete;
+    DX12MainFrameGraph& operator=(const DX12MainFrameGraph&) = delete;
 
-    /// @brief Graph の Barrier、Clear、全画面 Draw と Present State 復帰を記録する
+    /// @brief Pass を依存順に実行し、終了 State まで記録する
     ///
-    /// 現在の Back Buffer を借用する。成功後は Command を同じ Graphics Queue に提出する
-    /// 失敗時は Command List を提出せず、破棄または Reset する
-    [[nodiscard]] Result<void> record(std::uint32_t a_frameIndex, DX12GpuCommandContext &a_context);
+    /// 手動提出時は mark_submitted、未提出時は discard_unsubmitted を必ず呼ぶ
+    [[nodiscard]] Result<void> record(std::uint32_t a_frameIndex, DX12GpuCommandContext& a_context);
 
-    /// @brief 提出済み Command の完了点を枠へ登録し、再利用と停止の待機に使う
+    /// @brief 基底 Command を DX12 Context に検証して記録する
+    [[nodiscard]] Result<void> record(std::uint32_t a_frameIndex, ICommandContext& a_context) override;
+
+    /// @brief FrameGraph が Command Pool から借用、提出する
+    [[nodiscard]] Result<bool> execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
+                                       std::function<bool()> a_shouldCancel = {});
+
+    /// @brief QueuePool の Compute／Copy Queue を必要な Pass に貸し、依存順に提出する
+    [[nodiscard]] Result<bool> execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
+                                       IQueuePool& a_queuePool, std::function<bool()> a_shouldCancel = {});
+
+    /// @brief 提出の GPU 完了点を枠へ登録する
     [[nodiscard]] Result<void> mark_submitted(std::uint32_t a_frameIndex,
-                                              std::shared_ptr<ICommandCompletion> a_completion);
+                                              std::shared_ptr<ICommandCompletion> a_completion) override;
 
-    /// @brief 固定 Pass と Barrier の検証済み計画を本体の生存中だけ借用する
-    [[nodiscard]] const FrameGraphPlan &plan() const noexcept;
+    /// @brief 提出しなかった Graph 記録の Pool Lease を返す
+    void discard_unsubmitted(std::uint32_t a_frameIndex) noexcept override;
 
-    /// @brief 全枠の GPU 完了後に FinalColor と Pipeline を解放する
-    ///
-    /// 待機失敗時は Resource を保持し、後から再試行できる
+    /// @brief 構築済み Plan を本体の生存中だけ返す
+    [[nodiscard]] const FrameGraphPlan& plan() const noexcept;
+
+    /// @brief 枠の GPU 完了後に物理 Resource を破棄する
     [[nodiscard]] Result<void> shutdown();
 
-  private:
-    FrameGraphPlan m_plan;
+private:
+    /// @brief 枠の Pool Lease と外部 Binding を初回 Pass より前に保持する
+    [[nodiscard]] Result<void> prepare_frame(std::uint32_t a_frameIndex);
+
+    /// @brief 準備済み枠の指定 Pass と終了 Barrier を記録する
+    [[nodiscard]] Result<void> record_range(std::uint32_t a_frameIndex, DX12GpuCommandContext& a_context,
+                                            std::size_t a_firstPass, std::size_t a_passCount,
+                                            bool a_includeFinal);
+
+    /// @brief 未提出または GPU 完了後の枠の借用を返す
+    void clear_frame(std::uint32_t a_frameIndex) noexcept;
+
+    std::unique_ptr<FrameGraph> m_graph;
     FrameGraphResourceHandle m_finalColor;
     FrameGraphResourceHandle m_backBuffer;
-    FrameGraphPassHandle m_clearPass;
-    FrameGraphPassHandle m_displayPass;
-    std::vector<dx12FrameGraphPassCallback> m_customCallbacks;
     std::unique_ptr<DX12FinalColorFrames> m_frames;
-    std::unique_ptr<DX12FullscreenPipeline> m_pipeline;
-    DX12SwapChain *m_swapChain = nullptr;
-    DX12DescriptorAllocator *m_srvAllocator = nullptr;
-    std::array<float, 4> m_clearColor{};
-    std::uint32_t m_width = 0;
-    std::uint32_t m_height = 0;
+    std::vector<std::vector<gpuResourceLease>> m_poolLeases;
+    std::vector<std::vector<DX12FrameGraphExternalResource>> m_externalBindings;
+    std::vector<bool> m_isPrepared;
+    DX12SwapChain* m_swapChain = nullptr;
 };
 } // namespace cue::dx12

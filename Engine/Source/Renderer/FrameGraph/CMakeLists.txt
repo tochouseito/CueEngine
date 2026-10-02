@@ -1,5 +1,6 @@
 # Backend 非依存の Pass 依存順と論理 Resource 寿命を計画する
 add_library(Cue.Renderer.FrameGraph STATIC
+    Private/FrameGraph.cpp
     Private/FrameGraphBuilder.cpp
 )
 

@@ -22,6 +22,11 @@ add_executable(CueFrameGraphBuilderTests Renderer/FrameGraphBuilderTests.cpp)
 target_link_libraries(CueFrameGraphBuilderTests PRIVATE Cue.Renderer.FrameGraph)
 add_test(NAME Cue.Renderer.FrameGraph.Builder COMMAND CueFrameGraphBuilderTests)
 
+    # 旧 Pass の setup、名前付き Resource 参照、依存順を確認する
+    add_executable(CueFrameGraphTests Renderer/FrameGraphTests.cpp)
+    target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.FrameGraph)
+    add_test(NAME Cue.Renderer.FrameGraph.Passes COMMAND CueFrameGraphTests)
+
 if(WIN32)
     # 共通 Factory から DX12 Backend を生成し、Device の所有と停止を検証する
     add_executable(CueDX12BackendTests Renderer/DX12BackendTests.cpp)
@@ -89,13 +94,7 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.FinalColorFrames COMMAND CueDX12FinalColorFramesTests)
     set_tests_properties(Cue.Renderer.DX12.FinalColorFrames PROPERTIES TIMEOUT 15)
 
-    # DXC Shader と全画面 Triangle の SRV から RTV への描画を WARP で検証する
-    add_executable(CueDX12FullscreenPipelineTests Renderer/DX12FullscreenPipelineTests.cpp)
-    target_link_libraries(CueDX12FullscreenPipelineTests PRIVATE Cue.Renderer.DX12)
-    add_test(NAME Cue.Renderer.DX12.FullscreenPipeline COMMAND CueDX12FullscreenPipelineTests)
-    set_tests_properties(Cue.Renderer.DX12.FullscreenPipeline PROPERTIES TIMEOUT 15)
-
-    # 固定 Clear と表示 Pass の Barrier および WARP Back Buffer 画素を確認する
+    # 旧 Pass 契約による Clear と表示の Barrier および WARP Back Buffer 画素を確認する
     add_executable(CueDX12MainFrameGraphTests Renderer/DX12MainFrameGraphTests.cpp)
     target_link_libraries(CueDX12MainFrameGraphTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
     add_test(NAME Cue.Renderer.DX12.MainFrameGraph COMMAND CueDX12MainFrameGraphTests)

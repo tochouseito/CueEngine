@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -42,7 +43,7 @@ private:
 using dx12FrameGraphPassCallback = std::function<Result<void>(ID3D12GraphicsCommandList&,
                                                                const DX12FrameGraphPassContext&)>;
 
-/// @brief 論理 Barrier 計画と Pass Callback を一つの Graphics Command List に記録する
+/// @brief 論理 Barrier 計画と Pass Callback を Queue ごとの Command List に記録する
 class DX12FrameGraphExecutor final
 {
 public:
@@ -54,5 +55,12 @@ public:
                                              std::span<const DX12FrameGraphExternalResource> a_external,
                                              std::span<const dx12FrameGraphPassCallback> a_callbacks,
                                              DX12GpuCommandContext& a_context);
+
+    /// @brief 指定 Pass 範囲と必要なら終了 Barrier を一つの Queue 用 List に記録する
+    [[nodiscard]] static Result<void> record_range(
+        const FrameGraphPlan& a_plan, DX12FrameGraphResources& a_resources,
+        std::span<const DX12FrameGraphExternalResource> a_external,
+        std::span<const dx12FrameGraphPassCallback> a_callbacks, DX12GpuCommandContext& a_context,
+        std::size_t a_firstPass, std::size_t a_passCount, bool a_includeFinal);
 };
 } // namespace cue::dx12
