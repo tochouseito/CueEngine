@@ -22,13 +22,14 @@ class TestPass final : public cue::FrameGraphPass
 {
 public:
     /// @brief Graph の論理 Texture と実行回数を保持する
-    TestPass(cue::FrameGraphResourceHandle a_color, int& a_count) noexcept
-        : m_color(a_color), m_count(&a_count)
+    TestPass(cue::FrameGraphResourceHandle a_color, int& a_count, bool& a_enabled) noexcept
+        : m_color(a_color), m_count(&a_count), m_enabled(&a_enabled)
     {
     }
 
     [[nodiscard]] const char* name() const noexcept override { return "AfterClear"; }
     [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] bool is_enabled() const noexcept override { return *m_enabled; }
     [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
     {
         return cue::Result<void>::success();
@@ -51,6 +52,7 @@ public:
 private:
     cue::FrameGraphResourceHandle m_color;
     int* m_count = nullptr;
+    bool* m_enabled = nullptr;
 };
 
 /// @brief Pool 所有 Buffer の世代付き Handle を Graph へ取り込む
@@ -384,14 +386,16 @@ int run_tests()
     }
     const auto poolBuffer = poolBufferResult.take_value();
     int customCallCount = 0;
+    bool customEnabled = true;
     int poolCallCount = 0;
     int computeCallCount = 0;
     auto extendedResult = cue::dx12::DX12MainFrameGraph::create(
         *device, *swapChain, 2, *rtvAllocator, *srvAllocator, clearColor,
-        [&customCallCount, &poolCallCount, &computeCallCount, &pool, poolBuffer](cue::FrameGraph& a_graph,
+        [&customCallCount, &customEnabled, &poolCallCount, &computeCallCount, &pool, poolBuffer](cue::FrameGraph& a_graph,
                            cue::FrameGraphResourceHandle a_finalColor) -> cue::Result<void>
         {
-            auto testResult = a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount));
+            auto testResult = a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount,
+                                                                          customEnabled));
             if (!testResult.has_value())
             {
                 return testResult;
@@ -434,6 +438,13 @@ int run_tests()
     {
         return 20;
     }
+    customEnabled = false;
+    if (extended->execute(0, *commandPool, *queuePool).has_value() ||
+        customCallCount != 0 || poolCallCount != 0 || computeCallCount != 0)
+    {
+        return 21;
+    }
+    customEnabled = true;
     auto executeResult = extended->execute(0, *commandPool, *queuePool);
     if (!executeResult.has_value() || !*executeResult.try_value() ||
         customCallCount != 1 || poolCallCount != 1 || computeCallCount != 1)

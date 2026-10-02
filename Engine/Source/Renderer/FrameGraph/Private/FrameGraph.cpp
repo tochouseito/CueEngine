@@ -74,7 +74,7 @@ ICommandContext& FrameGraphContext::command_context() const noexcept
 }
 
 /// @brief 通常は各 Frame で Pass を実行する
-bool FrameGraphPass::is_enabled(std::uint32_t) const noexcept
+bool FrameGraphPass::is_enabled() const noexcept
 {
     return true;
 }
@@ -133,6 +133,14 @@ Result<void> FrameGraph::build()
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build"});
     }
     m_buildAttempted = true;
+    // 無効 Pass がある場合は setup による Resource 宣言を始めずに Build を拒否する
+    for (const auto& pass : m_passes)
+    {
+        if (!pass->is_enabled())
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build.disabled_pass"});
+        }
+    }
     for (const auto& pass : m_passes)
     {
         auto setupResult = pass->setup(*m_builder);
@@ -162,6 +170,24 @@ Result<void> FrameGraph::build()
     return Result<void>::success();
 }
 
+/// @brief Build 後に有効状態が変わっても Command 提出前に拒否する
+Result<void> FrameGraph::validate_enabled() const
+{
+    if (!m_plan)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.validate_enabled.plan"});
+    }
+    for (const auto& pass : m_passes)
+    {
+        if (!pass->is_enabled())
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState,
+                                          "FrameGraph.validate_enabled.disabled_pass"});
+        }
+    }
+    return Result<void>::success();
+}
+
 /// @brief Pool の Lease を提出後の完了点へ移し、Backend Owner へ共有する
 Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
     std::uint32_t a_frameIndex, ICommandPool& a_commandPool, IQueueContext& a_queue,
@@ -171,6 +197,11 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
     if (!m_plan || a_queue.type() != QueueType::Graphics)
     {
         return CompletionResult::failure({ErrorCategory::InvalidState, "FrameGraph.execute"});
+    }
+    auto enabledResult = validate_enabled();
+    if (!enabledResult.has_value())
+    {
+        return CompletionResult::failure(*enabledResult.try_error());
     }
     for (const auto& pass : m_plan->passes())
     {

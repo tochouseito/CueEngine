@@ -142,6 +142,11 @@ Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, DX12GpuComma
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record"});
     }
+    auto enabledResult = m_graph->validate_enabled();
+    if (!enabledResult.has_value())
+    {
+        return enabledResult;
+    }
     auto prepareResult = prepare_frame(a_frameIndex);
     if (!prepareResult.has_value())
     {
@@ -236,6 +241,11 @@ Result<void> DX12MainFrameGraph::record_range(
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range"});
     }
+    auto enabledResult = m_graph->validate_enabled();
+    if (!enabledResult.has_value())
+    {
+        return enabledResult;
+    }
     auto* resources = m_frames->graph_resources(a_frameIndex);
     if (!resources)
     {
@@ -251,12 +261,6 @@ Result<void> DX12MainFrameGraph::record_range(
             if (!pass)
             {
                 return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.pass"});
-            }
-            if (!pass->is_enabled(a_frameIndex))
-            {
-                callbacks.push_back([](ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext&)
-                                    { return Result<void>::success(); });
-                continue;
             }
             callbacks.push_back([this, pass, a_frameIndex, &a_context, plannedPass = &planned]
                                 (ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext& a_resources)
@@ -322,6 +326,11 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
         a_frameIndex >= m_poolLeases.size())
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues"});
+    }
+    auto enabledResult = m_graph->validate_enabled();
+    if (!enabledResult.has_value())
+    {
+        return Result<bool>::failure(*enabledResult.try_error());
     }
     const auto& passes = m_graph->plan()->passes();
     if (std::all_of(passes.begin(), passes.end(), [](const auto& a_pass)

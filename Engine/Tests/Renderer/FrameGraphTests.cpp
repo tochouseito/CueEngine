@@ -130,6 +130,35 @@ public:
 private:
     cue::FrameGraphResourceHandle m_buffer;
 };
+
+/// @brief 無効 Pass を Build 前と Build 後の両方で検査する
+class TogglePass final : public cue::FrameGraphPass
+{
+public:
+    TogglePass(bool& a_enabled, int& a_setupCount) noexcept
+        : m_enabled(&a_enabled), m_setupCount(&a_setupCount) {}
+
+    [[nodiscard]] const char* name() const noexcept override { return "Toggle"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] bool is_enabled() const noexcept override { return *m_enabled; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
+    {
+        ++*m_setupCount;
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder&) override
+    {
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext&) override
+    {
+        return cue::Result<void>::success();
+    }
+
+private:
+    bool* m_enabled = nullptr;
+    int* m_setupCount = nullptr;
+};
 } // namespace
 
 /// @brief Legacy Pass の二段階宣言が名前と Hazard に結びつくことを確認する
@@ -248,6 +277,47 @@ int main()
         portableContext.clearColor != clearColor)
     {
         return 14;
+    }
+    bool enabled = false;
+    int setupCount = 0;
+    auto disabledBuilderResult = cue::FrameGraphBuilder::create();
+    if (!disabledBuilderResult.has_value())
+    {
+        return 15;
+    }
+    auto disabledGraphResult = cue::FrameGraph::create(disabledBuilderResult.take_value(), 8, 8);
+    if (!disabledGraphResult.has_value())
+    {
+        return 16;
+    }
+    auto disabledGraph = disabledGraphResult.take_value();
+    if (!disabledGraph->add_pass(std::make_unique<TogglePass>(enabled, setupCount)).has_value() ||
+        disabledGraph->build().has_value() || disabledGraph->plan() || setupCount != 0)
+    {
+        return 17;
+    }
+    enabled = true;
+    auto enabledBuilderResult = cue::FrameGraphBuilder::create();
+    if (!enabledBuilderResult.has_value())
+    {
+        return 18;
+    }
+    auto enabledGraphResult = cue::FrameGraph::create(enabledBuilderResult.take_value(), 8, 8);
+    if (!enabledGraphResult.has_value())
+    {
+        return 19;
+    }
+    auto enabledGraph = enabledGraphResult.take_value();
+    if (!enabledGraph->add_pass(std::make_unique<TogglePass>(enabled, setupCount)).has_value() ||
+        !enabledGraph->build().has_value() || !enabledGraph->validate_enabled().has_value() ||
+        setupCount != 1)
+    {
+        return 20;
+    }
+    enabled = false;
+    if (enabledGraph->validate_enabled().has_value())
+    {
+        return 21;
     }
     return 0;
 }

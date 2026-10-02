@@ -88,8 +88,8 @@ public:
     /// @brief 記録先 Queue の種類を返す
     [[nodiscard]] virtual QueueType type() const noexcept = 0;
 
-    /// @brief 当該 Frame で Pass を実行するか返す
-    [[nodiscard]] virtual bool is_enabled(std::uint32_t a_frameIndex) const noexcept;
+    /// @brief Build 時点で Pass が有効か返す。有効状態は実行前にも再検証する
+    [[nodiscard]] virtual bool is_enabled() const noexcept;
 
     /// @brief Resource と Pipeline の構築時宣言を行う
     [[nodiscard]] virtual Result<void> setup(FrameGraphBuilder& a_builder) = 0;
@@ -153,6 +153,9 @@ public:
 
     /// @brief setup、宣言、依存検証を行い Plan を確定する。失敗時は Graph を破棄して再生成する
     [[nodiscard]] Result<void> build();
+
+    /// @brief Plan に含まれる Pass が実行可能なままか検証する
+    [[nodiscard]] Result<void> validate_enabled() const;
 
     /// @brief Pool から Command を借り、記録、提出、完了点の登録を行う
     ///
