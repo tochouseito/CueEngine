@@ -311,12 +311,14 @@ Result<void> DX12FrameGraphExecutor::record_range(
         }
 
         std::vector<std::vector<D3D12_RESOURCE_BARRIER>> passBarriers(a_plan.passes().size());
+        std::vector<std::vector<D3D12_RESOURCE_BARRIER>> passBarriersAfter(a_plan.passes().size());
         std::vector<D3D12_RESOURCE_BARRIER> finalBarriers;
         for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
         {
             if (!a_callbacks[index] || a_plan.passes()[index].queue != a_context.type() ||
                 a_plan.passes()[index].handle.graphId != graphId ||
                 a_plan.passes()[index].barriersBefore.size() > (std::numeric_limits<UINT>::max)() ||
+                a_plan.passes()[index].barriersAfter.size() > (std::numeric_limits<UINT>::max)() ||
                 a_resources.barriers_before_pass(index).size() > (std::numeric_limits<UINT>::max)())
             {
                 return RecordResult::failure({ErrorCategory::InvalidArgument,
@@ -331,6 +333,16 @@ Result<void> DX12FrameGraphExecutor::record_range(
                                                   "DX12FrameGraphExecutor.record.barrier"});
                 }
                 passBarriers[index].push_back(native);
+            }
+            for (const auto& barrier : a_plan.passes()[index].barriersAfter)
+            {
+                D3D12_RESOURCE_BARRIER native{};
+                if (!native_barrier(barrier, nativeResources, graphId, native))
+                {
+                    return RecordResult::failure({ErrorCategory::InvalidArgument,
+                                                  "DX12FrameGraphExecutor.record.barrier_after"});
+                }
+                passBarriersAfter[index].push_back(native);
             }
         }
         if (a_includeFinal && a_plan.final_barriers().size() > (std::numeric_limits<UINT>::max)())
@@ -371,6 +383,11 @@ Result<void> DX12FrameGraphExecutor::record_range(
             if (!callbackResult.has_value())
             {
                 return callbackResult;
+            }
+            const auto& transitionsAfter = passBarriersAfter[index];
+            if (!transitionsAfter.empty())
+            {
+                list.ResourceBarrier(static_cast<UINT>(transitionsAfter.size()), transitionsAfter.data());
             }
         }
         if (!finalBarriers.empty())

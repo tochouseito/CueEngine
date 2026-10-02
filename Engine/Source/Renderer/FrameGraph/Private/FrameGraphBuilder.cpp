@@ -597,8 +597,9 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             currentStates.push_back(resource.initialState);
         }
         std::vector<std::optional<FrameGraphAccess>> previousAccess(resources.size());
-        for (auto& pass : ordered)
+        for (std::size_t order = 0; order < ordered.size(); ++order)
         {
+            auto& pass = ordered[order];
             for (const auto& use : pass.uses)
             {
                 const std::size_t index = use.resource.index;
@@ -617,6 +618,19 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 }
                 currentStates[index] = use.state;
                 previousAccess[index] = use.access;
+            }
+            // 最終使用直後に戻し、次の Alias Resource を有効化する前に State を確定する
+            for (const auto& use : pass.uses)
+            {
+                const std::size_t index = use.resource.index;
+                const auto& resource = resources[index];
+                if (!resource.isImported && resource.lastUse == order &&
+                    !is_same_state(currentStates[index], resource.initialState))
+                {
+                    pass.barriersAfter.push_back({FrameGraphBarrierKind::Transition, use.resource,
+                                                  currentStates[index], resource.initialState});
+                    currentStates[index] = resource.initialState;
+                }
             }
         }
         std::vector<FrameGraphBarrierPlan> finalBarriers;

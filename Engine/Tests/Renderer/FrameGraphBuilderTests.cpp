@@ -108,6 +108,14 @@ int main()
         plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::CopySource ||
         plan.passes()[2].barriersBefore.size() != 2 ||
         plan.passes()[2].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
+        plan.passes()[0].barriersAfter.size() != 0 ||
+        plan.passes()[1].barriersAfter.size() != 1 ||
+        plan.passes()[1].barriersAfter[0].resource.index != buffer.index ||
+        plan.passes()[1].barriersAfter[0].before != cue::FrameGraphResourceState::CopySource ||
+        plan.passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        plan.passes()[2].barriersAfter.size() != 1 ||
+        plan.passes()[2].barriersAfter[0].resource.index != texture.index ||
+        plan.passes()[2].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
         plan.final_barriers().size() != 1 ||
         plan.final_barriers()[0].resource.index != external.index ||
         plan.final_barriers()[0].before != cue::FrameGraphResourceState::CopyDestination ||

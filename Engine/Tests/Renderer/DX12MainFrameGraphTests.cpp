@@ -286,8 +286,10 @@ int run_tests()
         plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::CopySource ||
         plan.passes()[1].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
         plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::CopyDestination ||
-        plan.final_barriers().size() != 2 || plan.final_barriers()[0].after != cue::FrameGraphResourceState::Common ||
-        plan.final_barriers()[1].after != cue::FrameGraphResourceState::Present)
+        plan.passes()[1].barriersAfter.size() != 1 ||
+        plan.passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        plan.final_barriers().size() != 1 ||
+        plan.final_barriers()[0].after != cue::FrameGraphResourceState::Present)
     {
         return 8;
     }

@@ -97,6 +97,7 @@ struct FrameGraphPassPlan final
     std::vector<FrameGraphUse> uses;
     std::vector<FrameGraphPassHandle> dependencies;
     std::vector<FrameGraphBarrierPlan> barriersBefore;
+    std::vector<FrameGraphBarrierPlan> barriersAfter;
 };
 
 /// @brief 実行順における論理 Resource の使用区間を所有する
