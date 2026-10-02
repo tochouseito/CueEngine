@@ -8,6 +8,8 @@
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12FrameGraphPass.h>
+#include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
@@ -16,6 +18,120 @@
 
 namespace
 {
+/// @brief 追加 Pass が Graph の Resource 宣言と記録契約を通ることを確認する
+class TestPass final : public cue::FrameGraphPass
+{
+public:
+    /// @brief Graph の論理 Texture と実行回数を保持する
+    TestPass(cue::FrameGraphResourceHandle a_color, int& a_count) noexcept
+        : m_color(a_color), m_count(&a_count)
+    {
+    }
+
+    [[nodiscard]] const char* name() const noexcept override { return "AfterClear"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
+    {
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return a_builder.use(m_color, cue::FrameGraphAccess::Read,
+                             cue::FrameGraphResourceState::ShaderRead);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        auto* dx12Context = dynamic_cast<cue::dx12::DX12FrameGraphContext*>(&a_context);
+        if (!dx12Context || !dx12Context->resource(m_color))
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "TestPass.execute"});
+        }
+        ++*m_count;
+        return cue::Result<void>::success();
+    }
+
+private:
+    cue::FrameGraphResourceHandle m_color;
+    int* m_count = nullptr;
+};
+
+/// @brief Pool 所有 Buffer の世代付き Handle を Graph へ取り込む
+class PoolPass final : public cue::FrameGraphPass
+{
+public:
+    /// @brief Pool の寿命を Graph より長く保つ呼出側から借用する
+    PoolPass(cue::IGpuResourcePool& a_pool, cue::GpuResourceHandle a_handle, int& a_count) noexcept
+        : m_pool(&a_pool), m_handle(a_handle), m_count(&a_count)
+    {
+    }
+
+    [[nodiscard]] const char* name() const noexcept override { return "PoolRead"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Copy; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        auto result = a_builder.import_pool_buffer("PoolBuffer", *m_pool, m_handle, {64},
+            cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+        if (!result.has_value())
+        {
+            return cue::Result<void>::failure(*result.try_error());
+        }
+        m_buffer = result.take_value();
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return a_builder.use(m_buffer, cue::FrameGraphAccess::Read,
+                             cue::FrameGraphResourceState::CopySource);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        auto* dx12Context = dynamic_cast<cue::dx12::DX12FrameGraphContext*>(&a_context);
+        if (!dx12Context || !dx12Context->resource(m_buffer))
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PoolPass.execute"});
+        }
+        ++*m_count;
+        return cue::Result<void>::success();
+    }
+
+private:
+    cue::IGpuResourcePool* m_pool = nullptr;
+    cue::GpuResourceHandle m_handle;
+    cue::FrameGraphResourceHandle m_buffer;
+    int* m_count = nullptr;
+};
+
+/// @brief Compute Queue の空 Pass でも Graph の提出順と完了点を確認する
+class ComputePass final : public cue::FrameGraphPass
+{
+public:
+    /// @brief 実行回数を呼出側で検証する
+    explicit ComputePass(int& a_count) noexcept : m_count(&a_count) {}
+
+    [[nodiscard]] const char* name() const noexcept override { return "Compute"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Compute; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
+    {
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder&) override
+    {
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        if (a_context.command_context().type() != cue::QueueType::Compute)
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ComputePass.execute"});
+        }
+        ++*m_count;
+        return cue::Result<void>::success();
+    }
+
+private:
+    int* m_count = nullptr;
+};
+
 /// @brief 読み戻し用に Back Buffer の State を遷移させる
 void transition(ID3D12GraphicsCommandList &a_list, ID3D12Resource &a_resource, D3D12_RESOURCE_STATES a_before,
                 D3D12_RESOURCE_STATES a_after)
@@ -84,12 +200,12 @@ int run_tests()
     auto graph = graphResult.take_value();
     const auto &plan = graph->plan();
     if (plan.passes().size() != 2 || plan.passes()[0].name != "ClearFinalColor" ||
-        plan.passes()[1].name != "DisplayFinalColor" || plan.passes()[0].barriersBefore.size() != 1 ||
+        plan.passes()[1].name != "PresentToSwapChain" || plan.passes()[0].barriersBefore.size() != 1 ||
         plan.passes()[0].barriersBefore[0].after != cue::FrameGraphResourceState::RenderTarget ||
         plan.passes()[1].barriersBefore.size() != 2 ||
-        plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::ShaderRead ||
+        plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::CopySource ||
         plan.passes()[1].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
-        plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::RenderTarget ||
+        plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::CopyDestination ||
         plan.final_barriers().size() != 2 || plan.final_barriers()[0].after != cue::FrameGraphResourceState::Common ||
         plan.final_barriers()[1].after != cue::FrameGraphResourceState::Present)
     {
@@ -171,62 +287,62 @@ int run_tests()
     {
         return 18;
     }
+    auto poolResult = cue::dx12::DX12GpuResourcePool::create(*device);
+    auto queuePoolResult = cue::dx12::DX12QueuePool::create(*device);
+    if (!poolResult.has_value() || !queuePoolResult.has_value())
+    {
+        return 19;
+    }
+    auto pool = poolResult.take_value();
+    auto queuePool = queuePoolResult.take_value();
+    auto poolBufferResult = pool->create_buffer({64});
+    if (!poolBufferResult.has_value())
+    {
+        return 19;
+    }
+    const auto poolBuffer = poolBufferResult.take_value();
     int customCallCount = 0;
+    int poolCallCount = 0;
+    int computeCallCount = 0;
     auto extendedResult = cue::dx12::DX12MainFrameGraph::create(
         *device, *swapChain, 2, *rtvAllocator, *srvAllocator, clearColor,
-        [&customCallCount](cue::FrameGraphBuilder &a_builder, cue::FrameGraphResourceHandle a_finalColor,
-                           std::vector<cue::dx12::DX12MainGraphPass> &a_passes) -> cue::Result<void>
+        [&customCallCount, &poolCallCount, &computeCallCount, &pool, poolBuffer](cue::FrameGraph& a_graph,
+                           cue::FrameGraphResourceHandle a_finalColor) -> cue::Result<void>
         {
-            auto passResult = a_builder.add_pass("AfterClear");
-            if (!passResult.has_value())
+            auto testResult = a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount));
+            if (!testResult.has_value())
             {
-                return cue::Result<void>::failure(*passResult.try_error());
+                return testResult;
             }
-            const auto pass = passResult.take_value();
-            auto useResult = a_builder.use(pass, a_finalColor, cue::FrameGraphAccess::Read,
-                                           cue::FrameGraphResourceState::ShaderRead);
-            if (!useResult.has_value())
+            auto poolResult = a_graph.add_pass(std::make_unique<PoolPass>(*pool, poolBuffer, poolCallCount));
+            if (!poolResult.has_value())
             {
-                return useResult;
+                return poolResult;
             }
-            a_passes.push_back({pass,
-                                [&customCallCount, a_finalColor](ID3D12GraphicsCommandList &,
-                                                                 const cue::dx12::DX12FrameGraphPassContext &a_context)
-                                {
-                                    if (!a_context.resource(a_finalColor))
-                                    {
-                                        return cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
-                                                                           "DX12MainFrameGraphTests.custom_binding"});
-                                    }
-                                    ++customCallCount;
-                                    return cue::Result<void>::success();
-                                }});
-            return cue::Result<void>::success();
+            return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
         });
     if (!extendedResult.has_value())
     {
         return 19;
     }
     auto extended = extendedResult.take_value();
-    if (extended->plan().passes().size() != 3 || extended->plan().passes()[0].name != "ClearFinalColor" ||
-        extended->plan().passes()[1].name != "AfterClear" || extended->plan().passes()[2].name != "DisplayFinalColor")
+    if (extended->plan().passes().size() != 5 || extended->plan().passes()[0].name != "ClearFinalColor" ||
+        extended->plan().passes()[1].name != "AfterClear" ||
+        extended->plan().passes()[2].name != "PoolRead" ||
+        extended->plan().passes()[3].name != "Compute" ||
+        extended->plan().passes()[4].name != "PresentToSwapChain")
     {
         return 20;
     }
-    auto extraCommandResult = commandPool->acquire(cue::QueueType::Graphics);
-    if (!extraCommandResult.has_value())
-    {
-        return 21;
-    }
-    auto extraCommand = extraCommandResult.take_value();
-    auto *extraContext = dynamic_cast<cue::dx12::DX12GpuCommandContext *>(extraCommand.get());
-    if (!extraContext || !extended->record(0, *extraContext).has_value() || customCallCount != 1 ||
-        !extraCommand->close().has_value())
+    auto executeResult = extended->execute(0, *commandPool, *queuePool);
+    if (!executeResult.has_value() || !*executeResult.try_value() ||
+        customCallCount != 1 || poolCallCount != 1 || computeCallCount != 1)
     {
         return 22;
     }
-    extraCommand.reset();
     if (!extended->shutdown().has_value() || !commandPool->shutdown().has_value() ||
+        !queuePool->shutdown().has_value() ||
+        !pool->retire(poolBuffer).has_value() || !pool->shutdown().has_value() ||
         !swapChain->shutdown().has_value() || !window->destroy().has_value())
     {
         return 23;

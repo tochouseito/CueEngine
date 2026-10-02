@@ -1,5 +1,6 @@
 #include <DX12/DX12MainFrameGraph.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -7,12 +8,13 @@
 #include <memory>
 #include <new>
 #include <utility>
+#include <vector>
 
 #include <DX12/DX12CommandPool.h>
-#include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12FinalColorFrames.h>
 #include <DX12/DX12FrameGraphExecutor.h>
-#include <DX12/DX12FullscreenPipeline.h>
+#include <DX12/DX12FrameGraphPass.h>
+#include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
@@ -20,30 +22,63 @@
 
 namespace cue::dx12
 {
-/// @brief 二つの固定 Pass と枠ごとの描画資源を受け取る
-DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, FrameGraphPlan a_plan, FrameGraphResourceHandle a_finalColor,
-                                       FrameGraphResourceHandle a_backBuffer, FrameGraphPassHandle a_clearPass,
-                                       FrameGraphPassHandle a_displayPass,
-                                       std::vector<dx12FrameGraphPassCallback> a_customCallbacks,
+namespace
+{
+/// @brief 最終提出より前に共有所有を確保する完了 Token
+class BatchCompletion final : public ICommandCompletion
+{
+public:
+    /// @brief 提出結果の一意所有を共有 Control Block へ移す
+    void set(commandCompletion a_completion) noexcept
+    {
+        m_completion = std::move(a_completion);
+    }
+
+    /// @brief 最終提出の Queue 種類を返す
+    [[nodiscard]] QueueType type() const noexcept override
+    {
+        return m_completion ? m_completion->type() : QueueType::Graphics;
+    }
+
+    /// @brief 最終提出の GPU 完了を返す
+    [[nodiscard]] bool is_complete() const noexcept override
+    {
+        return m_completion && m_completion->is_complete();
+    }
+
+    /// @brief 最終提出の GPU 完了を待つ
+    [[nodiscard]] Result<void> wait() override
+    {
+        return m_completion ? m_completion->wait() :
+            Result<void>::failure({ErrorCategory::InvalidState, "BatchCompletion.wait"});
+    }
+
+private:
+    commandCompletion m_completion;
+};
+} // namespace
+
+/// @brief Graph と枠ごとの Texture の所有権を受け取る
+DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
+                                       FrameGraphResourceHandle a_finalColor,
+                                       FrameGraphResourceHandle a_backBuffer,
                                        std::unique_ptr<DX12FinalColorFrames> a_frames,
-                                       std::unique_ptr<DX12FullscreenPipeline> a_pipeline, DX12SwapChain &a_swapChain,
-                                       DX12DescriptorAllocator &a_srvAllocator, std::array<float, 4> a_clearColor,
-                                       std::uint32_t a_width, std::uint32_t a_height) noexcept
-    : m_plan(std::move(a_plan)), m_finalColor(a_finalColor), m_backBuffer(a_backBuffer), m_clearPass(a_clearPass),
-      m_displayPass(a_displayPass), m_customCallbacks(std::move(a_customCallbacks)), m_frames(std::move(a_frames)),
-      m_pipeline(std::move(a_pipeline)), m_swapChain(&a_swapChain), m_srvAllocator(&a_srvAllocator),
-      m_clearColor(a_clearColor), m_width(a_width), m_height(a_height)
+                                       DX12SwapChain& a_swapChain)
+    : m_graph(std::move(a_graph)), m_finalColor(a_finalColor), m_backBuffer(a_backBuffer),
+      m_frames(std::move(a_frames)), m_poolLeases(m_frames->frame_count()),
+      m_externalBindings(m_frames->frame_count()), m_isPrepared(m_frames->frame_count(), false),
+      m_swapChain(&a_swapChain)
 {
 }
 
-/// @brief Clear を先頭、表示を最後に固定し、Back Buffer を Present 境界で Import する
+/// @brief 旧 Pass 契約に従って Clear、追加 Pass、表示 Pass を組み立てる
 Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
-    DX12RenderDevice &a_device, DX12SwapChain &a_swapChain, std::uint32_t a_frameCount,
-    DX12DescriptorAllocator &a_rtvAllocator, DX12DescriptorAllocator &a_srvAllocator, std::array<float, 4> a_clearColor,
-    dx12MainGraphConfigure a_configure)
+    DX12RenderDevice& a_device, DX12SwapChain& a_swapChain, std::uint32_t a_frameCount,
+    DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
+    std::array<float, 4> a_clearColor, dx12MainGraphConfigure a_configure)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
-    auto *backBuffer = a_swapChain.back_buffer(0);
+    auto* backBuffer = a_swapChain.back_buffer(0);
     if (!a_device.device() || !backBuffer || !a_swapChain.graphics_queue() || a_frameCount == 0)
     {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create"});
@@ -60,8 +95,8 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     }
     GpuTexture2DDesc colorDesc{static_cast<std::uint32_t>(nativeDesc.Width),
                                static_cast<std::uint32_t>(nativeDesc.Height)};
-    colorDesc.format =
-        nativeDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ? GpuTextureFormat::Rgba8Unorm : GpuTextureFormat::Bgra8Unorm;
+    colorDesc.format = nativeDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ?
+        GpuTextureFormat::Rgba8Unorm : GpuTextureFormat::Bgra8Unorm;
     colorDesc.isRenderTarget = true;
     colorDesc.clearColor = a_clearColor;
     auto builderResult = FrameGraphBuilder::create_main(colorDesc);
@@ -71,130 +106,66 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     }
     auto builder = builderResult.take_value();
     const auto finalColor = builder->final_color();
-    auto backResult =
-        builder->import_texture2d(colorDesc, FrameGraphResourceState::Present, FrameGraphResourceState::Present);
+    auto backResult = builder->import_texture2d("BackBuffer", colorDesc, FrameGraphResourceState::Present,
+                                                FrameGraphResourceState::Present);
     if (!backResult.has_value())
     {
         return GraphResult::failure(*backResult.try_error());
     }
     const auto backHandle = backResult.take_value();
-    auto clearResult = builder->add_pass("ClearFinalColor");
-    if (!clearResult.has_value())
+    auto graphResult = FrameGraph::create(std::move(builder), colorDesc.width, colorDesc.height);
+    if (!graphResult.has_value())
     {
-        return GraphResult::failure(*clearResult.try_error());
+        return GraphResult::failure(*graphResult.try_error());
     }
-    const auto clearPass = clearResult.take_value();
-    auto clearUseResult =
-        builder->use(clearPass, finalColor, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
-    if (!clearUseResult.has_value())
-    {
-        return GraphResult::failure(*clearUseResult.try_error());
-    }
+    auto graph = graphResult.take_value();
     try
     {
-        std::vector<DX12MainGraphPass> customPasses;
+        auto clearResult = graph->add_pass(std::make_unique<DX12ClearFinalColorPass>(a_clearColor));
+        if (!clearResult.has_value())
+        {
+            return GraphResult::failure(*clearResult.try_error());
+        }
         if (a_configure)
         {
-            auto configureResult = a_configure(*builder, finalColor, customPasses);
+            auto configureResult = a_configure(*graph, finalColor);
             if (!configureResult.has_value())
             {
                 return GraphResult::failure(*configureResult.try_error());
             }
         }
-        auto displayResult = builder->add_pass("DisplayFinalColor");
-        if (!displayResult.has_value())
+        auto presentResult = graph->add_pass(std::make_unique<DX12PresentToSwapChainPass>());
+        if (!presentResult.has_value())
         {
-            return GraphResult::failure(*displayResult.try_error());
+            return GraphResult::failure(*presentResult.try_error());
         }
-        const auto displayPass = displayResult.take_value();
-        auto displayReadResult =
-            builder->use(displayPass, finalColor, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead);
-        if (!displayReadResult.has_value())
+        auto buildResult = graph->build();
+        if (!buildResult.has_value())
         {
-            return GraphResult::failure(*displayReadResult.try_error());
+            return GraphResult::failure(*buildResult.try_error());
         }
-        auto displayWriteResult =
-            builder->use(displayPass, backHandle, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
-        if (!displayWriteResult.has_value())
-        {
-            return GraphResult::failure(*displayWriteResult.try_error());
-        }
-        auto dependencyResult = builder->depends_on(displayPass, clearPass);
-        if (!dependencyResult.has_value())
-        {
-            return GraphResult::failure(*dependencyResult.try_error());
-        }
-        for (const auto &pass : customPasses)
-        {
-            if (pass.handle.graphId != clearPass.graphId || pass.handle.index <= clearPass.index ||
-                pass.handle.index >= displayPass.index || !pass.callback)
-            {
-                return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.custom_pass"});
-            }
-            auto afterClearResult = builder->depends_on(pass.handle, clearPass);
-            if (!afterClearResult.has_value())
-            {
-                return GraphResult::failure(*afterClearResult.try_error());
-            }
-            auto beforeDisplayResult = builder->depends_on(displayPass, pass.handle);
-            if (!beforeDisplayResult.has_value())
-            {
-                return GraphResult::failure(*beforeDisplayResult.try_error());
-            }
-        }
-        auto planResult = builder->build();
-        if (!planResult.has_value())
-        {
-            return GraphResult::failure(*planResult.try_error());
-        }
-        auto plan = planResult.take_value();
-        if (plan.passes().size() != customPasses.size() + 2 || plan.passes().front().handle.index != clearPass.index ||
-            plan.passes().back().handle.index != displayPass.index || plan.final_barriers().size() != 2)
+        const auto* plan = graph->plan();
+        if (!plan || plan->passes().size() < 2 || plan->passes().front().name != "ClearFinalColor" ||
+            plan->passes().back().name != "PresentToSwapChain")
         {
             return GraphResult::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.create.plan"});
         }
-        std::vector<dx12FrameGraphPassCallback> customCallbacks(plan.passes().size());
-        for (auto &pass : customPasses)
-        {
-            if (customCallbacks[pass.handle.index])
-            {
-                return GraphResult::failure(
-                    {ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.duplicate_callback"});
-            }
-            customCallbacks[pass.handle.index] = std::move(pass.callback);
-        }
-        for (const auto &pass : plan.passes())
-        {
-            if (pass.handle.index != clearPass.index && pass.handle.index != displayPass.index &&
-                !customCallbacks[pass.handle.index])
-            {
-                return GraphResult::failure(
-                    {ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.missing_callback"});
-            }
-        }
-        auto framesResult =
-            DX12FinalColorFrames::create(a_device, plan, finalColor, a_frameCount, a_rtvAllocator, a_srvAllocator);
+        auto framesResult = DX12FinalColorFrames::create(a_device, *plan, finalColor, a_frameCount,
+                                                        a_rtvAllocator, a_srvAllocator);
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
-        auto pipelineResult = DX12FullscreenPipeline::create(a_device, nativeDesc.Format);
-        if (!pipelineResult.has_value())
-        {
-            return GraphResult::failure(*pipelineResult.try_error());
-        }
         return GraphResult::success(std::make_unique<DX12MainFrameGraph>(
-            CreateToken{}, std::move(plan), finalColor, backHandle, clearPass, displayPass, std::move(customCallbacks),
-            framesResult.take_value(), pipelineResult.take_value(), a_swapChain, a_srvAllocator, a_clearColor,
-            colorDesc.width, colorDesc.height));
+            CreateToken{}, std::move(graph), finalColor, backHandle, framesResult.take_value(), a_swapChain));
     }
-    catch (const std::bad_alloc &)
+    catch (const std::bad_alloc&)
     {
         return GraphResult::failure({ErrorCategory::PlatformFailure, "DX12MainFrameGraph.create.allocation"});
     }
 }
 
-/// @brief 明示停止されなかった枠も GPU 完了後に破棄する
+/// @brief 明示停止されなかった枠も GPU 完了を待って破棄する
 DX12MainFrameGraph::~DX12MainFrameGraph()
 {
     auto result = shutdown();
@@ -205,120 +176,465 @@ DX12MainFrameGraph::~DX12MainFrameGraph()
     }
 }
 
-/// @brief Graph の計画を Executor に渡し、固定 Pass の Command を記録する
-Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, DX12GpuCommandContext &a_context)
+/// @brief Barrier 計画と各 Pass の execute を同じ Graphics List に記録する
+Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, DX12GpuCommandContext& a_context)
 {
-    if (!m_frames || !m_pipeline || !m_swapChain || !m_srvAllocator || !m_srvAllocator->heap() ||
-        a_frameIndex >= m_frames->frame_count() || a_context.type() != QueueType::Graphics ||
+    if (!m_graph || !m_graph->plan() || a_context.type() != QueueType::Graphics ||
         a_context.state() != CommandState::Recording)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record"});
     }
-    const auto backIndex = m_swapChain->current_index();
-    auto *backBuffer = m_swapChain->back_buffer(backIndex);
-    auto *finalColor = m_frames->resource(a_frameIndex);
-    auto *graphResources = m_frames->graph_resources(a_frameIndex);
-    auto colorRtvResult = m_frames->rtv(a_frameIndex);
-    auto colorSrvResult = m_frames->srv(a_frameIndex);
-    auto backRtvResult = m_swapChain->rtv(backIndex);
-    if (!backBuffer || !finalColor || !finalColor->resource() || !graphResources || !colorRtvResult.has_value() ||
-        !colorSrvResult.has_value() || !backRtvResult.has_value())
+    auto prepareResult = prepare_frame(a_frameIndex);
+    if (!prepareResult.has_value())
     {
-        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record.resources"});
+        return prepareResult;
+    }
+    auto recordResult = record_range(a_frameIndex, a_context, 0, m_graph->plan()->passes().size(), true);
+    if (!recordResult.has_value())
+    {
+        discard_unsubmitted(a_frameIndex);
+    }
+    return recordResult;
+}
+
+/// @brief 複数 Queue へ分ける前に枠の物理 Resource を一度だけ借用する
+Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
+{
+    if (!m_graph || !m_graph->plan() || !m_frames || !m_swapChain ||
+        a_frameIndex >= m_frames->frame_count() || m_isPrepared[a_frameIndex] ||
+        !m_poolLeases[a_frameIndex].empty())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.prepare_frame"});
+    }
+    auto* backBuffer = m_swapChain->back_buffer(m_swapChain->current_index());
+    if (!backBuffer || !m_frames->graph_resources(a_frameIndex))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.prepare_frame.resources"});
     }
     auto beginResult = m_frames->begin_frame(a_frameIndex);
     if (!beginResult.has_value())
     {
         return beginResult;
     }
-    const auto colorRtv = *colorRtvResult.try_value();
-    const auto colorSrv = *colorSrvResult.try_value();
-    const auto backRtv = *backRtvResult.try_value();
-    const auto *colorResource = finalColor->resource();
     try
     {
-        const std::array external{DX12FrameGraphExternalResource{m_backBuffer, backBuffer}};
-        const dx12FrameGraphPassCallback clearCallback =
-            [this, colorRtv, colorResource](ID3D12GraphicsCommandList &a_list,
-                                            const DX12FrameGraphPassContext &a_pass) -> Result<void>
+        std::vector<DX12FrameGraphExternalResource> external;
+        std::vector<gpuResourceLease> leases;
+        external.reserve(m_graph->plan()->resources().size() + 1);
+        external.push_back({m_backBuffer, backBuffer});
+        for (const auto& plannedResource : m_graph->plan()->resources())
         {
-            if (a_pass.resource(m_finalColor) != colorResource)
+            if (!plannedResource.pool)
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record.clear_binding"});
+                continue;
             }
-            a_list.ClearRenderTargetView(colorRtv, m_clearColor.data(), 0, nullptr);
-            return Result<void>::success();
-        };
-        const dx12FrameGraphPassCallback displayCallback =
-            [this, colorResource, backBuffer, colorSrv,
-             backRtv](ID3D12GraphicsCommandList &a_list, const DX12FrameGraphPassContext &a_pass) -> Result<void>
-        {
-            if (a_pass.resource(m_finalColor) != colorResource || a_pass.resource(m_backBuffer) != backBuffer)
+            bool isWritten = false;
+            for (const auto& pass : m_graph->plan()->passes())
             {
-                return Result<void>::failure(
-                    {ErrorCategory::InvalidState, "DX12MainFrameGraph.record.display_binding"});
+                for (const auto& use : pass.uses)
+                {
+                    if (use.resource.index == plannedResource.handle.index &&
+                        use.access == FrameGraphAccess::Write)
+                    {
+                        isWritten = true;
+                    }
+                }
             }
-            return m_pipeline->draw(a_list, *m_srvAllocator->heap(), colorSrv, backRtv, m_width, m_height);
-        };
-        std::vector<dx12FrameGraphPassCallback> callbacks;
-        callbacks.reserve(m_plan.passes().size());
-        for (const auto &pass : m_plan.passes())
-        {
-            if (pass.handle.index == m_clearPass.index)
+            auto leaseResult = plannedResource.pool->acquire(
+                plannedResource.poolHandle, isWritten ? GpuResourceAccess::Write : GpuResourceAccess::Read);
+            if (!leaseResult.has_value())
             {
-                callbacks.push_back(clearCallback);
+                return Result<void>::failure(*leaseResult.try_error());
             }
-            else if (pass.handle.index == m_displayPass.index)
+            auto lease = leaseResult.take_value();
+            auto* resource = dynamic_cast<DX12GpuResource*>(lease->resource());
+            if (!resource || !resource->resource())
             {
-                callbacks.push_back(displayCallback);
+                return Result<void>::failure({ErrorCategory::InvalidState,
+                                              "DX12MainFrameGraph.prepare_frame.pool_resource"});
             }
-            else
-            {
-                callbacks.push_back(m_customCallbacks[pass.handle.index]);
-            }
+            external.push_back({plannedResource.handle, resource->resource()});
+            leases.push_back(std::move(lease));
         }
-        return DX12FrameGraphExecutor::record(m_plan, *graphResources, external, callbacks, a_context);
+        m_externalBindings[a_frameIndex] = std::move(external);
+        m_poolLeases[a_frameIndex] = std::move(leases);
+        m_isPrepared[a_frameIndex] = true;
+        return Result<void>::success();
     }
-    catch (const std::bad_alloc &)
+    catch (const std::bad_alloc&)
     {
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "DX12MainFrameGraph.record.allocation"});
+        return Result<void>::failure({ErrorCategory::PlatformFailure,
+                                      "DX12MainFrameGraph.prepare_frame.allocation"});
     }
 }
 
-/// @brief 枠を再利用する前に待つ完了点を FinalColor 所有者へ渡す
-Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
-                                                std::shared_ptr<ICommandCompletion> a_completion)
+/// @brief 準備済み Binding を使い、各 Queue に割り当てた範囲だけを記録する
+Result<void> DX12MainFrameGraph::record_range(
+    std::uint32_t a_frameIndex, DX12GpuCommandContext& a_context,
+    std::size_t a_firstPass, std::size_t a_passCount, bool a_includeFinal)
 {
-    if (!m_frames)
+    if (!m_graph || !m_graph->plan() || !m_frames || a_frameIndex >= m_isPrepared.size() ||
+        !m_isPrepared[a_frameIndex] || a_context.state() != CommandState::Recording)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range"});
+    }
+    auto* resources = m_frames->graph_resources(a_frameIndex);
+    auto rtvResult = m_frames->rtv(a_frameIndex);
+    if (!resources || !rtvResult.has_value())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.resources"});
+    }
+    try
+    {
+        std::vector<dx12FrameGraphPassCallback> callbacks;
+        callbacks.reserve(m_graph->plan()->passes().size());
+        for (const auto& planned : m_graph->plan()->passes())
+        {
+            auto* pass = m_graph->pass(planned.handle);
+            if (!pass)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.pass"});
+            }
+            if (!pass->is_enabled(a_frameIndex))
+            {
+                callbacks.push_back([](ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext&)
+                                    { return Result<void>::success(); });
+                continue;
+            }
+            callbacks.push_back([this, pass, a_frameIndex, &a_context, rtv = *rtvResult.try_value()]
+                                (ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext& a_resources)
+                                -> Result<void>
+            {
+                DX12FrameGraphContext context(m_graph->width(), m_graph->height(), a_frameIndex,
+                                              a_context, a_resources, rtv);
+                return pass->execute(context);
+            });
+        }
+        return DX12FrameGraphExecutor::record_range(
+            *m_graph->plan(), *resources, m_externalBindings[a_frameIndex], callbacks,
+            a_context, a_firstPass, a_passCount, a_includeFinal);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure,
+                                      "DX12MainFrameGraph.record_range.allocation"});
+    }
+}
+
+/// @brief GPU が終わった枠の Pool Lease と Native Binding を返す
+void DX12MainFrameGraph::clear_frame(std::uint32_t a_frameIndex) noexcept
+{
+    m_poolLeases[a_frameIndex].clear();
+    m_externalBindings[a_frameIndex].clear();
+    m_isPrepared[a_frameIndex] = false;
+}
+
+/// @brief Pool が返した基底 Context を DX12 記録器へ渡す
+Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, ICommandContext& a_context)
+{
+    auto* context = dynamic_cast<DX12GpuCommandContext*>(&a_context);
+    if (!context)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.record.context"});
+    }
+    return record(a_frameIndex, *context);
+}
+
+/// @brief Graph が Pool の Command と SwapChain の Graphics Queue を使って提出する
+Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
+                                         std::function<bool()> a_shouldCancel)
+{
+    if (!m_graph || !m_swapChain || !m_swapChain->graphics_queue())
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute"});
+    }
+    auto result = m_graph->execute(a_frameIndex, a_commandPool, *m_swapChain->graphics_queue(), *this,
+                                   std::move(a_shouldCancel));
+    if (!result.has_value())
+    {
+        return Result<bool>::failure(*result.try_error());
+    }
+    return Result<bool>::success(static_cast<bool>(*result.try_value()));
+}
+
+/// @brief 異なる Queue の Pass を依存順に提出し、最終 Graphics 完了点へ集約する
+Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
+                                         IQueuePool& a_queuePool, std::function<bool()> a_shouldCancel)
+{
+    if (!m_graph || !m_graph->plan() || !m_swapChain || !m_swapChain->graphics_queue() ||
+        a_frameIndex >= m_poolLeases.size())
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues"});
+    }
+    const auto& passes = m_graph->plan()->passes();
+    if (std::all_of(passes.begin(), passes.end(), [](const auto& a_pass)
+                    { return a_pass.queue == QueueType::Graphics; }))
+    {
+        return execute(a_frameIndex, a_commandPool, std::move(a_shouldCancel));
+    }
+    if (a_shouldCancel && a_shouldCancel())
+    {
+        return Result<bool>::success(false);
+    }
+    std::shared_ptr<BatchCompletion> completion;
+    std::vector<commandCompletion> submissions;
+    std::vector<IQueueContext*> queueByPass;
+    std::vector<std::uint64_t> fenceByPass;
+    try
+    {
+        completion = std::make_shared<BatchCompletion>();
+        submissions.reserve(passes.size());
+        queueByPass.resize(passes.size(), nullptr);
+        fenceByPass.resize(passes.size(), 0);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return Result<bool>::failure({ErrorCategory::PlatformFailure,
+                                      "DX12MainFrameGraph.execute_queues.allocation"});
+    }
+    auto prepareResult = prepare_frame(a_frameIndex);
+    if (!prepareResult.has_value())
+    {
+        return Result<bool>::failure(*prepareResult.try_error());
+    }
+    auto fail = [this, a_frameIndex, &submissions](Error a_error) -> Result<bool>
+    {
+        for (auto& submission : submissions)
+        {
+            auto waitResult = submission->wait();
+            if (!waitResult.has_value())
+            {
+                return Result<bool>::failure(*waitResult.try_error());
+            }
+        }
+        clear_frame(a_frameIndex);
+        return Result<bool>::failure(std::move(a_error));
+    };
+    queueLease computeQueue;
+    queueLease copyQueue;
+    std::uint64_t latestComputeFence = 0;
+    std::uint64_t latestCopyFence = 0;
+    auto* graphicsQueue = m_swapChain->graphics_queue();
+    for (std::size_t index = 0; index < passes.size(); ++index)
+    {
+        const auto type = passes[index].queue;
+        IQueueContext* queue = graphicsQueue;
+        if (type == QueueType::Compute)
+        {
+            if (!computeQueue)
+            {
+                auto queueResult = a_queuePool.acquire(type);
+                if (!queueResult.has_value())
+                {
+                    return fail(*queueResult.try_error());
+                }
+                computeQueue = queueResult.take_value();
+            }
+            queue = computeQueue.get();
+        }
+        else if (type == QueueType::Copy)
+        {
+            if (!copyQueue)
+            {
+                auto queueResult = a_queuePool.acquire(type);
+                if (!queueResult.has_value())
+                {
+                    return fail(*queueResult.try_error());
+                }
+                copyQueue = queueResult.take_value();
+            }
+            queue = copyQueue.get();
+        }
+        for (const auto dependency : passes[index].dependencies)
+        {
+            if (dependency.index >= queueByPass.size() || !queueByPass[dependency.index] ||
+                fenceByPass[dependency.index] == 0)
+            {
+                return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues.dependency"});
+            }
+            auto* producerQueue = queueByPass[dependency.index];
+            if (producerQueue != queue)
+            {
+                auto waitResult = queue->wait_for_queue(*producerQueue, fenceByPass[dependency.index]);
+                if (!waitResult.has_value())
+                {
+                    return fail(*waitResult.try_error());
+                }
+            }
+        }
+        auto commandResult = a_commandPool.acquire(type);
+        if (!commandResult.has_value())
+        {
+            return fail(*commandResult.try_error());
+        }
+        auto command = commandResult.take_value();
+        auto* context = dynamic_cast<DX12GpuCommandContext*>(command.get());
+        if (!context)
+        {
+            return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues.context"});
+        }
+        auto recordResult = record_range(a_frameIndex, *context, index, 1, false);
+        if (!recordResult.has_value())
+        {
+            return fail(*recordResult.try_error());
+        }
+        auto closeResult = command->close();
+        if (!closeResult.has_value())
+        {
+            return fail(*closeResult.try_error());
+        }
+        auto submitResult = a_commandPool.submit(*queue, *command);
+        if (!submitResult.has_value())
+        {
+            // 提出結果が不明な場合は Lease を保持し、GPU Resource の早期破棄を防ぐ
+            return Result<bool>::failure(*submitResult.try_error());
+        }
+        submissions.push_back(submitResult.take_value());
+        auto signalResult = queue->signal();
+        if (!signalResult.has_value())
+        {
+            return fail(*signalResult.try_error());
+        }
+        queueByPass[passes[index].handle.index] = queue;
+        fenceByPass[passes[index].handle.index] = signalResult.take_value();
+        if (type == QueueType::Compute)
+        {
+            latestComputeFence = fenceByPass[passes[index].handle.index];
+        }
+        else if (type == QueueType::Copy)
+        {
+            latestCopyFence = fenceByPass[passes[index].handle.index];
+        }
+    }
+    if (latestComputeFence != 0)
+    {
+        auto waitResult = graphicsQueue->wait_for_queue(*computeQueue, latestComputeFence);
+        if (!waitResult.has_value())
+        {
+            return fail(*waitResult.try_error());
+        }
+    }
+    if (latestCopyFence != 0)
+    {
+        auto waitResult = graphicsQueue->wait_for_queue(*copyQueue, latestCopyFence);
+        if (!waitResult.has_value())
+        {
+            return fail(*waitResult.try_error());
+        }
+    }
+    auto finalCommandResult = a_commandPool.acquire(QueueType::Graphics);
+    if (!finalCommandResult.has_value())
+    {
+        return fail(*finalCommandResult.try_error());
+    }
+    auto finalCommand = finalCommandResult.take_value();
+    auto* finalContext = dynamic_cast<DX12GpuCommandContext*>(finalCommand.get());
+    if (!finalContext)
+    {
+        return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues.final_context"});
+    }
+    auto finalRecordResult = record_range(a_frameIndex, *finalContext, passes.size(), 0, true);
+    if (!finalRecordResult.has_value())
+    {
+        return fail(*finalRecordResult.try_error());
+    }
+    auto finalCloseResult = finalCommand->close();
+    if (!finalCloseResult.has_value())
+    {
+        return fail(*finalCloseResult.try_error());
+    }
+    auto finalSubmitResult = a_commandPool.submit(*graphicsQueue, *finalCommand);
+    if (!finalSubmitResult.has_value())
+    {
+        return Result<bool>::failure(*finalSubmitResult.try_error());
+    }
+    completion->set(finalSubmitResult.take_value());
+    auto markResult = mark_submitted(a_frameIndex, completion);
+    if (!markResult.has_value())
+    {
+        return Result<bool>::failure(*markResult.try_error());
+    }
+    return Result<bool>::success(true);
+}
+
+/// @brief 枠の再利用と停止の待機に使う完了点を登録する
+Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
+                                                 std::shared_ptr<ICommandCompletion> a_completion)
+{
+    if (!m_frames || a_frameIndex >= m_poolLeases.size() || !a_completion)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.mark_submitted"});
     }
-    return m_frames->mark_submitted(a_frameIndex, std::move(a_completion));
+    auto frameResult = m_frames->mark_submitted(a_frameIndex, a_completion);
+    if (!frameResult.has_value())
+    {
+        auto waitResult = a_completion->wait();
+        if (!waitResult.has_value())
+        {
+            return waitResult;
+        }
+        clear_frame(a_frameIndex);
+        return frameResult;
+    }
+    for (auto& lease : m_poolLeases[a_frameIndex])
+    {
+        auto markResult = lease->mark_submitted(a_completion);
+        if (!markResult.has_value())
+        {
+            auto waitResult = a_completion->wait();
+            if (!waitResult.has_value())
+            {
+                return waitResult;
+            }
+            clear_frame(a_frameIndex);
+            return markResult;
+        }
+    }
+    clear_frame(a_frameIndex);
+    return Result<void>::success();
 }
 
-/// @brief 固定 Pass と Resource の実行順を検査できるよう貸し出す
-const FrameGraphPlan &DX12MainFrameGraph::plan() const noexcept
+/// @brief Command List の未提出が確定した枠を再記録可能にする
+void DX12MainFrameGraph::discard_unsubmitted(std::uint32_t a_frameIndex) noexcept
 {
-    return m_plan;
+    if (a_frameIndex < m_poolLeases.size())
+    {
+        clear_frame(a_frameIndex);
+    }
 }
 
-/// @brief GPU 完了後に描画資源を解放し、再入時は何もしない
+/// @brief 検証済み Plan を返す
+const FrameGraphPlan& DX12MainFrameGraph::plan() const noexcept
+{
+    return *m_graph->plan();
+}
+
+/// @brief GPU 完了後に枠の Resource を解放する
 Result<void> DX12MainFrameGraph::shutdown()
 {
     if (!m_frames)
     {
         return Result<void>::success();
     }
+    for (std::size_t index = 0; index < m_poolLeases.size(); ++index)
+    {
+        if (m_isPrepared[index] || !m_poolLeases[index].empty())
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState,
+                                          "DX12MainFrameGraph.shutdown.pending_submission"});
+        }
+    }
     auto result = m_frames->shutdown();
     if (!result.has_value())
     {
         return result;
     }
-    m_customCallbacks.clear();
     m_frames.reset();
-    m_pipeline.reset();
+    m_poolLeases.clear();
+    m_externalBindings.clear();
+    m_isPrepared.clear();
+    m_graph.reset();
     m_swapChain = nullptr;
-    m_srvAllocator = nullptr;
     return Result<void>::success();
 }
 } // namespace cue::dx12

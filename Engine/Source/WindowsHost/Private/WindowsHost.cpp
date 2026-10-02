@@ -44,52 +44,24 @@ class WindowsHost::State final
             return Result<void>::success();
         }
         auto *commandPool = dx12Backend->get_command_pool();
+        auto *queuePool = dx12Backend->get_queue_pool();
         auto *swapChain = dx12Backend->get_swap_chain();
-        if (!commandPool || !swapChain || !swapChain->graphics_queue() || !graph)
+        if (!commandPool || !queuePool || !swapChain || !swapChain->graphics_queue() || !graph)
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
         }
-        auto commandResult = commandPool->acquire(QueueType::Graphics);
-        if (!commandResult.has_value())
-        {
-            return Result<void>::failure(*commandResult.try_error());
-        }
-        auto command = commandResult.take_value();
-        auto *context = dynamic_cast<dx12::DX12GpuCommandContext *>(command.get());
-        if (!context)
-        {
-            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.context"});
-        }
         const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
-        auto recordResult = graph->record(frameSlot, *context);
-        if (!recordResult.has_value())
+        auto executeResult = graph->execute(frameSlot, *commandPool, *queuePool, [&]()
         {
-            return recordResult;
+            return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load();
+        });
+        if (!executeResult.has_value())
+        {
+            return Result<void>::failure(*executeResult.try_error());
         }
-        if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        if (!*executeResult.try_value())
         {
             return Result<void>::success();
-        }
-        auto closeResult = command->close();
-        if (!closeResult.has_value())
-        {
-            return closeResult;
-        }
-        auto submitResult = commandPool->submit(*swapChain->graphics_queue(), *command);
-        if (!submitResult.has_value())
-        {
-            return Result<void>::failure(*submitResult.try_error());
-        }
-        std::shared_ptr<ICommandCompletion> completion(submitResult.take_value());
-        auto markResult = graph->mark_submitted(frameSlot, completion);
-        if (!markResult.has_value())
-        {
-            auto waitResult = completion->wait();
-            if (!waitResult.has_value())
-            {
-                return waitResult;
-            }
-            return markResult;
         }
         return swapChain->present();
     }

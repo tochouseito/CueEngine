@@ -181,7 +181,7 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTex
     }
     auto builder = builderResult.take_value();
     a_finalColor.isRenderTarget = true;
-    auto colorResult = builder->create_transient_texture2d(a_finalColor);
+    auto colorResult = builder->create_transient_texture2d("FinalColorTexture", a_finalColor);
     if (!colorResult.has_value())
     {
         return Result<std::unique_ptr<FrameGraphBuilder>>::failure(*colorResult.try_error());
@@ -201,12 +201,20 @@ FrameGraphResourceHandle FrameGraphBuilder::final_color() const noexcept
 /// @brief Default Buffer の論理 Resource を追加する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(GpuBufferDesc a_desc)
 {
+    return create_transient_buffer({}, a_desc);
+}
+
+/// @brief 名前付きの Default Buffer を登録する
+Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(std::string a_name,
+                                                                            GpuBufferDesc a_desc)
+{
     if (a_desc.byteSize == 0 || a_desc.memory != GpuMemoryUsage::Default)
     {
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.create_transient_buffer.desc"});
     }
     FrameGraphResourcePlan resource{};
+    resource.name = std::move(a_name);
     resource.kind = GpuResourceKind::Buffer;
     resource.bufferDesc = a_desc;
     return add_resource(std::move(resource));
@@ -215,12 +223,20 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(GpuB
 /// @brief Texture の論理 Resource を追加する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_texture2d(GpuTexture2DDesc a_desc)
 {
+    return create_transient_texture2d({}, a_desc);
+}
+
+/// @brief 名前付きの二次元 Texture を登録する
+Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_texture2d(std::string a_name,
+                                                                               GpuTexture2DDesc a_desc)
+{
     if (!is_valid_texture(a_desc))
     {
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.create_transient_texture2d.desc"});
     }
     FrameGraphResourcePlan resource{};
+    resource.name = std::move(a_name);
     resource.kind = GpuResourceKind::Texture2D;
     resource.textureDesc = a_desc;
     return add_resource(std::move(resource));
@@ -230,6 +246,14 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_texture2d(G
 Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(GpuBufferDesc a_desc,
                                                                  FrameGraphResourceState a_initial,
                                                                  FrameGraphResourceState a_final)
+{
+    return import_buffer({}, a_desc, a_initial, a_final);
+}
+
+/// @brief 名前付きの外部 Buffer を取り込む
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(std::string a_name, GpuBufferDesc a_desc,
+                                                                  FrameGraphResourceState a_initial,
+                                                                  FrameGraphResourceState a_final)
 {
     if (a_desc.byteSize == 0 ||
         (a_desc.memory != GpuMemoryUsage::Default && a_desc.memory != GpuMemoryUsage::Upload &&
@@ -241,6 +265,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(GpuBufferDesc 
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_buffer.desc"});
     }
     FrameGraphResourcePlan resource{};
+    resource.name = std::move(a_name);
     resource.kind = GpuResourceKind::Buffer;
     resource.bufferDesc = a_desc;
     resource.isImported = true;
@@ -254,6 +279,15 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(GpuTexture2
                                                                     FrameGraphResourceState a_initial,
                                                                     FrameGraphResourceState a_final)
 {
+    return import_texture2d({}, a_desc, a_initial, a_final);
+}
+
+/// @brief 名前付きの外部 Texture を取り込む
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(std::string a_name,
+                                                                     GpuTexture2DDesc a_desc,
+                                                                     FrameGraphResourceState a_initial,
+                                                                     FrameGraphResourceState a_final)
+{
     if (!is_valid_texture(a_desc) ||
         !is_valid_boundary_state(a_initial, GpuResourceKind::Texture2D, GpuMemoryUsage::Default) ||
         !is_valid_boundary_state(a_final, GpuResourceKind::Texture2D, GpuMemoryUsage::Default))
@@ -262,6 +296,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(GpuTexture2
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_texture2d.desc"});
     }
     FrameGraphResourcePlan resource{};
+    resource.name = std::move(a_name);
     resource.kind = GpuResourceKind::Texture2D;
     resource.textureDesc = a_desc;
     resource.isImported = true;
@@ -270,10 +305,79 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(GpuTexture2
     return add_resource(std::move(resource));
 }
 
-/// @brief 診断名を確保して新しい Pass Handle を発行する
-Result<FrameGraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name)
+/// @brief 物理 Buffer の所有は Pool に残し、Graph は非所有 Handle を保持する
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(
+    std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
+    GpuBufferDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final)
 {
-    if (a_name.empty() || m_passes.size() >= (std::numeric_limits<std::uint32_t>::max)())
+    if (!a_poolHandle.is_valid())
+    {
+        return Result<FrameGraphResourceHandle>::failure(
+            {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_pool_buffer.handle"});
+    }
+    auto result = import_buffer(std::move(a_name), a_desc, a_initial, a_final);
+    if (result.has_value())
+    {
+        auto& resource = m_resources[result.try_value()->index];
+        resource.pool = &a_pool;
+        resource.poolHandle = a_poolHandle;
+    }
+    return result;
+}
+
+/// @brief 物理 Texture の所有は Pool に残し、Graph は非所有 Handle を保持する
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(
+    std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
+    GpuTexture2DDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final)
+{
+    if (!a_poolHandle.is_valid())
+    {
+        return Result<FrameGraphResourceHandle>::failure(
+            {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_pool_texture2d.handle"});
+    }
+    auto result = import_texture2d(std::move(a_name), a_desc, a_initial, a_final);
+    if (result.has_value())
+    {
+        auto& resource = m_resources[result.try_value()->index];
+        resource.pool = &a_pool;
+        resource.poolHandle = a_poolHandle;
+    }
+    return result;
+}
+
+/// @brief 名前と種類が一致する Texture の Handle を返す
+Result<FrameGraphResourceHandle> FrameGraphBuilder::get_texture(std::string_view a_name) const
+{
+    for (const auto& resource : m_resources)
+    {
+        if (!a_name.empty() && resource.name == a_name && resource.kind == GpuResourceKind::Texture2D)
+        {
+            return Result<FrameGraphResourceHandle>::success(resource.handle);
+        }
+    }
+    return Result<FrameGraphResourceHandle>::failure(
+        {ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_texture"});
+}
+
+/// @brief 名前と種類が一致する Buffer の Handle を返す
+Result<FrameGraphResourceHandle> FrameGraphBuilder::get_buffer(std::string_view a_name) const
+{
+    for (const auto& resource : m_resources)
+    {
+        if (!a_name.empty() && resource.name == a_name && resource.kind == GpuResourceKind::Buffer)
+        {
+            return Result<FrameGraphResourceHandle>::success(resource.handle);
+        }
+    }
+    return Result<FrameGraphResourceHandle>::failure(
+        {ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_buffer"});
+}
+
+/// @brief 診断名を確保して新しい Pass Handle を発行する
+Result<FrameGraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, QueueType a_queue)
+{
+    if (a_name.empty() || m_passes.size() >= (std::numeric_limits<std::uint32_t>::max)() ||
+        (a_queue != QueueType::Graphics && a_queue != QueueType::Compute && a_queue != QueueType::Copy))
     {
         return Result<FrameGraphPassHandle>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.add_pass"});
     }
@@ -283,6 +387,7 @@ Result<FrameGraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name)
         FrameGraphPassPlan pass{};
         pass.handle = handle;
         pass.name = std::move(a_name);
+        pass.queue = a_queue;
         m_passes.push_back(std::move(pass));
         return Result<FrameGraphPassHandle>::success(handle);
     }
@@ -300,7 +405,15 @@ Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResou
     if (!owns(a_pass) || !owns(a_resource) ||
         !is_valid_use_state(a_state, a_access) ||
         !is_valid_boundary_state(a_state, m_resources[a_resource.index].kind,
-                                 m_resources[a_resource.index].bufferDesc.memory))
+                                 m_resources[a_resource.index].bufferDesc.memory) ||
+        (m_passes[a_pass.index].queue == QueueType::Copy &&
+         a_state != FrameGraphResourceState::CopySource &&
+         a_state != FrameGraphResourceState::CopyDestination) ||
+        (m_passes[a_pass.index].queue == QueueType::Compute &&
+         (a_state == FrameGraphResourceState::RenderTarget ||
+          a_state == FrameGraphResourceState::DepthRead ||
+          a_state == FrameGraphResourceState::DepthWrite ||
+          a_state == FrameGraphResourceState::Present)))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.handle"});
     }
@@ -320,6 +433,29 @@ Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResou
     {
         return Result<void>::failure({ErrorCategory::PlatformFailure, "FrameGraphBuilder.use.allocation"});
     }
+}
+
+/// @brief 旧 Builder と同様、現在構築中の Pass に Resource 使用を登録する
+Result<void> FrameGraphBuilder::use(FrameGraphResourceHandle a_resource, FrameGraphAccess a_access,
+                                    FrameGraphResourceState a_state)
+{
+    if (!m_currentPass)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphBuilder.use.no_pass"});
+    }
+    return use(*m_currentPass, a_resource, a_access, a_state);
+}
+
+/// @brief describe_resources の期間だけ現在の Pass を設定する
+void FrameGraphBuilder::begin_pass(FrameGraphPassHandle a_pass) noexcept
+{
+    m_currentPass = a_pass;
+}
+
+/// @brief 別 Pass への Resource 宣言の漏出を防ぐ
+void FrameGraphBuilder::end_pass() noexcept
+{
+    m_currentPass.reset();
 }
 
 /// @brief Hazard 以外の実行順制約を後から追加する
@@ -359,12 +495,18 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         }
 
         // 同じ Resource の Write に接する Access は宣言順を守り、Read 同士だけ並べ替えを許す
-        std::vector<std::vector<std::pair<std::uint32_t, FrameGraphAccess>>> accesses(m_resources.size());
+        struct AccessRecord final
+        {
+            std::uint32_t passIndex = 0;
+            FrameGraphAccess access = FrameGraphAccess::Read;
+            FrameGraphResourceState state = FrameGraphResourceState::Common;
+        };
+        std::vector<std::vector<AccessRecord>> accesses(m_resources.size());
         for (const auto& pass : m_passes)
         {
             for (const auto& use : pass.uses)
             {
-                accesses[use.resource.index].push_back({pass.handle.index, use.access});
+                accesses[use.resource.index].push_back({pass.handle.index, use.access, use.state});
             }
         }
         for (const auto& resourceAccesses : accesses)
@@ -373,10 +515,13 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             {
                 for (std::size_t later = earlier + 1; later < resourceAccesses.size(); ++later)
                 {
-                    if (resourceAccesses[earlier].second == FrameGraphAccess::Write ||
-                        resourceAccesses[later].second == FrameGraphAccess::Write)
+                    const auto& first = resourceAccesses[earlier];
+                    const auto& second = resourceAccesses[later];
+                    if (first.access == FrameGraphAccess::Write || second.access == FrameGraphAccess::Write ||
+                        first.state != second.state ||
+                        m_passes[first.passIndex].queue != m_passes[second.passIndex].queue)
                     {
-                        edges[resourceAccesses[earlier].first][resourceAccesses[later].first] = true;
+                        edges[first.passIndex][second.passIndex] = true;
                     }
                 }
             }
@@ -518,6 +663,22 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 available->resources.push_back(resource.handle);
             }
         }
+        // Alias Slot の再利用は Resource Hazard がなくても GPU の実行順を要求する
+        for (const auto& slot : slots)
+        {
+            for (std::size_t index = 1; index < slot.resources.size(); ++index)
+            {
+                const auto& previous = resources[slot.resources[index - 1].index];
+                const auto& next = resources[slot.resources[index].index];
+                auto& dependencies = ordered[*next.firstUse].dependencies;
+                const auto before = ordered[*previous.lastUse].handle;
+                if (std::none_of(dependencies.begin(), dependencies.end(), [before](FrameGraphPassHandle a_handle)
+                                 { return a_handle.index == before.index; }))
+                {
+                    dependencies.push_back(before);
+                }
+            }
+        }
         std::uint64_t planId = g_nextPlanId.load(std::memory_order_relaxed);
         while (planId != (std::numeric_limits<std::uint64_t>::max)() &&
                !g_nextPlanId.compare_exchange_weak(planId, planId + 1, std::memory_order_relaxed))
@@ -536,6 +697,12 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
     }
 }
 
+/// @brief 宣言済み Pass 数を返す
+std::size_t FrameGraphBuilder::pass_count() const noexcept
+{
+    return m_passes.size();
+}
+
 /// @brief 失敗時は既存 Resource Index を変えずに論理形状だけ追加する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::add_resource(FrameGraphResourcePlan a_resource)
 {
@@ -543,6 +710,12 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::add_resource(FrameGraphResou
     {
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.add_resource.exhausted"});
+    }
+    if (!a_resource.name.empty() && std::any_of(m_resources.begin(), m_resources.end(),
+        [&a_resource](const FrameGraphResourcePlan& a_existing) { return a_existing.name == a_resource.name; }))
+    {
+        return Result<FrameGraphResourceHandle>::failure(
+            {ErrorCategory::InvalidArgument, "FrameGraphBuilder.add_resource.duplicate_name"});
     }
     const FrameGraphResourceHandle handle{m_graphId, static_cast<std::uint32_t>(m_resources.size())};
     a_resource.handle = handle;

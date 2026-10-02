@@ -209,11 +209,25 @@ Result<void> DX12FrameGraphExecutor::record(const FrameGraphPlan& a_plan, DX12Fr
                                             std::span<const dx12FrameGraphPassCallback> a_callbacks,
                                             DX12GpuCommandContext& a_context)
 {
+    return record_range(a_plan, a_resources, a_external, a_callbacks, a_context,
+                        0, a_plan.passes().size(), true);
+}
+
+/// @brief 複数 Queue の提出単位ごとに同じ Plan の一部分を記録する
+Result<void> DX12FrameGraphExecutor::record_range(
+    const FrameGraphPlan& a_plan, DX12FrameGraphResources& a_resources,
+    std::span<const DX12FrameGraphExternalResource> a_external,
+    std::span<const dx12FrameGraphPassCallback> a_callbacks, DX12GpuCommandContext& a_context,
+    std::size_t a_firstPass, std::size_t a_passCount, bool a_includeFinal)
+{
     using RecordResult = Result<void>;
     if (!a_resources.matches_plan(a_plan) ||
-        a_context.type() != QueueType::Graphics || a_context.state() != CommandState::Recording ||
+        a_context.state() != CommandState::Recording ||
         !a_context.command_list() || a_callbacks.size() != a_plan.passes().size() ||
-        a_plan.passes().size() > (std::numeric_limits<UINT>::max)())
+        a_plan.passes().size() > (std::numeric_limits<UINT>::max)() ||
+        a_firstPass > a_plan.passes().size() ||
+        a_passCount > a_plan.passes().size() - a_firstPass ||
+        (a_includeFinal && a_context.type() != QueueType::Graphics))
     {
         return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.context"});
     }
@@ -298,9 +312,10 @@ Result<void> DX12FrameGraphExecutor::record(const FrameGraphPlan& a_plan, DX12Fr
 
         std::vector<std::vector<D3D12_RESOURCE_BARRIER>> passBarriers(a_plan.passes().size());
         std::vector<D3D12_RESOURCE_BARRIER> finalBarriers;
-        for (std::size_t index = 0; index < a_plan.passes().size(); ++index)
+        for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
         {
-            if (!a_callbacks[index] || a_plan.passes()[index].handle.graphId != graphId ||
+            if (!a_callbacks[index] || a_plan.passes()[index].queue != a_context.type() ||
+                a_plan.passes()[index].handle.graphId != graphId ||
                 a_plan.passes()[index].barriersBefore.size() > (std::numeric_limits<UINT>::max)() ||
                 a_resources.barriers_before_pass(index).size() > (std::numeric_limits<UINT>::max)())
             {
@@ -318,13 +333,17 @@ Result<void> DX12FrameGraphExecutor::record(const FrameGraphPlan& a_plan, DX12Fr
                 passBarriers[index].push_back(native);
             }
         }
-        if (a_plan.final_barriers().size() > (std::numeric_limits<UINT>::max)())
+        if (a_includeFinal && a_plan.final_barriers().size() > (std::numeric_limits<UINT>::max)())
         {
             return RecordResult::failure({ErrorCategory::InvalidArgument,
                                           "DX12FrameGraphExecutor.record.final_barrier_count"});
         }
         for (const auto& barrier : a_plan.final_barriers())
         {
+            if (!a_includeFinal)
+            {
+                break;
+            }
             D3D12_RESOURCE_BARRIER native{};
             if (!native_barrier(barrier, nativeResources, graphId, native))
             {
@@ -336,7 +355,7 @@ Result<void> DX12FrameGraphExecutor::record(const FrameGraphPlan& a_plan, DX12Fr
 
         DX12FrameGraphPassContext passContext(graphId, nativeResources);
         auto& list = *a_context.command_list();
-        for (std::size_t index = 0; index < a_plan.passes().size(); ++index)
+        for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
         {
             const auto aliasing = a_resources.barriers_before_pass(index);
             if (!aliasing.empty())
