@@ -83,6 +83,12 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.FrameGraphResources COMMAND CueDX12FrameGraphResourcesTests)
     set_tests_properties(Cue.Renderer.DX12.FrameGraphResources PROPERTIES TIMEOUT 15)
 
+    # 固定 FinalColor を枠ごとに物理化し、WARP の Clear 結果を読み戻す
+    add_executable(CueDX12FinalColorFramesTests Renderer/DX12FinalColorFramesTests.cpp)
+    target_link_libraries(CueDX12FinalColorFramesTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.FinalColorFrames COMMAND CueDX12FinalColorFramesTests)
+    set_tests_properties(Cue.Renderer.DX12.FinalColorFrames PROPERTIES TIMEOUT 15)
+
     # 論理 Barrier と Pass を実 Command List に記録し、WARP の転送結果を確認する
     add_executable(CueDX12FrameGraphExecutorTests Renderer/DX12FrameGraphExecutorTests.cpp)
     target_link_libraries(CueDX12FrameGraphExecutorTests PRIVATE Cue.Renderer.DX12)
