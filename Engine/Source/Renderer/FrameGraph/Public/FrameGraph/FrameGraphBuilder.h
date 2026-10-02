@@ -103,6 +103,7 @@ struct FrameGraphResourcePlan final
     GpuBufferDesc bufferDesc;
     GpuTexture2DDesc textureDesc;
     bool isImported = false;
+    bool restoreFinalState = false;
     FrameGraphResourceState initialState = FrameGraphResourceState::Common;
     FrameGraphResourceState finalState = FrameGraphResourceState::Common;
     std::optional<std::size_t> firstUse;
@@ -135,7 +136,7 @@ public:
     /// @brief 一時 Resource の非重複寿命から作った共有候補を返す
     [[nodiscard]] const std::vector<FrameGraphAliasSlotPlan>& alias_slots() const noexcept;
 
-    /// @brief 外部 Resource を指定された終了 State に戻す Barrier を返す
+    /// @brief 外部 Resource と再利用する固定 Resource を終了 State に戻す Barrier を返す
     [[nodiscard]] const std::vector<FrameGraphBarrierPlan>& final_barriers() const noexcept;
 
 private:

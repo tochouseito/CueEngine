@@ -1,12 +1,19 @@
 #include <WindowsHost/WindowsHost.h>
 
+#include <atomic>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <utility>
 
+#include <DX12/DX12Backend.h>
+#include <DX12/DX12CommandPool.h>
+#include <DX12/DX12MainFrameGraph.h>
+#include <DX12/DX12RenderDevice.h>
+#include <DX12/DX12SwapChain.h>
 #include <Platform/Diagnostics.h>
-#include <Platform/Windows/WindowsPlatform.h>
 #include <Platform/WindowSystem.h>
+#include <Platform/Windows/WindowsPlatform.h>
 #include <RHI/BackendFactory.h>
 #include <Runtime/Runtime.h>
 
@@ -14,14 +21,78 @@ namespace cue
 {
 class WindowsHost::State final
 {
-public:
+  public:
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     std::unique_ptr<IBackend> backend;
+    dx12::DX12Backend *dx12Backend = nullptr;
+    std::unique_ptr<dx12::DX12MainFrameGraph> graph;
     WindowsThreadServices services;
     std::unique_ptr<Runtime> runtime;
+    std::atomic<bool> isRenderStopped = false;
+    std::atomic<bool> isPresentationSuspended = false;
+    WindowSize presentationSize{};
     bool isCloseRequested = false;
     bool isDestroyed = false;
+
+    /// @brief 固定 Graph の Command を Graphics Queue に提出して表示する
+    [[nodiscard]] Result<void> render(std::uint64_t a_frameIndex, std::stop_token a_stopToken,
+                                      std::uint32_t a_frameCount)
+    {
+        if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        {
+            return Result<void>::success();
+        }
+        auto *commandPool = dx12Backend->get_command_pool();
+        auto *swapChain = dx12Backend->get_swap_chain();
+        if (!commandPool || !swapChain || !swapChain->graphics_queue() || !graph)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
+        }
+        auto commandResult = commandPool->acquire(QueueType::Graphics);
+        if (!commandResult.has_value())
+        {
+            return Result<void>::failure(*commandResult.try_error());
+        }
+        auto command = commandResult.take_value();
+        auto *context = dynamic_cast<dx12::DX12GpuCommandContext *>(command.get());
+        if (!context)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.context"});
+        }
+        const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
+        auto recordResult = graph->record(frameSlot, *context);
+        if (!recordResult.has_value())
+        {
+            return recordResult;
+        }
+        if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        {
+            return Result<void>::success();
+        }
+        auto closeResult = command->close();
+        if (!closeResult.has_value())
+        {
+            return closeResult;
+        }
+        auto submitResult = commandPool->submit(*swapChain->graphics_queue(), *command);
+        if (!submitResult.has_value())
+        {
+            return Result<void>::failure(*submitResult.try_error());
+        }
+        std::shared_ptr<ICommandCompletion> completion(submitResult.take_value());
+        auto markResult = graph->mark_submitted(frameSlot, completion);
+        if (!markResult.has_value())
+        {
+            auto waitResult = completion->wait();
+            if (!waitResult.has_value())
+            {
+                return waitResult;
+            }
+            return markResult;
+        }
+        return swapChain->present();
+    }
 };
 
 /// @brief 起動設定と構築 Thread を固定する
@@ -62,7 +133,8 @@ Result<void> WindowsHost::initialize()
     }
 
     // 部分初期化の失敗時は元の Error を返し、Cleanup の失敗は別に診断する
-    auto rollback = [this](Error a_error) {
+    auto rollback = [this](Error a_error)
+    {
         auto cleanupResult = shutdown();
         if (!cleanupResult.has_value())
         {
@@ -95,6 +167,45 @@ Result<void> WindowsHost::initialize()
         return rollback(*backendResult.try_error());
     }
     m_state->backend = backendResult.take_value();
+    m_state->dx12Backend = dynamic_cast<dx12::DX12Backend *>(m_state->backend.get());
+    if (!m_state->dx12Backend)
+    {
+        return rollback({ErrorCategory::InvalidState, "WindowsHost.backend"});
+    }
+
+    // Window の Client Area と同じ大きさで Back Buffer と固定 Graph を用意する
+    auto handleResult = borrow_windows_window_handle(*m_state->window);
+    if (!handleResult.has_value())
+    {
+        return rollback(*handleResult.try_error());
+    }
+    m_state->presentationSize = m_state->window->client_size();
+    dx12::DX12SwapChainConfig swapConfig{};
+    swapConfig.width = m_state->presentationSize.width;
+    swapConfig.height = m_state->presentationSize.height;
+    swapConfig.bufferCount = m_config.presentation.bufferCount;
+    swapConfig.isVSyncEnabled = m_config.presentation.isVSyncEnabled;
+    swapConfig.isTearingAllowed = m_config.presentation.isTearingAllowed;
+    auto swapResult = m_state->dx12Backend->create_swap_chain(*handleResult.try_value(), swapConfig);
+    if (!swapResult.has_value())
+    {
+        return rollback(*swapResult.try_error());
+    }
+    auto *device = dynamic_cast<dx12::DX12RenderDevice *>(m_state->dx12Backend->get_render_device());
+    auto *rtvAllocator = m_state->dx12Backend->get_descriptor_allocator(dx12::DX12DescriptorHeapRole::Rtv);
+    auto *srvAllocator = m_state->dx12Backend->get_descriptor_allocator(dx12::DX12DescriptorHeapRole::ShaderView);
+    if (!device || !rtvAllocator || !srvAllocator)
+    {
+        return rollback({ErrorCategory::InvalidState, "WindowsHost.graph.resources"});
+    }
+    auto graphResult = dx12::DX12MainFrameGraph::create(*device, *m_state->dx12Backend->get_swap_chain(),
+                                                        m_config.frame.maxFramesInFlight, *rtvAllocator, *srvAllocator,
+                                                        m_config.presentation.clearColor);
+    if (!graphResult.has_value())
+    {
+        return rollback(*graphResult.try_error());
+    }
+    m_state->graph = graphResult.take_value();
 
     // Runtime が借りる時間と Worker Service を、Runtime より長く生存させる
     auto servicesResult = create_windows_thread_services();
@@ -104,12 +215,14 @@ Result<void> WindowsHost::initialize()
     }
     m_state->services = servicesResult.take_value();
 
-    m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock,
-                                                 *m_state->services.waiter, *m_state->services.threadFactory);
-    // Resource と描画の接続までは Frame 順序だけを動作させる
-    auto runtimeResult = m_state->runtime->initialize(
-        [](std::uint64_t, std::stop_token) { return Result<void>::success(); },
-        [](std::uint64_t, std::stop_token) { return Result<void>::success(); });
+    m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
+                                                 *m_state->services.threadFactory);
+    State *state = m_state.get();
+    const auto frameCount = m_config.frame.maxFramesInFlight;
+    auto runtimeResult =
+        m_state->runtime->initialize([](std::uint64_t, std::stop_token) { return Result<void>::success(); },
+                                     [state, frameCount](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
+                                     { return state->render(a_frameIndex, a_stopToken, frameCount); });
     if (!runtimeResult.has_value())
     {
         return rollback(*runtimeResult.try_error());
@@ -150,10 +263,20 @@ Result<bool> WindowsHost::step()
         if (event.type == WindowEventType::CloseRequested)
         {
             m_state->isCloseRequested = true;
+            m_state->isRenderStopped.store(true);
         }
         else if (event.type == WindowEventType::Destroyed)
         {
             m_state->isDestroyed = true;
+            m_state->isRenderStopped.store(true);
+        }
+        else if (event.type == WindowEventType::Minimized || event.type == WindowEventType::Resized ||
+                 event.type == WindowEventType::Restored)
+        {
+            // Resize 対応までは旧 Back Buffer サイズでの追加提出を止める
+            m_state->isPresentationSuspended.store(event.clientSize.width == 0 || event.clientSize.height == 0 ||
+                                                   event.clientSize.width != m_state->presentationSize.width ||
+                                                   event.clientSize.height != m_state->presentationSize.height);
         }
     }
 
@@ -204,6 +327,7 @@ Result<void> WindowsHost::shutdown()
     }
 
     // Worker の Callback を止めてから GPU と Window の所有先を解放する
+    m_state->isRenderStopped.store(true);
     std::optional<Error> failure;
     if (m_state->runtime)
     {
@@ -213,6 +337,15 @@ Result<void> WindowsHost::shutdown()
             failure = *runtimeResult.try_error();
         }
         m_state->runtime.reset();
+    }
+    if (m_state->graph)
+    {
+        auto graphResult = m_state->graph->shutdown();
+        if (!graphResult.has_value() && !failure)
+        {
+            failure = *graphResult.try_error();
+        }
+        m_state->graph.reset();
     }
     if (m_state->backend)
     {
