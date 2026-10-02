@@ -63,6 +63,11 @@ public:
     /// @brief 指定 Index の有効な RTV Handle を返す
     [[nodiscard]] Result<D3D12_CPU_DESCRIPTOR_HANDLE> rtv(std::uint32_t a_index) const;
 
+    /// @brief SwapChain を作成した Graphics Queue を本体の生存中だけ借用する
+    ///
+    /// 描画 Command はこの Queue に提出してから Present する
+    [[nodiscard]] IQueueContext* graphics_queue() const noexcept;
+
     /// @brief 設定した同期方式で表示し、DXGI の失敗を Result で返す
     ///
     /// 呼出側は先に GPU 作業を提出し、Back Buffer を PRESENT State に戻す

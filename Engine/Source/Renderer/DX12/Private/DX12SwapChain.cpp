@@ -173,6 +173,12 @@ Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12SwapChain::rtv(std::uint32_t a_index) co
     return m_rtvAllocator->cpu_handle(m_rtvHandles[a_index]);
 }
 
+/// @brief 描画提出と Present が同じ Queue を使えるように貸し出す
+IQueueContext* DX12SwapChain::graphics_queue() const noexcept
+{
+    return m_queue.get();
+}
+
 /// @brief VSync と DXGI のティアリング制約を一箇所で適用する
 Result<void> DX12SwapChain::present()
 {

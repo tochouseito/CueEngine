@@ -95,6 +95,12 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.FullscreenPipeline COMMAND CueDX12FullscreenPipelineTests)
     set_tests_properties(Cue.Renderer.DX12.FullscreenPipeline PROPERTIES TIMEOUT 15)
 
+    # 固定 Clear と表示 Pass の Barrier および WARP Back Buffer 画素を確認する
+    add_executable(CueDX12MainFrameGraphTests Renderer/DX12MainFrameGraphTests.cpp)
+    target_link_libraries(CueDX12MainFrameGraphTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
+    add_test(NAME Cue.Renderer.DX12.MainFrameGraph COMMAND CueDX12MainFrameGraphTests)
+    set_tests_properties(Cue.Renderer.DX12.MainFrameGraph PROPERTIES TIMEOUT 20)
+
     # 論理 Barrier と Pass を実 Command List に記録し、WARP の転送結果を確認する
     add_executable(CueDX12FrameGraphExecutorTests Renderer/DX12FrameGraphExecutorTests.cpp)
     target_link_libraries(CueDX12FrameGraphExecutorTests PRIVATE Cue.Renderer.DX12)
