@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace cue
@@ -44,6 +45,8 @@ struct GpuTexture2DDesc final
     std::uint32_t height = 0;
     std::uint16_t mipLevels = 1;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
+    bool isRenderTarget = false;
+    std::array<float, 4> clearColor{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 /// @brief Backend が所有する GPU Resource の共通契約

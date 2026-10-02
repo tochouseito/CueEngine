@@ -25,7 +25,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
     DX12RenderDevice& a_device, const FrameGraphPlan& a_plan)
 {
     using GraphResult = Result<std::unique_ptr<DX12FrameGraphResources>>;
-    // 現行の Native 定義は RT／DS／UAV Flag を持たないため、物理化前に拒否する
+    // RenderTarget は明示された Texture だけに許可し、未対応の DS／UAV を拒否する
     for (const auto& pass : a_plan.passes())
     {
         for (const auto& use : pass.uses)
@@ -34,7 +34,9 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             {
                 continue;
             }
-            if (use.state == FrameGraphResourceState::RenderTarget ||
+            const auto& resource = a_plan.resources()[use.resource.index];
+            if ((use.state == FrameGraphResourceState::RenderTarget &&
+                 (resource.kind != GpuResourceKind::Texture2D || !resource.textureDesc.isRenderTarget)) ||
                 use.state == FrameGraphResourceState::DepthRead ||
                 use.state == FrameGraphResourceState::DepthWrite ||
                 use.state == FrameGraphResourceState::UnorderedAccess)

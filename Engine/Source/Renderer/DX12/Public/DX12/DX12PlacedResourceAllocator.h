@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -75,12 +76,14 @@ private:
     /// @brief Native 定義に合う空き領域を探して Resource を作る
     [[nodiscard]] Result<std::unique_ptr<DX12GpuResource>> create_resource(
         const D3D12_RESOURCE_DESC& a_desc, GpuResourceKind a_kind, std::uint64_t a_bufferSize,
-        D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name);
+        D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name,
+        const std::array<float, 4>* a_clearColor = nullptr);
 
     /// @brief 最大 Size と Alignment の一領域に Resource 群を作る
     [[nodiscard]] Result<std::vector<std::unique_ptr<DX12GpuResource>>> create_resources(
         std::span<const D3D12_RESOURCE_DESC> a_descs, GpuResourceKind a_kind,
-        std::span<const std::uint64_t> a_bufferSizes, D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name);
+        std::span<const std::uint64_t> a_bufferSizes, D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name,
+        std::span<const std::array<float, 4>> a_clearColors = {});
 
     std::shared_ptr<State> m_state;
 };

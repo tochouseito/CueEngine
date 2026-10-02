@@ -97,6 +97,7 @@ Result<D3D12_RESOURCE_DESC> DX12GpuResource::texture2d_desc(GpuTexture2DDesc a_d
     desc.Format = format;
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = a_desc.isRenderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
     return Result<D3D12_RESOURCE_DESC>::success(desc);
 }
 
@@ -159,8 +160,15 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     auto resource = std::make_unique<DX12GpuResource>(CreateToken{});
+    D3D12_CLEAR_VALUE clearValue{};
+    clearValue.Format = descResult.try_value()->Format;
+    for (std::size_t index = 0; index < a_desc.clearColor.size(); ++index)
+    {
+        clearValue.Color[index] = a_desc.clearColor[index];
+    }
     const HRESULT result = a_device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(),
-                                                             D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                             D3D12_RESOURCE_STATE_COMMON,
+                                                             a_desc.isRenderTarget ? &clearValue : nullptr,
                                                              IID_PPV_ARGS(&resource->m_resource));
     if (FAILED(result))
     {

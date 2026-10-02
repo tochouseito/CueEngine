@@ -171,6 +171,31 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create()
     }
 }
 
+/// @brief RenderTarget と ShaderRead の両用途を持つ論理 Texture を先頭へ固定する
+Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTexture2DDesc a_finalColor)
+{
+    auto builderResult = create();
+    if (!builderResult.has_value())
+    {
+        return builderResult;
+    }
+    auto builder = builderResult.take_value();
+    a_finalColor.isRenderTarget = true;
+    auto colorResult = builder->create_transient_texture2d(a_finalColor);
+    if (!colorResult.has_value())
+    {
+        return Result<std::unique_ptr<FrameGraphBuilder>>::failure(*colorResult.try_error());
+    }
+    builder->m_finalColor = colorResult.take_value();
+    return Result<std::unique_ptr<FrameGraphBuilder>>::success(std::move(builder));
+}
+
+/// @brief 通常 Builder では無効 Handle、本番用 Builder では固定 Handle を返す
+FrameGraphResourceHandle FrameGraphBuilder::final_color() const noexcept
+{
+    return m_finalColor;
+}
+
 /// @brief Default Buffer の論理 Resource を追加する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(GpuBufferDesc a_desc)
 {
@@ -476,7 +501,10 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             const auto& resource = resources[index];
             auto available = std::find_if(slots.begin(), slots.end(), [&resources, &resource](const auto& a_slot) {
                 const auto& last = resources[a_slot.resources.back().index];
-                return a_slot.kind == resource.kind && *last.lastUse < *resource.firstUse;
+                const bool isSameTextureHeap = resource.kind != GpuResourceKind::Texture2D ||
+                                               last.textureDesc.isRenderTarget == resource.textureDesc.isRenderTarget;
+                return a_slot.kind == resource.kind && isSameTextureHeap &&
+                       *last.lastUse < *resource.firstUse;
             });
             if (available == slots.end())
             {

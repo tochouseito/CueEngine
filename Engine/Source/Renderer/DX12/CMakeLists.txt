@@ -4,6 +4,7 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12Backend.cpp
     Private/DX12CommandPool.cpp
     Private/DX12DescriptorAllocator.cpp
+    Private/DX12FinalColorFrames.cpp
     Private/DX12FrameGraphExecutor.cpp
     Private/DX12FrameGraphResources.cpp
     Private/DX12GpuResource.cpp

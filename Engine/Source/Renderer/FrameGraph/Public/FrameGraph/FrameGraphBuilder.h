@@ -172,6 +172,14 @@ public:
     /// @brief 他 Graph と混同しない ID を発行する
     [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create();
 
+    /// @brief FinalColorTexture を固定登録した本番用 Graph Builder を作る
+    ///
+    /// 生成した Handle は Builder の寿命中だけ有効で、物理 Texture は Backend が枠ごとに作る
+    [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create_main(GpuTexture2DDesc a_finalColor);
+
+    /// @brief 本番用 Graph に固定した FinalColorTexture の論理 Handle を返す
+    [[nodiscard]] FrameGraphResourceHandle final_color() const noexcept;
+
     FrameGraphBuilder(const FrameGraphBuilder&) = delete;
     FrameGraphBuilder& operator=(const FrameGraphBuilder&) = delete;
 
@@ -219,6 +227,7 @@ private:
     [[nodiscard]] bool owns(FrameGraphPassHandle a_handle) const noexcept;
 
     std::uint64_t m_graphId = 0;
+    FrameGraphResourceHandle m_finalColor;
     std::vector<FrameGraphResourcePlan> m_resources;
     std::vector<FrameGraphPassPlan> m_passes;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> m_dependencies;
