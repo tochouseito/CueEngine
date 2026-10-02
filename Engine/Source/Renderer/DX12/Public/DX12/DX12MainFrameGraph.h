@@ -40,7 +40,7 @@ using dx12MainGraphConfigure =
 /// @brief FinalColor Clear と Back Buffer 表示を一つの本番 Graph に固定する
 ///
 /// SwapChain と Descriptor Allocator は借用し、本体より長く生存させる
-/// 記録、提出完了の登録、停止は同一制御 Thread から直列に呼ぶ
+/// 記録、提出完了の登録、停止は Thread をまたぐ場合も直列に呼ぶ
 /// Present は本体が呼ばず、呼出側が記録済み Command の提出後に呼ぶ
 class DX12MainFrameGraph final
 {

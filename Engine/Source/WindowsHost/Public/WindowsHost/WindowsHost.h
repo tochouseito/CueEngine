@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <thread>
@@ -16,6 +17,7 @@ struct PresentationConfig final
     std::uint32_t bufferCount = 2;
     bool isVSyncEnabled = false;
     bool isTearingAllowed = false;
+    std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
@@ -31,15 +33,15 @@ struct WindowsHostConfig final
 /// 構築 Thread が初期化、Message Pump、停止、破棄を行い、再入しない
 class WindowsHost final
 {
-public:
-    /// @brief Frame と将来の SwapChain 設定を所有値で保持する
+  public:
+    /// @brief Frame と SwapChain 設定を所有値で保持する
     explicit WindowsHost(WindowsHostConfig a_config);
 
     /// @brief 明示停止がない場合も Window を解放する
     ~WindowsHost();
 
-    WindowsHost(const WindowsHost&) = delete;
-    WindowsHost& operator=(const WindowsHost&) = delete;
+    WindowsHost(const WindowsHost &) = delete;
+    WindowsHost &operator=(const WindowsHost &) = delete;
 
     /// @brief Window、Renderer Backend、Runtime を作成して表示する
     ///
@@ -61,7 +63,7 @@ public:
     /// 構築 Thread から複数回呼べる。失敗しても残る解放を続け、最初の Error を返す
     [[nodiscard]] Result<void> shutdown();
 
-private:
+  private:
     class State;
 
     enum class Lifecycle

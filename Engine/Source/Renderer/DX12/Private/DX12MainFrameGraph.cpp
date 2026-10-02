@@ -149,7 +149,7 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
         }
         auto plan = planResult.take_value();
         if (plan.passes().size() != customPasses.size() + 2 || plan.passes().front().handle.index != clearPass.index ||
-            plan.passes().back().handle.index != displayPass.index || plan.final_barriers().size() != 1)
+            plan.passes().back().handle.index != displayPass.index || plan.final_barriers().size() != 2)
         {
             return GraphResult::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.create.plan"});
         }

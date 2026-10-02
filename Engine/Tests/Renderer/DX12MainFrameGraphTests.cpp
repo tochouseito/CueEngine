@@ -90,7 +90,8 @@ int run_tests()
         plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::ShaderRead ||
         plan.passes()[1].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
         plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::RenderTarget ||
-        plan.final_barriers().size() != 1 || plan.final_barriers()[0].after != cue::FrameGraphResourceState::Present)
+        plan.final_barriers().size() != 2 || plan.final_barriers()[0].after != cue::FrameGraphResourceState::Common ||
+        plan.final_barriers()[1].after != cue::FrameGraphResourceState::Present)
     {
         return 8;
     }

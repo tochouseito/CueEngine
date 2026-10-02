@@ -187,6 +187,8 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTex
         return Result<std::unique_ptr<FrameGraphBuilder>>::failure(*colorResult.try_error());
     }
     builder->m_finalColor = colorResult.take_value();
+    // 枠をまたいで使う物理 Texture は次回の開始 State へ戻す
+    builder->m_resources[builder->m_finalColor.index].restoreFinalState = true;
     return Result<std::unique_ptr<FrameGraphBuilder>>::success(std::move(builder));
 }
 
@@ -475,7 +477,8 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         for (std::size_t index = 0; index < resources.size(); ++index)
         {
             const auto& resource = resources[index];
-            if (resource.isImported && !is_same_state(currentStates[index], resource.finalState))
+            if ((resource.isImported || resource.restoreFinalState) &&
+                !is_same_state(currentStates[index], resource.finalState))
             {
                 finalBarriers.push_back({FrameGraphBarrierKind::Transition, resource.handle,
                                          currentStates[index], resource.finalState});

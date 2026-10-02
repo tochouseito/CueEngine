@@ -110,7 +110,7 @@ int test_window_lifecycle()
     return 0;
 }
 
-/// @brief 既定の Worker 構成で Host が Frame を投入し描画 Callback まで進む
+/// @brief 既定の Worker 構成で複数回の描画提出と Present が完了する
 int test_worker_frame_progress()
 {
     cue::WindowsHost host({{"CueWindowsHost Worker Test", {320, 240}}, {}, {}});
@@ -128,7 +128,7 @@ int test_worker_frame_progress()
         {
             return 2;
         }
-        hasRendered = progressResult.try_value()->renderedFrames != 0;
+        hasRendered = progressResult.try_value()->renderedFrames >= 3;
         if (!hasRendered)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
