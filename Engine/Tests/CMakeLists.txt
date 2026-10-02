@@ -89,6 +89,12 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.FinalColorFrames COMMAND CueDX12FinalColorFramesTests)
     set_tests_properties(Cue.Renderer.DX12.FinalColorFrames PROPERTIES TIMEOUT 15)
 
+    # DXC Shader と全画面 Triangle の SRV から RTV への描画を WARP で検証する
+    add_executable(CueDX12FullscreenPipelineTests Renderer/DX12FullscreenPipelineTests.cpp)
+    target_link_libraries(CueDX12FullscreenPipelineTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.FullscreenPipeline COMMAND CueDX12FullscreenPipelineTests)
+    set_tests_properties(Cue.Renderer.DX12.FullscreenPipeline PROPERTIES TIMEOUT 15)
+
     # 論理 Barrier と Pass を実 Command List に記録し、WARP の転送結果を確認する
     add_executable(CueDX12FrameGraphExecutorTests Renderer/DX12FrameGraphExecutorTests.cpp)
     target_link_libraries(CueDX12FrameGraphExecutorTests PRIVATE Cue.Renderer.DX12)
