@@ -122,6 +122,12 @@ ID3D12Device* DX12GpuCommandQueue::device() const noexcept
     return m_device.Get();
 }
 
+/// @brief Present と同じ Graphics Queue を DXGI へ渡す
+ID3D12CommandQueue* DX12GpuCommandQueue::command_queue() const noexcept
+{
+    return m_queue.Get();
+}
+
 /// @brief Queue の Lease が解放されても Fence を生存させる参照を返す
 Microsoft::WRL::ComPtr<ID3D12Fence> DX12GpuCommandQueue::completion_fence() const noexcept
 {

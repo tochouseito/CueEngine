@@ -13,6 +13,8 @@ class DX12QueuePool;
 class DX12CommandPool;
 class DX12GpuResourcePool;
 class DX12DescriptorAllocator;
+class DX12SwapChain;
+struct DX12SwapChainConfig;
 struct DX12DescriptorHeapState;
 
 /// @brief Backend が所有する Descriptor Heap の用途
@@ -91,11 +93,20 @@ public:
     /// Allocator の公開操作は複数 Thread から呼べる。最後の Lease の返却後は Pointer を使わない
     [[nodiscard]] DX12DescriptorAllocator* get_descriptor_allocator(DX12DescriptorHeapRole a_role) noexcept;
 
+    /// @brief Window に対する SwapChain を一度だけ作成して所有する
+    ///
+    /// Window は shutdown 完了まで呼出側が生存させる。失敗時は Backend の既存状態を維持する
+    [[nodiscard]] Result<void> create_swap_chain(void* a_windowHandle, const DX12SwapChainConfig& a_config);
+
+    /// @brief 稼働中の SwapChain を Backend の停止まで借用させる
+    [[nodiscard]] DX12SwapChain* get_swap_chain() noexcept;
+
 private:
     std::unique_ptr<DX12RenderDevice> m_device;
     std::shared_ptr<DX12DescriptorHeapState> m_descriptors;
     std::unique_ptr<DX12QueuePool> m_queuePool;
     std::unique_ptr<DX12CommandPool> m_commandPool;
     std::unique_ptr<DX12GpuResourcePool> m_resourcePool;
+    std::unique_ptr<DX12SwapChain> m_swapChain;
 };
 } // namespace cue::dx12

@@ -12,6 +12,7 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12RenderDevice.cpp
     Private/DX12QueuePool.cpp
     Private/DX12ResourceLeakChecker.cpp
+    Private/DX12SwapChain.cpp
 )
 
 target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
