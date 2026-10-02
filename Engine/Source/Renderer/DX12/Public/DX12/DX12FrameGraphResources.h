@@ -11,16 +11,19 @@
 #include <Foundation/Result.h>
 #include <FrameGraph/FrameGraphBuilder.h>
 #include <RHI/Command.h>
+#include <RHI/GpuResourcePool.h>
 
 namespace cue::dx12
 {
 class DX12GpuResource;
-class DX12PlacedResourceAllocator;
+class DX12GpuResourcePool;
 class DX12RenderDevice;
 
 /// @brief FrameGraph の一時 Resource と初回使用前の Aliasing Barrier を所有する
 ///
 /// 一つの Graph Plan を一つの直列 Queue で実行する前提。外部 Resource は所有しない
+/// Alias Slot の Resource は専用 ResourcePool が所有し、Graph が配置順を管理する
+/// Pool Lease は Graph の GPU 完了まで保持し、shutdown で待機後に返す
 /// Resource と Barrier の Pointer は本体の shutdown まで有効。GPU 提出後は毎回 mark_submitted を呼ぶ
 class DX12FrameGraphResources final
 {
@@ -67,8 +70,9 @@ public:
     [[nodiscard]] Result<void> shutdown();
 
 private:
-    std::unique_ptr<DX12PlacedResourceAllocator> m_allocator;
-    std::vector<std::unique_ptr<DX12GpuResource>> m_resources;
+    std::unique_ptr<DX12GpuResourcePool> m_pool;
+    std::vector<DX12GpuResource*> m_poolResources;
+    std::vector<gpuResourceLease> m_poolLeases;
     std::vector<std::vector<D3D12_RESOURCE_BARRIER>> m_barriers;
     std::shared_ptr<ICommandCompletion> m_completion;
     std::uint64_t m_graphId = 0;

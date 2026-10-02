@@ -1,5 +1,9 @@
 #include <FrameGraph/FrameGraph.h>
+#include <Passes/ClearFinalColorPass.h>
+#include <Passes/MainFrameGraph.h>
+#include <Passes/PresentToSwapChainPass.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -23,6 +27,46 @@ public:
         : FrameGraphContext(8, 8, 1, a_command)
     {
     }
+
+    /// @brief Native API を使わずに Clear の宣言内容を記録する
+    [[nodiscard]] cue::Result<void> clear_render_target(
+        cue::FrameGraphResourceHandle a_target, const std::array<float, 4>& a_color) override
+    {
+        clearTarget = a_target;
+        clearColor = a_color;
+        ++clearCount;
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 抽象 Context の描画先指定を GPU なしで受け付ける
+    [[nodiscard]] cue::Result<void> set_render_target(cue::FrameGraphResourceHandle) override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief 抽象 Context の Shader 入力指定を GPU なしで受け付ける
+    [[nodiscard]] cue::Result<void> bind_texture2d(cue::FrameGraphResourceHandle,
+                                                   std::uint32_t) override
+    {
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Native API を使わずに Copy の宣言内容を記録する
+    [[nodiscard]] cue::Result<void> copy_texture2d(
+        cue::FrameGraphResourceHandle a_source, cue::FrameGraphResourceHandle a_destination) override
+    {
+        copySource = a_source;
+        copyDestination = a_destination;
+        ++copyCount;
+        return cue::Result<void>::success();
+    }
+
+    cue::FrameGraphResourceHandle clearTarget;
+    cue::FrameGraphResourceHandle copySource;
+    cue::FrameGraphResourceHandle copyDestination;
+    std::array<float, 4> clearColor{};
+    int clearCount = 0;
+    int copyCount = 0;
 };
 
 /// @brief 名前付き Buffer を構築し、後続 Pass の読み取り元にする
@@ -161,6 +205,49 @@ int main()
         aliasPlan.passes()[1].dependencies[0].index != firstPass.index)
     {
         return 10;
+    }
+    cue::GpuTexture2DDesc colorDesc{8, 8};
+    colorDesc.isRenderTarget = true;
+    const std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
+    colorDesc.clearColor = clearColor;
+    bool wasConfigured = false;
+    auto compositionResult = cue::create_main_frame_graph(
+        colorDesc, [&wasConfigured](cue::FrameGraph&, cue::FrameGraphResourceHandle a_color)
+        {
+            wasConfigured = a_color.is_valid();
+            return cue::Result<void>::success();
+        });
+    if (!compositionResult.has_value())
+    {
+        return 11;
+    }
+    auto composition = compositionResult.take_value();
+    if (!wasConfigured || !composition.graph)
+    {
+        return 12;
+    }
+    const auto* portablePlan = composition.graph->plan();
+    if (!portablePlan || portablePlan->passes().size() != 2 ||
+        portablePlan->passes()[0].uses[0].state != cue::FrameGraphResourceState::RenderTarget ||
+        portablePlan->passes()[1].uses[0].state != cue::FrameGraphResourceState::CopySource ||
+        portablePlan->passes()[1].uses[1].state != cue::FrameGraphResourceState::CopyDestination)
+    {
+        return 13;
+    }
+    TestContext portableContext(command);
+    auto* clearPass = composition.graph->pass(portablePlan->passes()[0].handle);
+    auto* presentPass = composition.graph->pass(portablePlan->passes()[1].handle);
+    if (!clearPass || !presentPass ||
+        !clearPass->execute(portableContext).has_value() ||
+        !presentPass->execute(portableContext).has_value() ||
+        portableContext.clearCount != 1 || portableContext.copyCount != 1 ||
+        portableContext.clearTarget.graphId != composition.finalColor.graphId ||
+        portableContext.clearTarget.index != composition.finalColor.index ||
+        portableContext.copySource.index != composition.finalColor.index ||
+        portableContext.copyDestination.index != composition.backBuffer.index ||
+        portableContext.clearColor != clearColor)
+    {
+        return 14;
     }
     return 0;
 }

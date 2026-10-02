@@ -24,7 +24,7 @@ add_test(NAME Cue.Renderer.FrameGraph.Builder COMMAND CueFrameGraphBuilderTests)
 
     # 旧 Pass の setup、名前付き Resource 参照、依存順を確認する
     add_executable(CueFrameGraphTests Renderer/FrameGraphTests.cpp)
-    target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.FrameGraph)
+    target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.Passes)
     add_test(NAME Cue.Renderer.FrameGraph.Passes COMMAND CueFrameGraphTests)
 
 if(WIN32)
@@ -88,11 +88,11 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.FrameGraphResources COMMAND CueDX12FrameGraphResourcesTests)
     set_tests_properties(Cue.Renderer.DX12.FrameGraphResources PROPERTIES TIMEOUT 15)
 
-    # 固定 FinalColor を枠ごとに物理化し、WARP の Clear 結果を読み戻す
-    add_executable(CueDX12FinalColorFramesTests Renderer/DX12FinalColorFramesTests.cpp)
-    target_link_libraries(CueDX12FinalColorFramesTests PRIVATE Cue.Renderer.DX12)
-    add_test(NAME Cue.Renderer.DX12.FinalColorFrames COMMAND CueDX12FinalColorFramesTests)
-    set_tests_properties(Cue.Renderer.DX12.FinalColorFrames PROPERTIES TIMEOUT 15)
+    # Graph の一時 Texture を枠ごとに物理化し、WARP の Clear 結果を読み戻す
+    add_executable(CueDX12FrameGraphFramesTests Renderer/DX12FrameGraphFramesTests.cpp)
+    target_link_libraries(CueDX12FrameGraphFramesTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.FrameGraphFrames COMMAND CueDX12FrameGraphFramesTests)
+    set_tests_properties(Cue.Renderer.DX12.FrameGraphFrames PROPERTIES TIMEOUT 15)
 
     # 旧 Pass 契約による Clear と表示の Barrier および WARP Back Buffer 画素を確認する
     add_executable(CueDX12MainFrameGraphTests Renderer/DX12MainFrameGraphTests.cpp)

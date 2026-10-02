@@ -8,7 +8,7 @@
 
 #include <DX12/DX12FrameGraphExecutor.h>
 #include <Foundation/Result.h>
-#include <FrameGraph/FrameGraph.h>
+#include <Passes/MainFrameGraph.h>
 #include <RHI/GpuResourcePool.h>
 
 namespace cue
@@ -19,15 +19,10 @@ class ICommandCompletion;
 namespace cue::dx12
 {
 class DX12DescriptorAllocator;
-class DX12FinalColorFrames;
+class DX12FrameGraphFrames;
 class DX12GpuCommandContext;
 class DX12RenderDevice;
 class DX12SwapChain;
-
-/// @brief 固定 Clear と表示の間へ任意の Pass を追加する
-///
-/// 追加する Pass は FrameGraph が所有し、Graph の記録と同じ Thread で実行する
-using dx12MainGraphConfigure = std::function<Result<void>(FrameGraph&, FrameGraphResourceHandle)>;
 
 /// @brief 旧 FrameGraphPass 契約で本番描画 Graph を構築・記録する
 ///
@@ -41,14 +36,14 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
 public:
     /// @brief Graph と枠ごとの物理 Resource の所有権を受け取る
     DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
-                       FrameGraphResourceHandle a_finalColor, FrameGraphResourceHandle a_backBuffer,
-                       std::unique_ptr<DX12FinalColorFrames> a_frames, DX12SwapChain& a_swapChain);
+                       FrameGraphResourceHandle a_backBuffer,
+                       std::unique_ptr<DX12FrameGraphFrames> a_frames, DX12SwapChain& a_swapChain);
 
     /// @brief SwapChain と同じ形状の FinalColorTexture を枠ごとに用意する
     [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create(
         DX12RenderDevice& a_device, DX12SwapChain& a_swapChain, std::uint32_t a_frameCount,
         DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
-        std::array<float, 4> a_clearColor, dx12MainGraphConfigure a_configure = {});
+        std::array<float, 4> a_clearColor, frameGraphConfigure a_configure = {});
 
     /// @brief GPU 完了後に資源を解放する
     ~DX12MainFrameGraph() override;
@@ -98,9 +93,8 @@ private:
     void clear_frame(std::uint32_t a_frameIndex) noexcept;
 
     std::unique_ptr<FrameGraph> m_graph;
-    FrameGraphResourceHandle m_finalColor;
     FrameGraphResourceHandle m_backBuffer;
-    std::unique_ptr<DX12FinalColorFrames> m_frames;
+    std::unique_ptr<DX12FrameGraphFrames> m_frames;
     std::vector<std::vector<gpuResourceLease>> m_poolLeases;
     std::vector<std::vector<DX12FrameGraphExternalResource>> m_externalBindings;
     std::vector<bool> m_isPrepared;

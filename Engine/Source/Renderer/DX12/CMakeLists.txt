@@ -4,9 +4,9 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12Backend.cpp
     Private/DX12CommandPool.cpp
     Private/DX12DescriptorAllocator.cpp
-    Private/DX12FinalColorFrames.cpp
+    Private/DX12FrameGraphFrames.cpp
     Private/DX12FrameGraphExecutor.cpp
-    Private/DX12FrameGraphPass.cpp
+    Private/DX12FrameGraphContext.cpp
     Private/DX12FrameGraphResources.cpp
     Private/DX12GpuResource.cpp
     Private/DX12GpuResourcePool.cpp
@@ -20,7 +20,7 @@ add_library(Cue.Renderer.DX12 STATIC
 
 target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
 target_link_libraries(Cue.Renderer.DX12
-    PUBLIC Cue.Foundation Cue.Renderer.FrameGraph Cue.Renderer.RHI
+    PUBLIC Cue.Foundation Cue.Renderer.FrameGraph Cue.Renderer.Passes Cue.Renderer.RHI
     PRIVATE Cue.Platform.Windows d3d12 dxgi dxguid
 )
 target_compile_features(Cue.Renderer.DX12 PUBLIC cxx_std_20)

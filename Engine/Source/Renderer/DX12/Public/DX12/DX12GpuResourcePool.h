@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <span>
+#include <vector>
 
 #include <Foundation/Result.h>
 #include <RHI/GpuResourcePool.h>
@@ -48,6 +50,14 @@ public:
     /// @brief Texture を Placed Heap の占有領域に生成する
     [[nodiscard]] Result<GpuResourceHandle> create_transient_texture2d(GpuTexture2DDesc a_desc) override;
 
+    /// @brief 非重複寿命の Buffer 群を同じ Heap 領域へ配置する
+    [[nodiscard]] Result<std::vector<GpuResourceHandle>> create_alias_buffers(
+        std::span<const GpuBufferDesc> a_descs) override;
+
+    /// @brief 非重複寿命の Texture 群を同じ Heap 領域へ配置する
+    [[nodiscard]] Result<std::vector<GpuResourceHandle>> create_alias_texture2ds(
+        std::span<const GpuTexture2DDesc> a_descs) override;
+
     /// @brief 現世代の Resource を競合しない Access で借りる
     [[nodiscard]] Result<gpuResourceLease> acquire(GpuResourceHandle a_handle, GpuResourceAccess a_access) override;
 
@@ -63,6 +73,10 @@ public:
 private:
     /// @brief 生成済み Resource を空き Slot に収めて Handle を作る
     [[nodiscard]] Result<GpuResourceHandle> insert_resource(std::unique_ptr<DX12GpuResource> a_resource);
+
+    /// @brief Group の登録途中で失敗した場合は挿入済み Handle を退役させる
+    [[nodiscard]] Result<std::vector<GpuResourceHandle>> insert_resources(
+        std::vector<std::unique_ptr<DX12GpuResource>> a_resources);
 
     std::shared_ptr<State> m_state;
     std::unique_ptr<DX12PlacedResourceAllocator> m_placedAllocator;

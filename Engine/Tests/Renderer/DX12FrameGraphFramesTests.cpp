@@ -1,4 +1,4 @@
-#include <DX12/DX12FinalColorFrames.h>
+#include <DX12/DX12FrameGraphFrames.h>
 
 #include <array>
 #include <cstddef>
@@ -78,21 +78,21 @@ int run_tests()
     }
     auto rtvAllocator = rtvResult.take_value();
     auto srvAllocator = srvResult.take_value();
-    auto framesResult = cue::dx12::DX12FinalColorFrames::create(
-        *device, plan, color, 2, *rtvAllocator, *srvAllocator);
+    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(
+        *device, plan, 2, *rtvAllocator, *srvAllocator);
     if (!framesResult.has_value())
     {
         return 7;
     }
     auto frames = framesResult.take_value();
-    auto* first = frames->resource(0);
-    auto* second = frames->resource(1);
+    auto* first = frames->resource(0, color);
+    auto* second = frames->resource(1, color);
     if (frames->frame_count() != 2 || !first || !second ||
         first->resource() == second->resource() ||
         (first->resource()->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
-        !frames->rtv(0).has_value() || !frames->rtv(1).has_value() ||
-        !frames->srv(0).has_value() || !frames->srv(1).has_value() ||
-        frames->rtv(2).has_value() || frames->srv(2).has_value() ||
+        !frames->rtv(0, color).has_value() || !frames->rtv(1, color).has_value() ||
+        !frames->srv(0, color).has_value() || !frames->srv(1, color).has_value() ||
+        frames->rtv(2, color).has_value() || frames->srv(2, color).has_value() ||
         !frames->begin_frame(0).has_value())
     {
         return 8;
@@ -139,7 +139,7 @@ int run_tests()
     list->ResourceBarrier(static_cast<UINT>(aliasBarriers.size()), aliasBarriers.data());
     transition(*list, *first->resource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
     const std::array<float, 4> clearColor{0.25f, 0.5f, 0.75f, 1.0f};
-    auto targetResult = frames->rtv(0);
+    auto targetResult = frames->rtv(0, color);
     if (!targetResult.has_value())
     {
         return 14;
@@ -190,7 +190,7 @@ int run_tests()
     command.reset();
     queue.reset();
     if (!frames->shutdown().has_value() || !frames->shutdown().has_value() ||
-        frames->resource(0) || !commandPool->shutdown().has_value() ||
+        frames->resource(0, color) || !commandPool->shutdown().has_value() ||
         !queuePool->shutdown().has_value())
     {
         return 19;

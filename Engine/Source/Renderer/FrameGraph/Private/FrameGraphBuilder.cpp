@@ -181,6 +181,7 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTex
     }
     auto builder = builderResult.take_value();
     a_finalColor.isRenderTarget = true;
+    a_finalColor.isShaderReadable = true;
     auto colorResult = builder->create_transient_texture2d("FinalColorTexture", a_finalColor);
     if (!colorResult.has_value())
     {

@@ -9,7 +9,7 @@
 #include <vector>
 
 #include <DX12/DX12GpuResource.h>
-#include <DX12/DX12PlacedResourceAllocator.h>
+#include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <Platform/Diagnostics.h>
 
@@ -46,16 +46,17 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             }
         }
     }
-    auto allocatorResult = DX12PlacedResourceAllocator::create(a_device);
-    if (!allocatorResult.has_value())
+    auto poolResult = DX12GpuResourcePool::create(a_device);
+    if (!poolResult.has_value())
     {
-        return GraphResult::failure(*allocatorResult.try_error());
+        return GraphResult::failure(*poolResult.try_error());
     }
     try
     {
         auto graph = std::make_unique<DX12FrameGraphResources>(CreateToken{});
-        graph->m_allocator = allocatorResult.take_value();
-        graph->m_resources.resize(a_plan.resources().size());
+        graph->m_pool = poolResult.take_value();
+        graph->m_poolResources.resize(a_plan.resources().size(), nullptr);
+        graph->m_poolLeases.reserve(a_plan.resources().size());
         graph->m_barriers.resize(a_plan.passes().size());
         graph->m_planId = a_plan.id();
         if (!a_plan.resources().empty())
@@ -65,7 +66,9 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
 
         for (const auto& slot : a_plan.alias_slots())
         {
-            std::vector<std::unique_ptr<DX12GpuResource>> created;
+            Result<std::vector<GpuResourceHandle>> createdResult =
+                Result<std::vector<GpuResourceHandle>>::failure(
+                    {ErrorCategory::InvalidState, "DX12FrameGraphResources.create.slot"});
             if (slot.kind == GpuResourceKind::Buffer)
             {
                 std::vector<GpuBufferDesc> descs;
@@ -74,12 +77,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
                 {
                     descs.push_back(a_plan.resources()[handle.index].bufferDesc);
                 }
-                auto createdResult = graph->m_allocator->create_alias_buffers(descs);
-                if (!createdResult.has_value())
-                {
-                    return GraphResult::failure(*createdResult.try_error());
-                }
-                created = createdResult.take_value();
+                createdResult = graph->m_pool->create_alias_buffers(descs);
             }
             else
             {
@@ -89,24 +87,39 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
                 {
                     descs.push_back(a_plan.resources()[handle.index].textureDesc);
                 }
-                auto createdResult = graph->m_allocator->create_alias_texture2ds(descs);
-                if (!createdResult.has_value())
-                {
-                    return GraphResult::failure(*createdResult.try_error());
-                }
-                created = createdResult.take_value();
+                createdResult = graph->m_pool->create_alias_texture2ds(descs);
             }
+            if (!createdResult.has_value() || createdResult.try_value()->size() != slot.resources.size())
+            {
+                return GraphResult::failure(createdResult.has_value()
+                    ? Error{ErrorCategory::InvalidState, "DX12FrameGraphResources.create.group_size"}
+                    : *createdResult.try_error());
+            }
+            auto created = createdResult.take_value();
 
             ID3D12Resource* previous = nullptr;
             for (std::size_t index = 0; index < slot.resources.size(); ++index)
             {
                 const auto handle = slot.resources[index];
                 const auto& planned = a_plan.resources()[handle.index];
-                graph->m_resources[handle.index] = std::move(created[index]);
+                auto leaseResult = graph->m_pool->acquire(created[index], GpuResourceAccess::Write);
+                if (!leaseResult.has_value())
+                {
+                    return GraphResult::failure(*leaseResult.try_error());
+                }
+                auto lease = leaseResult.take_value();
+                auto* resource = dynamic_cast<DX12GpuResource*>(lease->resource());
+                if (!resource || !resource->resource())
+                {
+                    return GraphResult::failure({ErrorCategory::InvalidState,
+                                                 "DX12FrameGraphResources.create.pool_resource"});
+                }
+                graph->m_poolResources[handle.index] = resource;
+                graph->m_poolLeases.push_back(std::move(lease));
                 D3D12_RESOURCE_BARRIER activation{};
                 activation.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
                 activation.Aliasing.pResourceBefore = previous;
-                activation.Aliasing.pResourceAfter = graph->m_resources[handle.index]->resource();
+                activation.Aliasing.pResourceAfter = resource->resource();
                 graph->m_barriers[*planned.firstUse].push_back(activation);
                 previous = activation.Aliasing.pResourceAfter;
             }
@@ -134,11 +147,11 @@ DX12FrameGraphResources::~DX12FrameGraphResources()
 DX12GpuResource* DX12FrameGraphResources::resource(FrameGraphResourceHandle a_handle) const noexcept
 {
     if (m_isClosed || a_handle.graphId != m_graphId || a_handle.graphId == 0 ||
-        a_handle.index >= m_resources.size())
+        a_handle.index >= m_poolResources.size())
     {
         return nullptr;
     }
-    return m_resources[a_handle.index].get();
+    return m_poolResources[a_handle.index];
 }
 
 /// @brief Pass の実行前に必要な Activation を記録順のまま返す
@@ -184,11 +197,20 @@ Result<void> DX12FrameGraphResources::shutdown()
             return result;
         }
     }
-    m_isClosed = true;
     m_barriers.clear();
-    m_resources.clear();
-    m_allocator.reset();
+    m_poolResources.clear();
+    m_poolLeases.clear();
+    if (m_pool)
+    {
+        auto result = m_pool->shutdown();
+        if (!result.has_value())
+        {
+            return result;
+        }
+        m_pool.reset();
+    }
     m_completion.reset();
+    m_isClosed = true;
     return Result<void>::success();
 }
 } // namespace cue::dx12

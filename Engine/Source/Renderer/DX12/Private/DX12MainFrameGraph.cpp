@@ -11,13 +11,14 @@
 #include <vector>
 
 #include <DX12/DX12CommandPool.h>
-#include <DX12/DX12FinalColorFrames.h>
 #include <DX12/DX12FrameGraphExecutor.h>
-#include <DX12/DX12FrameGraphPass.h>
+#include <DX12/DX12FrameGraphContext.h>
+#include <DX12/DX12FrameGraphFrames.h>
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include <Passes/MainFrameGraph.h>
 #include <Platform/Diagnostics.h>
 
 namespace cue::dx12
@@ -60,11 +61,10 @@ private:
 
 /// @brief Graph と枠ごとの Texture の所有権を受け取る
 DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
-                                       FrameGraphResourceHandle a_finalColor,
                                        FrameGraphResourceHandle a_backBuffer,
-                                       std::unique_ptr<DX12FinalColorFrames> a_frames,
+                                       std::unique_ptr<DX12FrameGraphFrames> a_frames,
                                        DX12SwapChain& a_swapChain)
-    : m_graph(std::move(a_graph)), m_finalColor(a_finalColor), m_backBuffer(a_backBuffer),
+    : m_graph(std::move(a_graph)), m_backBuffer(a_backBuffer),
       m_frames(std::move(a_frames)), m_poolLeases(m_frames->frame_count()),
       m_externalBindings(m_frames->frame_count()), m_isPrepared(m_frames->frame_count(), false),
       m_swapChain(&a_swapChain)
@@ -75,7 +75,7 @@ DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> 
 Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     DX12RenderDevice& a_device, DX12SwapChain& a_swapChain, std::uint32_t a_frameCount,
     DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
-    std::array<float, 4> a_clearColor, dx12MainGraphConfigure a_configure)
+    std::array<float, 4> a_clearColor, frameGraphConfigure a_configure)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
     auto* backBuffer = a_swapChain.back_buffer(0);
@@ -99,65 +99,23 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
         GpuTextureFormat::Rgba8Unorm : GpuTextureFormat::Bgra8Unorm;
     colorDesc.isRenderTarget = true;
     colorDesc.clearColor = a_clearColor;
-    auto builderResult = FrameGraphBuilder::create_main(colorDesc);
-    if (!builderResult.has_value())
+    auto compositionResult = create_main_frame_graph(colorDesc, std::move(a_configure));
+    if (!compositionResult.has_value())
     {
-        return GraphResult::failure(*builderResult.try_error());
+        return GraphResult::failure(*compositionResult.try_error());
     }
-    auto builder = builderResult.take_value();
-    const auto finalColor = builder->final_color();
-    auto backResult = builder->import_texture2d("BackBuffer", colorDesc, FrameGraphResourceState::Present,
-                                                FrameGraphResourceState::Present);
-    if (!backResult.has_value())
-    {
-        return GraphResult::failure(*backResult.try_error());
-    }
-    const auto backHandle = backResult.take_value();
-    auto graphResult = FrameGraph::create(std::move(builder), colorDesc.width, colorDesc.height);
-    if (!graphResult.has_value())
-    {
-        return GraphResult::failure(*graphResult.try_error());
-    }
-    auto graph = graphResult.take_value();
+    auto composition = compositionResult.take_value();
     try
     {
-        auto clearResult = graph->add_pass(std::make_unique<DX12ClearFinalColorPass>(a_clearColor));
-        if (!clearResult.has_value())
-        {
-            return GraphResult::failure(*clearResult.try_error());
-        }
-        if (a_configure)
-        {
-            auto configureResult = a_configure(*graph, finalColor);
-            if (!configureResult.has_value())
-            {
-                return GraphResult::failure(*configureResult.try_error());
-            }
-        }
-        auto presentResult = graph->add_pass(std::make_unique<DX12PresentToSwapChainPass>());
-        if (!presentResult.has_value())
-        {
-            return GraphResult::failure(*presentResult.try_error());
-        }
-        auto buildResult = graph->build();
-        if (!buildResult.has_value())
-        {
-            return GraphResult::failure(*buildResult.try_error());
-        }
-        const auto* plan = graph->plan();
-        if (!plan || plan->passes().size() < 2 || plan->passes().front().name != "ClearFinalColor" ||
-            plan->passes().back().name != "PresentToSwapChain")
-        {
-            return GraphResult::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.create.plan"});
-        }
-        auto framesResult = DX12FinalColorFrames::create(a_device, *plan, finalColor, a_frameCount,
-                                                        a_rtvAllocator, a_srvAllocator);
+        auto framesResult = DX12FrameGraphFrames::create(a_device, *composition.graph->plan(), a_frameCount,
+                                                       a_rtvAllocator, a_srvAllocator);
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
         return GraphResult::success(std::make_unique<DX12MainFrameGraph>(
-            CreateToken{}, std::move(graph), finalColor, backHandle, framesResult.take_value(), a_swapChain));
+            CreateToken{}, std::move(composition.graph), composition.backBuffer,
+            framesResult.take_value(), a_swapChain));
     }
     catch (const std::bad_alloc&)
     {
@@ -279,8 +237,7 @@ Result<void> DX12MainFrameGraph::record_range(
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range"});
     }
     auto* resources = m_frames->graph_resources(a_frameIndex);
-    auto rtvResult = m_frames->rtv(a_frameIndex);
-    if (!resources || !rtvResult.has_value())
+    if (!resources)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.resources"});
     }
@@ -301,12 +258,12 @@ Result<void> DX12MainFrameGraph::record_range(
                                     { return Result<void>::success(); });
                 continue;
             }
-            callbacks.push_back([this, pass, a_frameIndex, &a_context, rtv = *rtvResult.try_value()]
+            callbacks.push_back([this, pass, a_frameIndex, &a_context, plannedPass = &planned]
                                 (ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext& a_resources)
                                 -> Result<void>
             {
                 DX12FrameGraphContext context(m_graph->width(), m_graph->height(), a_frameIndex,
-                                              a_context, a_resources, rtv);
+                                              a_context, a_resources, *m_graph->plan(), *plannedPass, *m_frames);
                 return pass->execute(context);
             });
         }

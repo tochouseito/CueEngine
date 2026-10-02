@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <vector>
 
 #include <Foundation/Result.h>
 #include <RHI/Command.h>
@@ -87,6 +89,18 @@ public:
     ///
     /// 使用期間の共有と Aliasing Barrier は後続の FrameGraph が決める
     [[nodiscard]] virtual Result<GpuResourceHandle> create_transient_texture2d(GpuTexture2DDesc a_desc) = 0;
+
+    /// @brief 非重複の使用期間を持つ Buffer 群を同じ Placed 領域に作る
+    ///
+    /// 呼出側が使用順と Aliasing Barrier を管理する。失敗時は一つも公開しない
+    [[nodiscard]] virtual Result<std::vector<GpuResourceHandle>> create_alias_buffers(
+        std::span<const GpuBufferDesc> a_descs) = 0;
+
+    /// @brief 非重複の使用期間を持つ Texture 群を同じ Placed 領域に作る
+    ///
+    /// 呼出側が使用順と Aliasing Barrier を管理する。失敗時は一つも公開しない
+    [[nodiscard]] virtual Result<std::vector<GpuResourceHandle>> create_alias_texture2ds(
+        std::span<const GpuTexture2DDesc> a_descs) = 0;
 
     /// @brief GPU の読み取り共有または書き込み排他の Lease を借りる
     ///

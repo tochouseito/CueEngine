@@ -8,7 +8,6 @@
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
-#include <DX12/DX12FrameGraphPass.h>
 #include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12QueuePool.h>
@@ -41,8 +40,7 @@ public:
     }
     [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
     {
-        auto* dx12Context = dynamic_cast<cue::dx12::DX12FrameGraphContext*>(&a_context);
-        if (!dx12Context || !dx12Context->resource(m_color))
+        if (a_context.command_context().type() != cue::QueueType::Graphics)
         {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "TestPass.execute"});
         }
@@ -85,8 +83,7 @@ public:
     }
     [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
     {
-        auto* dx12Context = dynamic_cast<cue::dx12::DX12FrameGraphContext*>(&a_context);
-        if (!dx12Context || !dx12Context->resource(m_buffer))
+        if (a_context.command_context().type() != cue::QueueType::Copy)
         {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PoolPass.execute"});
         }
@@ -132,6 +129,89 @@ private:
     int* m_count = nullptr;
 };
 
+/// @brief Pass 自身の setup で作った RenderTexture に色を書き込む
+class ProduceColorPass final : public cue::FrameGraphPass
+{
+public:
+    [[nodiscard]] const char* name() const noexcept override { return "ProduceColor"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        cue::GpuTexture2DDesc desc{64, 64};
+        desc.isRenderTarget = true;
+        desc.clearColor = {0.8f, 0.1f, 0.3f, 1.0f};
+        auto result = a_builder.create_transient_texture2d("PassAOutput", desc);
+        if (!result.has_value())
+        {
+            return cue::Result<void>::failure(*result.try_error());
+        }
+        m_output = result.take_value();
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return a_builder.use(m_output, cue::FrameGraphAccess::Write,
+                             cue::FrameGraphResourceState::RenderTarget);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        if (a_context.clear_render_target(m_output, {0.0f, 0.0f, 0.0f, 1.0f}).has_value())
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
+                                               "ProduceColorPass.unexpected_clear"});
+        }
+        auto bindResult = a_context.set_render_target(m_output);
+        if (!bindResult.has_value())
+        {
+            return bindResult;
+        }
+        return a_context.clear_render_target(m_output, {0.8f, 0.1f, 0.3f, 1.0f});
+    }
+
+private:
+    cue::FrameGraphResourceHandle m_output;
+};
+
+/// @brief 前の Pass の名前付き Texture を取得して FinalColor に複写する
+class ConsumeColorPass final : public cue::FrameGraphPass
+{
+public:
+    [[nodiscard]] const char* name() const noexcept override { return "ConsumeColor"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        auto sourceResult = a_builder.get_texture("PassAOutput");
+        auto targetResult = a_builder.get_texture("FinalColorTexture");
+        if (!sourceResult.has_value() || !targetResult.has_value())
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
+                                               "ConsumeColorPass.setup"});
+        }
+        m_source = sourceResult.take_value();
+        m_target = targetResult.take_value();
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        auto sourceResult = a_builder.use(m_source, cue::FrameGraphAccess::Read,
+                                          cue::FrameGraphResourceState::CopySource);
+        if (!sourceResult.has_value())
+        {
+            return sourceResult;
+        }
+        return a_builder.use(m_target, cue::FrameGraphAccess::Write,
+                             cue::FrameGraphResourceState::CopyDestination);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        return a_context.copy_texture2d(m_source, m_target);
+    }
+
+private:
+    cue::FrameGraphResourceHandle m_source;
+    cue::FrameGraphResourceHandle m_target;
+};
+
 /// @brief 読み戻し用に Back Buffer の State を遷移させる
 void transition(ID3D12GraphicsCommandList &a_list, ID3D12Resource &a_resource, D3D12_RESOURCE_STATES a_before,
                 D3D12_RESOURCE_STATES a_after)
@@ -171,9 +251,9 @@ int run_tests()
         return 4;
     }
     auto device = deviceResult.take_value();
-    auto rtvResult = cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 4);
+    auto rtvResult = cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     auto srvResult =
-        cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true);
+        cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8, true);
     auto queueResult = cue::dx12::DX12GpuCommandQueue::create(*device->device(), cue::QueueType::Graphics, 0);
     if (!rtvResult.has_value() || !srvResult.has_value() || !queueResult.has_value())
     {
@@ -314,6 +394,16 @@ int run_tests()
             {
                 return testResult;
             }
+            auto produceResult = a_graph.add_pass(std::make_unique<ProduceColorPass>());
+            if (!produceResult.has_value())
+            {
+                return produceResult;
+            }
+            auto consumeResult = a_graph.add_pass(std::make_unique<ConsumeColorPass>());
+            if (!consumeResult.has_value())
+            {
+                return consumeResult;
+            }
             auto poolResult = a_graph.add_pass(std::make_unique<PoolPass>(*pool, poolBuffer, poolCallCount));
             if (!poolResult.has_value())
             {
@@ -326,11 +416,13 @@ int run_tests()
         return 19;
     }
     auto extended = extendedResult.take_value();
-    if (extended->plan().passes().size() != 5 || extended->plan().passes()[0].name != "ClearFinalColor" ||
+    if (extended->plan().passes().size() != 7 || extended->plan().passes()[0].name != "ClearFinalColor" ||
         extended->plan().passes()[1].name != "AfterClear" ||
-        extended->plan().passes()[2].name != "PoolRead" ||
-        extended->plan().passes()[3].name != "Compute" ||
-        extended->plan().passes()[4].name != "PresentToSwapChain")
+        extended->plan().passes()[2].name != "ProduceColor" ||
+        extended->plan().passes()[3].name != "ConsumeColor" ||
+        extended->plan().passes()[4].name != "PoolRead" ||
+        extended->plan().passes()[5].name != "Compute" ||
+        extended->plan().passes()[6].name != "PresentToSwapChain")
     {
         return 20;
     }
@@ -340,6 +432,53 @@ int run_tests()
     {
         return 22;
     }
+    auto* extendedBackBuffer = swapChain->back_buffer(swapChain->current_index());
+    auto verifyCommandResult = commandPool->acquire(cue::QueueType::Graphics);
+    if (!extendedBackBuffer || !verifyCommandResult.has_value())
+    {
+        return 24;
+    }
+    auto verifyCommand = verifyCommandResult.take_value();
+    auto* verifyContext = dynamic_cast<cue::dx12::DX12GpuCommandContext*>(verifyCommand.get());
+    if (!verifyContext || !verifyContext->command_list())
+    {
+        return 25;
+    }
+    auto* verifyList = verifyContext->command_list();
+    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_PRESENT,
+               D3D12_RESOURCE_STATE_COPY_SOURCE);
+    source.pResource = extendedBackBuffer;
+    verifyList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE,
+               D3D12_RESOURCE_STATE_PRESENT);
+    if (!verifyCommand->close().has_value())
+    {
+        return 26;
+    }
+    auto verifySubmitResult = commandPool->submit(*swapChain->graphics_queue(), *verifyCommand);
+    if (!verifySubmitResult.has_value())
+    {
+        return 27;
+    }
+    auto verifyCompletion = verifySubmitResult.take_value();
+    if (!verifyCompletion->wait().has_value() || !readback->read(0, pixels).has_value())
+    {
+        return 28;
+    }
+    const auto outputMatches = [&pixels, &layout](std::size_t a_x, std::size_t a_y)
+    {
+        const auto offset = a_y * layout.Footprint.RowPitch + a_x * 4;
+        const auto red = std::to_integer<int>(pixels[offset]);
+        const auto green = std::to_integer<int>(pixels[offset + 1]);
+        const auto blue = std::to_integer<int>(pixels[offset + 2]);
+        return red >= 203 && red <= 205 && green >= 25 && green <= 27 &&
+               blue >= 76 && blue <= 78 && std::to_integer<int>(pixels[offset + 3]) == 255;
+    };
+    if (!outputMatches(0, 0) || !outputMatches(63, 63))
+    {
+        return 29;
+    }
+    verifyCommand.reset();
     if (!extended->shutdown().has_value() || !commandPool->shutdown().has_value() ||
         !queuePool->shutdown().has_value() ||
         !pool->retire(poolBuffer).has_value() || !pool->shutdown().has_value() ||

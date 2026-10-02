@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -12,7 +13,9 @@
 
 namespace cue
 {
-/// @brief Pass の記録中だけ Command と Frame 情報を借用する
+/// @brief Pass の記録中だけ Command、Frame 情報、Backend 操作を借用する
+///
+/// Resource Handle は同じ Graph の Plan に属するものを渡す。非対応の操作は Result で失敗する
 class FrameGraphContext
 {
 public:
@@ -33,6 +36,27 @@ public:
 
     /// @brief 記録中の Command Lease を非所有で返す
     [[nodiscard]] ICommandContext& command_context() const noexcept;
+
+    /// @brief 宣言済み RenderTarget の Clear を Backend に記録する
+    ///
+    /// 対応する RTV がない場合や宣言した最適化 Clear 色と異なる場合は失敗し、Command を記録しない
+    [[nodiscard]] virtual Result<void> clear_render_target(FrameGraphResourceHandle a_target,
+                                                            const std::array<float, 4>& a_color) = 0;
+
+    /// @brief 宣言済み RenderTarget を現在の Graphics Pass の描画先に設定する
+    [[nodiscard]] virtual Result<void> set_render_target(FrameGraphResourceHandle a_target) = 0;
+
+    /// @brief ShaderRead と宣言した Texture の SRV を Graphics Root Table に設定する
+    ///
+    /// Root Signature と Pipeline は呼出 Pass が先に設定する
+    [[nodiscard]] virtual Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
+                                                      std::uint32_t a_rootParameter) = 0;
+
+    /// @brief 同一形状の宣言済み Texture 間の Copy を Backend に記録する
+    ///
+    /// 異なる形状や未対応の Queue では失敗し、Command を記録しない
+    [[nodiscard]] virtual Result<void> copy_texture2d(FrameGraphResourceHandle a_source,
+                                                      FrameGraphResourceHandle a_destination) = 0;
 
 protected:
     /// @brief Graph が保持する値と借用中の Command を紐付ける

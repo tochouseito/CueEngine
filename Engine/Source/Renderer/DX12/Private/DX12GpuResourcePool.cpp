@@ -310,6 +310,46 @@ Result<GpuResourceHandle> DX12GpuResourcePool::create_transient_texture2d(GpuTex
     return insert_resource(resourceResult.take_value());
 }
 
+/// @brief 同じ Placed 領域の Buffer 群を失敗時にまとめて Rollback する
+Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::create_alias_buffers(
+    std::span<const GpuBufferDesc> a_descs)
+{
+    {
+        std::lock_guard lock(m_state->mutex);
+        if (m_state->isClosed)
+        {
+            return Result<std::vector<GpuResourceHandle>>::failure(
+                {ErrorCategory::InvalidState, "DX12GpuResourcePool.create_alias_buffers.closed"});
+        }
+    }
+    auto result = m_placedAllocator->create_alias_buffers(a_descs);
+    if (!result.has_value())
+    {
+        return Result<std::vector<GpuResourceHandle>>::failure(*result.try_error());
+    }
+    return insert_resources(result.take_value());
+}
+
+/// @brief 同じ Placed 領域の Texture 群を失敗時にまとめて Rollback する
+Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::create_alias_texture2ds(
+    std::span<const GpuTexture2DDesc> a_descs)
+{
+    {
+        std::lock_guard lock(m_state->mutex);
+        if (m_state->isClosed)
+        {
+            return Result<std::vector<GpuResourceHandle>>::failure(
+                {ErrorCategory::InvalidState, "DX12GpuResourcePool.create_alias_texture2ds.closed"});
+        }
+    }
+    auto result = m_placedAllocator->create_alias_texture2ds(a_descs);
+    if (!result.has_value())
+    {
+        return Result<std::vector<GpuResourceHandle>>::failure(*result.try_error());
+    }
+    return insert_resources(result.take_value());
+}
+
 /// @brief 世代を検証し、GPU 利用と CPU 記録の競合を防ぐ Lease を貸す
 Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle, GpuResourceAccess a_access)
 {
@@ -470,5 +510,46 @@ Result<GpuResourceHandle> DX12GpuResourcePool::insert_resource(std::unique_ptr<D
     slot.resource = std::move(a_resource);
     slot.isRetired = false;
     return Result<GpuResourceHandle>::success({index, slot.generation, m_state->poolId});
+}
+
+/// @brief Group 内の一部だけが Pool に残らないよう Handle をまとめて登録する
+Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::insert_resources(
+    std::vector<std::unique_ptr<DX12GpuResource>> a_resources)
+{
+    using HandlesResult = Result<std::vector<GpuResourceHandle>>;
+    std::vector<GpuResourceHandle> handles;
+    try
+    {
+        handles.reserve(a_resources.size());
+    }
+    catch (const std::bad_alloc&)
+    {
+        return HandlesResult::failure({ErrorCategory::PlatformFailure,
+                                       "DX12GpuResourcePool.insert_resources.allocation"});
+    }
+    for (auto& resource : a_resources)
+    {
+        auto result = insert_resource(std::move(resource));
+        if (!result.has_value())
+        {
+            const auto error = *result.try_error();
+            for (const auto handle : handles)
+            {
+                auto retireResult = retire(handle);
+                if (!retireResult.has_value())
+                {
+                    return HandlesResult::failure(*retireResult.try_error());
+                }
+            }
+            auto collectResult = collect();
+            if (!collectResult.has_value())
+            {
+                return HandlesResult::failure(*collectResult.try_error());
+            }
+            return HandlesResult::failure(error);
+        }
+        handles.push_back(result.take_value());
+    }
+    return HandlesResult::success(std::move(handles));
 }
 } // namespace cue::dx12
