@@ -624,12 +624,23 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             {
                 const std::size_t index = use.resource.index;
                 const auto& resource = resources[index];
-                if (!resource.isImported && resource.lastUse == order &&
-                    !is_same_state(currentStates[index], resource.initialState))
+                const auto nextPass = std::find_if(ordered.begin() + order + 1, ordered.end(),
+                                                   [&use](const FrameGraphPassPlan& a_candidate)
+                                                   {
+                                                       return std::any_of(a_candidate.uses.begin(), a_candidate.uses.end(),
+                                                                          [&use](const FrameGraphUse& a_nextUse)
+                                                                          { return a_nextUse.resource.index == use.resource.index; });
+                                                   });
+                // Copy Queue との境界では Common を経由し、各 Queue の遷移を自分の List に記録する
+                const bool copyBoundary = pass.queue == QueueType::Copy ||
+                    (nextPass != ordered.end() && nextPass->queue == QueueType::Copy);
+                const bool lastTransientUse = !resource.isImported && resource.lastUse == order;
+                const auto after = copyBoundary ? FrameGraphResourceState::Common : resource.initialState;
+                if ((copyBoundary || lastTransientUse) && !is_same_state(currentStates[index], after))
                 {
                     pass.barriersAfter.push_back({FrameGraphBarrierKind::Transition, use.resource,
-                                                  currentStates[index], resource.initialState});
-                    currentStates[index] = resource.initialState;
+                                                  currentStates[index], after});
+                    currentStates[index] = after;
                 }
             }
         }

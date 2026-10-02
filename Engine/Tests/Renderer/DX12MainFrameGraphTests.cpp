@@ -177,7 +177,7 @@ class ConsumeColorPass final : public cue::FrameGraphPass
 {
 public:
     [[nodiscard]] const char* name() const noexcept override { return "ConsumeColor"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Copy; }
     [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
     {
         auto sourceResult = a_builder.get_texture("PassAOutput");
@@ -424,7 +424,13 @@ int run_tests()
         extended->plan().passes()[3].name != "ConsumeColor" ||
         extended->plan().passes()[4].name != "PoolRead" ||
         extended->plan().passes()[5].name != "Compute" ||
-        extended->plan().passes()[6].name != "PresentToSwapChain")
+        extended->plan().passes()[6].name != "PresentToSwapChain" ||
+        extended->plan().passes()[2].barriersAfter.size() != 1 ||
+        extended->plan().passes()[2].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        extended->plan().passes()[3].barriersBefore[0].before != cue::FrameGraphResourceState::Common ||
+        extended->plan().passes()[3].barriersAfter.size() != 2 ||
+        extended->plan().passes()[3].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        extended->plan().passes()[6].barriersBefore[0].before != cue::FrameGraphResourceState::Common)
     {
         return 20;
     }

@@ -110,7 +110,8 @@ Result<void> DX12FrameGraphContext::copy_texture2d(
     if (!allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::CopySource) ||
         !allows(a_destination, FrameGraphAccess::Write, FrameGraphResourceState::CopyDestination) ||
         !source || !destination || source == destination ||
-        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording ||
+        (m_command->type() != QueueType::Graphics && m_command->type() != QueueType::Copy) ||
+        m_command->state() != CommandState::Recording ||
         !m_command->command_list())
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.copy_texture2d"});
