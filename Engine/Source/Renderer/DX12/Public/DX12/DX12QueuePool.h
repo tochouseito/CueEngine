@@ -47,6 +47,9 @@ public:
     /// @brief Queue を生成した Native Device を Queue の生存中だけ借用させる
     [[nodiscard]] ID3D12Device* device() const noexcept;
 
+    /// @brief SwapChain 作成用の Native Queue を Lease の生存中だけ借用させる
+    [[nodiscard]] ID3D12CommandQueue* command_queue() const noexcept;
+
     /// @brief 提出先 Queue の Lease 解放後も完了確認に使える Fence 参照を返す
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3D12Fence> completion_fence() const noexcept;
 

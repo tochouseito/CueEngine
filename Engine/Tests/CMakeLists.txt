@@ -35,6 +35,12 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.RenderDevice COMMAND CueDX12RenderDeviceTests)
     set_tests_properties(Cue.Renderer.DX12.RenderDevice PROPERTIES TIMEOUT 15)
 
+    # WARP の実 Window で Back Buffer、RTV、VSync とティアリング設定を検証する
+    add_executable(CueDX12SwapChainTests Renderer/DX12SwapChainTests.cpp)
+    target_link_libraries(CueDX12SwapChainTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
+    add_test(NAME Cue.Renderer.DX12.SwapChain COMMAND CueDX12SwapChainTests)
+    set_tests_properties(Cue.Renderer.DX12.SwapChain PROPERTIES TIMEOUT 20)
+
     # Descriptor Heap の生成、世代付き再利用と並行貸出を WARP で検証する
     add_executable(CueDX12DescriptorAllocatorTests Renderer/DX12DescriptorAllocatorTests.cpp)
     target_link_libraries(CueDX12DescriptorAllocatorTests PRIVATE Cue.Renderer.DX12)

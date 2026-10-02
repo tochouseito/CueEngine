@@ -9,6 +9,7 @@
 #include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12QueuePool.h>
+#include <DX12/DX12SwapChain.h>
 #include <Platform/Diagnostics.h>
 
 #include "DX12ResourceLeakChecker.h"
@@ -121,6 +122,15 @@ Result<void> DX12Backend::shutdown()
     // CommandPool の Slot 完了を先に確認してから QueuePool を停止する
     const bool hasOwnedDevice = m_device != nullptr;
     Result<void> stopResult = Result<void>::success();
+    if (m_swapChain)
+    {
+        stopResult = m_swapChain->shutdown();
+        if (!stopResult.has_value())
+        {
+            return stopResult;
+        }
+        m_swapChain.reset();
+    }
     if (m_resourcePool)
     {
         stopResult = m_resourcePool->shutdown();
@@ -185,5 +195,37 @@ DX12DescriptorAllocator* DX12Backend::get_descriptor_allocator(DX12DescriptorHea
 {
     const std::size_t index = static_cast<std::size_t>(a_role);
     return m_descriptors && index < m_descriptors->allocators.size() ? m_descriptors->allocators[index].get() : nullptr;
+}
+
+/// @brief Graphics Queue と RTV Allocator を Backend の所有下に保持する
+Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12SwapChainConfig& a_config)
+{
+    if (!m_device || !m_queuePool || m_swapChain)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain"});
+    }
+    auto* rtvAllocator = get_descriptor_allocator(DX12DescriptorHeapRole::Rtv);
+    if (!rtvAllocator)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain.rtv"});
+    }
+    auto leaseResult = m_queuePool->acquire(QueueType::Graphics);
+    if (!leaseResult.has_value())
+    {
+        return Result<void>::failure(*leaseResult.try_error());
+    }
+    auto result = DX12SwapChain::create(*m_device, leaseResult.take_value(), *rtvAllocator, a_windowHandle, a_config);
+    if (!result.has_value())
+    {
+        return Result<void>::failure(*result.try_error());
+    }
+    m_swapChain = result.take_value();
+    return Result<void>::success();
+}
+
+/// @brief Backend 停止後の借用を拒否する
+DX12SwapChain* DX12Backend::get_swap_chain() noexcept
+{
+    return m_swapChain.get();
 }
 } // namespace cue::dx12
