@@ -20,6 +20,7 @@ namespace cue::dx12
 {
 class DX12DescriptorAllocator;
 class DX12FrameGraphFrames;
+class DX12FullscreenTriangle;
 class DX12GpuCommandContext;
 class DX12RenderDevice;
 class DX12SwapChain;
@@ -37,7 +38,9 @@ public:
     /// @brief Graph と枠ごとの物理 Resource の所有権を受け取る
     DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
                        FrameGraphResourceHandle a_backBuffer,
-                       std::unique_ptr<DX12FrameGraphFrames> a_frames, DX12SwapChain& a_swapChain);
+                       std::unique_ptr<DX12FrameGraphFrames> a_frames,
+                       std::unique_ptr<DX12FullscreenTriangle> a_fullscreenTriangle,
+                       DX12SwapChain& a_swapChain);
 
     /// @brief SwapChain と同じ形状の FinalColorTexture を枠ごとに用意する
     [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create(
@@ -95,6 +98,7 @@ private:
     std::unique_ptr<FrameGraph> m_graph;
     FrameGraphResourceHandle m_backBuffer;
     std::unique_ptr<DX12FrameGraphFrames> m_frames;
+    std::unique_ptr<DX12FullscreenTriangle> m_fullscreenTriangle;
     std::vector<std::vector<gpuResourceLease>> m_poolLeases;
     std::vector<std::vector<DX12FrameGraphExternalResource>> m_externalBindings;
     std::vector<bool> m_isPrepared;

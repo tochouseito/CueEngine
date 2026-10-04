@@ -100,6 +100,70 @@ private:
     int* m_count = nullptr;
 };
 
+/// @brief Pool 所有 Texture を RenderTarget として使い、記録前の RTV 準備を通す
+class PoolTexturePass final : public cue::FrameGraphPass
+{
+public:
+    PoolTexturePass(cue::IGpuResourcePool& a_pool, cue::GpuResourceHandle a_handle) noexcept
+        : m_pool(&a_pool), m_handle(a_handle) {}
+
+    [[nodiscard]] const char* name() const noexcept override { return "PoolTextureWrite"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        cue::GpuTexture2DDesc desc{64, 64};
+        desc.isRenderTarget = true;
+        desc.isShaderReadable = true;
+        desc.clearColor = {0.1f, 0.2f, 0.3f, 1.0f};
+        auto result = a_builder.import_pool_texture2d("PoolTexture", *m_pool, m_handle, desc,
+            cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+        if (!result.has_value()) return cue::Result<void>::failure(*result.try_error());
+        m_texture = result.take_value();
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return a_builder.use(m_texture, cue::FrameGraphAccess::Write,
+                             cue::FrameGraphResourceState::RenderTarget);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        return a_context.clear_render_target(m_texture, {0.1f, 0.2f, 0.3f, 1.0f});
+    }
+
+private:
+    cue::IGpuResourcePool* m_pool = nullptr;
+    cue::GpuResourceHandle m_handle;
+    cue::FrameGraphResourceHandle m_texture;
+};
+
+/// @brief 同じ Pool Texture の ShaderRead 宣言で SRV の準備も通す
+class PoolTextureReadPass final : public cue::FrameGraphPass
+{
+public:
+    [[nodiscard]] const char* name() const noexcept override { return "PoolTextureRead"; }
+    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        auto result = a_builder.get_texture("PoolTexture");
+        if (!result.has_value()) return cue::Result<void>::failure(*result.try_error());
+        m_texture = result.take_value();
+        return cue::Result<void>::success();
+    }
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return a_builder.use(m_texture, cue::FrameGraphAccess::Read,
+                             cue::FrameGraphResourceState::ShaderRead);
+    }
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext&) override
+    {
+        return cue::Result<void>::success();
+    }
+
+private:
+    cue::FrameGraphResourceHandle m_texture;
+};
+
 /// @brief Compute Queue の空 Pass でも Graph の提出順と完了点を確認する
 class ComputePass final : public cue::FrameGraphPass
 {
@@ -285,9 +349,9 @@ int run_tests()
         plan.passes()[1].name != "PresentToSwapChain" || plan.passes()[0].barriersBefore.size() != 1 ||
         plan.passes()[0].barriersBefore[0].after != cue::FrameGraphResourceState::RenderTarget ||
         plan.passes()[1].barriersBefore.size() != 2 ||
-        plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::CopySource ||
+        plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::ShaderRead ||
         plan.passes()[1].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
-        plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::CopyDestination ||
+        plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::RenderTarget ||
         plan.passes()[1].barriersAfter.size() != 1 ||
         plan.passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
         plan.final_barriers().size() != 1 ||
@@ -380,18 +444,25 @@ int run_tests()
     auto pool = poolResult.take_value();
     auto queuePool = queuePoolResult.take_value();
     auto poolBufferResult = pool->create_buffer({64});
-    if (!poolBufferResult.has_value())
+    cue::GpuTexture2DDesc poolTextureDesc{64, 64};
+    poolTextureDesc.isRenderTarget = true;
+    poolTextureDesc.isShaderReadable = true;
+    poolTextureDesc.clearColor = {0.1f, 0.2f, 0.3f, 1.0f};
+    auto poolTextureResult = pool->create_texture2d(poolTextureDesc);
+    if (!poolBufferResult.has_value() || !poolTextureResult.has_value())
     {
         return 19;
     }
     const auto poolBuffer = poolBufferResult.take_value();
+    const auto poolTexture = poolTextureResult.take_value();
     int customCallCount = 0;
     bool customEnabled = true;
     int poolCallCount = 0;
     int computeCallCount = 0;
     auto extendedResult = cue::dx12::DX12MainFrameGraph::create(
         *device, *swapChain, 2, *rtvAllocator, *srvAllocator, clearColor,
-        [&customCallCount, &customEnabled, &poolCallCount, &computeCallCount, &pool, poolBuffer](cue::FrameGraph& a_graph,
+        [&customCallCount, &customEnabled, &poolCallCount, &computeCallCount, &pool,
+         poolBuffer, poolTexture](cue::FrameGraph& a_graph,
                            cue::FrameGraphResourceHandle a_finalColor) -> cue::Result<void>
         {
             auto testResult = a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount,
@@ -415,6 +486,11 @@ int run_tests()
             {
                 return poolResult;
             }
+            auto poolTextureWriteResult = a_graph.add_pass(
+                std::make_unique<PoolTexturePass>(*pool, poolTexture));
+            if (!poolTextureWriteResult.has_value()) return poolTextureWriteResult;
+            auto poolTextureReadResult = a_graph.add_pass(std::make_unique<PoolTextureReadPass>());
+            if (!poolTextureReadResult.has_value()) return poolTextureReadResult;
             return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
         });
     if (!extendedResult.has_value())
@@ -422,19 +498,21 @@ int run_tests()
         return 19;
     }
     auto extended = extendedResult.take_value();
-    if (extended->plan().passes().size() != 7 || extended->plan().passes()[0].name != "ClearFinalColor" ||
+    if (extended->plan().passes().size() != 9 || extended->plan().passes()[0].name != "ClearFinalColor" ||
         extended->plan().passes()[1].name != "AfterClear" ||
         extended->plan().passes()[2].name != "ProduceColor" ||
         extended->plan().passes()[3].name != "ConsumeColor" ||
         extended->plan().passes()[4].name != "PoolRead" ||
-        extended->plan().passes()[5].name != "Compute" ||
-        extended->plan().passes()[6].name != "PresentToSwapChain" ||
+        extended->plan().passes()[5].name != "PoolTextureWrite" ||
+        extended->plan().passes()[6].name != "PoolTextureRead" ||
+        extended->plan().passes()[7].name != "Compute" ||
+        extended->plan().passes()[8].name != "PresentToSwapChain" ||
         extended->plan().passes()[2].barriersAfter.size() != 1 ||
         extended->plan().passes()[2].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
         extended->plan().passes()[3].barriersBefore[0].before != cue::FrameGraphResourceState::Common ||
         extended->plan().passes()[3].barriersAfter.size() != 2 ||
         extended->plan().passes()[3].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
-        extended->plan().passes()[6].barriersBefore[0].before != cue::FrameGraphResourceState::Common)
+        extended->plan().passes()[8].barriersBefore[0].before != cue::FrameGraphResourceState::Common)
     {
         return 20;
     }

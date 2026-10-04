@@ -5,6 +5,8 @@
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12FrameGraphFrames.h>
 
+#include "DX12FullscreenTriangle.h"
+
 namespace cue::dx12
 {
 /// @brief Pass が参照する情報を記録期間へ限定する
@@ -12,9 +14,10 @@ DX12FrameGraphContext::DX12FrameGraphContext(
     std::uint32_t a_width, std::uint32_t a_height, std::uint32_t a_frameIndex,
     DX12GpuCommandContext& a_command, const DX12FrameGraphPassContext& a_resources,
     const FrameGraphPlan& a_plan, const FrameGraphPassPlan& a_pass,
-    const DX12FrameGraphFrames& a_frames) noexcept
+    const DX12FrameGraphFrames& a_frames, const DX12FullscreenTriangle& a_fullscreenTriangle) noexcept
     : FrameGraphContext(a_width, a_height, a_frameIndex, a_command), m_command(&a_command),
-      m_resources(&a_resources), m_plan(&a_plan), m_pass(&a_pass), m_frames(&a_frames)
+      m_resources(&a_resources), m_plan(&a_plan), m_pass(&a_pass), m_frames(&a_frames),
+      m_fullscreenTriangle(&a_fullscreenTriangle)
 {
 }
 
@@ -98,6 +101,49 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
         m_isSrvHeapBound = true;
     }
     command_list().SetGraphicsRootDescriptorTable(a_rootParameter, *srvResult.try_value());
+    return Result<void>::success();
+}
+
+/// @brief 宣言済み Texture と RTV を検証し、固定 Pipeline に全画面描画を記録する
+Result<void> DX12FrameGraphContext::draw_fullscreen_texture(
+    FrameGraphResourceHandle a_source, FrameGraphResourceHandle a_target)
+{
+    auto* source = resource(a_source);
+    auto* target = resource(a_target);
+    if (!allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead) ||
+        !allows(a_target, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) ||
+        !source || !target || source == target || !m_frames->srv_heap() || !m_fullscreenTriangle ||
+        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording ||
+        !m_command->command_list())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState,
+                                      "DX12FrameGraphContext.draw_fullscreen_texture"});
+    }
+    const auto sourceDesc = source->GetDesc();
+    const auto targetDesc = target->GetDesc();
+    if (sourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        targetDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        sourceDesc.Width != targetDesc.Width || sourceDesc.Height != targetDesc.Height ||
+        sourceDesc.Format != targetDesc.Format || sourceDesc.SampleDesc.Count != 1 ||
+        targetDesc.SampleDesc.Count != 1)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState,
+                                      "DX12FrameGraphContext.draw_fullscreen_texture.shape"});
+    }
+    auto srvResult = m_frames->srv(frame_index(), a_source);
+    if (!srvResult.has_value())
+    {
+        return Result<void>::failure(*srvResult.try_error());
+    }
+    auto rtvResult = m_frames->rtv(frame_index(), a_target);
+    if (!rtvResult.has_value())
+    {
+        return Result<void>::failure(*rtvResult.try_error());
+    }
+    // Descriptor の実体は記録前の prepare_frame で確定済みである
+    m_fullscreenTriangle->draw(command_list(), *m_frames->srv_heap(), *srvResult.try_value(),
+                               *rtvResult.try_value(), width(), height());
+    m_isSrvHeapBound = true;
     return Result<void>::success();
 }
 

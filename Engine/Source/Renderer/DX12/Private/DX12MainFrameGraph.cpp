@@ -18,6 +18,7 @@
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include "DX12FullscreenTriangle.h"
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Diagnostics.h>
 
@@ -63,9 +64,11 @@ private:
 DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
                                        FrameGraphResourceHandle a_backBuffer,
                                        std::unique_ptr<DX12FrameGraphFrames> a_frames,
+                                       std::unique_ptr<DX12FullscreenTriangle> a_fullscreenTriangle,
                                        DX12SwapChain& a_swapChain)
     : m_graph(std::move(a_graph)), m_backBuffer(a_backBuffer),
-      m_frames(std::move(a_frames)), m_poolLeases(m_frames->frame_count()),
+      m_frames(std::move(a_frames)), m_fullscreenTriangle(std::move(a_fullscreenTriangle)),
+      m_poolLeases(m_frames->frame_count()),
       m_externalBindings(m_frames->frame_count()), m_isPrepared(m_frames->frame_count(), false),
       m_swapChain(&a_swapChain)
 {
@@ -107,15 +110,20 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     auto composition = compositionResult.take_value();
     try
     {
+        auto fullscreenResult = DX12FullscreenTriangle::create(a_device, nativeDesc.Format);
+        if (!fullscreenResult.has_value())
+        {
+            return GraphResult::failure(*fullscreenResult.try_error());
+        }
         auto framesResult = DX12FrameGraphFrames::create(a_device, *composition.graph->plan(), a_frameCount,
-                                                       a_rtvAllocator, a_srvAllocator);
+                                                       a_rtvAllocator, a_srvAllocator, composition.backBuffer);
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
         return GraphResult::success(std::make_unique<DX12MainFrameGraph>(
             CreateToken{}, std::move(composition.graph), composition.backBuffer,
-            framesResult.take_value(), a_swapChain));
+            framesResult.take_value(), fullscreenResult.take_value(), a_swapChain));
     }
     catch (const std::bad_alloc&)
     {
@@ -219,6 +227,17 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
             external.push_back({plannedResource.handle, resource->resource()});
             leases.push_back(std::move(lease));
         }
+        auto backRtvResult = m_swapChain->rtv(m_swapChain->current_index());
+        if (!backRtvResult.has_value())
+        {
+            return Result<void>::failure(*backRtvResult.try_error());
+        }
+        auto viewsResult = m_frames->prepare_imported_views(a_frameIndex, *m_graph->plan(), external,
+                                                             *backRtvResult.try_value());
+        if (!viewsResult.has_value())
+        {
+            return viewsResult;
+        }
         m_externalBindings[a_frameIndex] = std::move(external);
         m_poolLeases[a_frameIndex] = std::move(leases);
         m_isPrepared[a_frameIndex] = true;
@@ -267,7 +286,8 @@ Result<void> DX12MainFrameGraph::record_range(
                                 -> Result<void>
             {
                 DX12FrameGraphContext context(m_graph->width(), m_graph->height(), a_frameIndex,
-                                              a_context, a_resources, *m_graph->plan(), *plannedPass, *m_frames);
+                                              a_context, a_resources, *m_graph->plan(), *plannedPass,
+                                              *m_frames, *m_fullscreenTriangle);
                 return pass->execute(context);
             });
         }
@@ -596,6 +616,7 @@ Result<void> DX12MainFrameGraph::shutdown()
         return result;
     }
     m_frames.reset();
+    m_fullscreenTriangle.reset();
     m_poolLeases.clear();
     m_externalBindings.clear();
     m_isPrepared.clear();

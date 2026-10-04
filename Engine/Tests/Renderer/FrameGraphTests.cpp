@@ -51,6 +51,16 @@ public:
         return cue::Result<void>::success();
     }
 
+    /// @brief 表示 Pass が指定した入力と描画先を記録する
+    [[nodiscard]] cue::Result<void> draw_fullscreen_texture(
+        cue::FrameGraphResourceHandle a_source, cue::FrameGraphResourceHandle a_target) override
+    {
+        drawSource = a_source;
+        drawTarget = a_target;
+        ++drawCount;
+        return cue::Result<void>::success();
+    }
+
     /// @brief Native API を使わずに Copy の宣言内容を記録する
     [[nodiscard]] cue::Result<void> copy_texture2d(
         cue::FrameGraphResourceHandle a_source, cue::FrameGraphResourceHandle a_destination) override
@@ -64,9 +74,12 @@ public:
     cue::FrameGraphResourceHandle clearTarget;
     cue::FrameGraphResourceHandle copySource;
     cue::FrameGraphResourceHandle copyDestination;
+    cue::FrameGraphResourceHandle drawSource;
+    cue::FrameGraphResourceHandle drawTarget;
     std::array<float, 4> clearColor{};
     int clearCount = 0;
     int copyCount = 0;
+    int drawCount = 0;
 };
 
 /// @brief 名前付き Buffer を構築し、後続 Pass の読み取り元にする
@@ -258,8 +271,8 @@ int main()
     const auto* portablePlan = composition.graph->plan();
     if (!portablePlan || portablePlan->passes().size() != 2 ||
         portablePlan->passes()[0].uses[0].state != cue::FrameGraphResourceState::RenderTarget ||
-        portablePlan->passes()[1].uses[0].state != cue::FrameGraphResourceState::CopySource ||
-        portablePlan->passes()[1].uses[1].state != cue::FrameGraphResourceState::CopyDestination)
+        portablePlan->passes()[1].uses[0].state != cue::FrameGraphResourceState::ShaderRead ||
+        portablePlan->passes()[1].uses[1].state != cue::FrameGraphResourceState::RenderTarget)
     {
         return 13;
     }
@@ -269,11 +282,11 @@ int main()
     if (!clearPass || !presentPass ||
         !clearPass->execute(portableContext).has_value() ||
         !presentPass->execute(portableContext).has_value() ||
-        portableContext.clearCount != 1 || portableContext.copyCount != 1 ||
+        portableContext.clearCount != 1 || portableContext.drawCount != 1 ||
         portableContext.clearTarget.graphId != composition.finalColor.graphId ||
         portableContext.clearTarget.index != composition.finalColor.index ||
-        portableContext.copySource.index != composition.finalColor.index ||
-        portableContext.copyDestination.index != composition.backBuffer.index ||
+        portableContext.drawSource.index != composition.finalColor.index ||
+        portableContext.drawTarget.index != composition.backBuffer.index ||
         portableContext.clearColor != clearColor)
     {
         return 14;

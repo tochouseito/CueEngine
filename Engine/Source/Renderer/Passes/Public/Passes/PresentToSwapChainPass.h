@@ -4,7 +4,7 @@
 
 namespace cue
 {
-/// @brief FinalColorTexture を BackBuffer へ複写する表示 Pass
+/// @brief FinalColorTexture を全画面三角形で BackBuffer へ描画する表示 Pass
 ///
 /// SwapChain の Present は Graph 提出後に Host が行う
 class PresentToSwapChainPass final : public FrameGraphPass
@@ -39,23 +39,23 @@ public:
         return Result<void>::success();
     }
 
-    /// @brief Copy 元と先の Access と State を宣言する
+    /// @brief ShaderRead と RenderTarget の Access と State を宣言する
     [[nodiscard]] Result<void> describe_resources(FrameGraphBuilder& a_builder) override
     {
         auto sourceResult = a_builder.use(m_finalColor, FrameGraphAccess::Read,
-                                          FrameGraphResourceState::CopySource);
+                                          FrameGraphResourceState::ShaderRead);
         if (!sourceResult.has_value())
         {
             return sourceResult;
         }
         return a_builder.use(m_backBuffer, FrameGraphAccess::Write,
-                             FrameGraphResourceState::CopyDestination);
+                             FrameGraphResourceState::RenderTarget);
     }
 
-    /// @brief Backend Context に Copy を記録する
+    /// @brief Backend Context に全画面描画を記録する
     [[nodiscard]] Result<void> execute(FrameGraphContext& a_context) override
     {
-        return a_context.copy_texture2d(m_finalColor, m_backBuffer);
+        return a_context.draw_fullscreen_texture(m_finalColor, m_backBuffer);
     }
 
 private:

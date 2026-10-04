@@ -36,23 +36,33 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
 {
     using SwapResult = Result<std::unique_ptr<DX12SwapChain>>;
     auto* queue = dynamic_cast<DX12GpuCommandQueue*>(a_queue.get());
-    if (!a_device.device() || !a_device.factory() || !queue || !queue->command_queue() ||
-        queue->device() != a_device.device() || queue->type() != QueueType::Graphics ||
-        !a_windowHandle || !IsWindow(static_cast<HWND>(a_windowHandle)) || a_config.width == 0 ||
-        a_config.height == 0 || a_config.bufferCount < 2 || a_config.bufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS ||
-        (a_config.format != DXGI_FORMAT_R8G8B8A8_UNORM && a_config.format != DXGI_FORMAT_B8G8R8A8_UNORM) ||
-        a_rtvAllocator.type() != D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
+    if (!a_device.device() ||                                           // Device があるか
+        !a_device.factory() ||                                          // Factory があるか
+        !queue || !queue->command_queue() ||                            // Queue があるか
+        queue->device() != a_device.device() ||                         // Queue が Device に属するか
+        queue->type() != QueueType::Graphics ||                         // Queue が Graphics か
+        !a_windowHandle ||                                              // Window Handle があるか
+        !IsWindow(static_cast<HWND>(a_windowHandle)) ||                 // Window Handle が有効か
+        a_config.width == 0 ||                                          // SwapChain の幅があるか
+        a_config.height == 0 ||                                         // SwapChain の高さがあるか
+        a_config.bufferCount < 2 ||                                     // SwapChain の Back Buffer が 2 以上か
+        a_config.bufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS ||           // SwapChain の Back Buffer が上限以下か
+        (a_config.format != DXGI_FORMAT_R8G8B8A8_UNORM && a_config.format != DXGI_FORMAT_B8G8R8A8_UNORM) || // SwapChain のフォーマットが有効か
+        a_rtvAllocator.type() != D3D12_DESCRIPTOR_HEAP_TYPE_RTV)        // RTV アロケータのタイプが正しいか
     {
         return SwapResult::failure({ErrorCategory::InvalidArgument, "DX12SwapChain.create"});
     }
 
+    // DXGI が Tearing を許可するか確認する
     BOOL canTear = false;
     const HRESULT featureResult = a_device.factory()->CheckFeatureSupport(
         DXGI_FEATURE_PRESENT_ALLOW_TEARING, &canTear, sizeof(canTear));
     const bool isTearingEnabled = a_config.isTearingAllowed && SUCCEEDED(featureResult) && canTear != false;
 
+    // メモリ確保失敗時は bad_alloc を catch で拾う
     try
     {
+        // SwapChain 生成
         auto result = std::make_unique<DX12SwapChain>(CreateToken{});
         result->m_rtvAllocator = &a_rtvAllocator;
         result->m_queue = std::move(a_queue);
@@ -61,15 +71,16 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
         result->m_backBuffers.reserve(a_config.bufferCount);
         result->m_rtvHandles.reserve(a_config.bufferCount);
 
+        // SwapChain の設定を構築する
         DXGI_SWAP_CHAIN_DESC1 desc{};
         desc.Width = a_config.width;
         desc.Height = a_config.height;
         desc.Format = a_config.format;
-        desc.Stereo = false;
-        desc.SampleDesc.Count = 1;
-        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        desc.BufferCount = a_config.bufferCount;
-        desc.Scaling = DXGI_SCALING_STRETCH;
+        desc.Stereo = false; // 3D Stereo は未対応
+        desc.SampleDesc.Count = 1; // マルチサンプルは未対応
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; // Back Buffer は Render Target で使う
+        desc.BufferCount = a_config.bufferCount;            // Back Buffer の数を指定する
+        desc.Scaling = DXGI_SCALING_STRETCH;                // Stretch 以外は未対応
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
         desc.Flags = isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;

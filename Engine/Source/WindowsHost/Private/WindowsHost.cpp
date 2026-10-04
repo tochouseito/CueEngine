@@ -152,6 +152,8 @@ Result<void> WindowsHost::initialize()
         return rollback(*handleResult.try_error());
     }
     m_state->presentationSize = m_state->window->client_size();
+
+    // Swap Chain の設定を構築する
     dx12::DX12SwapChainConfig swapConfig{};
     swapConfig.width = m_state->presentationSize.width;
     swapConfig.height = m_state->presentationSize.height;

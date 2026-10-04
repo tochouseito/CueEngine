@@ -3,11 +3,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include <d3d12.h>
 
 #include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12FrameGraphExecutor.h>
 #include <Foundation/Result.h>
 #include <FrameGraph/FrameGraphBuilder.h>
 #include <RHI/Command.h>
@@ -37,7 +40,8 @@ public:
     /// 途中失敗では生成済みの枠と Descriptor を回収し、部分生成物を公開しない
     [[nodiscard]] static Result<std::unique_ptr<DX12FrameGraphFrames>> create(
         DX12RenderDevice& a_device, const FrameGraphPlan& a_plan, std::uint32_t a_frameCount,
-        DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator);
+        DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
+        FrameGraphResourceHandle a_borrowedRtvResource = {});
 
     /// @brief GPU 完了後に枠の Resource と Descriptor を回収する
     ~DX12FrameGraphFrames();
@@ -47,6 +51,14 @@ public:
 
     /// @brief 次の記録前に同じ枠の前回 GPU 作業を待つ
     [[nodiscard]] Result<void> begin_frame(std::uint32_t a_frameIndex);
+
+    /// @brief 今回借用した外部 Texture を検証し、予約済み View を記録前に設定する
+    ///
+    /// begin_frame 後に呼ぶ。外部 Resource と借用 RTV は Command 提出まで呼出側が維持する
+    [[nodiscard]] Result<void> prepare_imported_views(
+        std::uint32_t a_frameIndex, const FrameGraphPlan& a_plan,
+        std::span<const DX12FrameGraphExternalResource> a_external,
+        D3D12_CPU_DESCRIPTOR_HANDLE a_borrowedRtv = {});
 
     /// @brief 提出済み Graph の GPU 完了点を枠へ登録する
     [[nodiscard]] Result<void> mark_submitted(std::uint32_t a_frameIndex,
@@ -83,6 +95,11 @@ private:
     {
         DX12DescriptorHandle rtv;
         DX12DescriptorHandle srv;
+        std::optional<D3D12_CPU_DESCRIPTOR_HANDLE> borrowedRtv;
+        bool isImported = false;
+        bool needsRtv = false;
+        bool needsSrv = false;
+        bool isPrepared = false;
     };
 
     struct Frame final
@@ -98,6 +115,8 @@ private:
     std::vector<Frame> m_frames;
     DX12DescriptorAllocator* m_rtvAllocator = nullptr;
     DX12DescriptorAllocator* m_srvAllocator = nullptr;
+    DX12RenderDevice* m_device = nullptr;
+    FrameGraphResourceHandle m_borrowedRtvResource;
     std::uint64_t m_graphId = 0;
     bool m_isClosed = false;
 };

@@ -200,6 +200,7 @@ DX12DescriptorAllocator* DX12Backend::get_descriptor_allocator(DX12DescriptorHea
 /// @brief Graphics Queue と RTV Allocator を Backend の所有下に保持する
 Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12SwapChainConfig& a_config)
 {
+    // SwapChain は Backend が所有する Graphics Queue と RTV Allocator を借用する
     if (!m_device || !m_queuePool || m_swapChain)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain"});
@@ -214,6 +215,8 @@ Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12Swap
     {
         return Result<void>::failure(*leaseResult.try_error());
     }
+
+    // SwapChain を 生成する
     auto result = DX12SwapChain::create(*m_device, leaseResult.take_value(), *rtvAllocator, a_windowHandle, a_config);
     if (!result.has_value())
     {
