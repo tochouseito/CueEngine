@@ -52,6 +52,10 @@ public:
     [[nodiscard]] virtual Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
                                                       std::uint32_t a_rootParameter) = 0;
 
+    /// @brief ShaderRead の Texture を画面全体の三角形で RenderTarget へ描画する
+    [[nodiscard]] virtual Result<void> draw_fullscreen_texture(FrameGraphResourceHandle a_source,
+                                                               FrameGraphResourceHandle a_target) = 0;
+
     /// @brief 同一形状の宣言済み Texture 間の Copy を Backend に記録する
     ///
     /// 異なる形状や未対応の Queue では失敗し、Command を記録しない

@@ -11,6 +11,7 @@
 namespace cue::dx12
 {
 class DX12FrameGraphFrames;
+class DX12FullscreenTriangle;
 
 /// @brief 論理 Resource 操作を DX12 Command に変換する記録時 Context
 ///
@@ -22,7 +23,8 @@ public:
     DX12FrameGraphContext(std::uint32_t a_width, std::uint32_t a_height, std::uint32_t a_frameIndex,
                           DX12GpuCommandContext& a_command, const DX12FrameGraphPassContext& a_resources,
                           const FrameGraphPlan& a_plan, const FrameGraphPassPlan& a_pass,
-                          const DX12FrameGraphFrames& a_frames) noexcept;
+                          const DX12FrameGraphFrames& a_frames,
+                          const DX12FullscreenTriangle& a_fullscreenTriangle) noexcept;
 
     /// @brief Pass が RenderTarget と宣言した任意の Texture を Clear する
     [[nodiscard]] Result<void> clear_render_target(FrameGraphResourceHandle a_target,
@@ -34,6 +36,10 @@ public:
     /// @brief Pass の ShaderRead 宣言に対応する SRV を Root Table に設定する
     [[nodiscard]] Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
                                               std::uint32_t a_rootParameter) override;
+
+    /// @brief ShaderRead の Texture を RenderTarget 全体へ描画する
+    [[nodiscard]] Result<void> draw_fullscreen_texture(FrameGraphResourceHandle a_source,
+                                                       FrameGraphResourceHandle a_target) override;
 
     /// @brief 同一形状の二次元 Texture 間に Copy を記録する
     [[nodiscard]] Result<void> copy_texture2d(FrameGraphResourceHandle a_source,
@@ -55,6 +61,7 @@ private:
     const FrameGraphPlan* m_plan = nullptr;
     const FrameGraphPassPlan* m_pass = nullptr;
     const DX12FrameGraphFrames* m_frames = nullptr;
+    const DX12FullscreenTriangle* m_fullscreenTriangle = nullptr;
     bool m_isSrvHeapBound = false;
 };
 } // namespace cue::dx12

@@ -28,6 +28,72 @@ void transition(ID3D12GraphicsCommandList& a_list, ID3D12Resource& a_resource,
     a_list.ResourceBarrier(1, &barrier);
 }
 
+/// @brief 外部 Texture の View が枠の準備時にだけ有効になることを WARP で確認する
+int run_imported_view_tests()
+{
+    cue::GpuTexture2DDesc desc{4, 4};
+    desc.isRenderTarget = true;
+    desc.isShaderReadable = true;
+    auto builderResult = cue::FrameGraphBuilder::create();
+    if (!builderResult.has_value()) return 20;
+    auto builder = builderResult.take_value();
+    auto textureResult = builder->import_texture2d(
+        desc, cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+    auto writeResult = builder->add_pass("WriteImported", cue::QueueType::Graphics);
+    auto readResult = builder->add_pass("ReadImported", cue::QueueType::Graphics);
+    if (!textureResult.has_value() || !writeResult.has_value() || !readResult.has_value()) return 21;
+    const auto texture = textureResult.take_value();
+    if (!builder->use(writeResult.take_value(), texture, cue::FrameGraphAccess::Write,
+                      cue::FrameGraphResourceState::RenderTarget).has_value() ||
+        !builder->use(readResult.take_value(), texture, cue::FrameGraphAccess::Read,
+                      cue::FrameGraphResourceState::ShaderRead).has_value()) return 22;
+    auto planResult = builder->build();
+    if (!planResult.has_value()) return 23;
+    auto plan = planResult.take_value();
+    auto deviceResult = cue::dx12::DX12RenderDevice::create(cue::dx12::AdapterSelection::Warp);
+    if (!deviceResult.has_value()) return 24;
+    auto device = deviceResult.take_value();
+    auto rtvResult = cue::dx12::DX12DescriptorAllocator::create(
+        *device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2);
+    auto srvResult = cue::dx12::DX12DescriptorAllocator::create(
+        *device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true);
+    if (!rtvResult.has_value() || !srvResult.has_value()) return 25;
+    auto rtvAllocator = rtvResult.take_value();
+    auto srvAllocator = srvResult.take_value();
+    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(
+        *device, plan, 2, *rtvAllocator, *srvAllocator);
+    auto nativeResult = cue::dx12::DX12GpuResource::create_texture2d(*device->device(), desc);
+    cue::GpuTexture2DDesc wrongDesc{8, 8};
+    wrongDesc.isRenderTarget = true;
+    wrongDesc.isShaderReadable = true;
+    auto wrongResult = cue::dx12::DX12GpuResource::create_texture2d(*device->device(), wrongDesc);
+    if (!framesResult.has_value() || !nativeResult.has_value() || !wrongResult.has_value()) return 26;
+    auto frames = framesResult.take_value();
+    auto native = nativeResult.take_value();
+    auto wrong = wrongResult.take_value();
+    const std::array<cue::dx12::DX12FrameGraphExternalResource, 1> valid{{texture, native->resource()}};
+    const std::array<cue::dx12::DX12FrameGraphExternalResource, 1> invalid{{texture, wrong->resource()}};
+    if (frames->rtv(0, texture).has_value() || frames->srv(0, texture).has_value() ||
+        !frames->begin_frame(0).has_value() ||
+        frames->prepare_imported_views(0, plan, invalid).has_value() ||
+        frames->rtv(0, texture).has_value() ||
+        !frames->prepare_imported_views(0, plan, valid).has_value() ||
+        frames->prepare_imported_views(0, plan, valid).has_value() ||
+        !frames->rtv(0, texture).has_value() || !frames->srv(0, texture).has_value() ||
+        !frames->begin_frame(1).has_value() ||
+        !frames->prepare_imported_views(1, plan, valid).has_value() ||
+        !frames->rtv(1, texture).has_value() || !frames->srv(1, texture).has_value()) return 27;
+    auto firstSrvResult = frames->srv(0, texture);
+    auto secondSrvResult = frames->srv(1, texture);
+    if (!firstSrvResult.has_value() || !secondSrvResult.has_value()) return 28;
+    const auto firstSrv = firstSrvResult.take_value();
+    const auto secondSrv = secondSrvResult.take_value();
+    if (firstSrv.ptr == secondSrv.ptr || !frames->begin_frame(0).has_value() ||
+        frames->rtv(0, texture).has_value() || frames->srv(0, texture).has_value() ||
+        !frames->shutdown().has_value()) return 29;
+    return 0;
+}
+
 /// @brief WARP で枠ごとの RenderTarget と SRV、Clear、Readback を検証する
 int run_tests()
 {
@@ -202,5 +268,6 @@ int run_tests()
 /// @brief FinalColorTexture の枠分離と WARP 上の画素値を確認する
 int main()
 {
-    return run_tests();
+    const auto result = run_tests();
+    return result == 0 ? run_imported_view_tests() : result;
 }
