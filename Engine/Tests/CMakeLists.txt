@@ -164,6 +164,12 @@ if(WIN32)
     set_tests_properties(Cue.WindowsHost.Process PROPERTIES TIMEOUT 7)
     set_tests_properties(Cue.WindowsHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
 
+    # Docking API と公式 Backend の構成別 Library が利用できることを確認する
+    add_executable(CueImGuiDependencyTests Editor/ImGuiDependencyTests.cpp)
+    target_link_libraries(CueImGuiDependencyTests PRIVATE Cue.EditorHost imgui::imgui)
+    add_test(NAME Cue.Editor.ImGuiDependency COMMAND CueImGuiDependencyTests)
+    set_tests_properties(Cue.Editor.ImGuiDependency PROPERTIES TIMEOUT 5)
+
     # Editor の既定 Thread 構成と失敗時停止を実 Window で確認する
     add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
     target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)

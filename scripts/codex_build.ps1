@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'vcpkg_environment.ps1')
+$env:VCPKG_ROOT = get_vcpkg_root
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $buildPreset = "windows-vs2026-$($Configuration.ToLowerInvariant())"
 

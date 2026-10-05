@@ -13,7 +13,12 @@
             "architecture": "x64",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_CONFIGURATION_TYPES": "Debug;Development;Release"
+                "CMAKE_CONFIGURATION_TYPES": "Debug;Development;Release",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_MANIFEST_DIR": "${sourceDir}/ThirdParty",
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/ThirdParty/vcpkg_installed",
+                "VCPKG_TARGET_TRIPLET": "x64-windows",
+                "VCPKG_MANIFEST_INSTALL": "OFF"
             },
             "condition": {
                 "type": "equals",

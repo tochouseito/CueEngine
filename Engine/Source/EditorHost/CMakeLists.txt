@@ -1,10 +1,14 @@
 # Editor 固有の Composition Root は Windows 実行基盤より上位に置く
+# vcpkg の Release Library を独自の Development 構成でも利用する
+set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT Release)
+find_package(imgui CONFIG REQUIRED GLOBAL)
+
 add_library(Cue.EditorHost STATIC
     Private/EditorHost.cpp
 )
 
 target_include_directories(Cue.EditorHost PUBLIC Public)
-target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost)
+target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost PRIVATE imgui::imgui)
 target_compile_features(Cue.EditorHost PUBLIC cxx_std_20)
 
 add_executable(CueEditorHost WIN32 Main.cpp)
