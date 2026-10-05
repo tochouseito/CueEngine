@@ -42,6 +42,9 @@ if(WIN32)
     target_compile_definitions(CueWindowsHost PRIVATE
         $<$<CONFIG:Release>:CUE_SHIPPING=1>
     )
-    # Pass の Build で使用する Shader と DXC Runtime を配置する
-    cue_copy_shader_runtime(CueWindowsHost)
+    # Editor の実行入口を追加し、Windows の表示・Frame 基盤を再利用する
+    add_subdirectory(EditorHost)
+
+    # 同じ出力 Directory の Host は Shader と DXC Runtime の配置 Target を共有する
+    cue_copy_shader_runtime(CueWindowsHost CueEditorHost)
 endif()
