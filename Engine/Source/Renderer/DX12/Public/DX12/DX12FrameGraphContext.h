@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 #include <d3d12.h>
 
@@ -11,7 +13,7 @@
 namespace cue::dx12
 {
 class DX12FrameGraphFrames;
-class DX12FullscreenTriangle;
+class DX12PipelineManager;
 
 /// @brief Pass 記録中だけ使う Frame 情報と非所有の依存参照
 ///
@@ -26,7 +28,7 @@ struct DX12FrameGraphRecordContext final
     const FrameGraphPlan &plan;
     const FrameGraphPassPlan &pass;
     const DX12FrameGraphFrames &frames;
-    const DX12FullscreenTriangle &fullscreenTriangle;
+    DX12PipelineManager &pipelines;
 };
 
 /// @brief 論理 Resource 操作を DX12 Command に変換する記録時 Context
@@ -48,9 +50,18 @@ public:
   /// @brief Pass の ShaderRead 宣言に対応する SRV を Root Table に設定する
   [[nodiscard]] Result<void> bind_texture2d(FrameGraphResourceHandle a_source, std::uint32_t a_rootParameter) override;
 
-  /// @brief ShaderRead の Texture を RenderTarget 全体へ描画する
-  [[nodiscard]] Result<void> draw_fullscreen_texture(FrameGraphResourceHandle a_source,
-                                                     FrameGraphResourceHandle a_target) override;
+  /// @brief Root と PSO を設定して Command の寿命保持を開始する
+  [[nodiscard]] Result<void> set_graphics_pipeline(PipelineStateHandle a_pipeline) override;
+  /// @brief Compute Root と PSO を設定する
+  [[nodiscard]] Result<void> set_compute_pipeline(PipelineStateHandle a_pipeline) override;
+  /// @brief Graph の描画範囲内へ Viewport と Scissor を設定する
+  [[nodiscard]] Result<void> set_viewport_scissor(std::uint32_t a_width, std::uint32_t a_height) override;
+  /// @brief Graphics の設定と Binding を検証して Draw を記録する
+  [[nodiscard]] Result<void> draw_instanced(std::uint32_t a_vertexCount, std::uint32_t a_instanceCount,
+                                            std::uint32_t a_firstVertex = 0,
+                                            std::uint32_t a_firstInstance = 0) override;
+  /// @brief Compute 設定と Group 数を検証して Dispatch を記録する
+  [[nodiscard]] Result<void> dispatch(std::uint32_t a_x, std::uint32_t a_y, std::uint32_t a_z) override;
 
   /// @brief 同一形状の二次元 Texture 間に Copy を記録する
   [[nodiscard]] Result<void> copy_texture2d(FrameGraphResourceHandle a_source,
@@ -72,7 +83,13 @@ private:
     const FrameGraphPlan* m_plan = nullptr;
     const FrameGraphPassPlan* m_pass = nullptr;
     const DX12FrameGraphFrames* m_frames = nullptr;
-    const DX12FullscreenTriangle* m_fullscreenTriangle = nullptr;
+    DX12PipelineManager *m_pipelines = nullptr;
+    PipelineStateHandle m_pipeline;
+    std::optional<GpuTextureFormat> m_pipelineFormat;
+    std::optional<GpuTextureFormat> m_targetFormat;
+    std::vector<std::uint32_t> m_boundParameters;
+    bool m_isComputeBound = false;
+    bool m_hasViewport = false;
     bool m_isSrvHeapBound = false;
 };
 } // namespace cue::dx12

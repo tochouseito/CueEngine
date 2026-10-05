@@ -10,6 +10,7 @@
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12ViewManager.h>
@@ -65,7 +66,11 @@ int run_imported_view_tests()
     if (!viewsResult.has_value())
         return 30;
     auto views = viewsResult.take_value();
-    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
+    if (!pipelinesResult.has_value())
+        return 90;
+    auto pipelines = pipelinesResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     // 容量 2 の Heap に 3 枠を依頼した途中失敗でも Slot を回収し、再生成できる
     if (cue::dx12::DX12FrameGraphFrames::create(resources, plan, {3, {}}).has_value())
         return 31;
@@ -156,7 +161,11 @@ int run_tests()
     if (!viewsResult.has_value())
         return 30;
     auto views = viewsResult.take_value();
-    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
+    if (!pipelinesResult.has_value())
+        return 90;
+    auto pipelines = pipelinesResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     auto framesResult = cue::dx12::DX12FrameGraphFrames::create(resources, plan, {2, {}});
     if (!framesResult.has_value())
     {

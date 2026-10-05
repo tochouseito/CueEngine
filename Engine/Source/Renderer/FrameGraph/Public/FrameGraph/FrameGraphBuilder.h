@@ -12,6 +12,7 @@
 #include <Foundation/Result.h>
 #include <RHI/GpuResource.h>
 #include <RHI/GpuResourcePool.h>
+#include <RHI/PipelineManager.h>
 #include <RHI/Queue.h>
 
 namespace cue
@@ -165,6 +166,17 @@ private:
     std::vector<FrameGraphBarrierPlan> m_finalBarriers;
 };
 
+/// @brief Graph Build 中の生成依頼先を型付きで非所有参照する
+struct FrameGraphBuildContext final
+{
+    IPipelineManager &pipelines;
+    /// @brief Graph の破棄まで生存する Manager を借用する
+    [[nodiscard]] IPipelineManager &get_pipeline_manager() const noexcept
+    {
+        return pipelines;
+    }
+};
+
 /// @brief Pass と論理 Resource の宣言から依存順と使用区間を構築する
 ///
 /// Builder は呼出側が所有し、操作は同一 Thread で直列化する。失敗時は既存の宣言を維持する
@@ -181,11 +193,26 @@ public:
 
     /// @brief 他 Graph と混同しない ID を発行する
     [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create();
+    /// @brief Graph の破棄まで維持する非所有の生成基盤を受け取る
+    [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create(const FrameGraphBuildContext &a_context);
+    /// @brief Build で生成した Pipeline、Shader、Root の解放を Manager に依頼する
+    ~FrameGraphBuilder();
+    /// @brief setup から Root Signature の生成を依頼する
+    [[nodiscard]] Result<RootSignatureHandle> create_root_signature(RootSignatureDesc a_desc);
+    /// @brief setup から Shader Blob の生成を依頼する
+    [[nodiscard]] Result<ShaderBlobHandle> create_shader_blob(ShaderCompileDesc a_desc);
+    /// @brief setup から Graphics Pipeline の生成を依頼する
+    [[nodiscard]] Result<PipelineStateHandle> create_graphics_pipeline(GraphicsPipelineStateDesc a_desc);
+    /// @brief setup から Compute Pipeline の生成を依頼する
+    [[nodiscard]] Result<PipelineStateHandle> create_compute_pipeline(ComputePipelineStateDesc a_desc);
+    /// @brief 同じ Graph の Texture 記述を Pipeline の描画先 Format 設定へ使う
+    [[nodiscard]] Result<GpuTexture2DDesc> texture_desc(FrameGraphResourceHandle a_handle) const;
 
     /// @brief FinalColorTexture を固定登録した本番用 Graph Builder を作る
     ///
     /// 生成した Handle は Builder の寿命中だけ有効で、物理 Texture は Backend が枠ごとに作る
-    [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create_main(GpuTexture2DDesc a_finalColor);
+    [[nodiscard]] static Result<std::unique_ptr<FrameGraphBuilder>> create_main(
+        GpuTexture2DDesc a_finalColor, const FrameGraphBuildContext *a_context = nullptr);
 
     /// @brief 本番用 Graph に固定した FinalColorTexture の論理 Handle を返す
     [[nodiscard]] FrameGraphResourceHandle final_color() const noexcept;
@@ -272,6 +299,9 @@ public:
 private:
     friend class FrameGraph;
 
+    /// @brief Graph Build の生成物を回収し、途中失敗では未回収 Handle を残す
+    [[nodiscard]] Result<void> release_build_pipelines();
+
     /// @brief Pass の資源宣言範囲を開始する
     void begin_pass(FrameGraphPassHandle a_pass) noexcept;
 
@@ -287,6 +317,11 @@ private:
     /// @brief この Builder に属する Pass Handle か判定する
     [[nodiscard]] bool owns(FrameGraphPassHandle a_handle) const noexcept;
 
+    IPipelineManager *m_pipelineManager = nullptr;
+    bool m_isBuildingPipelines = false;
+    std::vector<RootSignatureHandle> m_createdRoots;
+    std::vector<ShaderBlobHandle> m_createdShaders;
+    std::vector<PipelineStateHandle> m_createdPipelines;
     std::uint64_t m_graphId = 0;
     FrameGraphResourceHandle m_finalColor;
     std::optional<FrameGraphPassHandle> m_currentPass;

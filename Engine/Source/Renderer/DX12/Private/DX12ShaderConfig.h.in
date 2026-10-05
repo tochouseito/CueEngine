@@ -1,0 +1,7 @@
+#pragma once
+
+namespace cue::dx12
+{
+inline constexpr wchar_t k_dxcLibraryPath[] = L"@CUE_DXC_RUNTIME_DIR@/dxcompiler.dll";
+inline constexpr wchar_t k_shaderSourceDirectory[] = L"@CUE_SHADER_SOURCE_DIRECTORY@";
+} // namespace cue::dx12

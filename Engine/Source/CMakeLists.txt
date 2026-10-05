@@ -42,4 +42,6 @@ if(WIN32)
     target_compile_definitions(CueWindowsHost PRIVATE
         $<$<CONFIG:Release>:CUE_SHIPPING=1>
     )
+    # Pass の Build で使用する Shader と DXC Runtime を配置する
+    cue_copy_shader_runtime(CueWindowsHost)
 endif()

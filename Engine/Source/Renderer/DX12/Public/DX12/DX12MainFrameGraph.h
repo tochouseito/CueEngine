@@ -21,7 +21,7 @@ namespace cue::dx12
 {
 class DX12DescriptorAllocator;
 class DX12FrameGraphFrames;
-class DX12FullscreenTriangle;
+class DX12PipelineManager;
 class DX12GpuCommandContext;
 class DX12RenderDevice;
 class DX12SwapChain;
@@ -105,7 +105,7 @@ private:
   std::unique_ptr<FrameGraph> m_graph;
   FrameGraphResourceHandle m_backBuffer;
   std::unique_ptr<DX12FrameGraphFrames> m_frames;
-  std::unique_ptr<DX12FullscreenTriangle> m_fullscreenTriangle;
+  DX12PipelineManager *m_pipelineManager = nullptr;
   std::vector<std::vector<gpuResourceLease>> m_poolLeases;
   std::vector<std::vector<DX12FrameGraphExternalResource>> m_externalBindings;
   std::vector<bool> m_isPrepared;

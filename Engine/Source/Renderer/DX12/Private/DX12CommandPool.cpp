@@ -1,9 +1,11 @@
 #include <DX12/DX12CommandPool.h>
 
+#include <algorithm>
 #include <array>
 #include <exception>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -246,6 +248,25 @@ ID3D12GraphicsCommandList* DX12GpuCommandContext::command_list() const noexcept
     return m_state == CommandState::Recording ? m_list.Get() : nullptr;
 }
 
+/// @brief Native Binding 前に寿命を確保し、確保失敗時は List を変更しない
+Result<void> DX12GpuCommandContext::retain_pipeline(std::shared_ptr<const void> a_pipeline)
+{
+    if (m_state != CommandState::Recording || !a_pipeline)
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12GpuCommandContext.retain_pipeline"});
+    if (std::find(m_pipelineReferences.begin(), m_pipelineReferences.end(), a_pipeline) != m_pipelineReferences.end())
+        return Result<void>::success();
+    try
+    {
+        m_pipelineReferences.push_back(std::move(a_pipeline));
+        return Result<void>::success();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure(
+            {ErrorCategory::PlatformFailure, "DX12GpuCommandContext.retain_pipeline.allocation"});
+    }
+}
+
 /// @brief 未提出または Fence 完了済みの Allocator だけを Reset する
 Result<void> DX12GpuCommandContext::reset_for_recording()
 {
@@ -265,6 +286,8 @@ Result<void> DX12GpuCommandContext::reset_for_recording()
         m_state = CommandState::Failed;
         return Result<void>::failure(command_error("ID3D12GraphicsCommandList.Reset", listResult));
     }
+    // Pool が未提出または Fence 完了を確認し、List の Reset も成功した後だけ旧 Pipeline を返す
+    m_pipelineReferences.clear();
     m_fenceValue = 0;
     m_submissionFence.Reset();
     m_isFatalFailure = false;

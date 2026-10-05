@@ -1,4 +1,5 @@
 #include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
@@ -59,7 +60,11 @@ int run_tests()
     if (!viewsResult.has_value())
         return 13;
     auto views = viewsResult.take_value();
-    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
+    if (!pipelinesResult.has_value())
+        return 90;
+    auto pipelines = pipelinesResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     for (const bool isVSyncEnabled : {false, true})
     {
         auto queueResult = cue::dx12::DX12GpuCommandQueue::create(

@@ -4,6 +4,7 @@
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12GpuResource.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12RenderDevice.h>
 #include <RHI/BackendFactory.h>
 
@@ -61,6 +62,7 @@ int main()
     const auto *resources = dx12Backend->get_resource_context();
     const auto *execution = dx12Backend->get_execution_context();
     if (!resources || !execution || &resources->get_render_device() != device ||
+        resources->get_pipeline_manager().device() != device->device() ||
         &execution->get_command_pool() != backend->get_command_pool() ||
         &execution->get_queue_pool() != backend->get_queue_pool())
         return 31;

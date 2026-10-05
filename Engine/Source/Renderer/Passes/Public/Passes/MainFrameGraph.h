@@ -24,11 +24,12 @@ struct FrameGraphComposition final
 /// @brief FinalColorTexture、BackBuffer、Clear と表示 Pass を抽象層で組み立てる
 ///
 /// 呼出側が Graph を一意所有し、Resource の物理化と Queue 提出は Backend が担う
-[[nodiscard]] inline Result<FrameGraphComposition> create_main_frame_graph(
-    GpuTexture2DDesc a_colorDesc, frameGraphConfigure a_configure = {})
+[[nodiscard]] inline Result<FrameGraphComposition> create_main_frame_graph(GpuTexture2DDesc a_colorDesc,
+                                                                           const FrameGraphBuildContext &a_context,
+                                                                           frameGraphConfigure a_configure = {})
 {
     using GraphResult = Result<FrameGraphComposition>;
-    auto builderResult = FrameGraphBuilder::create_main(a_colorDesc);
+    auto builderResult = FrameGraphBuilder::create_main(a_colorDesc, &a_context);
     if (!builderResult.has_value())
     {
         return GraphResult::failure(*builderResult.try_error());

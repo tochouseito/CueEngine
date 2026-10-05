@@ -27,6 +27,11 @@ add_test(NAME Cue.Renderer.FrameGraph.Builder COMMAND CueFrameGraphBuilderTests)
     target_link_libraries(CueFrameGraphTests PRIVATE Cue.Renderer.Passes)
     add_test(NAME Cue.Renderer.FrameGraph.Passes COMMAND CueFrameGraphTests)
 
+# Build の Pipeline 生成・設定伝達・失敗回収を Backend なしで検証する
+add_executable(CueFrameGraphPipelineTests Renderer/FrameGraphPipelineTests.cpp)
+target_link_libraries(CueFrameGraphPipelineTests PRIVATE Cue.Renderer.Passes)
+add_test(NAME Cue.Renderer.FrameGraph.Pipelines COMMAND CueFrameGraphPipelineTests)
+
 if(WIN32)
     # 共通 Factory から DX12 Backend を生成し、Device の所有と停止を検証する
     add_executable(CueDX12BackendTests Renderer/DX12BackendTests.cpp)
@@ -45,6 +50,14 @@ if(WIN32)
     target_link_libraries(CueDX12SwapChainTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
     add_test(NAME Cue.Renderer.DX12.SwapChain COMMAND CueDX12SwapChainTests)
     set_tests_properties(Cue.Renderer.DX12.SwapChain PROPERTIES TIMEOUT 20)
+
+    # 実 DXC と WARP で Pipeline の失敗、Handle と Manager 破棄後の GPU 利用を確認する
+    add_executable(CueDX12PipelineManagerTests Renderer/DX12PipelineManagerTests.cpp)
+    target_link_libraries(CueDX12PipelineManagerTests PRIVATE Cue.Renderer.DX12)
+    target_compile_definitions(CueDX12PipelineManagerTests PRIVATE
+        CUE_TEST_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/Renderer/Shaders/PipelineValidation.hlsl")
+    add_test(NAME Cue.Renderer.DX12.PipelineManager COMMAND CueDX12PipelineManagerTests)
+    set_tests_properties(Cue.Renderer.DX12.PipelineManager PROPERTIES TIMEOUT 30)
 
     # Descriptor Heap の生成、世代付き再利用と並行貸出を WARP で検証する
     add_executable(CueDX12DescriptorAllocatorTests Renderer/DX12DescriptorAllocatorTests.cpp)
@@ -103,6 +116,8 @@ if(WIN32)
     # 旧 Pass 契約による Clear と表示の Barrier および WARP Back Buffer 画素を確認する
     add_executable(CueDX12MainFrameGraphTests Renderer/DX12MainFrameGraphTests.cpp)
     target_link_libraries(CueDX12MainFrameGraphTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
+    target_compile_definitions(CueDX12MainFrameGraphTests PRIVATE
+        CUE_TEST_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/Renderer/Shaders/PipelineValidation.hlsl")
     add_test(NAME Cue.Renderer.DX12.MainFrameGraph COMMAND CueDX12MainFrameGraphTests)
     set_tests_properties(Cue.Renderer.DX12.MainFrameGraph PROPERTIES TIMEOUT 20)
 
@@ -148,4 +163,10 @@ if(WIN32)
              COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost> --resize)
     set_tests_properties(Cue.WindowsHost.Process PROPERTIES TIMEOUT 7)
     set_tests_properties(Cue.WindowsHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
+endif()
+
+if(WIN32)
+    cue_copy_shader_runtime(CueDX12PipelineManagerTests
+        CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
+    )
 endif()

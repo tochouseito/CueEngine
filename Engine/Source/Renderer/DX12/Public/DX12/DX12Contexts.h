@@ -10,6 +10,7 @@ namespace cue::dx12
 {
 class DX12RenderDevice;
 class DX12ViewManager;
+class DX12PipelineManager;
 
 /// @brief Resource 生成に必要な Backend Object を非所有で束ねる
 ///
@@ -19,6 +20,13 @@ struct DX12ResourceContext final
 {
     DX12RenderDevice &device;
     DX12ViewManager &views;
+    DX12PipelineManager &pipelines;
+
+    /// @brief Graph の生成物を所有する Manager を借用する
+    [[nodiscard]] DX12PipelineManager &get_pipeline_manager() const noexcept
+    {
+        return pipelines;
+    }
 
     /// @brief Context の利用期間中だけ Device を借用する
     [[nodiscard]] DX12RenderDevice &get_render_device() const noexcept

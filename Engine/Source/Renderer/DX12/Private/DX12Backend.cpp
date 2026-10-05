@@ -8,6 +8,7 @@
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12GpuResourcePool.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
@@ -97,6 +98,10 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHea
         return BackendResult::failure(*resourcePoolResult.try_error());
     }
 
+    auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value());
+    if (!pipelineResult.has_value())
+        return BackendResult::failure(*pipelineResult.try_error());
+
     auto viewResult = DX12ViewManager::create(
         **deviceResult.try_value(), *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Rtv)],
         *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)]);
@@ -108,10 +113,12 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHea
         backend->m_device = deviceResult.take_value();
         backend->m_descriptors = std::move(descriptors);
         backend->m_viewManager = viewResult.take_value();
+        backend->m_pipelineManager = pipelineResult.take_value();
         backend->m_queuePool = queuePoolResult.take_value();
         backend->m_commandPool = commandPoolResult.take_value();
         backend->m_resourcePool = resourcePoolResult.take_value();
-        backend->m_resourceContext.emplace(DX12ResourceContext{*backend->m_device, *backend->m_viewManager});
+        backend->m_resourceContext.emplace(
+            DX12ResourceContext{*backend->m_device, *backend->m_viewManager, *backend->m_pipelineManager});
         backend->m_executionContext.emplace(DX12ExecutionContext{*backend->m_commandPool, *backend->m_queuePool});
         return BackendResult::success(std::move(backend));
     }
@@ -173,6 +180,7 @@ Result<void> DX12Backend::shutdown()
         m_queuePool.reset();
     }
     // 借用が残る失敗経路では Pool の共有状態が GPU 完了まで Heap を保持する
+    m_pipelineManager.reset();
     m_viewManager.reset();
     m_descriptors.reset();
     m_device.reset();
