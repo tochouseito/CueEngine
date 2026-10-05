@@ -30,8 +30,10 @@ class TestPipelineManager final : public cue::IPipelineManager
     [[nodiscard]] cue::Result<cue::ShaderBlobHandle> create_shader_blob(cue::ShaderCompileDesc a_desc) override
     {
         if (++shaderCalls == failShaderCall)
+        {
             return cue::Result<cue::ShaderBlobHandle>::failure(
                 {cue::ErrorCategory::PlatformFailure, "Test.shader.failure"});
+        }
         shaders.push_back(std::move(a_desc));
         ++activeShaders;
         return cue::Result<cue::ShaderBlobHandle>::success({static_cast<std::uint32_t>(shaders.size()), 1, 99});
@@ -41,8 +43,10 @@ class TestPipelineManager final : public cue::IPipelineManager
         cue::GraphicsPipelineStateDesc a_desc) override
     {
         if (shouldFailPipeline)
+        {
             return cue::Result<cue::PipelineStateHandle>::failure(
                 {cue::ErrorCategory::PlatformFailure, "Test.pipeline.failure"});
+        }
         graphics.push_back(std::move(a_desc));
         ++activePipelines;
         return cue::Result<cue::PipelineStateHandle>::success({static_cast<std::uint32_t>(graphics.size()), 1, 99});
@@ -57,7 +61,9 @@ class TestPipelineManager final : public cue::IPipelineManager
     [[nodiscard]] cue::Result<void> retire(cue::RootSignatureHandle) override
     {
         if (activeRoots == 0)
+        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.retire.empty"});
+        }
         --activeRoots;
         return cue::Result<void>::success();
     }
@@ -65,7 +71,9 @@ class TestPipelineManager final : public cue::IPipelineManager
     [[nodiscard]] cue::Result<void> retire(cue::ShaderBlobHandle) override
     {
         if (activeShaders == 0)
+        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.retire.empty"});
+        }
         --activeShaders;
         return cue::Result<void>::success();
     }
@@ -73,7 +81,9 @@ class TestPipelineManager final : public cue::IPipelineManager
     [[nodiscard]] cue::Result<void> retire(cue::PipelineStateHandle) override
     {
         if (activePipelines == 0)
+        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.retire.empty"});
+        }
         --activePipelines;
         return cue::Result<void>::success();
     }

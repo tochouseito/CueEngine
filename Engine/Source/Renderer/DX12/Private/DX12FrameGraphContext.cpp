@@ -74,8 +74,10 @@ Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a
     }
     const auto targetFormat = m_plan->resources()[a_target.index].textureDesc.format;
     if (m_pipelineFormat && *m_pipelineFormat != targetFormat)
+    {
         return Result<void>::failure(
             {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.set_render_target.format"});
+    }
     const auto rtv = *rtvResult.try_value();
     m_targetFormat = targetFormat;
     command_list().OMSetRenderTargets(1, &rtv, false, nullptr);
@@ -94,7 +96,9 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     }
     auto validation = m_pipelines->validate_texture_binding(m_pipeline, a_rootParameter);
     if (!validation.has_value())
+    {
         return validation;
+    }
     auto srvResult = m_frames->srv(frame_index(), a_source);
     if (!srvResult.has_value())
     {
@@ -126,7 +130,9 @@ Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_
 {
     auto result = m_pipelines->bind_graphics(*m_command, a_pipeline);
     if (!result.has_value())
+    {
         return Result<void>::failure(*result.try_error());
+    }
     m_pipeline = a_pipeline;
     m_pipelineFormat = result.take_value();
     m_targetFormat.reset();
@@ -140,7 +146,9 @@ Result<void> DX12FrameGraphContext::set_compute_pipeline(PipelineStateHandle a_p
 {
     auto result = m_pipelines->bind_compute(*m_command, a_pipeline);
     if (!result.has_value())
+    {
         return result;
+    }
     m_pipeline = a_pipeline;
     m_pipelineFormat.reset();
     m_targetFormat.reset();
@@ -156,7 +164,9 @@ Result<void> DX12FrameGraphContext::set_viewport_scissor(std::uint32_t a_width, 
         a_width > static_cast<std::uint32_t>((std::numeric_limits<LONG>::max)()) ||
         a_height > static_cast<std::uint32_t>((std::numeric_limits<LONG>::max)()) ||
         m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording)
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.viewport"});
+    }
     const D3D12_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(a_width), static_cast<float>(a_height), 0.0f, 1.0f};
     const D3D12_RECT scissor{0, 0, static_cast<LONG>(a_width), static_cast<LONG>(a_height)};
     command_list().RSSetViewports(1, &viewport);
@@ -172,10 +182,14 @@ Result<void> DX12FrameGraphContext::draw_instanced(std::uint32_t a_vertexCount, 
     if (!m_pipelineFormat || !m_targetFormat || m_pipelineFormat != m_targetFormat || !m_hasViewport ||
         a_vertexCount == 0 || a_instanceCount == 0 || m_command->type() != QueueType::Graphics ||
         m_command->state() != CommandState::Recording)
+    {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.draw"});
+    }
     auto validation = m_pipelines->validate_bindings(m_pipeline, m_boundParameters);
     if (!validation.has_value())
+    {
         return validation;
+    }
     command_list().DrawInstanced(a_vertexCount, a_instanceCount, a_firstVertex, a_firstInstance);
     return Result<void>::success();
 }
@@ -185,10 +199,14 @@ Result<void> DX12FrameGraphContext::dispatch(std::uint32_t a_x, std::uint32_t a_
 {
     if (!m_isComputeBound || a_x == 0 || a_y == 0 || a_z == 0 || a_x > 65535 || a_y > 65535 || a_z > 65535 ||
         m_command->type() == QueueType::Copy || m_command->state() != CommandState::Recording)
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.dispatch"});
+    }
     auto validation = m_pipelines->validate_bindings(m_pipeline, {});
     if (!validation.has_value())
+    {
         return validation;
+    }
     command_list().Dispatch(a_x, a_y, a_z);
     return Result<void>::success();
 }

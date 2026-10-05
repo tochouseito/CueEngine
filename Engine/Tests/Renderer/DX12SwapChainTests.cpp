@@ -54,15 +54,21 @@ int run_tests()
     auto srvResult =
         cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true);
     if (!srvResult.has_value())
+    {
         return 12;
+    }
     auto srvAllocator = srvResult.take_value();
     auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *allocator, *srvAllocator);
     if (!viewsResult.has_value())
+    {
         return 13;
+    }
     auto views = viewsResult.take_value();
     auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
     if (!pipelinesResult.has_value())
+    {
         return 90;
+    }
     auto pipelines = pipelinesResult.take_value();
     const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     for (const bool isVSyncEnabled : {false, true})

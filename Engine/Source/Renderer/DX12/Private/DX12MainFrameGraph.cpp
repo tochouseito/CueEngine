@@ -101,7 +101,9 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     // 表示 Pass は Back Buffer への描画を担い、SwapChain の Present は Graph 提出後に Host が行う
     auto &pipelines = a_resources.get_pipeline_manager();
     if (pipelines.device() != device.device())
+    {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.pipeline_device"});
+    }
     auto compositionResult = create_main_frame_graph(colorDesc, {pipelines}, std::move(a_config.configure));
     if (!compositionResult.has_value())
     {

@@ -100,13 +100,17 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHea
 
     auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value());
     if (!pipelineResult.has_value())
+    {
         return BackendResult::failure(*pipelineResult.try_error());
+    }
 
     auto viewResult = DX12ViewManager::create(
         **deviceResult.try_value(), *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Rtv)],
         *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)]);
     if (!viewResult.has_value())
+    {
         return BackendResult::failure(*viewResult.try_error());
+    }
     try
     {
         auto backend = std::make_unique<DX12Backend>(CreateToken{});

@@ -65,7 +65,9 @@ int main()
         resources->get_pipeline_manager().device() != device->device() ||
         &execution->get_command_pool() != backend->get_command_pool() ||
         &execution->get_queue_pool() != backend->get_queue_pool())
+    {
         return 31;
+    }
 
     // Backend が所有する ResourcePool から生成し、停止前に破棄予約できる
     auto resourceResult = backend->get_resource_pool()->create_buffer({64, cue::GpuMemoryUsage::Upload});

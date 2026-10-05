@@ -119,7 +119,10 @@ public:
         desc.clearColor = {0.1f, 0.2f, 0.3f, 1.0f};
         auto result = a_builder.import_pool_texture2d("PoolTexture", *m_pool, m_handle, desc,
             cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
-        if (!result.has_value()) return cue::Result<void>::failure(*result.try_error());
+        if (!result.has_value())
+        {
+            return cue::Result<void>::failure(*result.try_error());
+        }
         m_texture = result.take_value();
         return cue::Result<void>::success();
     }
@@ -148,7 +151,10 @@ public:
     [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
     {
         auto result = a_builder.get_texture("PoolTexture");
-        if (!result.has_value()) return cue::Result<void>::failure(*result.try_error());
+        if (!result.has_value())
+        {
+            return cue::Result<void>::failure(*result.try_error());
+        }
         m_texture = result.take_value();
         return cue::Result<void>::success();
     }
@@ -182,14 +188,20 @@ public:
     {
         auto root = a_builder.create_root_signature({});
         if (!root.has_value())
+        {
             return cue::Result<void>::failure(*root.try_error());
+        }
         auto shader = a_builder.create_shader_blob(
             {"ComputeTest.CS", CUE_TEST_SHADER_PATH, "cs_empty_main", cue::ShaderStage::Compute});
         if (!shader.has_value())
+        {
             return cue::Result<void>::failure(*shader.try_error());
+        }
         auto pipeline = a_builder.create_compute_pipeline({"ComputeTest.PSO", root.take_value(), shader.take_value()});
         if (!pipeline.has_value())
+        {
             return cue::Result<void>::failure(*pipeline.try_error());
+        }
         m_pipeline = pipeline.take_value();
         return cue::Result<void>::success();
     }
@@ -202,15 +214,23 @@ public:
     [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
     {
         if (a_context.command_context().type() != cue::QueueType::Compute)
+        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ComputePass.execute"});
+        }
         auto binding = a_context.set_compute_pipeline(m_pipeline);
         if (!binding.has_value())
+        {
             return binding;
+        }
         if (a_context.dispatch(0, 1, 1).has_value())
+        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ComputePass.invalid_dispatch"});
+        }
         auto dispatch = a_context.dispatch(1, 1, 1);
         if (dispatch.has_value())
+        {
             ++*m_count;
+        }
         return dispatch;
     }
 
@@ -353,11 +373,15 @@ int run_tests()
     auto srvAllocator = srvResult.take_value();
     auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
     if (!viewsResult.has_value())
+    {
         return 31;
+    }
     auto views = viewsResult.take_value();
     auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
     if (!pipelinesResult.has_value())
+    {
         return 90;
+    }
     auto pipelines = pipelinesResult.take_value();
     const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     cue::queueLease queue(queueResult.take_value().release(), [](cue::IQueueContext *a_queue) { delete a_queue; });
@@ -519,10 +543,14 @@ int run_tests()
              }
              auto poolTextureWriteResult = a_graph.add_pass(std::make_unique<PoolTexturePass>(*pool, poolTexture));
              if (!poolTextureWriteResult.has_value())
+             {
                  return poolTextureWriteResult;
+             }
              auto poolTextureReadResult = a_graph.add_pass(std::make_unique<PoolTextureReadPass>());
              if (!poolTextureReadResult.has_value())
+             {
                  return poolTextureReadResult;
+             }
              return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
          }});
     if (!extendedResult.has_value())

@@ -78,7 +78,9 @@ Result<H> insert_record(std::vector<Slot<T>> &a_slots, std::shared_ptr<T> a_reco
         }
     }
     if (a_slots.size() >= (std::numeric_limits<std::uint32_t>::max)())
+    {
         return Result<H>::failure({ErrorCategory::InvalidState, "DX12PipelineManager.capacity"});
+    }
     a_slots.push_back({1, std::move(a_record)});
     return Result<H>::success({static_cast<std::uint32_t>(a_slots.size() - 1), 1, a_id});
 }
@@ -87,7 +89,9 @@ template <typename T, typename H>
 Result<void> retire_record(std::vector<Slot<T>> &a_slots, H a_handle, std::uint64_t a_id)
 {
     if (!find_record(a_slots, a_handle, a_id))
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.retire.handle"});
+    }
     auto &slot = a_slots[a_handle.index];
     slot.value.reset();
     ++slot.generation;
@@ -130,10 +134,14 @@ DXGI_FORMAT texture_format(GpuTextureFormat a_format)
 Result<void> name_object(ID3D12Object &a_object, const std::string &a_name)
 {
     if (a_name.find('\0') != std::string::npos)
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.name"});
+    }
     auto converted = utf8_to_utf16(a_name.empty() ? "Cue.PipelineObject" : a_name);
     if (!converted.has_value())
+    {
         return Result<void>::failure(*converted.try_error());
+    }
     const HRESULT hr = a_object.SetName(converted.try_value()->c_str());
     return FAILED(hr) ? Result<void>::failure(pipeline_error("ID3D12Object.SetName", hr)) : Result<void>::success();
 }
@@ -162,17 +170,23 @@ Result<std::unique_ptr<DX12PipelineManager>> DX12PipelineManager::create(DX12Ren
 {
     using managerResult = Result<std::unique_ptr<DX12PipelineManager>>;
     if (!a_device.device())
+    {
         return managerResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.create.device"});
+    }
     std::uint64_t id = g_nextManagerId.load(std::memory_order_relaxed);
     while (id != (std::numeric_limits<std::uint64_t>::max)() &&
            !g_nextManagerId.compare_exchange_weak(id, id + 1, std::memory_order_relaxed))
     {
     }
     if (id == (std::numeric_limits<std::uint64_t>::max)())
+    {
         return managerResult::failure({ErrorCategory::Fatal, "DX12PipelineManager.id_exhausted"});
+    }
     auto compilerResult = DX12ShaderCompiler::create();
     if (!compilerResult.has_value())
+    {
         return managerResult::failure(*compilerResult.try_error());
+    }
     try
     {
         auto manager = std::make_unique<DX12PipelineManager>(CreateToken{});
@@ -193,7 +207,9 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
 {
     using rootResult = Result<RootSignatureHandle>;
     if (a_desc.parameters.size() > 64 || a_desc.samplers.size() > 16)
+    {
         return rootResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.size"});
+    }
     try
     {
         std::vector<D3D12_ROOT_PARAMETER> parameters(a_desc.parameters.size());
@@ -204,7 +220,9 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
             const auto &source = a_desc.parameters[index];
             auto &target = parameters[index];
             if (!visibility(source.visibility, target.ShaderVisibility) || source.count == 0)
+            {
                 return rootResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.parameter"});
+            }
             switch (source.type)
             {
             case RootParameterType::SrvTable:
@@ -231,8 +249,10 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
             case RootParameterType::ShaderResource:
             case RootParameterType::UnorderedAccess:
                 if (source.count != 1)
+                {
                     return rootResult::failure(
                         {ErrorCategory::InvalidArgument, "DX12PipelineManager.root.descriptor_count"});
+                }
                 target.ParameterType = source.type == RootParameterType::ConstantBuffer ? D3D12_ROOT_PARAMETER_TYPE_CBV
                                        : source.type == RootParameterType::ShaderResource
                                            ? D3D12_ROOT_PARAMETER_TYPE_SRV
@@ -250,7 +270,9 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
             if (!visibility(source.visibility, target.ShaderVisibility) ||
                 (source.filter != SamplerFilter::Point && source.filter != SamplerFilter::Linear) ||
                 (source.address != SamplerAddressMode::Clamp && source.address != SamplerAddressMode::Wrap))
+            {
                 return rootResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.sampler"});
+            }
             target.Filter = source.filter == SamplerFilter::Linear ? D3D12_FILTER_MIN_MAG_MIP_LINEAR
                                                                    : D3D12_FILTER_MIN_MAG_MIP_POINT;
             target.AddressU = target.AddressV = target.AddressW = source.address == SamplerAddressMode::Clamp
@@ -272,15 +294,21 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
         Microsoft::WRL::ComPtr<ID3DBlob> diagnostics;
         HRESULT hr = D3D12SerializeRootSignature(&native, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &diagnostics);
         if (FAILED(hr))
+        {
             return rootResult::failure(pipeline_error("D3D12SerializeRootSignature", hr));
+        }
         auto record = std::make_shared<RootRecord>();
         hr = device()->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
                                            IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
+        {
             return rootResult::failure(pipeline_error("ID3D12Device.CreateRootSignature", hr));
+        }
         auto nameResult = name_object(*record->native.Get(), a_desc.name);
         if (!nameResult.has_value())
+        {
             return rootResult::failure(*nameResult.try_error());
+        }
         record->desc = std::move(a_desc);
         return insert_record<RootSignatureHandle>(m_state->roots, std::move(record), m_state->id);
     }
@@ -296,7 +324,9 @@ Result<ShaderBlobHandle> DX12PipelineManager::create_shader_blob(ShaderCompileDe
     using shaderResult = Result<ShaderBlobHandle>;
     auto compiled = m_state->compiler->compile(a_desc);
     if (!compiled.has_value())
+    {
         return shaderResult::failure(*compiled.try_error());
+    }
     try
     {
         auto record = std::make_shared<ShaderRecord>();
@@ -322,7 +352,9 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
         (a_desc.topology != PrimitiveTopology::Triangle && a_desc.topology != PrimitiveTopology::Line &&
          a_desc.topology != PrimitiveTopology::Point) ||
         (a_desc.cullMode != CullMode::None && a_desc.cullMode != CullMode::Front && a_desc.cullMode != CullMode::Back))
+    {
         return pipelineResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.graphics.desc"});
+    }
     try
     {
         auto record = std::make_shared<PipelineRecord>();
@@ -358,10 +390,14 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
         native.SampleDesc.Count = 1;
         const HRESULT hr = device()->CreateGraphicsPipelineState(&native, IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
+        {
             return pipelineResult::failure(pipeline_error("ID3D12Device.CreateGraphicsPipelineState", hr));
+        }
         auto nameResult = name_object(*record->native.Get(), a_desc.name);
         if (!nameResult.has_value())
+        {
             return pipelineResult::failure(*nameResult.try_error());
+        }
         return insert_record<PipelineStateHandle>(m_state->pipelines, std::move(record), m_state->id);
     }
     catch (const std::bad_alloc &)
@@ -377,7 +413,9 @@ Result<PipelineStateHandle> DX12PipelineManager::create_compute_pipeline(Compute
     auto root = find_record(m_state->roots, a_desc.rootSignature, m_state->id);
     auto shader = find_record(m_state->shaders, a_desc.computeShader, m_state->id);
     if (!root || !shader || shader->desc.stage != ShaderStage::Compute)
+    {
         return pipelineResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.compute.desc"});
+    }
     try
     {
         auto record = std::make_shared<PipelineRecord>();
@@ -388,10 +426,14 @@ Result<PipelineStateHandle> DX12PipelineManager::create_compute_pipeline(Compute
         native.CS = {shader->native->GetBufferPointer(), shader->native->GetBufferSize()};
         const HRESULT hr = device()->CreateComputePipelineState(&native, IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
+        {
             return pipelineResult::failure(pipeline_error("ID3D12Device.CreateComputePipelineState", hr));
+        }
         auto nameResult = name_object(*record->native.Get(), a_desc.name);
         if (!nameResult.has_value())
+        {
             return pipelineResult::failure(*nameResult.try_error());
+        }
         return insert_record<PipelineStateHandle>(m_state->pipelines, std::move(record), m_state->id);
     }
     catch (const std::bad_alloc &)
@@ -423,10 +465,14 @@ Result<GpuTextureFormat> DX12PipelineManager::bind_graphics(DX12GpuCommandContex
     auto record = find_record(m_state->pipelines, a_handle, m_state->id);
     if (!record || record->isCompute || a_command.type() != QueueType::Graphics ||
         a_command.state() != CommandState::Recording || a_command.m_device.Get() != device())
+    {
         return Result<GpuTextureFormat>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_graphics"});
+    }
     auto retained = a_command.retain_pipeline(record);
     if (!retained.has_value())
+    {
         return Result<GpuTextureFormat>::failure(*retained.try_error());
+    }
     auto *list = a_command.command_list();
     list->SetGraphicsRootSignature(record->root->native.Get());
     list->SetPipelineState(record->native.Get());
@@ -442,10 +488,14 @@ Result<void> DX12PipelineManager::bind_compute(DX12GpuCommandContext &a_command,
     auto record = find_record(m_state->pipelines, a_handle, m_state->id);
     if (!record || !record->isCompute || a_command.type() == QueueType::Copy ||
         a_command.state() != CommandState::Recording || a_command.m_device.Get() != device())
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_compute"});
+    }
     auto retained = a_command.retain_pipeline(record);
     if (!retained.has_value())
+    {
         return retained;
+    }
     a_command.command_list()->SetComputeRootSignature(record->root->native.Get());
     a_command.command_list()->SetPipelineState(record->native.Get());
     return Result<void>::success();
@@ -457,10 +507,14 @@ Result<void> DX12PipelineManager::validate_texture_binding(PipelineStateHandle a
 {
     auto record = find_record(m_state->pipelines, a_handle, m_state->id);
     if (!record || record->isCompute || a_rootParameter >= record->root->desc.parameters.size())
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.texture.parameter"});
+    }
     const auto &parameter = record->root->desc.parameters[a_rootParameter];
     if (parameter.type != RootParameterType::SrvTable || parameter.count != 1)
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.texture.table"});
+    }
     return Result<void>::success();
 }
 /// @brief 未対応の Root Binding や未設定の Table を使って GPU 実行しない
@@ -469,13 +523,17 @@ Result<void> DX12PipelineManager::validate_bindings(PipelineStateHandle a_handle
 {
     auto record = find_record(m_state->pipelines, a_handle, m_state->id);
     if (!record)
+    {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bindings.handle"});
+    }
     for (std::size_t index = 0; index < record->root->desc.parameters.size(); ++index)
     {
         const auto &parameter = record->root->desc.parameters[index];
         if (parameter.type != RootParameterType::SrvTable || parameter.count != 1 ||
             std::find(a_boundParameters.begin(), a_boundParameters.end(), index) == a_boundParameters.end())
+        {
             return Result<void>::failure({ErrorCategory::InvalidState, "DX12PipelineManager.bindings.unbound"});
+        }
     }
     return Result<void>::success();
 }
