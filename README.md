@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、現在は既存Graphの描画まで接続している。ImGuiのDocking版は依存導入済みで、UIの起動・描画とRuntime Worldは未接続。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
+新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、既存Graphの描画、ImGui Contextの起動、Win32入力とCPUのUI Frame生成まで接続している。ImGuiのGPU描画とRuntime Worldは未接続。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
 
 ## 開発環境
 
@@ -37,7 +37,7 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
 ```
 
-`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。Hostは抽象型の表示PassをGraphの最後へ注入でき、未指定時は既存の全画面表示を使う。ImGuiのDocking版、Demo、公式Win32／DX12 BackendはEditorのPRIVATE依存として接続済み。UIの起動・描画は後続Issueで行う。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、所有、表示Pass注入、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
+`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderとImGuiをMainThreadで実行する。Hostは抽象型の表示PassをGraphの最後へ注入でき、未指定時は既存の全画面表示を使う。ImGuiManagerがContext、Font、Style、LayoutとWin32入力を所有し、採用されたUpdate FrameでUI構築Callbackを呼ぶ。ImGuiのGPU描画は後続#81／#82で接続する。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、UI契約は[ImGuiManager](Engine/Documents/ImGuiManager.md)、所有、表示Pass注入、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
 
 ## 構成と配置
 

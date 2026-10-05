@@ -71,6 +71,7 @@ int test_failed_initialization()
     int destroyed = 0;
     cue::EditorHostConfig config;
     config.window.title.clear();
+    config.imgui.settingsFile.clear();
     config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed);
     cue::EditorHost host(std::move(config));
     auto result = host.initialize();
@@ -94,12 +95,22 @@ int test_owner_thread_frames()
 {
     int recorded = 0;
     int destroyed = 0;
+    int uiFrames = 0;
+    const auto ownerId = std::this_thread::get_id();
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.frame.maxFps = 0;
+    config.imgui.settingsFile.clear();
+    config.buildUi = [&]()
+    {
+        ++uiFrames;
+        return std::this_thread::get_id() == ownerId
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::WrongThread, "Test.ui"});
+    };
     config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed);
     cue::EditorHost host(std::move(config));
-    if (host.step().has_value() || host.frame_progress().has_value())
+    if (host.step().has_value() || host.frame_progress().has_value() || host.ui_frame_info().has_value())
     {
         return 1;
     }
@@ -122,8 +133,8 @@ int test_owner_thread_frames()
         return 4;
     }
     const auto &progress = *progressResult.try_value();
-    const auto ownerId = std::this_thread::get_id();
-    if (recorded != 3 || destroyed != 0 ||
+    auto ui = host.ui_frame_info();
+    if (!ui.has_value() || ui.try_value()->frames != 3 || uiFrames != 3 || recorded != 3 || destroyed != 0 ||
         progress.submittedFrames != 3 || progress.updatedFrames != 3 || progress.renderedFrames != 3 ||
         progress.updateThreadId != ownerId || progress.renderThreadId != ownerId)
     {
@@ -137,13 +148,15 @@ int test_owner_thread_frames()
             auto initialize = host.initialize();
             auto step = host.step();
             auto progress = host.frame_progress();
+            auto ui = host.ui_frame_info();
             auto stop = host.shutdown();
             rejectedOtherThread = !initialize.has_value() && !step.has_value() && !progress.has_value() &&
-                                  !stop.has_value() &&
+                                  !stop.has_value() && !ui.has_value() &&
                                   initialize.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   step.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   progress.try_error()->category == cue::ErrorCategory::WrongThread &&
-                                  stop.try_error()->category == cue::ErrorCategory::WrongThread;
+                                  stop.try_error()->category == cue::ErrorCategory::WrongThread &&
+                                  ui.try_error()->category == cue::ErrorCategory::WrongThread;
         });
     worker.join();
     if (!rejectedOtherThread)
@@ -154,7 +167,7 @@ int test_owner_thread_frames()
     {
         return 7;
     }
-    if (host.step().has_value() || host.frame_progress().has_value())
+    if (host.step().has_value() || host.frame_progress().has_value() || host.ui_frame_info().has_value())
     {
         return 8;
     }
@@ -170,6 +183,7 @@ int test_failed_display()
         int destroyed = 0;
         cue::EditorHostConfig config;
         config.window.clientSize = {320, 240};
+        config.imgui.settingsFile.clear();
         config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed, true);
         if (failsConfig)
         {
@@ -183,6 +197,63 @@ int test_failed_display()
         {
             return 1;
         }
+    }
+    return 0;
+}
+
+/// @brief UI を Worker から触る構成を拒否し、Context の生成失敗も Window とともに回収する
+int test_invalid_ui_config()
+{
+    for (bool usesWorker : {false, true})
+    {
+        cue::EditorHostConfig config;
+        config.imgui.settingsFile.clear();
+        config.frame.useWorkerThreads = usesWorker;
+        if (!usesWorker)
+        {
+            config.imgui.fontSize = 0.0f;
+        }
+        cue::EditorHost host(std::move(config));
+        auto result = host.initialize();
+        if (result.has_value() || result.try_error()->category != cue::ErrorCategory::InvalidArgument ||
+            !host.shutdown().has_value() || host.ui_frame_info().has_value() || host.step().has_value())
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/// @brief UI 内の Host 再入を拒否し、UI 失敗を Runtime と Host の Result に伝える
+int test_failed_ui_callback()
+{
+    cue::EditorHost* borrowed = nullptr;
+    bool rejectedReentry = false;
+    cue::EditorHostConfig config;
+    config.imgui.settingsFile.clear();
+    config.frame.maxFps = 0;
+    config.buildUi = [&]()
+    {
+        auto stopped = borrowed->shutdown();
+        auto stepped = borrowed->step();
+        rejectedReentry = !stopped.has_value() && !stepped.has_value() &&
+                          stopped.try_error()->category == cue::ErrorCategory::InvalidState &&
+                          stepped.try_error()->category == cue::ErrorCategory::InvalidState;
+        return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.ui_callback"});
+    };
+    cue::EditorHost host(std::move(config));
+    borrowed = &host;
+    if (!host.initialize().has_value())
+    {
+        return 1;
+    }
+    auto step = host.step();
+    auto stopped = host.shutdown();
+    if (!rejectedReentry || step.has_value() || step.try_error()->operation != "Test.ui_callback" ||
+        stopped.has_value() || stopped.try_error()->operation != "Test.ui_callback" ||
+        !host.shutdown().has_value() || host.ui_frame_info().has_value())
+    {
+        return 2;
     }
     return 0;
 }
@@ -202,6 +273,14 @@ int main()
     if (const int result = test_failed_display(); result != 0)
     {
         return 30 + result;
+    }
+    if (const int result = test_invalid_ui_config(); result != 0)
+    {
+        return 40 + result;
+    }
+    if (const int result = test_failed_ui_callback(); result != 0)
+    {
+        return 50 + result;
     }
     return 0;
 }

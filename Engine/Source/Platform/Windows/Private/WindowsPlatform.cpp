@@ -39,6 +39,9 @@ public:
     /// @brief Window ProcedureのEvent追加失敗を記録する
     void report_event_failure() noexcept;
 
+    /// @brief 外部 Handler の例外を次の Pump へ伝える
+    void report_handler_failure() noexcept;
+
     /// @brief Window破棄後に非所有参照を解除する
     void release_window(WindowsWindow* a_window) noexcept;
 
@@ -55,6 +58,7 @@ private:
     WindowsWindow* m_active = nullptr;
     bool m_isClassRegistered = false;
     bool m_hasEventFailure = false;
+    bool m_hasHandlerFailure = false;
     bool m_isQuitRequested = false;
 };
 
@@ -106,6 +110,46 @@ public:
         return GetCurrentThreadId() == m_threadId;
     }
 
+    /// @brief Handler の所有権を受け取り、古い Token と区別する世代を発行する
+    [[nodiscard]] Result<WindowsMessageHandlerToken> register_handler(windowsMessageHandler a_handler)
+    {
+        using HandlerResult = Result<WindowsMessageHandlerToken>;
+        if (!is_owner_thread())
+        {
+            return HandlerResult::failure({ErrorCategory::WrongThread, "Window.register_handler"});
+        }
+        if (!a_handler || !m_handle)
+        {
+            return HandlerResult::failure({ErrorCategory::InvalidArgument, "Window.register_handler"});
+        }
+        if (m_handler || m_handlerDepth != 0 || m_handlerGeneration == (std::numeric_limits<std::uint64_t>::max)())
+        {
+            return HandlerResult::failure({ErrorCategory::InvalidState, "Window.register_handler"});
+        }
+        m_handler = std::move(a_handler);
+        ++m_handlerGeneration;
+        return HandlerResult::success({this, m_handlerGeneration});
+    }
+
+    /// @brief 登録元の Token だけが Handler を解除できるよう検証する
+    [[nodiscard]] Result<void> unregister_handler(WindowsMessageHandlerToken a_token)
+    {
+        if (!is_owner_thread())
+        {
+            return Result<void>::failure({ErrorCategory::WrongThread, "Window.unregister_handler"});
+        }
+        if (a_token.window != this || a_token.generation == 0 || a_token.generation != m_handlerGeneration)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "Window.unregister_handler"});
+        }
+        if (m_handlerDepth != 0)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "Window.unregister_handler"});
+        }
+        m_handler = {};
+        return Result<void>::success();
+    }
+
     /// @brief Windowを表示する
     [[nodiscard]] Result<void> show() override
     {
@@ -136,6 +180,10 @@ public:
         if (!m_handle)
         {
             return Result<void>::success();
+        }
+        if (m_handlerDepth != 0)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "Window.destroy.handler"});
         }
         // WM_DESTROY と WM_NCDESTROY は DestroyWindow の呼出中に同期して届く
         if (!DestroyWindow(m_handle))
@@ -196,6 +244,23 @@ public:
             return DefWindowProcW(a_handle, a_message, a_wParam, a_lParam);
         }
 
+        // UI に入力を観測させるが、必須の Lifecycle 処理を消費させない
+        // SetCapture 等による再入中も Handler の差し替えと解除を拒否する
+        WindowsMessageResult handled;
+        if (window->m_handler)
+        {
+            ++window->m_handlerDepth;
+            try
+            {
+                handled = window->m_handler({a_handle, a_message, a_wParam, a_lParam});
+            }
+            catch (...)
+            {
+                window->m_system.report_handler_failure();
+            }
+            --window->m_handlerDepth;
+        }
+
         switch (a_message)
         {
         case WM_CLOSE:
@@ -248,11 +313,13 @@ public:
             // HWND が無効になる前に Callback 用 Pointer と借用を解除する
             SetWindowLongPtrW(a_handle, GWLP_USERDATA, 0);
             window->m_handle = nullptr;
+            window->m_handler = {};
             window->m_system.release_window(window);
             return DefWindowProcW(a_handle, a_message, a_wParam, a_lParam);
 
         default:
-            return DefWindowProcW(a_handle, a_message, a_wParam, a_lParam);
+            return handled.isHandled ? static_cast<LRESULT>(handled.result)
+                                     : DefWindowProcW(a_handle, a_message, a_wParam, a_lParam);
         }
     }
 
@@ -277,6 +344,9 @@ private:
     WindowSize m_clientSize{};
     WindowState m_state = WindowState::Created;
     std::deque<WindowEvent> m_events;
+    windowsMessageHandler m_handler;
+    std::uint64_t m_handlerGeneration = 0;
+    std::uint32_t m_handlerDepth = 0;
     bool m_isMinimized = false;
     bool m_isPublished = false;
 };
@@ -446,6 +516,10 @@ Result<PumpStatus> WindowsWindowSystem::pump_events()
     {
         return Result<PumpStatus>::failure({ErrorCategory::PlatformFailure, "WindowEventQueue"});
     }
+    if (m_hasHandlerFailure)
+    {
+        return Result<PumpStatus>::failure({ErrorCategory::PlatformFailure, "WindowsMessageHandler"});
+    }
     return Result<PumpStatus>::success(m_isQuitRequested ? PumpStatus::QuitRequested : PumpStatus::Running);
 }
 
@@ -453,6 +527,12 @@ Result<PumpStatus> WindowsWindowSystem::pump_events()
 void WindowsWindowSystem::report_event_failure() noexcept
 {
     m_hasEventFailure = true;
+}
+
+/// @brief noexcept の Window Procedure から例外の発生だけを保存する
+void WindowsWindowSystem::report_handler_failure() noexcept
+{
+    m_hasHandlerFailure = true;
 }
 
 /// @brief 明示破棄後にWindowの借用を解除する
@@ -491,5 +571,29 @@ Result<void*> borrow_windows_window_handle(Window& a_window)
         return Result<void*>::failure({ErrorCategory::WrongThread, "borrow_windows_window_handle"});
     }
     return Result<void*>::success(window->native_handle());
+}
+
+/// @brief Windows 実装にだけ外部 Message Handler を接続する
+Result<WindowsMessageHandlerToken> register_windows_message_handler(Window& a_window,
+                                                                     windowsMessageHandler a_handler)
+{
+    auto* window = dynamic_cast<WindowsWindow*>(&a_window);
+    if (!window)
+    {
+        return Result<WindowsMessageHandlerToken>::failure(
+            {ErrorCategory::InvalidArgument, "register_windows_message_handler"});
+    }
+    return window->register_handler(std::move(a_handler));
+}
+
+/// @brief 登録時の Window と世代が一致する Handler を解除する
+Result<void> unregister_windows_message_handler(Window& a_window, WindowsMessageHandlerToken a_token)
+{
+    auto* window = dynamic_cast<WindowsWindow*>(&a_window);
+    if (!window)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "unregister_windows_message_handler"});
+    }
+    return window->unregister_handler(a_token);
 }
 } // namespace cue

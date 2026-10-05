@@ -140,6 +140,42 @@ int test_worker_frame_progress()
     }
     return hasRendered ? 0 : 4;
 }
+
+/// @brief 上位機能が借用を解除できなかった停止では Window を保持し、次の停止で回収する
+int test_callback_shutdown_retry()
+{
+    cue::Window* borrowed = nullptr;
+    int attempts = 0;
+    cue::WindowsHostConfig config{{"Shutdown Callback Test", {320, 240}}, {1, false, 0}, {}};
+    config.callbacks.initializeWindow = [&](cue::Window& a_window)
+    {
+        borrowed = &a_window;
+        return cue::Result<void>::success();
+    };
+    config.callbacks.shutdownWindow = [&]()
+    {
+        ++attempts;
+        return attempts == 1
+                   ? cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.shutdown_pending"})
+                   : cue::Result<void>::success();
+    };
+    cue::WindowsHost host(std::move(config));
+    if (!host.initialize().has_value())
+    {
+        return 1;
+    }
+    auto first = host.shutdown();
+    if (first.has_value() || first.try_error()->operation != "Test.shutdown_pending" || attempts != 1 || !borrowed ||
+        borrowed->state() != cue::WindowState::Visible || host.step().has_value())
+    {
+        return 2;
+    }
+    if (!host.shutdown().has_value() || attempts != 2 || !host.shutdown().has_value() || attempts != 2)
+    {
+        return 3;
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief 実 Window 上で WindowsHost の生成と停止を検証する
@@ -160,6 +196,10 @@ int main()
     if (const int result = test_worker_frame_progress(); result != 0)
     {
         return 30 + result;
+    }
+    if (const int result = test_callback_shutdown_retry(); result != 0)
+    {
+        return 40 + result;
     }
     return 0;
 }
