@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、現在は既存Graphの描画まで接続している。ImGuiとRuntime Worldは未導入。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
+新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、現在は既存Graphの描画まで接続している。ImGuiのDocking版は依存導入済みで、UIの起動・描画とRuntime Worldは未接続。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
 
 ## 開発環境
 
@@ -9,7 +9,7 @@
 - CMake 4.2.0以上（`Visual Studio 18 2026` Generator）
 - PowerShell 7（`scripts/codex_build.ps1`を使う場合）
 
-NuGet restoreと第三者Libraryの取得は不要。Repository RootをVisual StudioのCMake Projectとして開くか、以下をPowerShellで実行する。
+初回は `pwsh -NoProfile -File scripts/prepare_dependencies.ps1` で Dear ImGui の Docking 版を取得する。通常 Build 中は依存を取得しない。vcpkg の配置と直接 CMake／Visual Studio を使う場合の `VCPKG_ROOT` 設定は [ImGui 依存導入](Engine/Documents/ImGuiDependencies.md) を参照する。NuGet restore は不要。
 
 ## Configure、Build、Test、実行
 
@@ -37,7 +37,7 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
 ```
 
-`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。ImGui導入は後続Issueで行う。所有、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
+`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。ImGuiのDocking版、Demo、公式Win32／DX12 BackendはEditorのPRIVATE依存として接続済み。UIの起動・描画は後続Issueで行う。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、所有、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
 
 ## 構成と配置
 
@@ -47,7 +47,7 @@ ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
 | Development | 開発時の動作確認。Release Runtime、最適化、Debug Symbol、Assert有効 |
 | Release | 製品条件の検証。Release Runtime、最適化、`CUE_SHIPPING=1`、Assert無効 |
 
-First-party Sourceは`Engine/Source/`、CTest登録は`Engine/Tests/`、Coding Rulesは`Engine/Documents/`、設計決定は`Docs/Decisions/`に置く。各Moduleの公開Headerは`Public/<Module名>/`に置き、`Cue/`を含めずにIncludeする。第三者Libraryはまだ導入していない。導入時の`ThirdParty/`配置と依存取得方法は[ADR-0002](Docs/Decisions/0002-build-system-source-of-truth.md)に従う。
+First-party Sourceは`Engine/Source/`、CTest登録は`Engine/Tests/`、Coding Rulesは`Engine/Documents/`、設計決定は`Docs/Decisions/`に置く。各Moduleの公開Headerは`Public/<Module名>/`に置き、`Cue/`を含めずにIncludeする。第三者LibraryのManifestとLicenseは`ThirdParty/`で管理し、配置と依存取得方法は[ADR-0002](Docs/Decisions/0002-build-system-source-of-truth.md)に従う。
 
 この基盤の設計境界は[ADR-0001](Docs/Decisions/0001-architecture-boundaries.md)、記述規約は[CODING_RULES.md](Engine/Documents/CODING_RULES.md)を参照する。
 

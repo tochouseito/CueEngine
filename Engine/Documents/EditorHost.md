@@ -32,7 +32,6 @@ Lifecycle Test は初期化失敗後の停止、二重停止、停止後の操�
 | Issue | 機能 |
 | --- | --- |
 | [#78](https://github.com/tochouseito/CueEngine/issues/78) | Host から表示 Pass を注入 |
-| [#79](https://github.com/tochouseito/CueEngine/issues/79) | Dear ImGui 依存と CMake |
 | [#80](https://github.com/tochouseito/CueEngine/issues/80) | ImGuiManager と Win32 入力 |
 | [#81](https://github.com/tochouseito/CueEngine/issues/81) | 公式 DX12 Backend と GPU 資源 |
 | [#82](https://github.com/tochouseito/CueEngine/issues/82) | ImGuiPass、Demo、描画 Texture 表示 |
@@ -40,6 +39,8 @@ Lifecycle Test は初期化失敗後の停止、二重停止、停止後の操�
 | [#84](https://github.com/tochouseito/CueEngine/issues/84) | 導入検証と Completion Gate |
 
 表示 Pass の選択と UI の所有は EditorHost 側に追加する。WindowsHost の接続入口には FrameGraphPass 等の抽象契約を渡し、GraphicsBackend から Editor の具体型を生成しない
+
+Dear ImGui の Docking 版と公式 Win32／DX12 Backend は #79 で PRIVATE 依存として導入済み。準備と構成別 Library の検証は [ImGuiDependencies](ImGuiDependencies.md) を参照する
 
 実際の GPU Resize は M04 の #22 / #59 の残作業。現在の WindowsHost は初期サイズと異なる間は描画を停止し、SwapChain / FinalColor を再生成しない。M05 の最終検証では Window 状態変更と GPU の描画復帰を分けて確認する
 
