@@ -1,6 +1,6 @@
 # CueEngine
 
-新CueEngineのBuild基盤とWindows用のWindow表示基盤。`CueWindowsHost`はWindowとDX12 Backendの生成、Message処理、終了を担当する。`Runtime`と`FrameController`は独立したModuleとして残し、現在のHostには接続していない。RendererはBackendによるDX12 Device生成まで再導入しており、描画、Editor、Runtime Worldは現在含まない。Build定義はCMakeを正本とする。
+新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、現在は既存Graphの描画まで接続している。ImGuiとRuntime Worldは未導入。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
 
 ## 開発環境
 
@@ -29,6 +29,15 @@ pwsh -NoProfile -File scripts/codex_build.ps1
 ```
 
 Build Tree、生成されたVisual Studio Project、Test Logは`out/build/windows-vs2026/`以下に置き、Git管理しない。Testは通常BuildのTargetに含まれるが、Buildだけでは自動実行されない。
+
+## EditorHost（M05）
+
+```powershell
+& 'out/build/windows-vs2026/bin/Debug/CueEditorHost.exe'
+ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
+```
+
+`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。ImGui導入は後続Issueで行う。所有、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
 
 ## 構成と配置
 

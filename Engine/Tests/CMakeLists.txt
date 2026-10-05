@@ -163,10 +163,22 @@ if(WIN32)
              COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost> --resize)
     set_tests_properties(Cue.WindowsHost.Process PROPERTIES TIMEOUT 7)
     set_tests_properties(Cue.WindowsHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
+
+    # Editor の既定 Thread 構成と失敗時停止を実 Window で確認する
+    add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
+    target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)
+    add_test(NAME Cue.EditorHost.Lifecycle COMMAND CueEditorHostTests)
+    set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 15)
+
+    # 共通の Process Fixture で Editor の Executable の表示と正常 Close を確認する
+    add_dependencies(CueWindowsHostProcessTests CueEditorHost)
+    add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost>)
+    set_tests_properties(Cue.EditorHost.Process PROPERTIES TIMEOUT 7)
 endif()
 
 if(WIN32)
     cue_copy_shader_runtime(CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
+        CueEditorHostTests
     )
 endif()
