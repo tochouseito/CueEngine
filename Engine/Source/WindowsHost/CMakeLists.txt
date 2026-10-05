@@ -8,8 +8,8 @@ target_include_directories(Cue.WindowsHost PUBLIC
 )
 
 target_link_libraries(Cue.WindowsHost
-    # 公開 Header の Platform と Frame 契約を利用側へ伝える
-    PUBLIC Cue.Platform Cue.Runtime.Frame
+    # 公開 Header の Platform、Frame と抽象 Graph 構築契約を利用側へ伝える
+    PUBLIC Cue.Platform Cue.Runtime.Frame Cue.Renderer.Passes
     # Win32 と DX12 の実装は Host 内部の依存に留める
     PRIVATE Cue.Platform.Windows Cue.Renderer.DX12 Cue.Runtime
 )

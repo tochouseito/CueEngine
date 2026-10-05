@@ -13,7 +13,17 @@ namespace cue
 /// @brief Clear と表示の間に Pass を追加する Backend 非依存の設定 Callback
 using frameGraphConfigure = std::function<Result<void>(FrameGraph&, FrameGraphResourceHandle)>;
 
-/// @brief 固定 Pass を持つ Graph と、Backend が物理化する Resource Handle
+/// @brief Host が追加描画と最後の表示 Pass を選ぶ Backend 非依存の構築設定
+///
+/// displayPass の所有権は構築先へ移る。未指定なら標準の全画面表示を使う
+/// Pass が借用する UI 等は Graph の停止と破棄より長く生存させる
+struct MainFrameGraphConfig final
+{
+    frameGraphConfigure configure;
+    std::unique_ptr<FrameGraphPass> displayPass;
+};
+
+/// @brief 表示 Pass を所有する Graph と、Backend が物理化する Resource Handle
 struct FrameGraphComposition final
 {
     std::unique_ptr<FrameGraph> graph;
@@ -24,9 +34,10 @@ struct FrameGraphComposition final
 /// @brief FinalColorTexture、BackBuffer、Clear と表示 Pass を抽象層で組み立てる
 ///
 /// 呼出側が Graph を一意所有し、Resource の物理化と Queue 提出は Backend が担う
+/// 構築は同一 Thread で行い、失敗時は注入した Pass と途中生成物も破棄する
 [[nodiscard]] inline Result<FrameGraphComposition> create_main_frame_graph(GpuTexture2DDesc a_colorDesc,
                                                                            const FrameGraphBuildContext &a_context,
-                                                                           frameGraphConfigure a_configure = {})
+                                                                           MainFrameGraphConfig a_config = {})
 {
     using GraphResult = Result<FrameGraphComposition>;
     auto builderResult = FrameGraphBuilder::create_main(a_colorDesc, &a_context);
@@ -51,20 +62,29 @@ struct FrameGraphComposition final
     auto graph = graphResult.take_value();
     try
     {
-        auto clearResult = graph->add_pass(std::make_unique<ClearFinalColorPass>(a_colorDesc.clearColor));
+        auto clear = std::make_unique<ClearFinalColorPass>(a_colorDesc.clearColor);
+        const auto* clearPass = clear.get();
+        auto clearResult = graph->add_pass(std::move(clear));
         if (!clearResult.has_value())
         {
             return GraphResult::failure(*clearResult.try_error());
         }
-        if (a_configure)
+        // Clear、呼出側の追加描画、選択した表示の順に一つの Graph へ所有権を移す
+        if (a_config.configure)
         {
-            auto configureResult = a_configure(*graph, finalColor);
+            auto configureResult = a_config.configure(*graph, finalColor);
             if (!configureResult.has_value())
             {
                 return GraphResult::failure(*configureResult.try_error());
             }
         }
-        auto presentResult = graph->add_pass(std::make_unique<PresentToSwapChainPass>());
+        if (!a_config.displayPass)
+        {
+            a_config.displayPass = std::make_unique<PresentToSwapChainPass>();
+        }
+        // 具体型や名前には依存せず、選択した Pass 自体が最後に残ることを検証する
+        const auto* displayPass = a_config.displayPass.get();
+        auto presentResult = graph->add_pass(std::move(a_config.displayPass));
         if (!presentResult.has_value())
         {
             return GraphResult::failure(*presentResult.try_error());
@@ -75,10 +95,26 @@ struct FrameGraphComposition final
             return GraphResult::failure(*buildResult.try_error());
         }
         const auto* plan = graph->plan();
-        if (!plan || plan->passes().size() < 2 || plan->passes().front().name != "ClearFinalColor" ||
-            plan->passes().back().name != "PresentToSwapChain")
+        if (!plan || plan->passes().size() < 2 ||
+            graph->pass(plan->passes().front().handle) != clearPass ||
+            graph->pass(plan->passes().back().handle) != displayPass)
         {
             return GraphResult::failure({ErrorCategory::InvalidState, "create_main_frame_graph.plan"});
+        }
+        // 表示先は Graphics の BackBuffer 書込みとし、Present への復帰は Graph の終了 Barrier に任せる
+        const auto& display = plan->passes().back();
+        bool writesBackBuffer = false;
+        for (const auto& use : display.uses)
+        {
+            if (use.resource.graphId == backBuffer.graphId && use.resource.index == backBuffer.index &&
+                use.access == FrameGraphAccess::Write && use.state == FrameGraphResourceState::RenderTarget)
+            {
+                writesBackBuffer = true;
+            }
+        }
+        if (display.queue != QueueType::Graphics || !writesBackBuffer)
+        {
+            return GraphResult::failure({ErrorCategory::InvalidArgument, "create_main_frame_graph.display"});
         }
         return GraphResult::success({std::move(graph), finalColor, backBuffer});
     }

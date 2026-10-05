@@ -26,12 +26,14 @@ class DX12GpuCommandContext;
 class DX12RenderDevice;
 class DX12SwapChain;
 
-/// @brief 本番 Graph の描画枠、初期色と追加 Pass の設定
+/// @brief 本番 Graph の描画枠、初期色、追加描画と Host 選択の表示 Pass の設定
 struct DX12MainFrameGraphConfig final
 {
     std::uint32_t frameCount = 2;
     std::array<float, 4> clearColor{0.0f, 0.0f, 0.0f, 1.0f};
     frameGraphConfigure configure;
+    // Graph へ一意所有を移し、未指定時は標準の表示 Pass を使う
+    std::unique_ptr<FrameGraphPass> displayPass;
 };
 
 /// @brief 旧 FrameGraphPass 契約で本番描画 Graph を構築・記録する

@@ -37,7 +37,7 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
 ```
 
-`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。ImGuiのDocking版、Demo、公式Win32／DX12 BackendはEditorのPRIVATE依存として接続済み。UIの起動・描画は後続Issueで行う。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、所有、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
+`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderをMainThreadで実行する。Hostは抽象型の表示PassをGraphの最後へ注入でき、未指定時は既存の全画面表示を使う。ImGuiのDocking版、Demo、公式Win32／DX12 BackendはEditorのPRIVATE依存として接続済み。UIの起動・描画は後続Issueで行う。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、所有、表示Pass注入、起動・停止、未対応のResizeと機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
 
 ## 構成と配置
 

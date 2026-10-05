@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "TestPipelineManager.h"
 
@@ -189,11 +190,156 @@ private:
     bool* m_enabled = nullptr;
     int* m_setupCount = nullptr;
 };
+
+/// @brief Host が所有している検査値を借用し、表示 Pass の移動と失敗時破棄を確認する
+class DisplayPass final : public cue::FrameGraphPass
+{
+public:
+    /// @brief Graph の破棄まで生存する検査値と構築失敗の指定を受け取る
+    DisplayPass(int& a_destroyed, bool a_failsSetup = false, bool a_writesBackBuffer = true) noexcept
+        : m_destroyed(&a_destroyed), m_failsSetup(a_failsSetup), m_writesBackBuffer(a_writesBackBuffer)
+    {
+    }
+
+    /// @brief 一意所有の解放を外部の検査値へ記録する
+    ~DisplayPass() override
+    {
+        ++*m_destroyed;
+    }
+    /// @brief 標準の表示 Pass と異なる診断名を返す
+    [[nodiscard]] const char* name() const noexcept override
+    {
+        return "HostDisplay";
+    }
+    /// @brief BackBuffer を描く Graphics Queue を指定する
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+
+    /// @brief 固定名の表示先を取得し、指定された場合は Build を失敗させる
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    {
+        if (m_failsSetup)
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "DisplayPass.setup"});
+        }
+        auto result = a_builder.get_texture("BackBuffer");
+        if (!result.has_value())
+        {
+            return cue::Result<void>::failure(*result.try_error());
+        }
+        m_backBuffer = result.take_value();
+        return cue::Result<void>::success();
+    }
+
+    /// @brief UI のみを描く場合と同様に FinalColor の読取りを必須にしない
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    {
+        return m_writesBackBuffer
+                   ? a_builder.use(m_backBuffer, cue::FrameGraphAccess::Write,
+                                   cue::FrameGraphResourceState::RenderTarget)
+                   : cue::Result<void>::success();
+    }
+
+    /// @brief 抽象 Context へ表示先の Clear を記録する
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    {
+        return a_context.clear_render_target(m_backBuffer, {0.0f, 0.0f, 0.0f, 1.0f});
+    }
+
+private:
+    int* m_destroyed = nullptr;
+    bool m_failsSetup = false;
+    bool m_writesBackBuffer = true;
+    cue::FrameGraphResourceHandle m_backBuffer;
+};
+
+/// @brief Clear、追加描画、注入表示の順序と所有権、構築失敗時の回収を検証する
+int test_display_injection()
+{
+    TestPipelineManager pipelines;
+    cue::GpuTexture2DDesc colorDesc{8, 8};
+    colorDesc.isRenderTarget = true;
+    int destroyed = 0;
+    cue::MainFrameGraphConfig config;
+    config.displayPass = std::make_unique<DisplayPass>(destroyed);
+    const auto* injected = config.displayPass.get();
+    config.configure = [](cue::FrameGraph& a_graph, cue::FrameGraphResourceHandle)
+    {
+        return a_graph.add_pass(std::make_unique<SeedPass>());
+    };
+    auto result = cue::create_main_frame_graph(colorDesc, {pipelines}, std::move(config));
+    if (!result.has_value() || config.displayPass || destroyed != 0)
+    {
+        return 1;
+    }
+    auto composition = result.take_value();
+    const auto& passes = composition.graph->plan()->passes();
+    if (passes.size() != 3 || passes[0].name != "ClearFinalColor" || passes[1].name != "Seed" ||
+        passes[2].name != "HostDisplay" || composition.graph->pass(passes[2].handle) != injected)
+    {
+        return 2;
+    }
+    TestCommand command;
+    TestContext context(command);
+    for (const auto& pass : passes)
+    {
+        if (!composition.graph->pass(pass.handle)->execute(context).has_value())
+        {
+            return 3;
+        }
+    }
+    if (context.clearCount != 2 || context.drawCount != 0 ||
+        context.clearTarget.index != composition.backBuffer.index)
+    {
+        return 4;
+    }
+    // 表示先を Present に戻す終了 Barrier は差し替え後も保持する
+    bool restoresPresent = false;
+    for (const auto& barrier : composition.graph->plan()->final_barriers())
+    {
+        if (barrier.resource.index == composition.backBuffer.index &&
+            barrier.before == cue::FrameGraphResourceState::RenderTarget &&
+            barrier.after == cue::FrameGraphResourceState::Present)
+        {
+            restoresPresent = true;
+        }
+    }
+    composition.graph.reset();
+    if (!restoresPresent || destroyed != 1)
+    {
+        return 5;
+    }
+    // Callback 失敗、Pass の setup 失敗、表示先未宣言のそれぞれで渡した所有物を回収する
+    for (int failure = 0; failure < 3; ++failure)
+    {
+        cue::MainFrameGraphConfig failedConfig;
+        failedConfig.displayPass = std::make_unique<DisplayPass>(destroyed, failure == 1, failure != 2);
+        if (failure == 0)
+        {
+            failedConfig.configure = [](cue::FrameGraph&, cue::FrameGraphResourceHandle)
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.configure"});
+            };
+        }
+        auto failed = cue::create_main_frame_graph(colorDesc, {pipelines}, std::move(failedConfig));
+        if (failed.has_value() || destroyed != failure + 2)
+        {
+            return 6 + failure;
+        }
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Legacy Pass の二段階宣言が名前と Hazard に結びつくことを確認する
 int main()
 {
+    if (const int result = test_display_injection(); result != 0)
+    {
+        return 30 + result;
+    }
     auto builderResult = cue::FrameGraphBuilder::create();
     if (!builderResult.has_value())
     {
@@ -273,11 +419,11 @@ int main()
     TestPipelineManager pipelines;
     auto compositionResult =
         cue::create_main_frame_graph(colorDesc, {pipelines},
-                                     [&wasConfigured](cue::FrameGraph &, cue::FrameGraphResourceHandle a_color)
-                                     {
-                                         wasConfigured = a_color.is_valid();
-                                         return cue::Result<void>::success();
-                                     });
+                                     {[&wasConfigured](cue::FrameGraph &, cue::FrameGraphResourceHandle a_color)
+                                      {
+                                          wasConfigured = a_color.is_valid();
+                                          return cue::Result<void>::success();
+                                      }, {}});
     if (!compositionResult.has_value())
     {
         return 11;
