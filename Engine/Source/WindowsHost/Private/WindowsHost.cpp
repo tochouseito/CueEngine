@@ -99,6 +99,8 @@ Result<void> WindowsHost::initialize()
     if (m_config.frame.maxFramesInFlight == 0 || m_config.frame.maxFramesInFlight > 2 ||
         m_config.presentation.bufferCount < 2)
     {
+        // Graph 生成前の入力失敗でも Host が受け取った Pass を残さない
+        m_config.graph = {};
         return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.config"});
     }
 
@@ -173,6 +175,9 @@ Result<void> WindowsHost::initialize()
     dx12::DX12MainFrameGraphConfig graphConfig;
     graphConfig.frameCount = m_config.frame.maxFramesInFlight;
     graphConfig.clearColor = m_config.presentation.clearColor;
+    // Host が選択した抽象 Pass を Graph に移し、DX12 層には Editor の具体型を伝えない
+    graphConfig.configure = std::move(m_config.graph.configure);
+    graphConfig.displayPass = std::move(m_config.graph.displayPass);
     auto graphResult =
         dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
     if (!graphResult.has_value())
@@ -295,6 +300,8 @@ Result<void> WindowsHost::shutdown()
         return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.shutdown"});
     }
     m_lifecycle = Lifecycle::Stopped;
+    // Window や Backend の生成前に失敗した場合も未使用の Pass と Callback を回収する
+    m_config.graph = {};
     if (!m_state)
     {
         return Result<void>::success();

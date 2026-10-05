@@ -6,6 +6,7 @@
 #include <thread>
 
 #include <Foundation/Result.h>
+#include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
 #include <Runtime/FrameController.h>
 
@@ -26,6 +27,8 @@ struct WindowsHostConfig final
     WindowDescriptor window;
     FrameControllerDesc frame;
     PresentationConfig presentation;
+    // Editor 等の具体型を公開せず、追加描画と表示 Pass の所有権を受け取る
+    MainFrameGraphConfig graph;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する

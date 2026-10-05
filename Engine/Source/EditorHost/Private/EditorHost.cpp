@@ -6,7 +6,7 @@ namespace cue
 {
 /// @brief Editor の表示設定を保持し、下位基盤へ Editor 型を渡さない
 EditorHost::EditorHost(EditorHostConfig a_config)
-    : m_windows({std::move(a_config.window), a_config.frame, a_config.presentation})
+    : m_windows({std::move(a_config.window), a_config.frame, a_config.presentation, std::move(a_config.graph)})
 {
 }
 

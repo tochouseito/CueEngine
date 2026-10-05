@@ -11,6 +11,8 @@ struct EditorHostConfig final
     // UI Context と Window Message を同じ Owner Thread で扱う初期構成
     FrameControllerDesc frame{2, false, 60};
     PresentationConfig presentation;
+    // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す
+    MainFrameGraphConfig graph;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
