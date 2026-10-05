@@ -1,6 +1,7 @@
 #include <WindowsHost/WindowsHost.h>
 
 #include <atomic>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -34,6 +35,7 @@ class WindowsHost::State final
     WindowSize presentationSize{};
     bool isCloseRequested = false;
     bool isDestroyed = false;
+    bool hasWindowInitializationStarted = false;
 
     /// @brief 固定 Graph の Command を Graphics Queue に提出して表示する
     [[nodiscard]] Result<void> render(std::uint64_t a_frameIndex, std::stop_token a_stopToken,
@@ -78,6 +80,12 @@ WindowsHost::~WindowsHost()
     if (!result.has_value())
     {
         report_error("CueWindowsHost cleanup", *result.try_error(), DiagnosticSeverity::Error);
+        // 借用解除が完了していない Window を暗黙破棄すると、上位 Owner の参照が失効する
+        // 明示 shutdown は再試行できるが、Destructor では安全な回収を継続できない
+        if (m_state && m_state->hasWindowInitializationStarted)
+        {
+            std::terminate();
+        }
     }
 }
 
@@ -131,6 +139,17 @@ Result<void> WindowsHost::initialize()
         return rollback(*windowResult.try_error());
     }
     m_state->window = windowResult.take_value();
+
+    // Window に依存する上位 Host の機能を、表示と Message Pump より前に接続する
+    if (m_config.callbacks.initializeWindow)
+    {
+        m_state->hasWindowInitializationStarted = true;
+        auto hostResult = m_config.callbacks.initializeWindow(*m_state->window);
+        if (!hostResult.has_value())
+        {
+            return rollback(*hostResult.try_error());
+        }
+    }
 
     // Backend が Device を所有し、Window より先に停止できる順序で保持する
     auto backendResult = create_backend();
@@ -198,8 +217,14 @@ Result<void> WindowsHost::initialize()
                                                  *m_state->services.threadFactory);
     State *state = m_state.get();
     const auto frameCount = m_config.frame.maxFramesInFlight;
+    // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
+    auto update = m_config.callbacks.update;
+    if (!update)
+    {
+        update = [](std::uint64_t, std::stop_token) { return Result<void>::success(); };
+    }
     auto runtimeResult =
-        m_state->runtime->initialize([](std::uint64_t, std::stop_token) { return Result<void>::success(); },
+        m_state->runtime->initialize(std::move(update),
                                      [state, frameCount](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
                                      { return state->render(a_frameIndex, a_stopToken, frameCount); });
     if (!runtimeResult.has_value())
@@ -327,6 +352,18 @@ Result<void> WindowsHost::shutdown()
             failure = *graphResult.try_error();
         }
         m_state->graph.reset();
+    }
+    // Pass が借用する UI とその Message Handler を、GPU 完了後かつ Device / Window の破棄前に止める
+    if (m_state->hasWindowInitializationStarted && m_config.callbacks.shutdownWindow)
+    {
+        auto hostResult = m_config.callbacks.shutdownWindow();
+        if (!hostResult.has_value())
+        {
+            // 上位機能が Window / Device の借用をまだ解除できない可能性がある
+            // 下位 Owner は保持し、Stopped 状態からの shutdown 再試行を許可する
+            return Result<void>::failure(failure ? *failure : *hostResult.try_error());
+        }
+        m_state->hasWindowInitializationStarted = false;
     }
     if (m_state->backend)
     {

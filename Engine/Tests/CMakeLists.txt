@@ -170,6 +170,18 @@ if(WIN32)
     add_test(NAME Cue.Editor.ImGuiDependency COMMAND CueImGuiDependencyTests)
     set_tests_properties(Cue.Editor.ImGuiDependency PROPERTIES TIMEOUT 5)
 
+    # Handler の消費 / 例外が Window Lifecycle を壊さず、所有 Token で解除できることを確認する
+    add_executable(CueWindowsMessageHandlerTests Platform/WindowsMessageHandlerTests.cpp)
+    target_link_libraries(CueWindowsMessageHandlerTests PRIVATE Cue.Platform.Windows)
+    add_test(NAME Cue.Platform.Windows.MessageHandler COMMAND CueWindowsMessageHandlerTests)
+    set_tests_properties(Cue.Platform.Windows.MessageHandler PROPERTIES TIMEOUT 10)
+
+    # Context、CPU 描画 Data、入力接続、Layout 保存と失敗回収を GPU Backend なしで検証する
+    add_executable(CueImGuiManagerTests Editor/ImGuiManagerTests.cpp)
+    target_link_libraries(CueImGuiManagerTests PRIVATE Cue.EditorHost Cue.Platform.Windows imgui::imgui)
+    add_test(NAME Cue.Editor.ImGuiManager COMMAND CueImGuiManagerTests)
+    set_tests_properties(Cue.Editor.ImGuiManager PROPERTIES TIMEOUT 15)
+
     # Editor の既定 Thread 構成と失敗時停止を実 Window で確認する
     add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
     target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)

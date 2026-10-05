@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <thread>
 
@@ -21,6 +22,19 @@ struct PresentationConfig final
     std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
 };
 
+/// @brief Host 固有機能の Window 初期化、Update と停止を抽象契約で接続する
+///
+/// 初期化と停止は構築 Thread、Update は Frame 設定の実行 Thread から呼ぶ
+/// 捕捉先は Host の shutdown 完了まで生存させる。Callback は再入しない
+struct WindowsHostCallbacks final
+{
+    std::function<Result<void>(Window&)> initializeWindow;
+    FrameCallback update;
+    // Runtime と Graph の停止後、Backend と Window の破棄前に呼ぶ
+    // 失敗時は下位 Owner を保持し、次の shutdown で再試行する
+    std::function<Result<void>()> shutdownWindow;
+};
+
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
 struct WindowsHostConfig final
 {
@@ -29,6 +43,7 @@ struct WindowsHostConfig final
     PresentationConfig presentation;
     // Editor 等の具体型を公開せず、追加描画と表示 Pass の所有権を受け取る
     MainFrameGraphConfig graph;
+    WindowsHostCallbacks callbacks;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -63,7 +78,8 @@ class WindowsHost final
 
     /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
     ///
-    /// 構築 Thread から複数回呼べる。失敗しても残る解放を続け、最初の Error を返す
+    /// 構築 Thread から複数回呼べる。最初の Error を返す
+    /// 上位の停止 Callback が失敗した場合は Backend / Window を保持し、shutdown を再試行する
     [[nodiscard]] Result<void> shutdown();
 
   private:

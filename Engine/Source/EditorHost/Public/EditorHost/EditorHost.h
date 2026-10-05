@@ -1,5 +1,11 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <stop_token>
+#include <thread>
+
+#include <EditorHost/ImGuiManager.h>
 #include <WindowsHost/WindowsHost.h>
 
 namespace cue
@@ -13,12 +19,15 @@ struct EditorHostConfig final
     PresentationConfig presentation;
     // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す
     MainFrameGraphConfig graph;
+    ImGuiManagerConfig imgui;
+    // Callback は ImGui Context が Current の Owner Thread 上で実行する
+    editorUiCallback buildUi;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
 ///
 /// 全操作と破棄は構築 Thread で行い、再入しない
-/// UI の所有先はこの層へ追加し、WindowsHost と Renderer は Editor に依存しない
+/// ImGuiManager を所有し、WindowsHost と Renderer は Editor に依存しない
 class EditorHost final
 {
   public:
@@ -26,7 +35,7 @@ class EditorHost final
     explicit EditorHost(EditorHostConfig a_config = {});
 
     /// @brief 明示停止がない場合も所有する Windows 実行基盤を停止する
-    ~EditorHost() = default;
+    ~EditorHost();
 
     EditorHost(const EditorHost &) = delete;
     EditorHost &operator=(const EditorHost &) = delete;
@@ -46,12 +55,31 @@ class EditorHost final
     /// GPU 完了状態は表さない。起動前と停止後は InvalidState を返す
     [[nodiscard]] Result<FrameProgress> frame_progress() const;
 
+    /// @brief 確定済み UI Frame の描画数と入力 Capture を Owner Thread へ返す
+    [[nodiscard]] Result<ImGuiFrameInfo> ui_frame_info() const;
+
     /// @brief Frame 実行と GPU を停止してから Window を破棄する
     ///
-    /// 複数回呼べる。失敗時も残りの解放を続け、Windows 実行基盤の Error を返す
+    /// 複数回呼べる。UI 停止失敗では Window を保持し、次の呼出しで回収を再試行する
     [[nodiscard]] Result<void> shutdown();
 
   private:
+    /// @brief Window の生存中に Context と Win32 入力接続を所有する
+    [[nodiscard]] Result<void> initialize_ui(Window& a_window);
+
+    /// @brief 採用された Update の Owner Thread 上で UI Frame を確定する
+    [[nodiscard]] Result<void> update_ui(std::uint64_t a_frameIndex, std::stop_token a_stopToken);
+
+    /// @brief Pass 破棄後に Handler を解除し、Window 破棄前に Context を解放する
+    [[nodiscard]] Result<void> shutdown_ui();
+
+    ImGuiManagerConfig m_imguiConfig;
+    editorUiCallback m_buildUi;
+    std::thread::id m_ownerId;
+    bool m_useWorkerThreads = false;
+    bool m_isStepping = false;
+    // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
+    std::unique_ptr<ImGuiManager> m_imgui;
     WindowsHost m_windows;
 };
 } // namespace cue
