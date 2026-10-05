@@ -9,8 +9,9 @@
 
 #include <d3d12.h>
 
-#include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12Contexts.h>
 #include <DX12/DX12FrameGraphExecutor.h>
+#include <DX12/DX12ViewManager.h>
 #include <Foundation/Result.h>
 #include <FrameGraph/FrameGraphBuilder.h>
 #include <RHI/Command.h>
@@ -21,9 +22,16 @@ class DX12FrameGraphResources;
 class DX12GpuResource;
 class DX12RenderDevice;
 
+/// @brief 枠数と借用 RTV の論理 Resource を指定する
+struct DX12FrameGraphFramesConfig final
+{
+    std::uint32_t frameCount = 2;
+    FrameGraphResourceHandle borrowedRtvResource;
+};
+
 /// @brief Graph の一時 Texture と View を描画枠ごとに所有する
 ///
-/// Allocator は shutdown より長く生存させる。操作は一つの制御 Thread で直列化する
+/// Context の参照先は shutdown より長く生存させる。操作は一つの制御 Thread で直列化する
 /// 枠の再利用前に begin_frame で前回 GPU 完了を待つ
 class DX12FrameGraphFrames final
 {
@@ -38,10 +46,9 @@ public:
     /// @brief 同じ Plan から枠ごとに独立した Resource と必要な View を作る
     ///
     /// 途中失敗では生成済みの枠と Descriptor を回収し、部分生成物を公開しない
-    [[nodiscard]] static Result<std::unique_ptr<DX12FrameGraphFrames>> create(
-        DX12RenderDevice& a_device, const FrameGraphPlan& a_plan, std::uint32_t a_frameCount,
-        DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
-        FrameGraphResourceHandle a_borrowedRtvResource = {});
+    [[nodiscard]] static Result<std::unique_ptr<DX12FrameGraphFrames>> create(const DX12ResourceContext &a_resources,
+                                                                              const FrameGraphPlan &a_plan,
+                                                                              DX12FrameGraphFramesConfig a_config = {});
 
     /// @brief GPU 完了後に枠の Resource と Descriptor を回収する
     ~DX12FrameGraphFrames();
@@ -93,8 +100,8 @@ public:
 private:
     struct Views final
     {
-        DX12DescriptorHandle rtv;
-        DX12DescriptorHandle srv;
+        DX12ViewHandle rtv;
+        DX12ViewHandle srv;
         std::optional<D3D12_CPU_DESCRIPTOR_HANDLE> borrowedRtv;
         bool isImported = false;
         bool needsRtv = false;
@@ -113,8 +120,7 @@ private:
     [[nodiscard]] bool owns(std::uint32_t a_frameIndex, FrameGraphResourceHandle a_handle) const noexcept;
 
     std::vector<Frame> m_frames;
-    DX12DescriptorAllocator* m_rtvAllocator = nullptr;
-    DX12DescriptorAllocator* m_srvAllocator = nullptr;
+    DX12ViewManager *m_viewManager = nullptr;
     DX12RenderDevice* m_device = nullptr;
     FrameGraphResourceHandle m_borrowedRtvResource;
     std::uint64_t m_graphId = 0;

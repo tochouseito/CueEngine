@@ -30,33 +30,35 @@ DX12SwapChain::DX12SwapChain(CreateToken) noexcept
 }
 
 /// @brief SwapChain と全 Back Buffer の RTV が揃った場合だけ公開する
-Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
-    DX12RenderDevice& a_device, queueLease a_queue, DX12DescriptorAllocator& a_rtvAllocator,
-    void* a_windowHandle, DX12SwapChainConfig a_config)
+Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceContext &a_resources, queueLease a_queue,
+                                                             void *a_windowHandle, DX12SwapChainConfig a_config)
 {
     using SwapResult = Result<std::unique_ptr<DX12SwapChain>>;
+    auto &device = a_resources.get_render_device();
+    auto &viewManager = a_resources.get_view_manager();
     auto* queue = dynamic_cast<DX12GpuCommandQueue*>(a_queue.get());
-    if (!a_device.device() ||                                           // Device があるか
-        !a_device.factory() ||                                          // Factory があるか
-        !queue || !queue->command_queue() ||                            // Queue があるか
-        queue->device() != a_device.device() ||                         // Queue が Device に属するか
-        queue->type() != QueueType::Graphics ||                         // Queue が Graphics か
-        !a_windowHandle ||                                              // Window Handle があるか
-        !IsWindow(static_cast<HWND>(a_windowHandle)) ||                 // Window Handle が有効か
-        a_config.width == 0 ||                                          // SwapChain の幅があるか
-        a_config.height == 0 ||                                         // SwapChain の高さがあるか
-        a_config.bufferCount < 2 ||                                     // SwapChain の Back Buffer が 2 以上か
-        a_config.bufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS ||           // SwapChain の Back Buffer が上限以下か
-        (a_config.format != DXGI_FORMAT_R8G8B8A8_UNORM && a_config.format != DXGI_FORMAT_B8G8R8A8_UNORM) || // SwapChain のフォーマットが有効か
-        a_rtvAllocator.type() != D3D12_DESCRIPTOR_HEAP_TYPE_RTV)        // RTV アロケータのタイプが正しいか
+    if (!device.device() ||                                   // Device があるか
+        !device.factory() ||                                  // Factory があるか
+        !queue || !queue->command_queue() ||                  // Queue があるか
+        queue->device() != device.device() ||                 // Queue が Device に属するか
+        queue->type() != QueueType::Graphics ||               // Queue が Graphics か
+        !a_windowHandle ||                                    // Window Handle があるか
+        !IsWindow(static_cast<HWND>(a_windowHandle)) ||       // Window Handle が有効か
+        a_config.width == 0 ||                                // SwapChain の幅があるか
+        a_config.height == 0 ||                               // SwapChain の高さがあるか
+        a_config.bufferCount < 2 ||                           // SwapChain の Back Buffer が 2 以上か
+        a_config.bufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS || // SwapChain の Back Buffer が上限以下か
+        (a_config.format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+         a_config.format != DXGI_FORMAT_B8G8R8A8_UNORM) || // SwapChain のフォーマットが有効か
+        viewManager.device() != device.device())           // View の生成基盤が同じか
     {
         return SwapResult::failure({ErrorCategory::InvalidArgument, "DX12SwapChain.create"});
     }
 
     // DXGI が Tearing を許可するか確認する
     BOOL canTear = false;
-    const HRESULT featureResult = a_device.factory()->CheckFeatureSupport(
-        DXGI_FEATURE_PRESENT_ALLOW_TEARING, &canTear, sizeof(canTear));
+    const HRESULT featureResult =
+        device.factory()->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &canTear, sizeof(canTear));
     const bool isTearingEnabled = a_config.isTearingAllowed && SUCCEEDED(featureResult) && canTear != false;
 
     // メモリ確保失敗時は bad_alloc を catch で拾う
@@ -64,7 +66,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
     {
         // SwapChain 生成
         auto result = std::make_unique<DX12SwapChain>(CreateToken{});
-        result->m_rtvAllocator = &a_rtvAllocator;
+        result->m_viewManager = &viewManager;
         result->m_queue = std::move(a_queue);
         result->m_config = a_config;
         result->m_isTearingEnabled = isTearingEnabled;
@@ -86,7 +88,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
         desc.Flags = isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
         Microsoft::WRL::ComPtr<IDXGISwapChain1> created;
-        const HRESULT createResult = a_device.factory()->CreateSwapChainForHwnd(
+        const HRESULT createResult = device.factory()->CreateSwapChainForHwnd(
             queue->command_queue(), static_cast<HWND>(a_windowHandle), &desc, nullptr, nullptr, &created);
         if (FAILED(createResult))
         {
@@ -97,8 +99,8 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
         {
             return SwapResult::failure(swap_chain_error("IDXGISwapChain.QueryInterface", queryResult));
         }
-        const HRESULT associationResult = a_device.factory()->MakeWindowAssociation(
-            static_cast<HWND>(a_windowHandle), DXGI_MWA_NO_ALT_ENTER);
+        const HRESULT associationResult =
+            device.factory()->MakeWindowAssociation(static_cast<HWND>(a_windowHandle), DXGI_MWA_NO_ALT_ENTER);
         if (FAILED(associationResult))
         {
             return SwapResult::failure(swap_chain_error("IDXGIFactory.MakeWindowAssociation", associationResult));
@@ -127,19 +129,12 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(
                 report_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", bufferNameResult),
                              DiagnosticSeverity::Warning);
             }
-            auto slotResult = a_rtvAllocator.allocate();
-            if (!slotResult.has_value())
+            auto viewResult = viewManager.create_rtv(*buffer.Get());
+            if (!viewResult.has_value())
             {
-                return SwapResult::failure(*slotResult.try_error());
+                return SwapResult::failure(*viewResult.try_error());
             }
-            const auto slot = slotResult.take_value();
-            result->m_rtvHandles.push_back(slot);
-            auto handleResult = a_rtvAllocator.cpu_handle(slot);
-            if (!handleResult.has_value())
-            {
-                return SwapResult::failure(*handleResult.try_error());
-            }
-            a_device.device()->CreateRenderTargetView(buffer.Get(), nullptr, *handleResult.try_value());
+            result->m_rtvHandles.push_back(viewResult.take_value());
             result->m_backBuffers.push_back(std::move(buffer));
         }
         return SwapResult::success(std::move(result));
@@ -176,12 +171,12 @@ ID3D12Resource* DX12SwapChain::back_buffer(std::uint32_t a_index) const noexcept
 /// @brief RTV Slot の世代を検証して CPU Handle を返す
 Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12SwapChain::rtv(std::uint32_t a_index) const
 {
-    if (!m_rtvAllocator || a_index >= m_rtvHandles.size())
+    if (!m_viewManager || a_index >= m_rtvHandles.size())
     {
         return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::failure(
             {ErrorCategory::InvalidArgument, "DX12SwapChain.rtv"});
     }
-    return m_rtvAllocator->cpu_handle(m_rtvHandles[a_index]);
+    return m_viewManager->cpu_handle(m_rtvHandles[a_index]);
 }
 
 /// @brief 描画提出と Present が同じ Queue を使えるように貸し出す
@@ -230,11 +225,11 @@ Result<void> DX12SwapChain::shutdown()
             return idleResult;
         }
     }
-    if (m_rtvAllocator)
+    if (m_viewManager)
     {
         for (const auto handle : m_rtvHandles)
         {
-            auto releaseResult = m_rtvAllocator->release(handle);
+            auto releaseResult = m_viewManager->release(handle);
             if (!releaseResult.has_value())
             {
                 return releaseResult;
@@ -245,7 +240,7 @@ Result<void> DX12SwapChain::shutdown()
     m_backBuffers.clear();
     m_swapChain.Reset();
     m_queue.reset();
-    m_rtvAllocator = nullptr;
+    m_viewManager = nullptr;
     return Result<void>::success();
 }
 } // namespace cue::dx12

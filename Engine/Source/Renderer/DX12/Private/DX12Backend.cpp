@@ -2,14 +2,16 @@
 
 #include <array>
 #include <cstddef>
+#include <new>
 #include <utility>
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12GpuResourcePool.h>
-#include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12QueuePool.h>
+#include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include <DX12/DX12ViewManager.h>
 #include <Platform/Diagnostics.h>
 
 #include "DX12ResourceLeakChecker.h"
@@ -23,14 +25,8 @@ struct DX12DescriptorHeapState final
         allocators;
 };
 
-/// @brief 検証済み Device の所有権を Backend へ移す
-DX12Backend::DX12Backend(CreateToken, std::unique_ptr<DX12RenderDevice> a_device,
-                         std::shared_ptr<DX12DescriptorHeapState> a_descriptors,
-                         std::unique_ptr<DX12QueuePool> a_queuePool,
-                         std::unique_ptr<DX12CommandPool> a_commandPool,
-                         std::unique_ptr<DX12GpuResourcePool> a_resourcePool) noexcept
-    : m_device(std::move(a_device)), m_descriptors(std::move(a_descriptors)), m_queuePool(std::move(a_queuePool)),
-      m_commandPool(std::move(a_commandPool)), m_resourcePool(std::move(a_resourcePool))
+/// @brief Factory が成功するまで空の所有状態を保持する
+DX12Backend::DX12Backend(CreateToken) noexcept
 {
 }
 
@@ -101,9 +97,28 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHea
         return BackendResult::failure(*resourcePoolResult.try_error());
     }
 
-    return BackendResult::success(std::make_unique<DX12Backend>(
-        CreateToken{}, deviceResult.take_value(), std::move(descriptors), queuePoolResult.take_value(),
-        commandPoolResult.take_value(), resourcePoolResult.take_value()));
+    auto viewResult = DX12ViewManager::create(
+        **deviceResult.try_value(), *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Rtv)],
+        *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)]);
+    if (!viewResult.has_value())
+        return BackendResult::failure(*viewResult.try_error());
+    try
+    {
+        auto backend = std::make_unique<DX12Backend>(CreateToken{});
+        backend->m_device = deviceResult.take_value();
+        backend->m_descriptors = std::move(descriptors);
+        backend->m_viewManager = viewResult.take_value();
+        backend->m_queuePool = queuePoolResult.take_value();
+        backend->m_commandPool = commandPoolResult.take_value();
+        backend->m_resourcePool = resourcePoolResult.take_value();
+        backend->m_resourceContext.emplace(DX12ResourceContext{*backend->m_device, *backend->m_viewManager});
+        backend->m_executionContext.emplace(DX12ExecutionContext{*backend->m_commandPool, *backend->m_queuePool});
+        return BackendResult::success(std::move(backend));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return BackendResult::failure({ErrorCategory::PlatformFailure, "DX12Backend.create.allocation"});
+    }
 }
 
 /// @brief 明示停止されていない Queue も GPU 完了後に破棄する
@@ -131,6 +146,9 @@ Result<void> DX12Backend::shutdown()
         }
         m_swapChain.reset();
     }
+    // Graph と SwapChain の停止後に借用入口を閉じ、Manager は Heap より先に破棄する
+    m_resourceContext.reset();
+    m_executionContext.reset();
     if (m_resourcePool)
     {
         stopResult = m_resourcePool->shutdown();
@@ -155,6 +173,7 @@ Result<void> DX12Backend::shutdown()
         m_queuePool.reset();
     }
     // 借用が残る失敗経路では Pool の共有状態が GPU 完了まで Heap を保持する
+    m_viewManager.reset();
     m_descriptors.reset();
     m_device.reset();
 
@@ -197,6 +216,18 @@ DX12DescriptorAllocator* DX12Backend::get_descriptor_allocator(DX12DescriptorHea
     return m_descriptors && index < m_descriptors->allocators.size() ? m_descriptors->allocators[index].get() : nullptr;
 }
 
+/// @brief 全生成基盤が揃う稼働期間だけ Resource Context を貸す
+const DX12ResourceContext *DX12Backend::get_resource_context() const noexcept
+{
+    return m_resourceContext ? &*m_resourceContext : nullptr;
+}
+
+/// @brief Pool の生成後から停止まで Execution Context を貸す
+const DX12ExecutionContext *DX12Backend::get_execution_context() const noexcept
+{
+    return m_executionContext ? &*m_executionContext : nullptr;
+}
+
 /// @brief Graphics Queue と RTV Allocator を Backend の所有下に保持する
 Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12SwapChainConfig& a_config)
 {
@@ -205,10 +236,10 @@ Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12Swap
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain"});
     }
-    auto* rtvAllocator = get_descriptor_allocator(DX12DescriptorHeapRole::Rtv);
-    if (!rtvAllocator)
+    const auto *resources = get_resource_context();
+    if (!resources)
     {
-        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain.rtv"});
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain.context"});
     }
     auto leaseResult = m_queuePool->acquire(QueueType::Graphics);
     if (!leaseResult.has_value())
@@ -217,7 +248,7 @@ Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12Swap
     }
 
     // SwapChain を 生成する
-    auto result = DX12SwapChain::create(*m_device, leaseResult.take_value(), *rtvAllocator, a_windowHandle, a_config);
+    auto result = DX12SwapChain::create(*resources, leaseResult.take_value(), a_windowHandle, a_config);
     if (!result.has_value())
     {
         return Result<void>::failure(*result.try_error());

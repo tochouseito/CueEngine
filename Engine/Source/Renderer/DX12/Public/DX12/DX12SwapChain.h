@@ -8,7 +8,8 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12Contexts.h>
+#include <DX12/DX12ViewManager.h>
 #include <Foundation/Result.h>
 #include <RHI/Queue.h>
 
@@ -29,7 +30,7 @@ struct DX12SwapChainConfig final
 
 /// @brief Window に対応する Back Buffer、RTV、Graphics Queue Lease を一意所有する
 ///
-/// Backend が所有し、Window と RTV Allocator より先に停止する
+/// Backend が所有し、Window と Context の参照先より先に停止する
 /// 公開操作は生成 Thread から直列に呼び、GPU 提出中の破棄は shutdown が待機する
 class DX12SwapChain final
 {
@@ -44,9 +45,9 @@ public:
     /// @brief 有効な Window と Graphics Queue から Flip Model SwapChain を生成する
     ///
     /// Queue Lease を受け取り、失敗時も RTV Slot と COM Resource を回収する
-    [[nodiscard]] static Result<std::unique_ptr<DX12SwapChain>> create(
-        DX12RenderDevice& a_device, queueLease a_queue, DX12DescriptorAllocator& a_rtvAllocator,
-        void* a_windowHandle, DX12SwapChainConfig a_config);
+    [[nodiscard]] static Result<std::unique_ptr<DX12SwapChain>> create(const DX12ResourceContext &a_resources,
+                                                                       queueLease a_queue, void *a_windowHandle,
+                                                                       DX12SwapChainConfig a_config);
 
     /// @brief GPU 完了後に Back Buffer と Queue Lease を解放する
     ~DX12SwapChain();
@@ -80,12 +81,12 @@ public:
     [[nodiscard]] Result<void> shutdown();
 
 private:
-    DX12DescriptorAllocator* m_rtvAllocator = nullptr;
-    queueLease m_queue;
-    Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_backBuffers;
-    std::vector<DX12DescriptorHandle> m_rtvHandles;
-    DX12SwapChainConfig m_config;
-    bool m_isTearingEnabled = false;
+  DX12ViewManager *m_viewManager = nullptr;
+  queueLease m_queue;
+  Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
+  std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_backBuffers;
+  std::vector<DX12ViewHandle> m_rtvHandles;
+  DX12SwapChainConfig m_config;
+  bool m_isTearingEnabled = false;
 };
 } // namespace cue::dx12
