@@ -83,10 +83,11 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; // Back Buffer は Render Target で使う
         desc.BufferCount = a_config.bufferCount;            // Back Buffer の数を指定する
         desc.Scaling = DXGI_SCALING_STRETCH;                // Stretch 以外は未対応
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        desc.Flags = isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;    // Flip Model で Back Buffer を破棄する
+        desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;       // Back Buffer の Alpha は未対応
+        desc.Flags = isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0; // Tearing を許可するか
 
+        // SwapChain を生成する
         Microsoft::WRL::ComPtr<IDXGISwapChain1> created;
         const HRESULT createResult = device.factory()->CreateSwapChainForHwnd(
             queue->command_queue(), static_cast<HWND>(a_windowHandle), &desc, nullptr, nullptr, &created);
@@ -99,6 +100,8 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         {
             return SwapResult::failure(swap_chain_error("IDXGISwapChain.QueryInterface", queryResult));
         }
+
+        // Alt+Enter でフルスクリーン切替を無効化する
         const HRESULT associationResult =
             device.factory()->MakeWindowAssociation(static_cast<HWND>(a_windowHandle), DXGI_MWA_NO_ALT_ENTER);
         if (FAILED(associationResult))
@@ -114,8 +117,11 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
             report_error("DX12SwapChain", swap_chain_error("IDXGISwapChain.SetPrivateData", nameResult),
                          DiagnosticSeverity::Warning);
         }
+
+        // Back Buffer を生成して RTV を割り当てる
         for (std::uint32_t index = 0; index < a_config.bufferCount; ++index)
         {
+            // Back Buffer を取得する
             Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
             const HRESULT bufferResult = result->m_swapChain->GetBuffer(index, IID_PPV_ARGS(&buffer));
             if (FAILED(bufferResult))
@@ -129,11 +135,15 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
                 report_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", bufferNameResult),
                              DiagnosticSeverity::Warning);
             }
+
+            // RTV を生成する
             auto viewResult = viewManager.create_rtv(*buffer.Get());
             if (!viewResult.has_value())
             {
                 return SwapResult::failure(*viewResult.try_error());
             }
+
+            // Back Buffer と RTV Handle を保持する
             result->m_rtvHandles.push_back(viewResult.take_value());
             result->m_backBuffers.push_back(std::move(buffer));
         }

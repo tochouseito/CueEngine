@@ -168,6 +168,8 @@ Result<void> WindowsHost::initialize()
     {
         return rollback({ErrorCategory::InvalidState, "WindowsHost.graph.resources"});
     }
+
+    // FrameGraph の構築は Backend と SwapChain が生存する間だけ有効で、Runtime より長く保持する
     dx12::DX12MainFrameGraphConfig graphConfig;
     graphConfig.frameCount = m_config.frame.maxFramesInFlight;
     graphConfig.clearColor = m_config.presentation.clearColor;
