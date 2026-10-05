@@ -49,10 +49,14 @@ int run_tests()
     TestPipelineManager manager;
     auto builderResult = cue::FrameGraphBuilder::create({manager});
     if (!builderResult.has_value())
+    {
         return 1;
+    }
     auto builder = builderResult.take_value();
     if (builder->create_root_signature({}).has_value() || !manager.roots.empty())
+    {
         return 2;
+    }
     for (int phase = 0; phase < 3; ++phase)
     {
         TestPipelineManager failing;
@@ -60,42 +64,58 @@ int run_tests()
         failing.shouldFailPipeline = phase == 2;
         auto result = cue::create_main_frame_graph(color, {failing});
         if (result.has_value() || failing.activeRoots || failing.activeShaders || failing.activePipelines)
+        {
             return 3 + phase;
+        }
     }
     auto result = cue::create_main_frame_graph(color, {manager});
     if (!result.has_value() || manager.activeRoots != 1 || manager.activeShaders != 2 || manager.activePipelines != 1 ||
         manager.roots[0].parameters[0].type != cue::RootParameterType::SrvTable ||
         manager.roots[0].samplers.size() != 1 || manager.shaders[0].stage != cue::ShaderStage::Vertex ||
         manager.shaders[1].stage != cue::ShaderStage::Pixel || manager.graphics[0].renderTargetFormat != color.format)
+    {
         return 6;
+    }
     auto composition = result.take_value();
     composition.graph.reset();
     if (manager.activeRoots || manager.activeShaders || manager.activePipelines)
+    {
         return 7;
+    }
     TestPipelineManager rollback;
     const cue::FrameGraphBuildContext context{rollback};
     auto rollbackBuilder = cue::FrameGraphBuilder::create_main(color, &context);
     if (!rollbackBuilder.has_value())
+    {
         return 8;
+    }
     auto ownedBuilder = rollbackBuilder.take_value();
     if (!ownedBuilder
              ->import_texture2d("BackBuffer", color, cue::FrameGraphResourceState::Present,
                                 cue::FrameGraphResourceState::Present)
              .has_value())
+    {
         return 9;
+    }
     auto graphResult = cue::FrameGraph::create(std::move(ownedBuilder), 8, 8);
     if (!graphResult.has_value())
+    {
         return 10;
+    }
     auto graph = graphResult.take_value();
     if (!graph->add_pass(std::make_unique<cue::ClearFinalColorPass>(color.clearColor)).has_value() ||
         !graph->add_pass(std::make_unique<cue::PresentToSwapChainPass>()).has_value() ||
         !graph->add_pass(std::make_unique<FailingPass>()).has_value())
+    {
         return 11;
+    }
     auto failed = graph->build();
     if (failed.has_value() || failed.try_error()->operation != "Test.describe.failure" || graph->plan() ||
         rollback.activeRoots || rollback.activeShaders || rollback.activePipelines || rollback.graphics.size() != 1 ||
         graph->build().has_value())
+    {
         return 12;
+    }
     return 0;
 }
 } // namespace

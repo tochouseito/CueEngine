@@ -252,9 +252,13 @@ ID3D12GraphicsCommandList* DX12GpuCommandContext::command_list() const noexcept
 Result<void> DX12GpuCommandContext::retain_pipeline(std::shared_ptr<const void> a_pipeline)
 {
     if (m_state != CommandState::Recording || !a_pipeline)
+    {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12GpuCommandContext.retain_pipeline"});
+    }
     if (std::find(m_pipelineReferences.begin(), m_pipelineReferences.end(), a_pipeline) != m_pipelineReferences.end())
+    {
         return Result<void>::success();
+    }
     try
     {
         m_pipelineReferences.push_back(std::move(a_pipeline));

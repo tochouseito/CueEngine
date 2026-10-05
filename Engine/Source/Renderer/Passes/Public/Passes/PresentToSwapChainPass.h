@@ -40,22 +40,30 @@ public:
         m_backBuffer = backResult.take_value();
         auto targetDesc = a_builder.texture_desc(m_backBuffer);
         if (!targetDesc.has_value())
+        {
             return Result<void>::failure(*targetDesc.try_error());
+        }
         RootSignatureDesc rootDesc;
         rootDesc.name = "PresentToSwapChain.Root";
         rootDesc.parameters.push_back({RootParameterType::SrvTable, ShaderVisibility::Pixel, 0});
         rootDesc.samplers.push_back({0, 0, ShaderVisibility::Pixel, SamplerFilter::Linear, SamplerAddressMode::Clamp});
         auto rootResult = a_builder.create_root_signature(std::move(rootDesc));
         if (!rootResult.has_value())
+        {
             return Result<void>::failure(*rootResult.try_error());
+        }
         auto vsResult = a_builder.create_shader_blob(
             {"PresentToSwapChain.VS", "Hlsl/FullscreenTriangle.hlsl", "vs_main", ShaderStage::Vertex});
         if (!vsResult.has_value())
+        {
             return Result<void>::failure(*vsResult.try_error());
+        }
         auto psResult = a_builder.create_shader_blob(
             {"PresentToSwapChain.PS", "Hlsl/FullscreenTriangle.hlsl", "ps_main", ShaderStage::Pixel});
         if (!psResult.has_value())
+        {
             return Result<void>::failure(*psResult.try_error());
+        }
         GraphicsPipelineStateDesc pipelineDesc;
         pipelineDesc.name = "PresentToSwapChain.Pipeline";
         pipelineDesc.rootSignature = rootResult.take_value();
@@ -64,7 +72,9 @@ public:
         pipelineDesc.renderTargetFormat = targetDesc.try_value()->format;
         auto pipelineResult = a_builder.create_graphics_pipeline(std::move(pipelineDesc));
         if (!pipelineResult.has_value())
+        {
             return Result<void>::failure(*pipelineResult.try_error());
+        }
         m_pipeline = pipelineResult.take_value();
         return Result<void>::success();
     }
@@ -87,16 +97,24 @@ public:
     {
         auto pipeline = a_context.set_graphics_pipeline(m_pipeline);
         if (!pipeline.has_value())
+        {
             return pipeline;
+        }
         auto target = a_context.set_render_target(m_backBuffer);
         if (!target.has_value())
+        {
             return target;
+        }
         auto binding = a_context.bind_texture2d(m_finalColor, 0);
         if (!binding.has_value())
+        {
             return binding;
+        }
         auto viewport = a_context.set_viewport_scissor(a_context.width(), a_context.height());
         if (!viewport.has_value())
+        {
             return viewport;
+        }
         return a_context.draw_instanced(3, 1);
     }
 

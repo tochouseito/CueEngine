@@ -73,7 +73,9 @@ Result<DX12TextureViewDesc> DX12ViewManager::resolve_desc(ID3D12Resource &a_reso
         return DescResult::failure({ErrorCategory::InvalidArgument, "DX12ViewManager.texture.resource"});
     }
     if (a_desc.format == DXGI_FORMAT_UNKNOWN)
+    {
         a_desc.format = native.Format;
+    }
     if (a_desc.mipCount == 0)
     {
         a_desc.mipCount = a_type == DX12ViewType::RenderTarget ? 1 : native.MipLevels - a_desc.firstMip;
@@ -106,7 +108,9 @@ Result<DX12ViewHandle> DX12ViewManager::reserve(DX12ViewType a_type)
     }
     auto result = target->allocate();
     if (!result.has_value())
+    {
         return Result<DX12ViewHandle>::failure(*result.try_error());
+    }
     return Result<DX12ViewHandle>::success({result.take_value(), a_type});
 }
 
@@ -128,10 +132,14 @@ Result<DX12ViewHandle> DX12ViewManager::create_view(ID3D12Resource &a_resource, 
 {
     auto validation = validate_texture2d(a_resource, a_type, a_desc);
     if (!validation.has_value())
+    {
         return Result<DX12ViewHandle>::failure(*validation.try_error());
+    }
     auto result = reserve(a_type);
     if (!result.has_value())
+    {
         return result;
+    }
     const auto handle = result.take_value();
     auto write = write_texture2d(handle, a_resource, a_desc);
     if (!write.has_value())
@@ -156,10 +164,14 @@ Result<void> DX12ViewManager::write_texture2d(DX12ViewHandle a_handle, ID3D12Res
 {
     auto result = resolve_desc(a_resource, a_handle.type, a_desc);
     if (!result.has_value())
+    {
         return Result<void>::failure(*result.try_error());
+    }
     auto cpu = cpu_handle(a_handle);
     if (!cpu.has_value())
+    {
         return Result<void>::failure(*cpu.try_error());
+    }
     const auto desc = result.take_value();
     if (a_handle.type == DX12ViewType::RenderTarget)
     {

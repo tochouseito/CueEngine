@@ -37,50 +37,77 @@ int run_imported_view_tests()
     desc.isRenderTarget = true;
     desc.isShaderReadable = true;
     auto builderResult = cue::FrameGraphBuilder::create();
-    if (!builderResult.has_value()) return 20;
+    if (!builderResult.has_value())
+    {
+        return 20;
+    }
     auto builder = builderResult.take_value();
     auto textureResult = builder->import_texture2d(
         desc, cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
     auto writeResult = builder->add_pass("WriteImported", cue::QueueType::Graphics);
     auto readResult = builder->add_pass("ReadImported", cue::QueueType::Graphics);
-    if (!textureResult.has_value() || !writeResult.has_value() || !readResult.has_value()) return 21;
+    if (!textureResult.has_value() || !writeResult.has_value() || !readResult.has_value())
+    {
+        return 21;
+    }
     const auto texture = textureResult.take_value();
     if (!builder->use(writeResult.take_value(), texture, cue::FrameGraphAccess::Write,
                       cue::FrameGraphResourceState::RenderTarget).has_value() ||
         !builder->use(readResult.take_value(), texture, cue::FrameGraphAccess::Read,
-                      cue::FrameGraphResourceState::ShaderRead).has_value()) return 22;
+                      cue::FrameGraphResourceState::ShaderRead).has_value())
+    {
+        return 22;
+    }
     auto planResult = builder->build();
-    if (!planResult.has_value()) return 23;
+    if (!planResult.has_value())
+    {
+        return 23;
+    }
     auto plan = planResult.take_value();
     auto deviceResult = cue::dx12::DX12RenderDevice::create(cue::dx12::AdapterSelection::Warp);
-    if (!deviceResult.has_value()) return 24;
+    if (!deviceResult.has_value())
+    {
+        return 24;
+    }
     auto device = deviceResult.take_value();
     auto rtvResult = cue::dx12::DX12DescriptorAllocator::create(
         *device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2);
     auto srvResult = cue::dx12::DX12DescriptorAllocator::create(
         *device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true);
-    if (!rtvResult.has_value() || !srvResult.has_value()) return 25;
+    if (!rtvResult.has_value() || !srvResult.has_value())
+    {
+        return 25;
+    }
     auto rtvAllocator = rtvResult.take_value();
     auto srvAllocator = srvResult.take_value();
     auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
     if (!viewsResult.has_value())
+    {
         return 30;
+    }
     auto views = viewsResult.take_value();
     auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
     if (!pipelinesResult.has_value())
+    {
         return 90;
+    }
     auto pipelines = pipelinesResult.take_value();
     const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     // 容量 2 の Heap に 3 枠を依頼した途中失敗でも Slot を回収し、再生成できる
     if (cue::dx12::DX12FrameGraphFrames::create(resources, plan, {3, {}}).has_value())
+    {
         return 31;
+    }
     auto framesResult = cue::dx12::DX12FrameGraphFrames::create(resources, plan, {2, {}});
     auto nativeResult = cue::dx12::DX12GpuResource::create_texture2d(*device->device(), desc);
     cue::GpuTexture2DDesc wrongDesc{8, 8};
     wrongDesc.isRenderTarget = true;
     wrongDesc.isShaderReadable = true;
     auto wrongResult = cue::dx12::DX12GpuResource::create_texture2d(*device->device(), wrongDesc);
-    if (!framesResult.has_value() || !nativeResult.has_value() || !wrongResult.has_value()) return 26;
+    if (!framesResult.has_value() || !nativeResult.has_value() || !wrongResult.has_value())
+    {
+        return 26;
+    }
     auto frames = framesResult.take_value();
     auto native = nativeResult.take_value();
     auto wrong = wrongResult.take_value();
@@ -95,15 +122,24 @@ int run_imported_view_tests()
         !frames->rtv(0, texture).has_value() || !frames->srv(0, texture).has_value() ||
         !frames->begin_frame(1).has_value() ||
         !frames->prepare_imported_views(1, plan, valid).has_value() ||
-        !frames->rtv(1, texture).has_value() || !frames->srv(1, texture).has_value()) return 27;
+        !frames->rtv(1, texture).has_value() || !frames->srv(1, texture).has_value())
+    {
+        return 27;
+    }
     auto firstSrvResult = frames->srv(0, texture);
     auto secondSrvResult = frames->srv(1, texture);
-    if (!firstSrvResult.has_value() || !secondSrvResult.has_value()) return 28;
+    if (!firstSrvResult.has_value() || !secondSrvResult.has_value())
+    {
+        return 28;
+    }
     const auto firstSrv = firstSrvResult.take_value();
     const auto secondSrv = secondSrvResult.take_value();
     if (firstSrv.ptr == secondSrv.ptr || !frames->begin_frame(0).has_value() ||
         frames->rtv(0, texture).has_value() || frames->srv(0, texture).has_value() ||
-        !frames->shutdown().has_value()) return 29;
+        !frames->shutdown().has_value())
+    {
+        return 29;
+    }
     return 0;
 }
 
@@ -159,11 +195,15 @@ int run_tests()
     auto srvAllocator = srvResult.take_value();
     auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
     if (!viewsResult.has_value())
+    {
         return 30;
+    }
     auto views = viewsResult.take_value();
     auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
     if (!pipelinesResult.has_value())
+    {
         return 90;
+    }
     auto pipelines = pipelinesResult.take_value();
     const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     auto framesResult = cue::dx12::DX12FrameGraphFrames::create(resources, plan, {2, {}});

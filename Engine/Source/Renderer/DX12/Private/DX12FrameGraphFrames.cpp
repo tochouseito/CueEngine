@@ -258,10 +258,14 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(
         {
             if ((type == DX12ViewType::RenderTarget && !views.needsRtv) ||
                 (type == DX12ViewType::ShaderResource && !views.needsSrv))
+            {
                 continue;
+            }
             auto validation = m_viewManager->validate_texture2d(*binding->resource, type);
             if (!validation.has_value())
+            {
                 return validation;
+            }
         }
         if (planned.handle.graphId == m_borrowedRtvResource.graphId &&
             planned.handle.index == m_borrowedRtvResource.index && views.needsRtv &&
@@ -295,14 +299,18 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(
             {
                 auto writeResult = m_viewManager->write_texture2d(views.rtv, *native);
                 if (!writeResult.has_value())
+                {
                     return writeResult;
+                }
             }
         }
         if (views.needsSrv)
         {
             auto writeResult = m_viewManager->write_texture2d(views.srv, *native);
             if (!writeResult.has_value())
+            {
                 return writeResult;
+            }
         }
         views.isPrepared = true;
     }

@@ -159,7 +159,9 @@ Result<void> FrameGraph::add_pass(std::unique_ptr<FrameGraphPass> a_pass)
 Result<void> FrameGraph::build()
 {
     if (!m_builder || m_buildAttempted)
+    {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build"});
+    }
     m_builder->m_isBuildingPipelines = true;
     auto result = Result<void>::success();
     try
@@ -175,7 +177,9 @@ Result<void> FrameGraph::build()
     {
         auto cleanup = m_builder->release_build_pipelines();
         if (!cleanup.has_value())
+        {
             return cleanup;
+        }
     }
     return result;
 }

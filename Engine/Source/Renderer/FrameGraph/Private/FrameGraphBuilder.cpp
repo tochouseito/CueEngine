@@ -177,7 +177,9 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create(const Frame
 {
     auto result = create();
     if (result.has_value())
+    {
         (*result.try_value())->m_pipelineManager = &a_context.get_pipeline_manager();
+    }
     return result;
 }
 
@@ -185,33 +187,43 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create(const Frame
 FrameGraphBuilder::~FrameGraphBuilder()
 {
     if (!release_build_pipelines().has_value())
+    {
         std::terminate();
+    }
 }
 
 /// @brief Native 依存の逆順に Handle を返却し、Command の共有参照は維持する
 Result<void> FrameGraphBuilder::release_build_pipelines()
 {
     if (!m_pipelineManager)
+    {
         return Result<void>::success();
+    }
     while (!m_createdPipelines.empty())
     {
         auto result = m_pipelineManager->retire(m_createdPipelines.back());
         if (!result.has_value())
+        {
             return result;
+        }
         m_createdPipelines.pop_back();
     }
     while (!m_createdShaders.empty())
     {
         auto result = m_pipelineManager->retire(m_createdShaders.back());
         if (!result.has_value())
+        {
             return result;
+        }
         m_createdShaders.pop_back();
     }
     while (!m_createdRoots.empty())
     {
         auto result = m_pipelineManager->retire(m_createdRoots.back());
         if (!result.has_value())
+        {
             return result;
+        }
         m_createdRoots.pop_back();
     }
     return Result<void>::success();
@@ -221,14 +233,18 @@ Result<void> FrameGraphBuilder::release_build_pipelines()
 Result<RootSignatureHandle> FrameGraphBuilder::create_root_signature(RootSignatureDesc a_desc)
 {
     if (!m_isBuildingPipelines || !m_pipelineManager)
+    {
         return Result<RootSignatureHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.create_root_signature.context"});
+    }
     try
     {
         m_createdRoots.reserve(m_createdRoots.size() + 1);
         auto result = m_pipelineManager->create_root_signature(std::move(a_desc));
         if (result.has_value())
+        {
             m_createdRoots.push_back(*result.try_value());
+        }
         return result;
     }
     catch (const std::bad_alloc &)
@@ -242,14 +258,18 @@ Result<RootSignatureHandle> FrameGraphBuilder::create_root_signature(RootSignatu
 Result<ShaderBlobHandle> FrameGraphBuilder::create_shader_blob(ShaderCompileDesc a_desc)
 {
     if (!m_isBuildingPipelines || !m_pipelineManager)
+    {
         return Result<ShaderBlobHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.create_shader_blob.context"});
+    }
     try
     {
         m_createdShaders.reserve(m_createdShaders.size() + 1);
         auto result = m_pipelineManager->create_shader_blob(std::move(a_desc));
         if (result.has_value())
+        {
             m_createdShaders.push_back(*result.try_value());
+        }
         return result;
     }
     catch (const std::bad_alloc &)
@@ -263,14 +283,18 @@ Result<ShaderBlobHandle> FrameGraphBuilder::create_shader_blob(ShaderCompileDesc
 Result<PipelineStateHandle> FrameGraphBuilder::create_graphics_pipeline(GraphicsPipelineStateDesc a_desc)
 {
     if (!m_isBuildingPipelines || !m_pipelineManager)
+    {
         return Result<PipelineStateHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.create_graphics_pipeline.context"});
+    }
     try
     {
         m_createdPipelines.reserve(m_createdPipelines.size() + 1);
         auto result = m_pipelineManager->create_graphics_pipeline(std::move(a_desc));
         if (result.has_value())
+        {
             m_createdPipelines.push_back(*result.try_value());
+        }
         return result;
     }
     catch (const std::bad_alloc &)
@@ -284,14 +308,18 @@ Result<PipelineStateHandle> FrameGraphBuilder::create_graphics_pipeline(Graphics
 Result<PipelineStateHandle> FrameGraphBuilder::create_compute_pipeline(ComputePipelineStateDesc a_desc)
 {
     if (!m_isBuildingPipelines || !m_pipelineManager)
+    {
         return Result<PipelineStateHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.create_compute_pipeline.context"});
+    }
     try
     {
         m_createdPipelines.reserve(m_createdPipelines.size() + 1);
         auto result = m_pipelineManager->create_compute_pipeline(std::move(a_desc));
         if (result.has_value())
+        {
             m_createdPipelines.push_back(*result.try_value());
+        }
         return result;
     }
     catch (const std::bad_alloc &)
@@ -305,7 +333,9 @@ Result<PipelineStateHandle> FrameGraphBuilder::create_compute_pipeline(ComputePi
 Result<GpuTexture2DDesc> FrameGraphBuilder::texture_desc(FrameGraphResourceHandle a_handle) const
 {
     if (!owns(a_handle) || m_resources[a_handle.index].kind != GpuResourceKind::Texture2D)
+    {
         return Result<GpuTexture2DDesc>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.texture_desc"});
+    }
     return Result<GpuTexture2DDesc>::success(m_resources[a_handle.index].textureDesc);
 }
 
