@@ -2,11 +2,11 @@
 
 関連 Issue: #69
 
-`DX12Backend` は Device、DescriptorAllocator、ViewManager、CommandPool、QueuePool、ResourcePool を所有する。
+`DX12Backend` は Device、DescriptorAllocator、ViewManager、PipelineManager、CommandPool、QueuePool、ResourcePool を所有する。
 生成が完了してから、非所有の `DX12ResourceContext` と `DX12ExecutionContext` を公開する。
 Context は型付き Getter で参照を渡し、Object の生成・破棄や Global 登録を行わない。
 
-- ResourceContext は Device と ViewManager を参照する。SwapChain と FrameGraph の生成に使う。
+- ResourceContext は Device、ViewManager と PipelineManager を参照する。SwapChain と FrameGraph の生成に使う。
 - ExecutionContext は CommandPool と QueuePool を参照する。Graph の記録と提出に使う。
 - Pass 記録中の Command と Resource 表は `DX12FrameGraphRecordContext` にまとめる。参照先は記録中だけ有効とする。
 - Frame 数、Clear 色、追加 Pass Callback は `DX12MainFrameGraphConfig` にまとめる。
@@ -26,5 +26,5 @@ Manager は Resource を所有しない。Resource の Owner が最終 GPU 利�
 外部 Texture は Slot を先に予約し、描画枠の GPU 完了後にその枠の Slot へ View を書き込む。
 SwapChain の Back Buffer にも同じ View 生成 API を使い、Graph はその RTV を借用する。
 
-停止順は Render 処理、Graph、SwapChain、Pool、ViewManager、DescriptorAllocator、Device とする。
+停止順は Render 処理、Graph、SwapChain、Pool、PipelineManager、ViewManager、DescriptorAllocator、Device とする。
 Pool の Lease が残る異常停止では既存の共有状態が Native Object と Heap を保持するが、Context からの再取得は許可しない。

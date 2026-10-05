@@ -10,6 +10,7 @@
 #include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12GpuResourcePool.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
@@ -165,35 +166,57 @@ private:
     cue::FrameGraphResourceHandle m_texture;
 };
 
-/// @brief Compute Queue の空 Pass でも Graph の提出順と完了点を確認する
+/// @brief Pass 設定からの Compute PSO 生成と抽象 Context の Dispatch を確認する
 class ComputePass final : public cue::FrameGraphPass
 {
 public:
     /// @brief 実行回数を呼出側で検証する
     explicit ComputePass(int& a_count) noexcept : m_count(&a_count) {}
 
+    /// @brief 診断に使う名前を返す
     [[nodiscard]] const char* name() const noexcept override { return "Compute"; }
+    /// @brief Compute List へ記録する
     [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Compute; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
+    /// @brief Root、CS と PSO の生成を Builder に依頼する
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
+        auto root = a_builder.create_root_signature({});
+        if (!root.has_value())
+            return cue::Result<void>::failure(*root.try_error());
+        auto shader = a_builder.create_shader_blob(
+            {"ComputeTest.CS", CUE_TEST_SHADER_PATH, "cs_empty_main", cue::ShaderStage::Compute});
+        if (!shader.has_value())
+            return cue::Result<void>::failure(*shader.try_error());
+        auto pipeline = a_builder.create_compute_pipeline({"ComputeTest.PSO", root.take_value(), shader.take_value()});
+        if (!pipeline.has_value())
+            return cue::Result<void>::failure(*pipeline.try_error());
+        m_pipeline = pipeline.take_value();
         return cue::Result<void>::success();
     }
+    /// @brief Resource を使わない Shader の実行だけを宣言する
     [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder&) override
     {
         return cue::Result<void>::success();
     }
+    /// @brief 無効な Group 数を拒否してから一回の Dispatch を記録する
     [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
     {
         if (a_context.command_context().type() != cue::QueueType::Compute)
-        {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ComputePass.execute"});
-        }
-        ++*m_count;
-        return cue::Result<void>::success();
+        auto binding = a_context.set_compute_pipeline(m_pipeline);
+        if (!binding.has_value())
+            return binding;
+        if (a_context.dispatch(0, 1, 1).has_value())
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ComputePass.invalid_dispatch"});
+        auto dispatch = a_context.dispatch(1, 1, 1);
+        if (dispatch.has_value())
+            ++*m_count;
+        return dispatch;
     }
 
 private:
     int* m_count = nullptr;
+    cue::PipelineStateHandle m_pipeline;
 };
 
 /// @brief Pass 自身の setup で作った RenderTexture に色を書き込む
@@ -332,7 +355,11 @@ int run_tests()
     if (!viewsResult.has_value())
         return 31;
     auto views = viewsResult.take_value();
-    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    auto pipelinesResult = cue::dx12::DX12PipelineManager::create(*device);
+    if (!pipelinesResult.has_value())
+        return 90;
+    auto pipelines = pipelinesResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     cue::queueLease queue(queueResult.take_value().release(), [](cue::IQueueContext *a_queue) { delete a_queue; });
     const cue::dx12::DX12SwapChainConfig config{64, 64, 2, DXGI_FORMAT_R8G8B8A8_UNORM, false, false};
     auto swapResult = cue::dx12::DX12SwapChain::create(resources, std::move(queue), *handleResult.try_value(), config);

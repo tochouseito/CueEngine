@@ -73,6 +73,36 @@ ICommandContext& FrameGraphContext::command_context() const noexcept
     return *m_command;
 }
 
+/// @brief 非対応の Backend では Command を変更せず失敗する
+Result<void> FrameGraphContext::set_graphics_pipeline(PipelineStateHandle)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_graphics_pipeline.unsupported"});
+}
+
+/// @brief 非対応の Backend では Command を変更せず失敗する
+Result<void> FrameGraphContext::set_compute_pipeline(PipelineStateHandle)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_compute_pipeline.unsupported"});
+}
+
+/// @brief 非対応の Backend では Command を変更せず失敗する
+Result<void> FrameGraphContext::set_viewport_scissor(std::uint32_t, std::uint32_t)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_viewport_scissor.unsupported"});
+}
+
+/// @brief 非対応の Backend では Command を変更せず失敗する
+Result<void> FrameGraphContext::draw_instanced(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.draw_instanced.unsupported"});
+}
+
+/// @brief 非対応の Backend では Command を変更せず失敗する
+Result<void> FrameGraphContext::dispatch(std::uint32_t, std::uint32_t, std::uint32_t)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.dispatch.unsupported"});
+}
+
 /// @brief 通常は各 Frame で Pass を実行する
 bool FrameGraphPass::is_enabled() const noexcept
 {
@@ -127,6 +157,31 @@ Result<void> FrameGraph::add_pass(std::unique_ptr<FrameGraphPass> a_pass)
 
 /// @brief Legacy と同じ二段階の Pass 宣言を既存の Plan Builder へ渡す
 Result<void> FrameGraph::build()
+{
+    if (!m_builder || m_buildAttempted)
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build"});
+    m_builder->m_isBuildingPipelines = true;
+    auto result = Result<void>::success();
+    try
+    {
+        result = build_passes();
+    }
+    catch (const std::bad_alloc &)
+    {
+        result = Result<void>::failure({ErrorCategory::PlatformFailure, "FrameGraph.build.allocation"});
+    }
+    m_builder->m_isBuildingPipelines = false;
+    if (!result.has_value())
+    {
+        auto cleanup = m_builder->release_build_pipelines();
+        if (!cleanup.has_value())
+            return cleanup;
+    }
+    return result;
+}
+
+/// @brief 各 Pass の生成依頼と Access 宣言から一度だけ Plan を確定する
+Result<void> FrameGraph::build_passes()
 {
     if (m_buildAttempted || !m_builder || m_passes.empty())
     {

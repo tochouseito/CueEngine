@@ -11,14 +11,14 @@
 #include <vector>
 
 #include <DX12/DX12CommandPool.h>
-#include <DX12/DX12FrameGraphExecutor.h>
 #include <DX12/DX12FrameGraphContext.h>
+#include <DX12/DX12FrameGraphExecutor.h>
 #include <DX12/DX12FrameGraphFrames.h>
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
+#include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
-#include "DX12FullscreenTriangle.h"
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Diagnostics.h>
 
@@ -71,12 +71,15 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
                                                                        DX12MainFrameGraphConfig a_config)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
+    // Backend の生成基盤を借用し、描画に必要な Device、Queue と枠数を検証する
     auto &device = a_resources.get_render_device();
+    // 0 番の Back Buffer は形状と Format の取得に使い、実際の描画先は Frame ごとに選ぶ
     auto* backBuffer = a_swapChain.back_buffer(0);
     if (!device.device() || !backBuffer || !a_swapChain.graphics_queue() || a_config.frameCount == 0)
     {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create"});
     }
+    // 表示用 Pipeline と Resource 生成が対応する二次元 Color Texture に限定する
     const auto nativeDesc = backBuffer->GetDesc();
     if (nativeDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || nativeDesc.Width == 0 ||
         nativeDesc.Width > (std::numeric_limits<std::uint32_t>::max)() || nativeDesc.Height == 0 ||
@@ -87,13 +90,19 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.back_buffer"});
     }
+    // FinalColorTexture の生成仕様を表示先に合わせる。GPU Texture の実体化は後段で行う
     GpuTexture2DDesc colorDesc{static_cast<std::uint32_t>(nativeDesc.Width),
                                static_cast<std::uint32_t>(nativeDesc.Height)};
     colorDesc.format = nativeDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ?
         GpuTextureFormat::Rgba8Unorm : GpuTextureFormat::Bgra8Unorm;
     colorDesc.isRenderTarget = true;
     colorDesc.clearColor = a_config.clearColor;
-    auto compositionResult = create_main_frame_graph(colorDesc, std::move(a_config.configure));
+    // 抽象層で FinalColor と外部 BackBuffer を宣言し、Clear、追加 Pass、表示 Pass の Plan を構築する
+    // 表示 Pass は Back Buffer への描画を担い、SwapChain の Present は Graph 提出後に Host が行う
+    auto &pipelines = a_resources.get_pipeline_manager();
+    if (pipelines.device() != device.device())
+        return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.pipeline_device"});
+    auto compositionResult = create_main_frame_graph(colorDesc, {pipelines}, std::move(a_config.configure));
     if (!compositionResult.has_value())
     {
         return GraphResult::failure(*compositionResult.try_error());
@@ -101,30 +110,30 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     auto composition = compositionResult.take_value();
     try
     {
-        auto fullscreenResult = DX12FullscreenTriangle::create(device, nativeDesc.Format);
-        if (!fullscreenResult.has_value())
-        {
-            return GraphResult::failure(*fullscreenResult.try_error());
-        }
+        // Plan に従って枠ごとの一時 Resource と RTV／SRV を生成する
+        // BackBuffer の RTV は SwapChain から借用するため、Graph 側で重複生成しない
         auto framesResult = DX12FrameGraphFrames::create(a_resources, *composition.graph->plan(),
                                                          {a_config.frameCount, composition.backBuffer});
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
+        // 配列確保を先に完了させ、確保失敗時に不完全な管理状態へ Resource の所有権を移さない
         auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
         result->m_poolLeases.resize(a_config.frameCount);
         result->m_externalBindings.resize(a_config.frameCount);
         result->m_isPrepared.resize(a_config.frameCount, false);
+        // Graph は Build で生成した Pipeline の解放責任を持ち、Manager と SwapChain は非所有で参照する
         result->m_graph = std::move(composition.graph);
         result->m_backBuffer = composition.backBuffer;
         result->m_frames = framesResult.take_value();
-        result->m_fullscreenTriangle = fullscreenResult.take_value();
+        result->m_pipelineManager = &pipelines;
         result->m_swapChain = &a_swapChain;
         return GraphResult::success(std::move(result));
     }
     catch (const std::bad_alloc&)
     {
+        // この生成段階のメモリ確保失敗を Result に変換し、途中生成物は所有者の破棄で回収する
         return GraphResult::failure({ErrorCategory::PlatformFailure, "DX12MainFrameGraph.create.allocation"});
     }
 }
@@ -292,7 +301,7 @@ Result<void> DX12MainFrameGraph::record_range(
                         .plan = *m_graph->plan(),
                         .pass = *plannedPass,
                         .frames = *m_frames,
-                        .fullscreenTriangle = *m_fullscreenTriangle,
+                        .pipelines = *m_pipelineManager,
                     });
                     return pass->execute(context);
                 });
@@ -624,7 +633,7 @@ Result<void> DX12MainFrameGraph::shutdown()
         return result;
     }
     m_frames.reset();
-    m_fullscreenTriangle.reset();
+    m_pipelineManager = nullptr;
     m_poolLeases.clear();
     m_externalBindings.clear();
     m_isPrepared.clear();

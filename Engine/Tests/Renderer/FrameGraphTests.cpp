@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "TestPipelineManager.h"
+
 namespace
 {
 /// @brief Pass の Execute 契約を GPU なしで確認する Command
@@ -39,26 +41,41 @@ public:
     }
 
     /// @brief 抽象 Context の描画先指定を GPU なしで受け付ける
-    [[nodiscard]] cue::Result<void> set_render_target(cue::FrameGraphResourceHandle) override
+    [[nodiscard]] cue::Result<void> set_render_target(cue::FrameGraphResourceHandle a_target) override
     {
+        drawTarget = a_target;
         return cue::Result<void>::success();
     }
 
     /// @brief 抽象 Context の Shader 入力指定を GPU なしで受け付ける
-    [[nodiscard]] cue::Result<void> bind_texture2d(cue::FrameGraphResourceHandle,
-                                                   std::uint32_t) override
+    [[nodiscard]] cue::Result<void> bind_texture2d(cue::FrameGraphResourceHandle a_source, std::uint32_t) override
     {
+        drawSource = a_source;
         return cue::Result<void>::success();
     }
 
-    /// @brief 表示 Pass が指定した入力と描画先を記録する
-    [[nodiscard]] cue::Result<void> draw_fullscreen_texture(
-        cue::FrameGraphResourceHandle a_source, cue::FrameGraphResourceHandle a_target) override
+    /// @brief 表示 Pass の Pipeline 設定を確認する
+    [[nodiscard]] cue::Result<void> set_graphics_pipeline(cue::PipelineStateHandle a_pipeline) override
     {
-        drawSource = a_source;
-        drawTarget = a_target;
+        return a_pipeline.is_valid()
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidArgument, "Test.pipeline"});
+    }
+    /// @brief Graph 全体の Viewport 指定を確認する
+    [[nodiscard]] cue::Result<void> set_viewport_scissor(std::uint32_t a_width, std::uint32_t a_height) override
+    {
+        return a_width == width() && a_height == height()
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidArgument, "Test.viewport"});
+    }
+    /// @brief 全画面表示の三頂点 Draw を確認する
+    [[nodiscard]] cue::Result<void> draw_instanced(std::uint32_t a_vertices, std::uint32_t a_instances, std::uint32_t,
+                                                   std::uint32_t) override
+    {
         ++drawCount;
-        return cue::Result<void>::success();
+        return a_vertices == 3 && a_instances == 1
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidArgument, "Test.draw"});
     }
 
     /// @brief Native API を使わずに Copy の宣言内容を記録する
@@ -253,12 +270,14 @@ int main()
     const std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
     colorDesc.clearColor = clearColor;
     bool wasConfigured = false;
-    auto compositionResult = cue::create_main_frame_graph(
-        colorDesc, [&wasConfigured](cue::FrameGraph&, cue::FrameGraphResourceHandle a_color)
-        {
-            wasConfigured = a_color.is_valid();
-            return cue::Result<void>::success();
-        });
+    TestPipelineManager pipelines;
+    auto compositionResult =
+        cue::create_main_frame_graph(colorDesc, {pipelines},
+                                     [&wasConfigured](cue::FrameGraph &, cue::FrameGraphResourceHandle a_color)
+                                     {
+                                         wasConfigured = a_color.is_valid();
+                                         return cue::Result<void>::success();
+                                     });
     if (!compositionResult.has_value())
     {
         return 11;

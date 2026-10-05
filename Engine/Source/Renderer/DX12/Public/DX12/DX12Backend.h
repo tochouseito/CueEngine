@@ -17,6 +17,7 @@ class DX12GpuResourcePool;
 class DX12DescriptorAllocator;
 class DX12SwapChain;
 class DX12ViewManager;
+class DX12PipelineManager;
 struct DX12SwapChainConfig;
 struct DX12DescriptorHeapState;
 
@@ -114,6 +115,7 @@ private:
     std::unique_ptr<DX12RenderDevice> m_device;
     std::shared_ptr<DX12DescriptorHeapState> m_descriptors;
     std::unique_ptr<DX12ViewManager> m_viewManager;
+    std::unique_ptr<DX12PipelineManager> m_pipelineManager;
     std::unique_ptr<DX12QueuePool> m_queuePool;
     std::unique_ptr<DX12CommandPool> m_commandPool;
     std::unique_ptr<DX12GpuResourcePool> m_resourcePool;

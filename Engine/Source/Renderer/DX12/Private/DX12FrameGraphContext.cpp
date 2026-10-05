@@ -1,11 +1,13 @@
 #include <DX12/DX12FrameGraphContext.h>
 
 #include <algorithm>
+#include <limits>
+#include <new>
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12FrameGraphFrames.h>
 
-#include "DX12FullscreenTriangle.h"
+#include <DX12/DX12PipelineManager.h>
 
 namespace cue::dx12
 {
@@ -13,7 +15,7 @@ namespace cue::dx12
 DX12FrameGraphContext::DX12FrameGraphContext(const DX12FrameGraphRecordContext &a_record) noexcept
     : FrameGraphContext(a_record.width, a_record.height, a_record.frameIndex, a_record.command),
       m_command(&a_record.command), m_resources(&a_record.resources), m_plan(&a_record.plan), m_pass(&a_record.pass),
-      m_frames(&a_record.frames), m_fullscreenTriangle(&a_record.fullscreenTriangle)
+      m_frames(&a_record.frames), m_pipelines(&a_record.pipelines)
 {
 }
 
@@ -70,7 +72,12 @@ Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a
     {
         return Result<void>::failure(*rtvResult.try_error());
     }
+    const auto targetFormat = m_plan->resources()[a_target.index].textureDesc.format;
+    if (m_pipelineFormat && *m_pipelineFormat != targetFormat)
+        return Result<void>::failure(
+            {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.set_render_target.format"});
     const auto rtv = *rtvResult.try_value();
+    m_targetFormat = targetFormat;
     command_list().OMSetRenderTargets(1, &rtv, false, nullptr);
     return Result<void>::success();
 }
@@ -85,10 +92,24 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.bind_texture2d"});
     }
+    auto validation = m_pipelines->validate_texture_binding(m_pipeline, a_rootParameter);
+    if (!validation.has_value())
+        return validation;
     auto srvResult = m_frames->srv(frame_index(), a_source);
     if (!srvResult.has_value())
     {
         return Result<void>::failure(*srvResult.try_error());
+    }
+    if (std::find(m_boundParameters.begin(), m_boundParameters.end(), a_rootParameter) == m_boundParameters.end())
+    {
+        try
+        {
+            m_boundParameters.push_back(a_rootParameter);
+        }
+        catch (const std::bad_alloc &)
+        {
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "DX12FrameGraphContext.binding.allocation"});
+        }
     }
     if (!m_isSrvHeapBound)
     {
@@ -100,46 +121,75 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     return Result<void>::success();
 }
 
-/// @brief 宣言済み Texture と RTV を検証し、固定 Pipeline に全画面描画を記録する
-Result<void> DX12FrameGraphContext::draw_fullscreen_texture(
-    FrameGraphResourceHandle a_source, FrameGraphResourceHandle a_target)
+/// @brief Pipeline の Native 実体を Command に保持して Graphics Binding を初期化する
+Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_pipeline)
 {
-    auto* source = resource(a_source);
-    auto* target = resource(a_target);
-    if (!allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead) ||
-        !allows(a_target, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) ||
-        !source || !target || source == target || !m_frames->srv_heap() || !m_fullscreenTriangle ||
-        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording ||
-        !m_command->command_list())
-    {
-        return Result<void>::failure({ErrorCategory::InvalidState,
-                                      "DX12FrameGraphContext.draw_fullscreen_texture"});
-    }
-    const auto sourceDesc = source->GetDesc();
-    const auto targetDesc = target->GetDesc();
-    if (sourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        targetDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        sourceDesc.Width != targetDesc.Width || sourceDesc.Height != targetDesc.Height ||
-        sourceDesc.Format != targetDesc.Format || sourceDesc.SampleDesc.Count != 1 ||
-        targetDesc.SampleDesc.Count != 1)
-    {
-        return Result<void>::failure({ErrorCategory::InvalidState,
-                                      "DX12FrameGraphContext.draw_fullscreen_texture.shape"});
-    }
-    auto srvResult = m_frames->srv(frame_index(), a_source);
-    if (!srvResult.has_value())
-    {
-        return Result<void>::failure(*srvResult.try_error());
-    }
-    auto rtvResult = m_frames->rtv(frame_index(), a_target);
-    if (!rtvResult.has_value())
-    {
-        return Result<void>::failure(*rtvResult.try_error());
-    }
-    // Descriptor の実体は記録前の prepare_frame で確定済みである
-    m_fullscreenTriangle->draw(command_list(), *m_frames->srv_heap(), *srvResult.try_value(),
-                               *rtvResult.try_value(), width(), height());
-    m_isSrvHeapBound = true;
+    auto result = m_pipelines->bind_graphics(*m_command, a_pipeline);
+    if (!result.has_value())
+        return Result<void>::failure(*result.try_error());
+    m_pipeline = a_pipeline;
+    m_pipelineFormat = result.take_value();
+    m_targetFormat.reset();
+    m_boundParameters.clear();
+    m_isComputeBound = false;
+    return Result<void>::success();
+}
+
+/// @brief Graphics の Binding を引き継がず Compute Root と Pipeline を設定する
+Result<void> DX12FrameGraphContext::set_compute_pipeline(PipelineStateHandle a_pipeline)
+{
+    auto result = m_pipelines->bind_compute(*m_command, a_pipeline);
+    if (!result.has_value())
+        return result;
+    m_pipeline = a_pipeline;
+    m_pipelineFormat.reset();
+    m_targetFormat.reset();
+    m_boundParameters.clear();
+    m_isComputeBound = true;
+    return Result<void>::success();
+}
+
+/// @brief Native Scissor の整数範囲と Graph の描画範囲を検証する
+Result<void> DX12FrameGraphContext::set_viewport_scissor(std::uint32_t a_width, std::uint32_t a_height)
+{
+    if (a_width == 0 || a_height == 0 || a_width > width() || a_height > height() ||
+        a_width > static_cast<std::uint32_t>((std::numeric_limits<LONG>::max)()) ||
+        a_height > static_cast<std::uint32_t>((std::numeric_limits<LONG>::max)()) ||
+        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.viewport"});
+    const D3D12_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(a_width), static_cast<float>(a_height), 0.0f, 1.0f};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(a_width), static_cast<LONG>(a_height)};
+    command_list().RSSetViewports(1, &viewport);
+    command_list().RSSetScissorRects(1, &scissor);
+    m_hasViewport = true;
+    return Result<void>::success();
+}
+
+/// @brief Pipeline、Target、Viewport と Root Binding が揃ってから Draw を記録する
+Result<void> DX12FrameGraphContext::draw_instanced(std::uint32_t a_vertexCount, std::uint32_t a_instanceCount,
+                                                   std::uint32_t a_firstVertex, std::uint32_t a_firstInstance)
+{
+    if (!m_pipelineFormat || !m_targetFormat || m_pipelineFormat != m_targetFormat || !m_hasViewport ||
+        a_vertexCount == 0 || a_instanceCount == 0 || m_command->type() != QueueType::Graphics ||
+        m_command->state() != CommandState::Recording)
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.draw"});
+    auto validation = m_pipelines->validate_bindings(m_pipeline, m_boundParameters);
+    if (!validation.has_value())
+        return validation;
+    command_list().DrawInstanced(a_vertexCount, a_instanceCount, a_firstVertex, a_firstInstance);
+    return Result<void>::success();
+}
+
+/// @brief 未設定 Root Binding と D3D12 の Group 上限超過を拒否する
+Result<void> DX12FrameGraphContext::dispatch(std::uint32_t a_x, std::uint32_t a_y, std::uint32_t a_z)
+{
+    if (!m_isComputeBound || a_x == 0 || a_y == 0 || a_z == 0 || a_x > 65535 || a_y > 65535 || a_z > 65535 ||
+        m_command->type() == QueueType::Copy || m_command->state() != CommandState::Recording)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.dispatch"});
+    auto validation = m_pipelines->validate_bindings(m_pipeline, {});
+    if (!validation.has_value())
+        return validation;
+    command_list().Dispatch(a_x, a_y, a_z);
     return Result<void>::success();
 }
 

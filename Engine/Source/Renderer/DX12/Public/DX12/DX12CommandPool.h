@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -12,6 +13,7 @@
 namespace cue::dx12
 {
 class DX12RenderDevice;
+class DX12PipelineManager;
 
 /// @brief DX12 Allocator と Command List を一組として保持する
 ///
@@ -53,6 +55,10 @@ public:
 
 private:
     friend class DX12CommandPool;
+    friend class DX12PipelineManager;
+
+    /// @brief 記録中の PSO と Root を Reset または GPU 完了後の破棄まで保持する
+    [[nodiscard]] Result<void> retain_pipeline(std::shared_ptr<const void> a_pipeline);
 
     /// @brief GPU 完了確認後または未提出のときだけ Allocator と List を再記録可能にする
     [[nodiscard]] Result<void> reset_for_recording();
@@ -61,6 +67,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
     Microsoft::WRL::ComPtr<ID3D12Fence> m_submissionFence;
+    std::vector<std::shared_ptr<const void>> m_pipelineReferences;
     CommandState m_state = CommandState::Recording;
     bool m_isFatalFailure = false;
     std::uint64_t m_fenceValue = 0;

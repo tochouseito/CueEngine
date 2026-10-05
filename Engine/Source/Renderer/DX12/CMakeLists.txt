@@ -1,5 +1,5 @@
 # DX12 固有の Device と Queue／Command Pool の作成・所有を独立した Module にする
-# 全画面表示 Shader は Build 時に DXIL へ変換し、実行時の File 読み込みを不要にする
+# Pass の Shader 設定は FrameGraph Build 中に DXC でコンパイルする
 file(GLOB CUE_DXC_CANDIDATES
     "$ENV{SystemDrive}/Program Files (x86)/Windows Kits/10/bin/*/x64/dxc.exe"
 )
@@ -9,23 +9,31 @@ if(NOT CUE_DXC_CANDIDATES)
 endif()
 list(GET CUE_DXC_CANDIDATES 0 CUE_DXC_EXECUTABLE)
 
-set(CUE_FULLSCREEN_VS "${CMAKE_CURRENT_BINARY_DIR}/Generated/FullscreenTriangleVS.h")
-set(CUE_FULLSCREEN_PS "${CMAKE_CURRENT_BINARY_DIR}/Generated/FullscreenTrianglePS.h")
-set(CUE_FULLSCREEN_SHADER "${CMAKE_CURRENT_SOURCE_DIR}/../../../Shader/Hlsl/FullscreenTriangle.hlsl")
-add_custom_command(OUTPUT "${CUE_FULLSCREEN_VS}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Generated"
-    COMMAND "${CUE_DXC_EXECUTABLE}" -T vs_6_0 -E vs_main -Fh "${CUE_FULLSCREEN_VS}"
-            -Vn g_fullscreenTriangleVs "${CUE_FULLSCREEN_SHADER}"
-    DEPENDS "${CUE_FULLSCREEN_SHADER}"
-    VERBATIM
-)
-add_custom_command(OUTPUT "${CUE_FULLSCREEN_PS}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Generated"
-    COMMAND "${CUE_DXC_EXECUTABLE}" -T ps_6_0 -E ps_main -Fh "${CUE_FULLSCREEN_PS}"
-            -Vn g_fullscreenTrianglePs "${CUE_FULLSCREEN_SHADER}"
-    DEPENDS "${CUE_FULLSCREEN_SHADER}"
-    VERBATIM
-)
+get_filename_component(CUE_DXC_RUNTIME_DIR "${CUE_DXC_EXECUTABLE}" DIRECTORY)
+get_filename_component(CUE_SHADER_SOURCE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../Shader" ABSOLUTE)
+configure_file(Private/DX12ShaderConfig.h.in "${CMAKE_CURRENT_BINARY_DIR}/Generated/DX12ShaderConfig.h" @ONLY)
+set_property(GLOBAL PROPERTY CUE_DXC_RUNTIME_DIR "${CUE_DXC_RUNTIME_DIR}")
+set_property(GLOBAL PROPERTY CUE_SHADER_SOURCE_DIRECTORY "${CUE_SHADER_SOURCE_DIRECTORY}")
+
+# 実行時の作業 Directory に依存せず DXC と HLSL を読み込めるよう実行 File の隣へ配置する
+function(cue_copy_shader_runtime a_target)
+    get_property(taskDxcDirectory GLOBAL PROPERTY CUE_DXC_RUNTIME_DIR)
+    get_property(taskShaderDirectory GLOBAL PROPERTY CUE_SHADER_SOURCE_DIRECTORY)
+    # 同じ Directory へ配置する Test 群は一つの Target にまとめる
+    # HLSL だけの編集でも Build ごとに更新し、並列 Copy の競合を避ける
+    add_custom_target(${a_target}.ShaderRuntime
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${a_target}>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${taskDxcDirectory}/dxcompiler.dll" "${taskDxcDirectory}/dxil.dll" "$<TARGET_FILE_DIR:${a_target}>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
+                "${taskShaderDirectory}" "$<TARGET_FILE_DIR:${a_target}>/EngineResources/Shader"
+        VERBATIM
+    )
+    foreach(taskTarget IN ITEMS ${a_target} ${ARGN})
+        add_dependencies(${taskTarget} ${a_target}.ShaderRuntime)
+    endforeach()
+endfunction()
+
 add_library(Cue.Renderer.DX12 STATIC
     Private/BackendFactory.cpp
     Private/DX12Backend.cpp
@@ -44,16 +52,15 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12ResourceLeakChecker.cpp
     Private/DX12ViewManager.cpp
     Private/DX12SwapChain.cpp
-    Private/DX12FullscreenTriangle.cpp
-    "${CUE_FULLSCREEN_VS}"
-    "${CUE_FULLSCREEN_PS}"
+    Private/DX12PipelineManager.cpp
+    Private/DX12ShaderCompiler.cpp
 )
 
 target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
 target_include_directories(Cue.Renderer.DX12 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Generated")
 target_link_libraries(Cue.Renderer.DX12
     PUBLIC Cue.Foundation Cue.Renderer.FrameGraph Cue.Renderer.Passes Cue.Renderer.RHI
-    PRIVATE Cue.Platform.Windows d3d12 dxgi dxguid
+    PRIVATE Cue.Foundation.Windows Cue.Platform.Windows d3d12 dxgi dxguid
 )
 target_compile_features(Cue.Renderer.DX12 PUBLIC cxx_std_20)
 

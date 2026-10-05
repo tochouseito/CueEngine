@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <new>
@@ -171,10 +172,148 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create()
     }
 }
 
-/// @brief RenderTarget と ShaderRead の両用途を持つ論理 Texture を先頭へ固定する
-Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTexture2DDesc a_finalColor)
+/// @brief 型付き Context の参照先だけを借用する
+Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create(const FrameGraphBuildContext &a_context)
 {
-    auto builderResult = create();
+    auto result = create();
+    if (result.has_value())
+        (*result.try_value())->m_pipelineManager = &a_context.get_pipeline_manager();
+    return result;
+}
+
+/// @brief 所有 Handle を回収できない状態を隠して破棄しない
+FrameGraphBuilder::~FrameGraphBuilder()
+{
+    if (!release_build_pipelines().has_value())
+        std::terminate();
+}
+
+/// @brief Native 依存の逆順に Handle を返却し、Command の共有参照は維持する
+Result<void> FrameGraphBuilder::release_build_pipelines()
+{
+    if (!m_pipelineManager)
+        return Result<void>::success();
+    while (!m_createdPipelines.empty())
+    {
+        auto result = m_pipelineManager->retire(m_createdPipelines.back());
+        if (!result.has_value())
+            return result;
+        m_createdPipelines.pop_back();
+    }
+    while (!m_createdShaders.empty())
+    {
+        auto result = m_pipelineManager->retire(m_createdShaders.back());
+        if (!result.has_value())
+            return result;
+        m_createdShaders.pop_back();
+    }
+    while (!m_createdRoots.empty())
+    {
+        auto result = m_pipelineManager->retire(m_createdRoots.back());
+        if (!result.has_value())
+            return result;
+        m_createdRoots.pop_back();
+    }
+    return Result<void>::success();
+}
+
+/// @brief Build 中の setup だけが生成を依頼し、成功 Handle を Graph の回収対象にする
+Result<RootSignatureHandle> FrameGraphBuilder::create_root_signature(RootSignatureDesc a_desc)
+{
+    if (!m_isBuildingPipelines || !m_pipelineManager)
+        return Result<RootSignatureHandle>::failure(
+            {ErrorCategory::InvalidState, "FrameGraphBuilder.create_root_signature.context"});
+    try
+    {
+        m_createdRoots.reserve(m_createdRoots.size() + 1);
+        auto result = m_pipelineManager->create_root_signature(std::move(a_desc));
+        if (result.has_value())
+            m_createdRoots.push_back(*result.try_value());
+        return result;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<RootSignatureHandle>::failure(
+            {ErrorCategory::PlatformFailure, "FrameGraphBuilder.create_root_signature.allocation"});
+    }
+}
+
+/// @brief Build 中の setup だけが生成を依頼し、成功 Handle を Graph の回収対象にする
+Result<ShaderBlobHandle> FrameGraphBuilder::create_shader_blob(ShaderCompileDesc a_desc)
+{
+    if (!m_isBuildingPipelines || !m_pipelineManager)
+        return Result<ShaderBlobHandle>::failure(
+            {ErrorCategory::InvalidState, "FrameGraphBuilder.create_shader_blob.context"});
+    try
+    {
+        m_createdShaders.reserve(m_createdShaders.size() + 1);
+        auto result = m_pipelineManager->create_shader_blob(std::move(a_desc));
+        if (result.has_value())
+            m_createdShaders.push_back(*result.try_value());
+        return result;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<ShaderBlobHandle>::failure(
+            {ErrorCategory::PlatformFailure, "FrameGraphBuilder.create_shader_blob.allocation"});
+    }
+}
+
+/// @brief Build 中の setup だけが生成を依頼し、成功 Handle を Graph の回収対象にする
+Result<PipelineStateHandle> FrameGraphBuilder::create_graphics_pipeline(GraphicsPipelineStateDesc a_desc)
+{
+    if (!m_isBuildingPipelines || !m_pipelineManager)
+        return Result<PipelineStateHandle>::failure(
+            {ErrorCategory::InvalidState, "FrameGraphBuilder.create_graphics_pipeline.context"});
+    try
+    {
+        m_createdPipelines.reserve(m_createdPipelines.size() + 1);
+        auto result = m_pipelineManager->create_graphics_pipeline(std::move(a_desc));
+        if (result.has_value())
+            m_createdPipelines.push_back(*result.try_value());
+        return result;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<PipelineStateHandle>::failure(
+            {ErrorCategory::PlatformFailure, "FrameGraphBuilder.create_graphics_pipeline.allocation"});
+    }
+}
+
+/// @brief Build 中の setup だけが生成を依頼し、成功 Handle を Graph の回収対象にする
+Result<PipelineStateHandle> FrameGraphBuilder::create_compute_pipeline(ComputePipelineStateDesc a_desc)
+{
+    if (!m_isBuildingPipelines || !m_pipelineManager)
+        return Result<PipelineStateHandle>::failure(
+            {ErrorCategory::InvalidState, "FrameGraphBuilder.create_compute_pipeline.context"});
+    try
+    {
+        m_createdPipelines.reserve(m_createdPipelines.size() + 1);
+        auto result = m_pipelineManager->create_compute_pipeline(std::move(a_desc));
+        if (result.has_value())
+            m_createdPipelines.push_back(*result.try_value());
+        return result;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<PipelineStateHandle>::failure(
+            {ErrorCategory::PlatformFailure, "FrameGraphBuilder.create_compute_pipeline.allocation"});
+    }
+}
+
+/// @brief Graph 所属と Texture 種類を検証して設定値を返す
+Result<GpuTexture2DDesc> FrameGraphBuilder::texture_desc(FrameGraphResourceHandle a_handle) const
+{
+    if (!owns(a_handle) || m_resources[a_handle.index].kind != GpuResourceKind::Texture2D)
+        return Result<GpuTexture2DDesc>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.texture_desc"});
+    return Result<GpuTexture2DDesc>::success(m_resources[a_handle.index].textureDesc);
+}
+
+/// @brief RenderTarget と ShaderRead の両用途を持つ論理 Texture を先頭へ固定する
+Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTexture2DDesc a_finalColor,
+                                                                          const FrameGraphBuildContext *a_context)
+{
+    auto builderResult = a_context ? create(*a_context) : create();
     if (!builderResult.has_value())
     {
         return builderResult;

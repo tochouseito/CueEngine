@@ -52,9 +52,18 @@ public:
     [[nodiscard]] virtual Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
                                                       std::uint32_t a_rootParameter) = 0;
 
-    /// @brief ShaderRead の Texture を画面全体の三角形で RenderTarget へ描画する
-    [[nodiscard]] virtual Result<void> draw_fullscreen_texture(FrameGraphResourceHandle a_source,
-                                                               FrameGraphResourceHandle a_target) = 0;
+    /// @brief Build で生成した Graphics Pipeline と対応 Root を設定する
+    [[nodiscard]] virtual Result<void> set_graphics_pipeline(PipelineStateHandle a_pipeline);
+    /// @brief Build で生成した Compute Pipeline と対応 Root を設定する
+    [[nodiscard]] virtual Result<void> set_compute_pipeline(PipelineStateHandle a_pipeline);
+    /// @brief 描画範囲を Graph の幅と高さの中へ設定する
+    [[nodiscard]] virtual Result<void> set_viewport_scissor(std::uint32_t a_width, std::uint32_t a_height);
+    /// @brief 現在の Graphics Pipeline、描画先と Binding を使って Draw を記録する
+    [[nodiscard]] virtual Result<void> draw_instanced(std::uint32_t a_vertexCount, std::uint32_t a_instanceCount,
+                                                      std::uint32_t a_firstVertex = 0,
+                                                      std::uint32_t a_firstInstance = 0);
+    /// @brief 現在の Compute Pipeline を指定 Group 数で実行する
+    [[nodiscard]] virtual Result<void> dispatch(std::uint32_t a_x, std::uint32_t a_y, std::uint32_t a_z);
 
     /// @brief 同一形状の宣言済み Texture 間の Copy を Backend に記録する
     ///
@@ -181,6 +190,9 @@ public:
     [[nodiscard]] std::uint32_t height() const noexcept;
 
 private:
+    /// @brief Pass の宣言と Plan 確定を行い、生成失敗は呼出側の Build 境界で回収する
+    [[nodiscard]] Result<void> build_passes();
+
     std::unique_ptr<FrameGraphBuilder> m_builder;
     std::vector<std::unique_ptr<FrameGraphPass>> m_passes;
     std::optional<FrameGraphPlan> m_plan;
