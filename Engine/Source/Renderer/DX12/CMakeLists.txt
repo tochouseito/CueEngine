@@ -42,6 +42,7 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12RenderDevice.cpp
     Private/DX12QueuePool.cpp
     Private/DX12ResourceLeakChecker.cpp
+    Private/DX12ViewManager.cpp
     Private/DX12SwapChain.cpp
     Private/DX12FullscreenTriangle.cpp
     "${CUE_FULLSCREEN_VS}"

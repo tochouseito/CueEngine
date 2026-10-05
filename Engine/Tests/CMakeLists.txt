@@ -52,6 +52,12 @@ if(WIN32)
     add_test(NAME Cue.Renderer.DX12.DescriptorAllocator COMMAND CueDX12DescriptorAllocatorTests)
     set_tests_properties(Cue.Renderer.DX12.DescriptorAllocator PROPERTIES TIMEOUT 15)
 
+    # View の Device 所属、Mip 範囲、容量と異常系の Slot 保全を WARP で確認する
+    add_executable(CueDX12ViewManagerTests Renderer/DX12ViewManagerTests.cpp)
+    target_link_libraries(CueDX12ViewManagerTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.ViewManager COMMAND CueDX12ViewManagerTests)
+    set_tests_properties(Cue.Renderer.DX12.ViewManager PROPERTIES TIMEOUT 15)
+
     # 複数 Queue の貸出、GPU Fence 同期、返却後の再利用を WARP で検証する
     add_executable(CueDX12QueuePoolTests Renderer/DX12QueuePoolTests.cpp)
     target_link_libraries(CueDX12QueuePoolTests PRIVATE Cue.Renderer.DX12)

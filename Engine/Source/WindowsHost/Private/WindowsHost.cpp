@@ -43,18 +43,16 @@ class WindowsHost::State final
         {
             return Result<void>::success();
         }
-        auto *commandPool = dx12Backend->get_command_pool();
-        auto *queuePool = dx12Backend->get_queue_pool();
+        const auto *execution = dx12Backend->get_execution_context();
         auto *swapChain = dx12Backend->get_swap_chain();
-        if (!commandPool || !queuePool || !swapChain || !swapChain->graphics_queue() || !graph)
+        if (!execution || !swapChain || !swapChain->graphics_queue() || !graph)
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
         }
         const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
-        auto executeResult = graph->execute(frameSlot, *commandPool, *queuePool, [&]()
-        {
-            return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load();
-        });
+        auto executeResult = graph->execute(
+            frameSlot, *execution,
+            [&]() { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
         if (!executeResult.has_value())
         {
             return Result<void>::failure(*executeResult.try_error());
@@ -165,16 +163,16 @@ Result<void> WindowsHost::initialize()
     {
         return rollback(*swapResult.try_error());
     }
-    auto *device = dynamic_cast<dx12::DX12RenderDevice *>(m_state->dx12Backend->get_render_device());
-    auto *rtvAllocator = m_state->dx12Backend->get_descriptor_allocator(dx12::DX12DescriptorHeapRole::Rtv);
-    auto *srvAllocator = m_state->dx12Backend->get_descriptor_allocator(dx12::DX12DescriptorHeapRole::ShaderView);
-    if (!device || !rtvAllocator || !srvAllocator)
+    const auto *resources = m_state->dx12Backend->get_resource_context();
+    if (!resources)
     {
         return rollback({ErrorCategory::InvalidState, "WindowsHost.graph.resources"});
     }
-    auto graphResult = dx12::DX12MainFrameGraph::create(*device, *m_state->dx12Backend->get_swap_chain(),
-                                                        m_config.frame.maxFramesInFlight, *rtvAllocator, *srvAllocator,
-                                                        m_config.presentation.clearColor);
+    dx12::DX12MainFrameGraphConfig graphConfig;
+    graphConfig.frameCount = m_config.frame.maxFramesInFlight;
+    graphConfig.clearColor = m_config.presentation.clearColor;
+    auto graphResult =
+        dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
     if (!graphResult.has_value())
     {
         return rollback(*graphResult.try_error());

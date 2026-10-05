@@ -2,6 +2,7 @@
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include <DX12/DX12ViewManager.h>
 
 #include <cstdint>
 #include <memory>
@@ -49,6 +50,16 @@ int run_tests()
         return 6;
     }
     auto allocator = allocatorResult.take_value();
+    auto srvResult =
+        cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true);
+    if (!srvResult.has_value())
+        return 12;
+    auto srvAllocator = srvResult.take_value();
+    auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *allocator, *srvAllocator);
+    if (!viewsResult.has_value())
+        return 13;
+    auto views = viewsResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views};
     for (const bool isVSyncEnabled : {false, true})
     {
         auto queueResult = cue::dx12::DX12GpuCommandQueue::create(
@@ -62,8 +73,8 @@ int run_tests()
         });
         const cue::dx12::DX12SwapChainConfig config{
             320, 240, 2, DXGI_FORMAT_R8G8B8A8_UNORM, isVSyncEnabled, !isVSyncEnabled};
-        auto swapResult = cue::dx12::DX12SwapChain::create(
-            *device, std::move(lease), *allocator, *handleResult.try_value(), config);
+        auto swapResult =
+            cue::dx12::DX12SwapChain::create(resources, std::move(lease), *handleResult.try_value(), config);
         if (!swapResult.has_value())
         {
             return 8;

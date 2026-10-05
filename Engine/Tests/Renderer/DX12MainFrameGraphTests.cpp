@@ -8,11 +8,12 @@
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
-#include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12GpuResource.h>
+#include <DX12/DX12GpuResourcePool.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include <DX12/DX12ViewManager.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
 namespace
@@ -327,18 +328,21 @@ int run_tests()
     }
     auto rtvAllocator = rtvResult.take_value();
     auto srvAllocator = srvResult.take_value();
+    auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
+    if (!viewsResult.has_value())
+        return 31;
+    auto views = viewsResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views};
     cue::queueLease queue(queueResult.take_value().release(), [](cue::IQueueContext *a_queue) { delete a_queue; });
     const cue::dx12::DX12SwapChainConfig config{64, 64, 2, DXGI_FORMAT_R8G8B8A8_UNORM, false, false};
-    auto swapResult =
-        cue::dx12::DX12SwapChain::create(*device, std::move(queue), *rtvAllocator, *handleResult.try_value(), config);
+    auto swapResult = cue::dx12::DX12SwapChain::create(resources, std::move(queue), *handleResult.try_value(), config);
     if (!swapResult.has_value())
     {
         return 6;
     }
     auto swapChain = swapResult.take_value();
     const std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
-    auto graphResult =
-        cue::dx12::DX12MainFrameGraph::create(*device, *swapChain, 2, *rtvAllocator, *srvAllocator, clearColor);
+    auto graphResult = cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, {2, clearColor, {}});
     if (!graphResult.has_value())
     {
         return 7;
@@ -460,39 +464,40 @@ int run_tests()
     int poolCallCount = 0;
     int computeCallCount = 0;
     auto extendedResult = cue::dx12::DX12MainFrameGraph::create(
-        *device, *swapChain, 2, *rtvAllocator, *srvAllocator, clearColor,
-        [&customCallCount, &customEnabled, &poolCallCount, &computeCallCount, &pool,
-         poolBuffer, poolTexture](cue::FrameGraph& a_graph,
-                           cue::FrameGraphResourceHandle a_finalColor) -> cue::Result<void>
-        {
-            auto testResult = a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount,
-                                                                          customEnabled));
-            if (!testResult.has_value())
-            {
-                return testResult;
-            }
-            auto produceResult = a_graph.add_pass(std::make_unique<ProduceColorPass>());
-            if (!produceResult.has_value())
-            {
-                return produceResult;
-            }
-            auto consumeResult = a_graph.add_pass(std::make_unique<ConsumeColorPass>());
-            if (!consumeResult.has_value())
-            {
-                return consumeResult;
-            }
-            auto poolResult = a_graph.add_pass(std::make_unique<PoolPass>(*pool, poolBuffer, poolCallCount));
-            if (!poolResult.has_value())
-            {
-                return poolResult;
-            }
-            auto poolTextureWriteResult = a_graph.add_pass(
-                std::make_unique<PoolTexturePass>(*pool, poolTexture));
-            if (!poolTextureWriteResult.has_value()) return poolTextureWriteResult;
-            auto poolTextureReadResult = a_graph.add_pass(std::make_unique<PoolTextureReadPass>());
-            if (!poolTextureReadResult.has_value()) return poolTextureReadResult;
-            return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
-        });
+        resources, *swapChain,
+        {2, clearColor,
+         [&customCallCount, &customEnabled, &poolCallCount, &computeCallCount, &pool, poolBuffer,
+          poolTexture](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle a_finalColor) -> cue::Result<void>
+         {
+             auto testResult =
+                 a_graph.add_pass(std::make_unique<TestPass>(a_finalColor, customCallCount, customEnabled));
+             if (!testResult.has_value())
+             {
+                 return testResult;
+             }
+             auto produceResult = a_graph.add_pass(std::make_unique<ProduceColorPass>());
+             if (!produceResult.has_value())
+             {
+                 return produceResult;
+             }
+             auto consumeResult = a_graph.add_pass(std::make_unique<ConsumeColorPass>());
+             if (!consumeResult.has_value())
+             {
+                 return consumeResult;
+             }
+             auto poolResult = a_graph.add_pass(std::make_unique<PoolPass>(*pool, poolBuffer, poolCallCount));
+             if (!poolResult.has_value())
+             {
+                 return poolResult;
+             }
+             auto poolTextureWriteResult = a_graph.add_pass(std::make_unique<PoolTexturePass>(*pool, poolTexture));
+             if (!poolTextureWriteResult.has_value())
+                 return poolTextureWriteResult;
+             auto poolTextureReadResult = a_graph.add_pass(std::make_unique<PoolTextureReadPass>());
+             if (!poolTextureReadResult.has_value())
+                 return poolTextureReadResult;
+             return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
+         }});
     if (!extendedResult.has_value())
     {
         return 19;
@@ -517,13 +522,13 @@ int run_tests()
         return 20;
     }
     customEnabled = false;
-    if (extended->execute(0, *commandPool, *queuePool).has_value() ||
-        customCallCount != 0 || poolCallCount != 0 || computeCallCount != 0)
+    if (extended->execute(0, {*commandPool, *queuePool}).has_value() || customCallCount != 0 || poolCallCount != 0 ||
+        computeCallCount != 0)
     {
         return 21;
     }
     customEnabled = true;
-    auto executeResult = extended->execute(0, *commandPool, *queuePool);
+    auto executeResult = extended->execute(0, {*commandPool, *queuePool});
     if (!executeResult.has_value() || !*executeResult.try_value() ||
         customCallCount != 1 || poolCallCount != 1 || computeCallCount != 1)
     {

@@ -58,6 +58,13 @@ int main()
         return 15;
     }
 
+    const auto *resources = dx12Backend->get_resource_context();
+    const auto *execution = dx12Backend->get_execution_context();
+    if (!resources || !execution || &resources->get_render_device() != device ||
+        &execution->get_command_pool() != backend->get_command_pool() ||
+        &execution->get_queue_pool() != backend->get_queue_pool())
+        return 31;
+
     // Backend が所有する ResourcePool から生成し、停止前に破棄予約できる
     auto resourceResult = backend->get_resource_pool()->create_buffer({64, cue::GpuMemoryUsage::Upload});
     if (!resourceResult.has_value() ||
@@ -69,8 +76,8 @@ int main()
     // 停止後に借用 Pointer を再取得できず、二重停止も安全に完了する
     if (!backend->shutdown().has_value() || backend->get_render_device() != nullptr ||
         backend->get_queue_pool() != nullptr || backend->get_command_pool() != nullptr ||
-        backend->get_resource_pool() != nullptr ||
-        !backend->shutdown().has_value())
+        backend->get_resource_pool() != nullptr || dx12Backend->get_resource_context() != nullptr ||
+        dx12Backend->get_execution_context() != nullptr || !backend->shutdown().has_value())
     {
         return 4;
     }

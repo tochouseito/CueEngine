@@ -12,6 +12,7 @@
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
+#include <DX12/DX12ViewManager.h>
 
 namespace
 {
@@ -60,8 +61,15 @@ int run_imported_view_tests()
     if (!rtvResult.has_value() || !srvResult.has_value()) return 25;
     auto rtvAllocator = rtvResult.take_value();
     auto srvAllocator = srvResult.take_value();
-    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(
-        *device, plan, 2, *rtvAllocator, *srvAllocator);
+    auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
+    if (!viewsResult.has_value())
+        return 30;
+    auto views = viewsResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    // 容量 2 の Heap に 3 枠を依頼した途中失敗でも Slot を回収し、再生成できる
+    if (cue::dx12::DX12FrameGraphFrames::create(resources, plan, {3, {}}).has_value())
+        return 31;
+    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(resources, plan, {2, {}});
     auto nativeResult = cue::dx12::DX12GpuResource::create_texture2d(*device->device(), desc);
     cue::GpuTexture2DDesc wrongDesc{8, 8};
     wrongDesc.isRenderTarget = true;
@@ -144,8 +152,12 @@ int run_tests()
     }
     auto rtvAllocator = rtvResult.take_value();
     auto srvAllocator = srvResult.take_value();
-    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(
-        *device, plan, 2, *rtvAllocator, *srvAllocator);
+    auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtvAllocator, *srvAllocator);
+    if (!viewsResult.has_value())
+        return 30;
+    auto views = viewsResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views};
+    auto framesResult = cue::dx12::DX12FrameGraphFrames::create(resources, plan, {2, {}});
     if (!framesResult.has_value())
     {
         return 7;

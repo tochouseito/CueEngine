@@ -60,29 +60,20 @@ private:
 };
 } // namespace
 
-/// @brief Graph と枠ごとの Texture の所有権を受け取る
-DX12MainFrameGraph::DX12MainFrameGraph(CreateToken, std::unique_ptr<FrameGraph> a_graph,
-                                       FrameGraphResourceHandle a_backBuffer,
-                                       std::unique_ptr<DX12FrameGraphFrames> a_frames,
-                                       std::unique_ptr<DX12FullscreenTriangle> a_fullscreenTriangle,
-                                       DX12SwapChain& a_swapChain)
-    : m_graph(std::move(a_graph)), m_backBuffer(a_backBuffer),
-      m_frames(std::move(a_frames)), m_fullscreenTriangle(std::move(a_fullscreenTriangle)),
-      m_poolLeases(m_frames->frame_count()),
-      m_externalBindings(m_frames->frame_count()), m_isPrepared(m_frames->frame_count(), false),
-      m_swapChain(&a_swapChain)
+/// @brief Factory が成功するまで所有状態を公開しない
+DX12MainFrameGraph::DX12MainFrameGraph(CreateToken) noexcept
 {
 }
 
 /// @brief 旧 Pass 契約に従って Clear、追加 Pass、表示 Pass を組み立てる
-Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
-    DX12RenderDevice& a_device, DX12SwapChain& a_swapChain, std::uint32_t a_frameCount,
-    DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
-    std::array<float, 4> a_clearColor, frameGraphConfigure a_configure)
+Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX12ResourceContext &a_resources,
+                                                                       DX12SwapChain &a_swapChain,
+                                                                       DX12MainFrameGraphConfig a_config)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
+    auto &device = a_resources.get_render_device();
     auto* backBuffer = a_swapChain.back_buffer(0);
-    if (!a_device.device() || !backBuffer || !a_swapChain.graphics_queue() || a_frameCount == 0)
+    if (!device.device() || !backBuffer || !a_swapChain.graphics_queue() || a_config.frameCount == 0)
     {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create"});
     }
@@ -101,8 +92,8 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     colorDesc.format = nativeDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ?
         GpuTextureFormat::Rgba8Unorm : GpuTextureFormat::Bgra8Unorm;
     colorDesc.isRenderTarget = true;
-    colorDesc.clearColor = a_clearColor;
-    auto compositionResult = create_main_frame_graph(colorDesc, std::move(a_configure));
+    colorDesc.clearColor = a_config.clearColor;
+    auto compositionResult = create_main_frame_graph(colorDesc, std::move(a_config.configure));
     if (!compositionResult.has_value())
     {
         return GraphResult::failure(*compositionResult.try_error());
@@ -110,20 +101,27 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(
     auto composition = compositionResult.take_value();
     try
     {
-        auto fullscreenResult = DX12FullscreenTriangle::create(a_device, nativeDesc.Format);
+        auto fullscreenResult = DX12FullscreenTriangle::create(device, nativeDesc.Format);
         if (!fullscreenResult.has_value())
         {
             return GraphResult::failure(*fullscreenResult.try_error());
         }
-        auto framesResult = DX12FrameGraphFrames::create(a_device, *composition.graph->plan(), a_frameCount,
-                                                       a_rtvAllocator, a_srvAllocator, composition.backBuffer);
+        auto framesResult = DX12FrameGraphFrames::create(a_resources, *composition.graph->plan(),
+                                                         {a_config.frameCount, composition.backBuffer});
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
-        return GraphResult::success(std::make_unique<DX12MainFrameGraph>(
-            CreateToken{}, std::move(composition.graph), composition.backBuffer,
-            framesResult.take_value(), fullscreenResult.take_value(), a_swapChain));
+        auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
+        result->m_poolLeases.resize(a_config.frameCount);
+        result->m_externalBindings.resize(a_config.frameCount);
+        result->m_isPrepared.resize(a_config.frameCount, false);
+        result->m_graph = std::move(composition.graph);
+        result->m_backBuffer = composition.backBuffer;
+        result->m_frames = framesResult.take_value();
+        result->m_fullscreenTriangle = fullscreenResult.take_value();
+        result->m_swapChain = &a_swapChain;
+        return GraphResult::success(std::move(result));
     }
     catch (const std::bad_alloc&)
     {
@@ -281,15 +279,23 @@ Result<void> DX12MainFrameGraph::record_range(
             {
                 return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.pass"});
             }
-            callbacks.push_back([this, pass, a_frameIndex, &a_context, plannedPass = &planned]
-                                (ID3D12GraphicsCommandList&, const DX12FrameGraphPassContext& a_resources)
-                                -> Result<void>
-            {
-                DX12FrameGraphContext context(m_graph->width(), m_graph->height(), a_frameIndex,
-                                              a_context, a_resources, *m_graph->plan(), *plannedPass,
-                                              *m_frames, *m_fullscreenTriangle);
-                return pass->execute(context);
-            });
+            callbacks.push_back(
+                [this, pass, a_frameIndex, &a_context, plannedPass = &planned](
+                    ID3D12GraphicsCommandList &, const DX12FrameGraphPassContext &a_resources) -> Result<void>
+                {
+                    DX12FrameGraphContext context({
+                        .width = m_graph->width(),
+                        .height = m_graph->height(),
+                        .frameIndex = a_frameIndex,
+                        .command = a_context,
+                        .resources = a_resources,
+                        .plan = *m_graph->plan(),
+                        .pass = *plannedPass,
+                        .frames = *m_frames,
+                        .fullscreenTriangle = *m_fullscreenTriangle,
+                    });
+                    return pass->execute(context);
+                });
         }
         return DX12FrameGraphExecutor::record_range(
             *m_graph->plan(), *resources, m_externalBindings[a_frameIndex], callbacks,
@@ -322,8 +328,8 @@ Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, ICommandCont
 }
 
 /// @brief Graph が Pool の Command と SwapChain の Graphics Queue を使って提出する
-Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
-                                         std::function<bool()> a_shouldCancel)
+Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, ICommandPool &a_commandPool,
+                                                  std::function<bool()> a_shouldCancel)
 {
     if (!m_graph || !m_swapChain || !m_swapChain->graphics_queue())
     {
@@ -339,9 +345,11 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
 }
 
 /// @brief 異なる Queue の Pass を依存順に提出し、最終 Graphics 完了点へ集約する
-Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPool& a_commandPool,
-                                         IQueuePool& a_queuePool, std::function<bool()> a_shouldCancel)
+Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
+                                         std::function<bool()> a_shouldCancel)
 {
+    auto &commandPool = a_execution.get_command_pool();
+    auto &queuePool = a_execution.get_queue_pool();
     if (!m_graph || !m_graph->plan() || !m_swapChain || !m_swapChain->graphics_queue() ||
         a_frameIndex >= m_poolLeases.size())
     {
@@ -356,7 +364,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
     if (std::all_of(passes.begin(), passes.end(), [](const auto& a_pass)
                     { return a_pass.queue == QueueType::Graphics; }))
     {
-        return execute(a_frameIndex, a_commandPool, std::move(a_shouldCancel));
+        return execute_graphics(a_frameIndex, commandPool, std::move(a_shouldCancel));
     }
     if (a_shouldCancel && a_shouldCancel())
     {
@@ -409,7 +417,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
         {
             if (!computeQueue)
             {
-                auto queueResult = a_queuePool.acquire(type);
+                auto queueResult = queuePool.acquire(type);
                 if (!queueResult.has_value())
                 {
                     return fail(*queueResult.try_error());
@@ -422,7 +430,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
         {
             if (!copyQueue)
             {
-                auto queueResult = a_queuePool.acquire(type);
+                auto queueResult = queuePool.acquire(type);
                 if (!queueResult.has_value())
                 {
                     return fail(*queueResult.try_error());
@@ -448,7 +456,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
                 }
             }
         }
-        auto commandResult = a_commandPool.acquire(type);
+        auto commandResult = commandPool.acquire(type);
         if (!commandResult.has_value())
         {
             return fail(*commandResult.try_error());
@@ -469,7 +477,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
         {
             return fail(*closeResult.try_error());
         }
-        auto submitResult = a_commandPool.submit(*queue, *command);
+        auto submitResult = commandPool.submit(*queue, *command);
         if (!submitResult.has_value())
         {
             // 提出結果が不明な場合は Lease を保持し、GPU Resource の早期破棄を防ぐ
@@ -508,7 +516,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
             return fail(*waitResult.try_error());
         }
     }
-    auto finalCommandResult = a_commandPool.acquire(QueueType::Graphics);
+    auto finalCommandResult = commandPool.acquire(QueueType::Graphics);
     if (!finalCommandResult.has_value())
     {
         return fail(*finalCommandResult.try_error());
@@ -529,7 +537,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, ICommandPoo
     {
         return fail(*finalCloseResult.try_error());
     }
-    auto finalSubmitResult = a_commandPool.submit(*graphicsQueue, *finalCommand);
+    auto finalSubmitResult = commandPool.submit(*graphicsQueue, *finalCommand);
     if (!finalSubmitResult.has_value())
     {
         return Result<bool>::failure(*finalSubmitResult.try_error());

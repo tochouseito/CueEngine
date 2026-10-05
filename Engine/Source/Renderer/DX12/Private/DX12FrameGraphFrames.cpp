@@ -7,8 +7,6 @@
 #include <utility>
 #include <vector>
 
-#include <wrl/client.h>
-
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
@@ -47,20 +45,20 @@ DX12FrameGraphFrames::DX12FrameGraphFrames(CreateToken) noexcept
 }
 
 /// @brief 一時 Texture の View を作り、外部 Texture の View Slot を枠ごとに予約する
-Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(
-    DX12RenderDevice& a_device, const FrameGraphPlan& a_plan, std::uint32_t a_frameCount,
-    DX12DescriptorAllocator& a_rtvAllocator, DX12DescriptorAllocator& a_srvAllocator,
-    FrameGraphResourceHandle a_borrowedRtvResource)
+Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const DX12ResourceContext &a_resources,
+                                                                           const FrameGraphPlan &a_plan,
+                                                                           DX12FrameGraphFramesConfig a_config)
 {
     using FramesResult = Result<std::unique_ptr<DX12FrameGraphFrames>>;
-    if (!a_device.device() || a_plan.id() == 0 || a_frameCount == 0 ||
-        a_rtvAllocator.type() != D3D12_DESCRIPTOR_HEAP_TYPE_RTV ||
-        a_srvAllocator.type() != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
-        !a_srvAllocator.is_shader_visible() ||
-        (a_borrowedRtvResource.is_valid() &&
-         (a_borrowedRtvResource.index >= a_plan.resources().size() ||
-          a_plan.resources()[a_borrowedRtvResource.index].handle.graphId != a_borrowedRtvResource.graphId ||
-          !a_plan.resources()[a_borrowedRtvResource.index].isImported)))
+    auto &device = a_resources.get_render_device();
+    auto &viewManager = a_resources.get_view_manager();
+    const auto frameCount = a_config.frameCount;
+    const auto borrowedRtvResource = a_config.borrowedRtvResource;
+    if (!device.device() || a_plan.id() == 0 || frameCount == 0 || viewManager.device() != device.device() ||
+        (borrowedRtvResource.is_valid() &&
+         (borrowedRtvResource.index >= a_plan.resources().size() ||
+          a_plan.resources()[borrowedRtvResource.index].handle.graphId != borrowedRtvResource.graphId ||
+          !a_plan.resources()[borrowedRtvResource.index].isImported)))
     {
         return FramesResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.create"});
     }
@@ -97,16 +95,15 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(
             }
         }
         auto frames = std::make_unique<DX12FrameGraphFrames>(CreateToken{});
-        frames->m_rtvAllocator = &a_rtvAllocator;
-        frames->m_srvAllocator = &a_srvAllocator;
-        frames->m_device = &a_device;
-        frames->m_borrowedRtvResource = a_borrowedRtvResource;
+        frames->m_viewManager = &viewManager;
+        frames->m_device = &device;
+        frames->m_borrowedRtvResource = borrowedRtvResource;
         frames->m_graphId = a_plan.resources().empty() ? 0 : a_plan.resources().front().handle.graphId;
-        frames->m_frames.resize(a_frameCount);
+        frames->m_frames.resize(frameCount);
         for (auto& frame : frames->m_frames)
         {
             frame.views.resize(a_plan.resources().size());
-            auto graphResult = DX12FrameGraphResources::create(a_device, a_plan);
+            auto graphResult = DX12FrameGraphResources::create(device, a_plan);
             if (!graphResult.has_value())
             {
                 return FramesResult::failure(*graphResult.try_error());
@@ -135,57 +132,36 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(
                     native = texture->resource();
                     nativeDesc = native->GetDesc();
                 }
-                if (views.needsRtv &&
-                    !(planned.handle.graphId == a_borrowedRtvResource.graphId &&
-                      planned.handle.index == a_borrowedRtvResource.index))
+                if (views.needsRtv && !(planned.handle.graphId == borrowedRtvResource.graphId &&
+                                        planned.handle.index == borrowedRtvResource.index))
                 {
                     if (native && (nativeDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
                     {
                         return FramesResult::failure({ErrorCategory::InvalidState,
                                                       "DX12FrameGraphFrames.create.flags"});
                     }
-                    auto rtvResult = a_rtvAllocator.allocate();
+                    auto rtvResult =
+                        native ? viewManager.create_rtv(*native) : viewManager.reserve(DX12ViewType::RenderTarget);
                     if (!rtvResult.has_value())
                     {
                         return FramesResult::failure(*rtvResult.try_error());
                     }
                     views.rtv = rtvResult.take_value();
-                    auto handleResult = a_rtvAllocator.cpu_handle(views.rtv);
-                    if (!handleResult.has_value())
-                    {
-                        return FramesResult::failure(*handleResult.try_error());
-                    }
-                    if (native)
-                    {
-                        a_device.device()->CreateRenderTargetView(native, nullptr, *handleResult.try_value());
-                    }
                 }
 
                 if (!views.needsSrv)
                 {
+                    views.isPrepared = native != nullptr;
                     continue;
                 }
                 // ShaderRead 用の View を同じ論理 Handle に結び付ける
-                auto srvResult = a_srvAllocator.allocate();
+                auto srvResult =
+                    native ? viewManager.create_srv(*native) : viewManager.reserve(DX12ViewType::ShaderResource);
                 if (!srvResult.has_value())
                 {
                     return FramesResult::failure(*srvResult.try_error());
                 }
                 views.srv = srvResult.take_value();
-                auto handleResult = a_srvAllocator.cpu_handle(views.srv);
-                if (!handleResult.has_value())
-                {
-                    return FramesResult::failure(*handleResult.try_error());
-                }
-                if (native)
-                {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-                    srvDesc.Format = nativeDesc.Format;
-                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    srvDesc.Texture2D.MipLevels = nativeDesc.MipLevels;
-                    a_device.device()->CreateShaderResourceView(native, &srvDesc, *handleResult.try_value());
-                }
                 views.isPrepared = native != nullptr;
             }
         }
@@ -278,12 +254,14 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(
             return Result<void>::failure({ErrorCategory::InvalidArgument,
                                           "DX12FrameGraphFrames.prepare_imported_views.resource"});
         }
-        Microsoft::WRL::ComPtr<ID3D12Device> resourceDevice;
-        if (FAILED(binding->resource->GetDevice(IID_PPV_ARGS(&resourceDevice))) ||
-            resourceDevice.Get() != m_device->device())
+        for (const auto type : {DX12ViewType::RenderTarget, DX12ViewType::ShaderResource})
         {
-            return Result<void>::failure({ErrorCategory::InvalidArgument,
-                                          "DX12FrameGraphFrames.prepare_imported_views.device"});
+            if ((type == DX12ViewType::RenderTarget && !views.needsRtv) ||
+                (type == DX12ViewType::ShaderResource && !views.needsSrv))
+                continue;
+            auto validation = m_viewManager->validate_texture2d(*binding->resource, type);
+            if (!validation.has_value())
+                return validation;
         }
         if (planned.handle.graphId == m_borrowedRtvResource.graphId &&
             planned.handle.index == m_borrowedRtvResource.index && views.needsRtv &&
@@ -315,27 +293,16 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(
             }
             else
             {
-                auto handleResult = m_rtvAllocator->cpu_handle(views.rtv);
-                if (!handleResult.has_value())
-                {
-                    return Result<void>::failure(*handleResult.try_error());
-                }
-                m_device->device()->CreateRenderTargetView(native, nullptr, *handleResult.try_value());
+                auto writeResult = m_viewManager->write_texture2d(views.rtv, *native);
+                if (!writeResult.has_value())
+                    return writeResult;
             }
         }
         if (views.needsSrv)
         {
-            auto handleResult = m_srvAllocator->cpu_handle(views.srv);
-            if (!handleResult.has_value())
-            {
-                return Result<void>::failure(*handleResult.try_error());
-            }
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-            srvDesc.Format = native->GetDesc().Format;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Texture2D.MipLevels = native->GetDesc().MipLevels;
-            m_device->device()->CreateShaderResourceView(native, &srvDesc, *handleResult.try_value());
+            auto writeResult = m_viewManager->write_texture2d(views.srv, *native);
+            if (!writeResult.has_value())
+                return writeResult;
         }
         views.isPrepared = true;
     }
@@ -403,7 +370,7 @@ Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12FrameGraphFrames::rtv(
     {
         return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::success(*views.borrowedRtv);
     }
-    return m_rtvAllocator->cpu_handle(views.rtv);
+    return m_viewManager->cpu_handle(views.rtv);
 }
 
 /// @brief 論理 Handle に対応する SRV Slot の世代を検証する
@@ -417,13 +384,13 @@ Result<D3D12_GPU_DESCRIPTOR_HANDLE> DX12FrameGraphFrames::srv(
         return Result<D3D12_GPU_DESCRIPTOR_HANDLE>::failure(
             {ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.srv"});
     }
-    return m_srvAllocator->gpu_handle(m_frames[a_frameIndex].views[a_handle.index].srv);
+    return m_viewManager->gpu_handle(m_frames[a_frameIndex].views[a_handle.index].srv);
 }
 
 /// @brief Shader 可視 SRV と同じ Heap を返す
 ID3D12DescriptorHeap* DX12FrameGraphFrames::srv_heap() const noexcept
 {
-    return !m_isClosed && m_srvAllocator ? m_srvAllocator->heap() : nullptr;
+    return !m_isClosed && m_viewManager ? m_viewManager->srv_heap() : nullptr;
 }
 
 /// @brief 有効な描画枠数を返す
@@ -456,7 +423,7 @@ Result<void> DX12FrameGraphFrames::shutdown()
         {
             if (views.rtv.is_valid())
             {
-                auto result = m_rtvAllocator->release(views.rtv);
+                auto result = m_viewManager->release(views.rtv);
                 if (!result.has_value())
                 {
                     return result;
@@ -465,7 +432,7 @@ Result<void> DX12FrameGraphFrames::shutdown()
             }
             if (views.srv.is_valid())
             {
-                auto result = m_srvAllocator->release(views.srv);
+                auto result = m_viewManager->release(views.srv);
                 if (!result.has_value())
                 {
                     return result;
@@ -475,8 +442,8 @@ Result<void> DX12FrameGraphFrames::shutdown()
         }
     }
     m_frames.clear();
-    m_rtvAllocator = nullptr;
-    m_srvAllocator = nullptr;
+    m_viewManager = nullptr;
+    m_device = nullptr;
     m_isClosed = true;
     return Result<void>::success();
 }

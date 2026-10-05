@@ -10,14 +10,10 @@
 namespace cue::dx12
 {
 /// @brief Pass が参照する情報を記録期間へ限定する
-DX12FrameGraphContext::DX12FrameGraphContext(
-    std::uint32_t a_width, std::uint32_t a_height, std::uint32_t a_frameIndex,
-    DX12GpuCommandContext& a_command, const DX12FrameGraphPassContext& a_resources,
-    const FrameGraphPlan& a_plan, const FrameGraphPassPlan& a_pass,
-    const DX12FrameGraphFrames& a_frames, const DX12FullscreenTriangle& a_fullscreenTriangle) noexcept
-    : FrameGraphContext(a_width, a_height, a_frameIndex, a_command), m_command(&a_command),
-      m_resources(&a_resources), m_plan(&a_plan), m_pass(&a_pass), m_frames(&a_frames),
-      m_fullscreenTriangle(&a_fullscreenTriangle)
+DX12FrameGraphContext::DX12FrameGraphContext(const DX12FrameGraphRecordContext &a_record) noexcept
+    : FrameGraphContext(a_record.width, a_record.height, a_record.frameIndex, a_record.command),
+      m_command(&a_record.command), m_resources(&a_record.resources), m_plan(&a_record.plan), m_pass(&a_record.pass),
+      m_frames(&a_record.frames), m_fullscreenTriangle(&a_record.fullscreenTriangle)
 {
 }
 
