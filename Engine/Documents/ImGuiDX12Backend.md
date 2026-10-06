@@ -60,3 +60,5 @@ DeviceObjects は初期化時に bool を確認して明示生成し、NewFrame 
 2026-10-06: `scripts/codex_build.ps1` の既定 Debug Build 成功。`ctest --preset windows-vs2026-debug --output-on-failure` は 35 / 35 成功。公式 UI の Red Pixel と、通常 Renderer を再設定した Blue Pixel を Readback で確認した。Backend は既定の HardwarePreferred を利用し、WARP を強制した検証は行っていない。Leak 検査用 Device を一時保持するため、Test の終了検査中だけ Warning の対話 Break を止め、Error / Corruption と残存 Object は Message 内容で判定する
 
 既定 Editor の [ImGuiPass](ImGuiPass.md) は #82 で接続した。UI はユーザー指定の Test / TEST のみ。Multi-Viewport、Worker 転送、任意 DrawCallback と GPU 失敗注入はこの検証には含めない
+
+#83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする

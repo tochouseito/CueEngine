@@ -8,7 +8,7 @@ M05-01 / [Issue #77](https://github.com/tochouseito/CueEngine/issues/77) の Edi
 
 `EditorHost` が `WindowsHost` と `ImGuiManager` を一意所有し、WindowsHost が WindowSystem、Window、Renderer Backend、FrameGraph、Thread Service、Runtime を所有する。Window Message、UI 構築、起動、停止、破棄は構築 Thread から行う。Runtime と Renderer は EditorHost に依存しない
 
-EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、`useWorkerThreads = false`、上限 60 FPS。UI Context を Window Message と同じ Thread で扱う初期構成とする。GPU の非同期実行と CPU Frame の Worker 利用は別の設定であり、単一 CPU Thread でも GPU 完了前に Resource を破棄しない
+EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、`useWorkerThreads = true`、上限 60 FPS。UI Context と Window Message は MainThread、Update / Render は Worker で実行する。GPU の非同期実行と CPU Frame の Worker 利用は別の設定であり、単一 CPU Thread でも GPU 完了前に Resource を破棄しない
 
 表示 Pass 未指定時は ClearFinalColor / ImGuiPass Graph を使う。ImGui Context と Win32 Backend は Window 生成後、公式 DX12 Backend は SwapChain 生成後に起動する。Editor 内部 Adapter が Manager の公式 GPU 記録を抽象 ImGuiPass に接続する。既定 UI はタイトル Test、本文 TEST の Window 一つ。詳細は [ImGuiPass](ImGuiPass.md) を参照する。Editor Document は未接続
 
@@ -87,3 +87,5 @@ Dear ImGui の Docking 版と公式 Win32／DX12 Backend は #79 で PRIVATE 依
 - Context の復元、Unicode 入力 / Mouse / Keyboard / Focus、CPU 描画 Data と Capture、Layout の保存・再読込、読込 / 保存失敗回収、UI Callback の未完了 Stack 回復と次の Frame、Thread / 再入拒否を確認
 - 上位停止 Callback の失敗時に Window を保持し、二度目の shutdown で回収できることを確認。読み取り Review の借用寿命と Stack 回復の指摘を修正し、再確認で追加の問題なし
 - `git diff --check` 成功。Development / Release と手動の連続 UI 操作は未実施。ImGui GPU 描画、Worker Data 転送、日本語 Font は未接続
+
+#83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする

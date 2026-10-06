@@ -22,7 +22,7 @@ Callback の Result 失敗と例外は Error として返し、未完了の Fram
 
 個別の `begin_frame()` / `end_frame()` も使用できる。開始から終了まで Context を切り替えず、ImGui の正常な Begin / End の組を守る。`shutdown()` は開いた Frame を回収する
 
-`frame_info()` / `EditorHost::ui_frame_info()` は確定済み Frame 数、頂点 / Index 数、Mouse / Keyboard / Text Input の Capture を所有値で返す。#81 の `initialize_renderer()` / `record_draw_data()` は Draw Data を公開せず GPU 記録へ接続する。#82 の [ImGuiPass](ImGuiPass.md) が実 Editor の Test UI を表示する。Render Thread への転送は #83 で接続する。GPU 接続の詳細は [ImGuiDX12Backend](ImGuiDX12Backend.md) を参照する
+`frame_info()` / `EditorHost::ui_frame_info()` は確定済み Frame 数、頂点 / Index 数、Mouse / Keyboard / Text Input の Capture を所有値で返す。#81 の `initialize_renderer()` / `record_draw_data()` は Draw Data を公開せず GPU 記録へ接続する。#82 の [ImGuiPass](ImGuiPass.md) が実 Editor の Test UI を表示する。Render Thread への転送は #83 の Snapshot に接続済み。GPU 接続の詳細は [ImGuiDX12Backend](ImGuiDX12Backend.md) を参照する
 
 ## Message と Capture
 
@@ -47,4 +47,4 @@ Capture Flag の真偽にかかわらず入力を ImGui に配送する。Gamepl
 - `Cue.EditorHost.Lifecycle`: 採用 Main Frame と UI Frame の対応、初期化 Rollback、UI 失敗伝播、Thread / 再入拒否、停止後の操作拒否
 - `Cue.WindowsHost.Lifecycle`: 上位停止 Callback 失敗時の Window 保持と再試行
 
-Layout の Test は各 Process が新規生成した一時 Directory を使い、利用者の Layout を変更しない。`Cue.Editor.ImGuiDX12Backend` は Test Pass から公式 GPU 描画、動的 Texture と不足回復を検証する。Editor の実 UI 操作、Multi-Viewport と Worker Data 転送は後続 Issue の検証対象とする
+Layout の Test は各 Process が新規生成した一時 Directory を使い、利用者の Layout を変更しない。`Cue.Editor.ImGuiDX12Backend` は Test Pass から公式 GPU 描画、動的 Texture と不足回復を検証する。Worker Data 転送は [Frame 転送](ImGuiFrameTransfer.md)、実 UI 操作と構成別の結果は [Completion Gate](ImGuiCompletionGate.md) を参照する。Multi-Viewport は対象外とする

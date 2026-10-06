@@ -1,4 +1,5 @@
 
+#include <cstdio>
 #include <cwchar>
 
 #define WIN32_LEAN_AND_MEAN
@@ -103,7 +104,8 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
         return 1;
     }
     const bool isResizeMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--resize") == 0;
-    if (a_argumentCount == 3 && !isResizeMode)
+    const bool isSustainMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--sustain") == 0;
+    if (a_argumentCount == 3 && !isResizeMode && !isSustainMode)
     {
         return 1;
     }
@@ -129,6 +131,14 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
     }
 
     int result = search.handle ? 0 : 3;
+    // ImGui の約 5 秒の自動保存と Worker の連続進行も製品 Process 上で通過させる
+    if (result == 0 && isSustainMode && WaitForSingleObject(process.hProcess, 6000) != WAIT_TIMEOUT)
+    {
+        DWORD exitCode = 0;
+        GetExitCodeProcess(process.hProcess, &exitCode);
+        std::fprintf(stderr, "Host exited before sustain interval: %lu\n", exitCode);
+        result = 9;
+    }
     if (result == 0 && isResizeMode)
     {
         result = exercise_window_states(search.handle, process.hProcess);

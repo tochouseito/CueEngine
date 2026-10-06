@@ -34,6 +34,13 @@ DX12Backend::DX12Backend(CreateToken) noexcept
 /// @brief Device、全 Descriptor Heap、各 Pool が揃うまで Backend を公開しない
 Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHeapConfig& a_descriptorConfig)
 {
+    return create(AdapterSelection::HardwarePreferred, a_descriptorConfig);
+}
+
+/// @brief Adapter 選択以外は本番と同じ生成と Rollback を利用する
+Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_selection,
+                                                         const DX12DescriptorHeapConfig &a_descriptorConfig)
+{
     using BackendResult = Result<std::unique_ptr<DX12Backend>>;
     if (a_descriptorConfig.cpuViewCapacity == 0 || a_descriptorConfig.shaderViewCapacity == 0 ||
         a_descriptorConfig.cpuSamplerCapacity == 0 || a_descriptorConfig.shaderSamplerCapacity == 0 ||
@@ -42,7 +49,7 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHea
         return BackendResult::failure({ErrorCategory::InvalidArgument, "DX12Backend.create.descriptor_config"});
     }
 
-    auto deviceResult = DX12RenderDevice::create();
+    auto deviceResult = DX12RenderDevice::create(a_selection);
     if (!deviceResult.has_value())
     {
         return BackendResult::failure(*deviceResult.try_error());

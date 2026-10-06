@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -246,8 +247,21 @@ bool check_messages(ID3D12InfoQueue &a_queue, bool a_checkLeaks)
     return valid;
 }
 
+/// @brief 選択した Adapter の説明と WARP 判定を記録し、明示した WARP 選択を検証する
+bool check_adapter(cue::dx12::DX12Backend &a_backend, cue::dx12::AdapterSelection a_selection)
+{
+    auto *device = dynamic_cast<cue::dx12::DX12RenderDevice *>(a_backend.get_render_device());
+    DXGI_ADAPTER_DESC1 desc{};
+    if (!device || !device->adapter() || FAILED(device->adapter()->GetDesc1(&desc)))
+    {
+        return false;
+    }
+    std::wcout << L"adapter: " << desc.Description << L", is_warp=" << device->is_warp() << L'\n';
+    return a_selection != cue::dx12::AdapterSelection::Warp || device->is_warp();
+}
+
 /// @brief 専用 Heap の不足回復と返却再利用を実 Graph / 公式 Texture Upload で検証する
-int run_case(std::uint32_t a_capacity)
+int run_case(std::uint32_t a_capacity, cue::dx12::AdapterSelection a_selection)
 {
     const auto frameCount = a_capacity;
     std::array<ImTextureData, 2> textures;
@@ -266,7 +280,7 @@ int run_case(std::uint32_t a_capacity)
     cue::ImGuiManagerConfig config;
     config.settingsFile.clear();
     config.rendererDescriptorCapacity = a_capacity;
-    auto backendResult = cue::dx12::DX12Backend::create();
+    auto backendResult = cue::dx12::DX12Backend::create(a_selection);
     auto managerResult = cue::ImGuiManager::create(*window, config);
     if (!backendResult.has_value() || !managerResult.has_value())
     {
@@ -274,6 +288,10 @@ int run_case(std::uint32_t a_capacity)
     }
     auto backend = backendResult.take_value();
     auto manager = managerResult.take_value();
+    if (!check_adapter(*backend, a_selection))
+    {
+        return 22;
+    }
     // SwapChain 未生成の Backend は借用せず、失敗後も CPU Context を維持する
     if (manager->initialize_renderer(*backend, 2).has_value())
     {
@@ -291,6 +309,7 @@ int run_case(std::uint32_t a_capacity)
     {
         return 6;
     }
+#if defined(_DEBUG)
     auto *device = dynamic_cast<cue::dx12::DX12RenderDevice *>(backend->get_render_device());
     Microsoft::WRL::ComPtr<ID3D12Device> probe = device->device();
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
@@ -299,6 +318,7 @@ int run_case(std::uint32_t a_capacity)
         return 7;
     }
     infoQueue->ClearStoredMessages();
+#endif
     bool restore = false;
     cue::dx12::DX12MainFrameGraphConfig graphConfig;
     graphConfig.frameCount = frameCount;
@@ -396,10 +416,16 @@ int run_case(std::uint32_t a_capacity)
                              snapshot.try_error()->category == cue::ErrorCategory::WrongThread;
         });
     worker.join();
-    if (!rejectedThread || !check_messages(*infoQueue.Get(), false))
+    if (!rejectedThread)
     {
         return 14;
     }
+#if defined(_DEBUG)
+    if (!check_messages(*infoQueue.Get(), false))
+    {
+        return 14;
+    }
+#endif
     if (!graph->shutdown().has_value())
     {
         return 15;
@@ -429,15 +455,18 @@ int run_case(std::uint32_t a_capacity)
     cpuManager.reset();
     // Leak 検査用 Device を保持した正常停止は Live Device Warning を発生させる
     // 対話 Break の代わりに、下記の Message 検査で Error と残存 Object を失敗にする
+#if defined(_DEBUG)
     if (FAILED(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, false)))
     {
         return 17;
     }
+#endif
     if (!backend->shutdown().has_value())
     {
         return 17;
     }
     backend.reset();
+#if defined(_DEBUG)
     if (!check_messages(*infoQueue.Get(), false))
     {
         return 18;
@@ -451,6 +480,7 @@ int run_case(std::uint32_t a_capacity)
     {
         return 18;
     }
+#endif
     if (!window->destroy().has_value() || !system->pump_events().has_value())
     {
         return 19;
@@ -459,7 +489,7 @@ int run_case(std::uint32_t a_capacity)
 }
 
 /// @brief 先に確定した二つの UI Frame を固定 Render Worker へ渡し、旧 Snapshot が上書きされないことを画素で確認する
-int run_transfer_case()
+int run_transfer_case(cue::dx12::AdapterSelection a_selection)
 {
     // 異常終了経路でも Manager より後に Texture を破棄し、登録先の参照を保つ
     ImTextureData texture;
@@ -478,19 +508,33 @@ int run_transfer_case()
     cue::ImGuiManagerConfig config;
     config.settingsFile.clear();
     auto managerResult = cue::ImGuiManager::create(*window, config);
-    auto backendResult = cue::dx12::DX12Backend::create();
+    auto backendResult = cue::dx12::DX12Backend::create(a_selection);
     if (!managerResult.has_value() || !backendResult.has_value())
     {
         return 3;
     }
     auto manager = managerResult.take_value();
     auto backend = backendResult.take_value();
+    if (!check_adapter(*backend, a_selection))
+    {
+        return 21;
+    }
     auto handle = cue::borrow_windows_window_handle(*window);
     if (!handle.has_value() || !backend->create_swap_chain(handle.take_value(), {96, 96, 2}).has_value() ||
         !manager->initialize_renderer(*backend, 2).has_value() || !manager->enable_frame_transfer().has_value())
     {
         return 4;
     }
+#if defined(_DEBUG)
+    auto *device = dynamic_cast<cue::dx12::DX12RenderDevice *>(backend->get_render_device());
+    Microsoft::WRL::ComPtr<ID3D12Device> probe = device->device();
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+    if (FAILED(probe.As(&infoQueue)))
+    {
+        return 25;
+    }
+    infoQueue->ClearStoredMessages();
+#endif
 
     cue::dx12::DX12MainFrameGraphConfig graphConfig;
     graphConfig.frameCount = 2;
@@ -738,13 +782,39 @@ int run_transfer_case()
         return 12;
     }
     graph.reset();
-    if (!manager->shutdown().has_value() || texture.QueueUserData != nullptr || texture.BackendUserData != nullptr ||
-        !backend->shutdown().has_value())
+    if (!manager->shutdown().has_value() || texture.QueueUserData != nullptr || texture.BackendUserData != nullptr)
     {
         return 13;
     }
     manager.reset();
+#if defined(_DEBUG)
+    // 検査用 Device の保持だけを許容し、Worker 描画の資源も停止後に検査する
+    if (!check_messages(*infoQueue.Get(), false) ||
+        FAILED(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, false)))
+    {
+        return 25;
+    }
+#endif
+    if (!backend->shutdown().has_value())
+    {
+        return 13;
+    }
     backend.reset();
+#if defined(_DEBUG)
+    if (!check_messages(*infoQueue.Get(), false))
+    {
+        return 25;
+    }
+    infoQueue->ClearStoredMessages();
+    Microsoft::WRL::ComPtr<ID3D12DebugDevice> debug;
+    if (FAILED(probe.As(&debug)) ||
+        FAILED(debug->ReportLiveDeviceObjects(
+            static_cast<D3D12_RLDO_FLAGS>(D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL))) ||
+        !check_messages(*infoQueue.Get(), true))
+    {
+        return 25;
+    }
+#endif
     if (!window->destroy().has_value() || !system->pump_events().has_value())
     {
         return 14;
@@ -754,17 +824,24 @@ int run_transfer_case()
 } // namespace
 
 /// @brief 公式 GPU Backend の描画、動的 Texture と Descriptor 不足からの回復を確認する
-int main()
+int main(int a_argumentCount, char **a_arguments)
 {
+    if (a_argumentCount > 2 || (a_argumentCount == 2 && std::strcmp(a_arguments[1], "--warp") != 0))
+    {
+        std::fprintf(stderr, "usage: ImGuiDX12BackendTests [--warp]\n");
+        return 1;
+    }
+    const auto selection =
+        a_argumentCount == 2 ? cue::dx12::AdapterSelection::Warp : cue::dx12::AdapterSelection::HardwarePreferred;
     for (const auto capacity : {1u, 2u})
     {
-        if (const auto result = run_case(capacity); result != 0)
+        if (const auto result = run_case(capacity, selection); result != 0)
         {
             std::fprintf(stderr, "capacity %u, failure %d\n", capacity, result);
             return static_cast<int>(capacity * 30) + result;
         }
     }
-    if (const auto result = run_transfer_case(); result != 0)
+    if (const auto result = run_transfer_case(selection); result != 0)
     {
         std::fprintf(stderr, "transfer failure %d\n", result);
         return 100 + result;
