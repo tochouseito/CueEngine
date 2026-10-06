@@ -10,13 +10,13 @@ M05-01 / [Issue #77](https://github.com/tochouseito/CueEngine/issues/77) の Edi
 
 EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、`useWorkerThreads = false`、上限 60 FPS。UI Context を Window Message と同じ Thread で扱う初期構成とする。GPU の非同期実行と CPU Frame の Worker 利用は別の設定であり、単一 CPU Thread でも GPU 完了前に Resource を破棄しない
 
-表示 Pass 未指定時は既存の ClearFinalColor / PresentToSwapChain Graph を使う。ImGui Context と Win32 Backend は Window 生成後に起動し、CPU 描画 Data を生成する。ImGui の GPU 描画と Editor Document はまだ接続しない
+表示 Pass 未指定時は ClearFinalColor / ImGuiPass Graph を使う。ImGui Context と Win32 Backend は Window 生成後、公式 DX12 Backend は SwapChain 生成後に起動する。Editor 内部 Adapter が Manager の公式 GPU 記録を抽象 ImGuiPass に接続する。既定 UI はタイトル Test、本文 TEST の Window 一つ。詳細は [ImGuiPass](ImGuiPass.md) を参照する。Editor Document は未接続
 
 ## UI Frame と入力
 
-`EditorHostConfig::imgui` は Layout 保存先、Font Size と Docking を指定し、`buildUi` は ImGui API を呼ぶ UI 構築 Callback を指定する。Callback は Manager の Context が Current の構築 Thread 上で実行し、失敗を `Result<void>` で返す
+`EditorHostConfig::imgui` は Layout 保存先、Font Size と Docking を指定し、`buildUi` は ImGui API を呼ぶ UI 構築 Callback を指定する。未指定なら Test Window を構築する。Callback は Manager の Context が Current の構築 Thread 上で実行し、失敗を `Result<void>` で返す
 
-WindowsHost に注入した汎用 Callback で Window 生成後の UI 初期化、Runtime の Update 上での UI 構築、Graph 破棄後の UI 停止を行う。Loop の `step()` 回数ではなく、採用された Update Frame ごとに NewFrame → UI Callback → Render を一度だけ呼ぶ。`useWorkerThreads = true` は #83 の Data 転送実装まで InvalidArgument で拒否する
+WindowsHost に注入した汎用 Callback で Window 生成後の UI 初期化、採用 Frame の MainThread 段階での UI 構築、Graph 破棄後の UI 停止を行う。Loop の `step()` 回数ではなく、採用 Frame ごとに Main Callback で NewFrame → UI Callback → ImGui::Render を一度だけ呼び、その後に Update → Render を進める。FrameController は Main が成功するまで投入数を Worker に公開せず、枠が満杯なら Main を呼ばない。Main 失敗は step と shutdown に伝播し、Callback 内からの step / shutdown 再入は拒否する。`useWorkerThreads = true` は #83 の Data 転送実装まで InvalidArgument で拒否する
 
 Window は一つの外部 Message Handler を保持し、公式 Win32 Backend に Mouse / Keyboard / Unicode 文字 / Focus を配送する。UI が Message を処理しても Close / Resize / Destroy の必須処理は実行する。Capture Flag は Gameplay 入力の抑制用であり、ImGui への配送を止める条件にはしない。詳細は [ImGuiManager](ImGuiManager.md) を参照する
 
@@ -24,11 +24,11 @@ Window は一つの外部 Message Handler を保持し、公式 Win32 Backend �
 
 `EditorHostConfig::graph` と `WindowsHostConfig::graph` は Backend 非依存の `MainFrameGraphConfig` を受け取る。`configure` で追加の描画 Pass を登録し、`displayPass` に Host が生成した `unique_ptr<FrameGraphPass>` を渡す。設定は move して Host を構築する
 
-所有権は EditorHost → WindowsHost → DX12MainFrameGraph → FrameGraph と移り、Graph は ClearFinalColor、追加の描画 Pass、指定した表示 Pass の順に Build する。Pass 未指定時だけ PresentToSwapChainPass を生成する。Graph は一つのままで、SwapChain の Present は Graph 提出後に WindowsHost が呼ぶ
+所有権は EditorHost → WindowsHost → DX12MainFrameGraph → FrameGraph と移り、Graph は ClearFinalColor、追加の描画 Pass、指定した表示 Pass の順に Build する。EditorHost は未指定時に ImGuiPass を注入する。Standalone など上位からの指定がない場合は標準 PresentToSwapChainPass を生成する。Graph は一つのままで、SwapChain の Present は Graph 提出後に WindowsHost が呼ぶ
 
 表示 Pass の具体型や名前は検証しない。最後に配置された Pass が指定した実体であること、Graphics Queue で BackBuffer を Write / RenderTarget と宣言していることを検証する。FinalColorTexture の Read / ShaderRead は表示 Pass が必要に応じて宣言する。BackBuffer の終了 State は Graph の終了 Barrier で Present に戻す
 
-過去 CueEngine の `EngineSetupInfo::editorPass` と同じ抽象型の受け渡しを採用する。Editor が生成する ImGuiPass は後続 #82 でこの入口に接続する。Renderer / DX12 は Editor と ImGui の具体型を Include しない
+過去 CueEngine の `EngineSetupInfo::editorPass` と同じ抽象型の受け渡しを採用する。Editor が生成する ImGuiPass は #82 でこの入口に接続した。Renderer / DX12 は Editor と ImGui の具体型を Include しない
 
 Pass が ImGuiManager 等を非所有参照する場合、その Owner は Host の shutdown 完了まで生存させる。通常停止では Runtime の Callback 停止、GPU 完了待ち、Graph と Pass の破棄、ImGuiManager 停止、Backend 停止の順となる。初期化失敗時も注入 Pass と部分 UI 基盤を回収し、同じ Host を再初期化しない
 
@@ -53,14 +53,14 @@ Lifecycle Test は初期化失敗後の停止、二重停止、停止後の操�
 
 | Issue | 機能 |
 | --- | --- |
-| [#81](https://github.com/tochouseito/CueEngine/issues/81) | 公式 DX12 Backend と GPU 資源 |
-| [#82](https://github.com/tochouseito/CueEngine/issues/82) | ImGuiPass、Demo、描画 Texture 表示 |
 | [#83](https://github.com/tochouseito/CueEngine/issues/83) | Render Thread への描画 Data 転送 |
 | [#84](https://github.com/tochouseito/CueEngine/issues/84) | 導入検証と Completion Gate |
 
-ImGuiPass の生成は EditorHost 側に追加する。実装済みの表示 Pass 注入入口へ抽象型として渡し、GraphicsBackend から Editor の具体型を生成しない
+ImGuiPass の定義と生成は EditorHost Module 側に置き、表示 Pass 注入入口へ抽象型として渡す。元 #82 の Demo / Image 表示はユーザー指定に合わせ Test / TEST へ変更した。描画 Texture の UI 専用 SRV 登録は未実装
 
 Dear ImGui の Docking 版と公式 Win32／DX12 Backend は #79 で PRIVATE 依存として導入済み。準備と構成別 Library の検証は [ImGuiDependencies](ImGuiDependencies.md) を参照する
+
+公式 DX12 Backend の接続、専用 Descriptor Heap、GPU 完了と外部 Command 記録の契約は [ImGuiDX12Backend](ImGuiDX12Backend.md) を参照する。`WindowsHostCallbacks::initializeRenderer` は SwapChain 生成後・Graph 構築前に Backend の抽象参照と CPU Frame 枠数を上位 Host へ渡す。Editor の具体型は下位へ渡さない
 
 実際の GPU Resize は M04 の #22 / #59 の残作業。現在の WindowsHost は初期サイズと異なる間は描画を停止し、SwapChain / FinalColor を再生成しない。M05 の最終検証では Window 状態変更と GPU の描画復帰を分けて確認する
 

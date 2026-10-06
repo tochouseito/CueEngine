@@ -75,7 +75,7 @@ public:
     /// @brief GPU Timestamp の毎秒 Tick 数を返す
     [[nodiscard]] Result<std::uint64_t> get_timestamp_frequency() const override;
 
-    /// @brief 最後に発行した Fence 値まで CPU を待機させる
+    /// @brief 新しい完了点を発行し、Native Queue への外部提出を含めて CPU を待機させる
     [[nodiscard]] Result<void> wait_idle();
 
     /// @brief 致命的な Queue 失敗後に新規 GPU 作業を拒否する状態か返す

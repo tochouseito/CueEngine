@@ -20,6 +20,8 @@
 #include <Platform/Diagnostics.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
+#include "DX12ImGuiBackend.h"
+
 // 公式 Header の指示に従い、Win32 型を公開 Header に漏らさず実装側で宣言する
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -58,10 +60,13 @@ public:
     ImGuiFrameInfo info;
     ImGuiContext* previousFrameContext = nullptr;
     ImGuiErrorRecoveryState recovery;
+    std::unique_ptr<DX12ImGuiBackend> renderer;
+    std::uint64_t lastRecordedFrame = 0;
     bool isWin32Initialized = false;
     bool isReady = false;
     bool isFrameOpen = false;
     bool isBuilding = false;
+    bool isCpuAtlasBuilt = false;
 };
 
 /// @brief 全 Context 操作を作成した Thread に固定する
@@ -114,7 +119,7 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
         ImGui::GetStyle().FrameRounding = 4.0f;
         ImFontConfig font;
         font.SizePixels = state.config.fontSize;
-        if (!io.Fonts->AddFontDefault(&font) || !io.Fonts->Build())
+        if (!io.Fonts->AddFontDefault(&font))
         {
             return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.fonts"});
         }
@@ -207,6 +212,68 @@ Result<void> ImGuiManager::validate(const char* a_operation) const
     return Result<void>::success();
 }
 
+/// @brief CPU 基盤の生成後に Renderer を接続し、途中失敗でも Context を維持する
+Result<void> ImGuiManager::initialize_renderer(IBackend &a_backend, std::uint32_t a_frameCount)
+{
+    auto valid = validate("ImGuiManager.initialize_renderer");
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    if (m_state->renderer || m_state->isFrameOpen || m_state->isCpuAtlasBuilt)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.initialize_renderer"});
+    }
+    auto created = DX12ImGuiBackend::create(a_backend, *m_state->context, a_frameCount,
+                                            m_state->config.rendererDescriptorCapacity);
+    if (!created.has_value())
+    {
+        return Result<void>::failure(*created.try_error());
+    }
+    m_state->renderer = created.take_value();
+    return Result<void>::success();
+}
+
+/// @brief 直前に確定した Frame を一度だけ記録し、Draw Data の借用を Frame 内に限定する
+Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
+{
+    auto valid = validate("ImGuiManager.record_draw_data");
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    if (!m_state->renderer || m_state->isFrameOpen || m_state->info.frames == 0 ||
+        m_state->lastRecordedFrame == m_state->info.frames)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.record_draw_data"});
+    }
+    ScopedContext current(m_state->context);
+    auto *draw = ImGui::GetDrawData();
+    if (!draw || !draw->Valid)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.draw_data"});
+    }
+    auto recorded = m_state->renderer->record(*draw, a_context);
+    if (recorded.has_value())
+    {
+        m_state->lastRecordedFrame = m_state->info.frames;
+    }
+    return recorded;
+}
+
+/// @brief 生成済み GPU Backend の所有状態だけを返す
+Result<ImGuiRendererInfo> ImGuiManager::renderer_info() const
+{
+    auto valid = validate("ImGuiManager.renderer_info");
+    if (!valid.has_value())
+    {
+        return Result<ImGuiRendererInfo>::failure(*valid.try_error());
+    }
+    return m_state->renderer
+               ? Result<ImGuiRendererInfo>::success(m_state->renderer->info())
+               : Result<ImGuiRendererInfo>::failure({ErrorCategory::InvalidState, "ImGuiManager.renderer_info"});
+}
+
 /// @brief Message Pump 後の採用 Frame で Platform 入力を取り込み、UI の構築を開始する
 Result<void> ImGuiManager::begin_frame()
 {
@@ -219,8 +286,28 @@ Result<void> ImGuiManager::begin_frame()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.begin_frame"});
     }
+    if (m_state->renderer)
+    {
+        auto renderer = m_state->renderer->new_frame();
+        if (!renderer.has_value())
+        {
+            return renderer;
+        }
+    }
     m_state->previousFrameContext = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(m_state->context);
+    // GPU 接続前に Legacy Atlas を焼かず、Renderer 未接続の CPU 利用だけ初回に生成する
+    // 動的 Texture 対応 Backend は NewFrame 内の公式 Atlas 更新へ任せる
+    if (!m_state->renderer && !m_state->isCpuAtlasBuilt)
+    {
+        if (!ImGui::GetIO().Fonts->Build())
+        {
+            ImGui::SetCurrentContext(m_state->previousFrameContext);
+            m_state->previousFrameContext = nullptr;
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.fonts"});
+        }
+        m_state->isCpuAtlasBuilt = true;
+    }
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     // 固定 Version が提供する回復 API で Callback 前の Begin / Style / Table Stack を保存する
@@ -377,6 +464,16 @@ Result<void> ImGuiManager::shutdown()
     if (m_state->isBuilding)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.shutdown"});
+    }
+    // GPU 完了の証明に失敗した場合は Context、Heap と下位 Backend の借用を保全する
+    if (m_state->renderer)
+    {
+        auto stopped = m_state->renderer->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_state->renderer.reset();
     }
     if (m_state->handler.generation != 0)
     {

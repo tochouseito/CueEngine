@@ -12,6 +12,7 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
     // Window を渡さず Service だけで Runtime を構築する
     std::uint64_t updates = 0;
     std::uint64_t renders = 0;
+    std::uint64_t mainFrames = 0;
     cue::Runtime runtime({1, false, 0}, *a_services.clock, *a_services.waiter, *a_services.threadFactory);
     if (runtime.step().has_value() || runtime.progress().has_value())
     {
@@ -19,12 +20,33 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
     }
     // Render は同じ Frame の Update 完了後に実行される
     auto initResult = runtime.initialize(
-        [&](std::uint64_t a_frame, std::stop_token) {
+        [&](std::uint64_t a_frame, std::stop_token)
+        {
+            if (mainFrames != a_frame + 1)
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.runtime.main"});
+            }
             updates = a_frame + 1;
             return cue::Result<void>::success();
         },
         [&](std::uint64_t a_frame, std::stop_token) {
             renders = updates == a_frame + 1 ? updates : 0;
+            return cue::Result<void>::success();
+        },
+        [&](std::uint64_t a_frame, std::stop_token)
+        {
+            // Main の実行中は Controller を破棄せず、Snapshot の参照だけ許可する
+            auto nested = runtime.step();
+            auto stopped = runtime.shutdown();
+            auto progress = runtime.progress();
+            if (nested.has_value() || stopped.has_value() || !progress.has_value() ||
+                nested.try_error()->category != cue::ErrorCategory::InvalidState ||
+                stopped.try_error()->category != cue::ErrorCategory::InvalidState ||
+                progress.try_value()->submittedFrames != a_frame)
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.runtime.reentry"});
+            }
+            mainFrames = a_frame + 1;
             return cue::Result<void>::success();
         });
     if (!initResult.has_value())

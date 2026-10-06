@@ -13,6 +13,8 @@
 
 namespace cue
 {
+class IBackend;
+
 /// @brief SwapChain 構築時に適用する表示設定
 struct PresentationConfig final
 {
@@ -22,9 +24,9 @@ struct PresentationConfig final
     std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
 };
 
-/// @brief Host 固有機能の Window 初期化、Update と停止を抽象契約で接続する
+/// @brief Host 固有機能の Window 初期化、Main、Update と停止を抽象契約で接続する
 ///
-/// 初期化と停止は構築 Thread、Update は Frame 設定の実行 Thread から呼ぶ
+/// 初期化、Main と停止は構築 Thread、Update は Frame 設定の実行 Thread から呼ぶ
 /// 捕捉先は Host の shutdown 完了まで生存させる。Callback は再入しない
 struct WindowsHostCallbacks final
 {
@@ -33,6 +35,11 @@ struct WindowsHostCallbacks final
     // Runtime と Graph の停止後、Backend と Window の破棄前に呼ぶ
     // 失敗時は下位 Owner を保持し、次の shutdown で再試行する
     std::function<Result<void>()> shutdownWindow;
+    // SwapChain 生成後、Graph 構築前に呼ぶ。具体 Backend 型は上位の実装側で解釈する
+    std::function<Result<void>(IBackend &, std::uint32_t)> initializeRenderer;
+    // Message Pump 後、採用 Frame の Update より先に構築 Thread で呼ぶ
+    // ImGui 等の具体型は捕捉先に閉じ、失敗時は Frame の投入を止める
+    FrameCallback main;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
@@ -96,5 +103,6 @@ class WindowsHost final
     std::thread::id m_ownerId;
     std::unique_ptr<State> m_state;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
+    bool m_isStepping = false;
 };
 } // namespace cue

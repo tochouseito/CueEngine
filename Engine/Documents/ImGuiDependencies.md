@@ -34,9 +34,9 @@ cmake --build --preset windows-vs2026-debug
 
 ## 到達範囲と検証
 
-`Cue.Editor.ImGuiDependency` は Version、Docking API、Demo の CPU 描画 Data 生成、公式 Win32／DX12 Backend 関数の Link を確認する。#80 で UI Context と公式 Win32 Backend を EditorHost に接続した。GPU Backend の実際の起動は後続 #81 で行う。
+`Cue.Editor.ImGuiDependency` は Version、Docking API、Demo の CPU 描画 Data 生成、公式 Win32／DX12 Backend 関数の Link を確認する。#80 で UI Context と公式 Win32 Backend、#81 で公式 DX12 Backend の起動と記録 Adapter を EditorHost に接続した。実画素と資源回収は [ImGuiDX12Backend](ImGuiDX12Backend.md) の Test で検証する。
 
-Host の表示 Pass 注入（#78）、ImGuiManager と Win32 入力（#80）の次は、DX12 Backend／GPU 資源（#81）、ImGuiPass と Demo 表示（#82）。実 Window の DockSpace 描画は未接続で、Multi-Viewport は無効のままとする。
+Host の表示 Pass 注入（#78）、ImGuiManager と Win32 入力（#80）、DX12 Backend／GPU 資源（#81）、ImGuiPass と Test UI 表示（#82）を接続した。今回の UI 指定は Test / TEST の Window 一つ。DockSpace は未接続で、Multi-Viewport は無効のままとする。
 
 License と再配布条件は [THIRD_PARTY_NOTICES](../../ThirdParty/THIRD_PARTY_NOTICES.md) に記録する。
 

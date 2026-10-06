@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -69,6 +70,16 @@ public:
 
   /// @brief Backend 固有 Pass が必要な場合だけ Native List を借用する
   [[nodiscard]] ID3D12GraphicsCommandList &command_list() const noexcept;
+
+  /// @brief 検証済み RTV へ外部 Graphics 記録を行い、変更された Binding の追跡状態を失効させる
+  ///
+  /// Callback は記録だけを行い、Reset / Close / Submit / Barrier を実行しない
+  /// 成否にかかわらず Pipeline / Root / Heap / Target / Viewport を後続描画前に再設定する
+  [[nodiscard]] Result<void> record_external_graphics(
+      GpuTextureFormat a_format, const std::function<Result<void>(ID3D12GraphicsCommandList &)> &a_record);
+
+  /// @brief 外部記録前の Texture Upload 等より先に Graphics / Recording / RTV Format を検証する
+  [[nodiscard]] Result<void> validate_external_graphics(GpuTextureFormat a_format) const;
 
   /// @brief Backend 固有 Pass が必要な場合だけ Native Resource を借用する
   [[nodiscard]] ID3D12Resource *resource(FrameGraphResourceHandle a_handle) const noexcept;

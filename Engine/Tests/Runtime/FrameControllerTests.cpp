@@ -423,6 +423,130 @@ int test_stop_during_callback(cue::WindowsThreadServices& a_services)
     return std::chrono::steady_clock::now() - stopStart < std::chrono::seconds(5) ? 0 : 4;
 }
 
+/// @brief Main は構築 Thread で一度だけ準備し、満杯時に呼ばず、準備前に Worker へ公開しない
+int test_main_stage(cue::WindowsThreadServices &a_services)
+{
+    for (bool usesWorkers : {false, true})
+    {
+        const auto ownerId = std::this_thread::get_id();
+        std::atomic<bool> wasPrepared = false;
+        std::atomic<bool> wasUpdated = false;
+        std::atomic<bool> allowsUpdate = !usesWorkers;
+        int mainCalls = 0;
+        cue::FrameController controller({1, usesWorkers, 0}, *a_services.clock, *a_services.waiter,
+                                        *a_services.threadFactory);
+        auto registered = controller.register_callbacks(
+            [&](std::uint64_t a_frame, std::stop_token a_token)
+            {
+                if (!wasPrepared.load() || a_frame != 0 || (std::this_thread::get_id() == ownerId) == usesWorkers)
+                {
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.main.order"});
+                }
+                // Worker を停止可能な待機に置き、投入枠が満杯の間の Main 呼出数を検査する
+                while (!allowsUpdate.load() && !a_token.stop_requested())
+                {
+                    [[maybe_unused]] const auto status =
+                        a_services.waiter->sleep_for(std::chrono::milliseconds(1), a_token);
+                }
+                wasUpdated = true;
+                return cue::Result<void>::success();
+            },
+            [&](std::uint64_t, std::stop_token)
+            {
+                return wasUpdated.load()
+                           ? cue::Result<void>::success()
+                           : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.main.render"});
+            },
+            [&](std::uint64_t a_frame, std::stop_token)
+            {
+                ++mainCalls;
+                // Main 内の Snapshot 参照は許可し、投入と停止の再入は拒否する
+                auto nested = controller.step();
+                auto stopped = controller.stop();
+                if (std::this_thread::get_id() != ownerId || a_frame != 0 ||
+                    controller.progress().submittedFrames != 0 || nested.has_value() || stopped.has_value())
+                {
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.main.thread"});
+                }
+                wasPrepared = true;
+                return cue::Result<void>::success();
+            });
+        if (!registered.has_value() || !controller.start().has_value())
+        {
+            return 1;
+        }
+        auto accepted = controller.advance();
+        if (!accepted.has_value() || !*accepted.try_value() || mainCalls != 1)
+        {
+            return 2;
+        }
+        if (usesWorkers)
+        {
+            auto full = controller.step();
+            if (!full.has_value() || *full.try_value() || mainCalls != 1)
+            {
+                return 3;
+            }
+        }
+        allowsUpdate = true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (controller.progress().renderedFrames == 0 && std::chrono::steady_clock::now() < deadline)
+        {
+            [[maybe_unused]] const auto status = a_services.waiter->sleep_for(std::chrono::milliseconds(1), {});
+        }
+        if (controller.progress().renderedFrames != 1 || !controller.stop().has_value())
+        {
+            return 4;
+        }
+    }
+    return 0;
+}
+
+/// @brief Main の Error と例外を保存し、未完成 Frame の投入と Update / Render を止める
+int test_main_failure(cue::WindowsThreadServices &a_services)
+{
+    for (bool usesWorkers : {false, true})
+    {
+        for (bool throws : {false, true})
+        {
+            std::atomic<int> workerCalls = 0;
+            cue::FrameController controller({1, usesWorkers, 0}, *a_services.clock, *a_services.waiter,
+                                            *a_services.threadFactory);
+            auto worker = [&](std::uint64_t, std::stop_token)
+            {
+                ++workerCalls;
+                return cue::Result<void>::success();
+            };
+            auto registered = controller.register_callbacks(
+                worker, worker,
+                [&](std::uint64_t, std::stop_token) -> cue::Result<void>
+                {
+                    if (throws)
+                    {
+                        throw std::runtime_error("main failure");
+                    }
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.main.failure"});
+                });
+            if (!registered.has_value() || !controller.start().has_value())
+            {
+                return 1;
+            }
+            const auto *operation = throws ? "FrameController.main.exception" : "Test.main.failure";
+            auto failed = controller.step();
+            auto retried = controller.step();
+            auto stopped = controller.stop();
+            if (failed.has_value() || retried.has_value() || stopped.has_value() ||
+                failed.try_error()->operation != operation || retried.try_error()->operation != operation ||
+                stopped.try_error()->operation != operation || workerCalls.load() != 0 ||
+                controller.progress().submittedFrames != 0)
+            {
+                return 2;
+            }
+        }
+    }
+    return 0;
+}
+
 /// @brief FrameControllerの有界実行、Fallback、失敗伝播を確認する
 int run_tests()
 {
@@ -432,6 +556,14 @@ int run_tests()
         return 1;
     }
     auto services = servicesResult.take_value();
+    if (const int result = test_main_stage(services); result != 0)
+    {
+        return 110 + result;
+    }
+    if (const int result = test_main_failure(services); result != 0)
+    {
+        return 120 + result;
+    }
     if (const int result = test_worker_frames(services); result != 0)
     {
         return 10 + result;

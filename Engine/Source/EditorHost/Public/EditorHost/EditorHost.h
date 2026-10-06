@@ -20,7 +20,7 @@ struct EditorHostConfig final
     // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す
     MainFrameGraphConfig graph;
     ImGuiManagerConfig imgui;
-    // Callback は ImGui Context が Current の Owner Thread 上で実行する
+    // Callback は ImGui Context が Current の Owner Thread 上で実行する。未指定なら Test / TEST を表示する
     editorUiCallback buildUi;
 };
 
@@ -65,13 +65,16 @@ class EditorHost final
 
   private:
     /// @brief Window の生存中に Context と Win32 入力接続を所有する
-    [[nodiscard]] Result<void> initialize_ui(Window& a_window);
+    [[nodiscard]] Result<void> initialize_ui(Window &a_window);
 
-    /// @brief 採用された Update の Owner Thread 上で UI Frame を確定する
-    [[nodiscard]] Result<void> update_ui(std::uint64_t a_frameIndex, std::stop_token a_stopToken);
+    /// @brief 採用 Frame の MainThread 段階で UI を構築し、Update 前に描画 Data を確定する
+    [[nodiscard]] Result<void> build_ui(std::uint64_t a_frameIndex, std::stop_token a_stopToken);
 
     /// @brief Pass 破棄後に Handler を解除し、Window 破棄前に Context を解放する
     [[nodiscard]] Result<void> shutdown_ui();
+
+    /// @brief 表示 Pass 未指定時に Manager を借用する ImGuiPass を生成する
+    [[nodiscard]] MainFrameGraphConfig prepare_graph(MainFrameGraphConfig a_config);
 
     ImGuiManagerConfig m_imguiConfig;
     editorUiCallback m_buildUi;

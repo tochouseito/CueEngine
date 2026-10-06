@@ -204,14 +204,19 @@ int test_failed_display()
 /// @brief UI を Worker から触る構成を拒否し、Context の生成失敗も Window とともに回収する
 int test_invalid_ui_config()
 {
-    for (bool usesWorker : {false, true})
+    for (int kind = 0; kind < 3; ++kind)
     {
         cue::EditorHostConfig config;
         config.imgui.settingsFile.clear();
-        config.frame.useWorkerThreads = usesWorker;
-        if (!usesWorker)
+        config.frame.useWorkerThreads = kind == 1;
+        if (kind == 0)
         {
             config.imgui.fontSize = 0.0f;
+        }
+        if (kind == 2)
+        {
+            // Window / Backend / SwapChain の生成後に失敗する GPU 接続も Rollback する
+            config.imgui.rendererDescriptorCapacity = 0;
         }
         cue::EditorHost host(std::move(config));
         auto result = host.initialize();
@@ -257,11 +262,45 @@ int test_failed_ui_callback()
     }
     return 0;
 }
+/// @brief 既定 UI と既定 ImGuiPass の組合せで CPU 構築から GPU 提出まで進む
+int test_default_ui_display()
+{
+    cue::EditorHostConfig config;
+    config.window.clientSize = {320, 240};
+    config.imgui.settingsFile.clear();
+    config.frame.maxFps = 0;
+    cue::EditorHost host(std::move(config));
+    if (!host.initialize().has_value())
+    {
+        return 1;
+    }
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        auto step = host.step();
+        if (!step.has_value() || !*step.try_value())
+        {
+            return 2;
+        }
+    }
+    auto ui = host.ui_frame_info();
+    auto progress = host.frame_progress();
+    if (!ui.has_value() || ui.try_value()->frames != 3 || ui.try_value()->vertexCount == 0 ||
+        ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames != 3 ||
+        !host.shutdown().has_value())
+    {
+        return 3;
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
 int main()
 {
+    if (const int result = test_default_ui_display(); result != 0)
+    {
+        return 60 + result;
+    }
     if (const int result = test_failed_initialization(); result != 0)
     {
         return 10 + result;
