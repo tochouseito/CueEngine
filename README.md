@@ -37,7 +37,7 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure
 ```
 
-`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。初期構成はCPUのUpdate／RenderとImGuiをMainThreadで実行する。Hostは抽象型の表示PassをGraphの最後へ注入でき、Editor未指定時はImGuiPassを使う。ImGuiManagerがContext、Font、Style、LayoutとWin32入力を所有し、採用FrameのMainThread用CallbackでUIを構築し、その後Update／Renderへ進む。ImGuiPassの定義はEditorHostモジュールに置く。既定UIはタイトル「Test」、本文「TEST」のWindow一つ。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、UI契約は[ImGuiManager](Engine/Documents/ImGuiManager.md)、GPU契約は[ImGuiDX12Backend](Engine/Documents/ImGuiDX12Backend.md)、表示は[ImGuiPass](Engine/Documents/ImGuiPass.md)、所有と機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
+`CueEditorHost`は`CueEngine Editor`のWindowを表示し、Closeで終了する。既定構成はUIをMainThreadで構築し、Update／RenderをWorkerで実行する。描画Snapshotの転送は[ImGui Frame転送](Engine/Documents/ImGuiFrameTransfer.md)を参照する。Hostは抽象型の表示PassをGraphの最後へ注入でき、Editor未指定時はImGuiPassを使う。ImGuiManagerがContext、Font、Style、LayoutとWin32入力を所有し、採用FrameのMainThread用CallbackでUIを構築し、その後Update／Renderへ進む。ImGuiPassの定義はEditorHostモジュールに置く。既定UIはタイトル「Test」、本文「TEST」のWindow一つ。依存取得は[ImGui 依存導入](Engine/Documents/ImGuiDependencies.md)、UI契約は[ImGuiManager](Engine/Documents/ImGuiManager.md)、GPU契約は[ImGuiDX12Backend](Engine/Documents/ImGuiDX12Backend.md)、表示は[ImGuiPass](Engine/Documents/ImGuiPass.md)、所有と機能別Issueは[EditorHost](Engine/Documents/EditorHost.md)を参照する。
 
 ## 構成と配置
 

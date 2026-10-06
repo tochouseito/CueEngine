@@ -14,8 +14,8 @@ namespace cue
 struct EditorHostConfig final
 {
     WindowDescriptor window{"CueEngine Editor", {1280, 720}};
-    // UI Context と Window Message を同じ Owner Thread で扱う初期構成
-    FrameControllerDesc frame{2, false, 60};
+    // UI 構築は MainThread、Update / Render は Worker で並列に進める
+    FrameControllerDesc frame{2, true, 60};
     PresentationConfig presentation;
     // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す
     MainFrameGraphConfig graph;
@@ -58,6 +58,9 @@ class EditorHost final
     /// @brief 確定済み UI Frame の描画数と入力 Capture を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiFrameInfo> ui_frame_info() const;
 
+    /// @brief CPU 描画 Snapshot の受渡し数を Owner Thread へ返す
+    [[nodiscard]] Result<ImGuiTransferInfo> ui_transfer_info() const;
+
     /// @brief Frame 実行と GPU を停止してから Window を破棄する
     ///
     /// 複数回呼べる。UI 停止失敗では Window を保持し、次の呼出しで回収を再試行する
@@ -79,7 +82,6 @@ class EditorHost final
     ImGuiManagerConfig m_imguiConfig;
     editorUiCallback m_buildUi;
     std::thread::id m_ownerId;
-    bool m_useWorkerThreads = false;
     bool m_isStepping = false;
     // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
     std::unique_ptr<ImGuiManager> m_imgui;

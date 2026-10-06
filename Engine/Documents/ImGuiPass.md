@@ -22,7 +22,7 @@ Graph は FinalColorTexture の Clear、追加 Scene Pass、ImGuiPass の順に�
 
 setup で BackBuffer Handle と Texture 宣言の Clear 色を取得する。実行時は BackBuffer Clear → RTV 設定 → Adapter 記録を行う。終了時の Present 遷移は Graph の終了 Barrier、提出後の Present は WindowsHost が担当する
 
-UI は採用 Frame の MainThread 段階で構築し、Update より先に CPU Draw Data を確定する。同じ Owner Thread の Render で記録する。WindowsHostCallbacks::main → Runtime → FrameController の汎用 Main Callback を利用し、Renderer 側に ImGuiPass の具体型を公開しない。Font / UI Texture の生成と更新は #81 の記録直前の検証・予約と公式 Upload に従う。今回の UI 構築段階は Graph の物理 Texture や Native Descriptor を借用しない
+UI は採用 Frame の MainThread 段階で構築し、Update より先に CPU Draw Data を確定する。#83 の Snapshot を固定 RenderThread（単一 Thread 構成では Owner）で記録する。WindowsHostCallbacks::main → Runtime → FrameController の汎用 Main Callback を利用し、Renderer 側に ImGuiPass の具体型を公開しない。Font / UI Texture の生成と更新は #81 の記録直前の検証・予約と公式 Upload に従う。今回の UI 構築段階は Graph の物理 Texture や Native Descriptor を借用しない
 
 最小化中や Client Size が初期値と異なる間は既存 WindowsHost が GPU 描画を停止し、元の寸法へ戻ると最新 UI Frame の描画を再開する。SwapChain の GPU Resize と Worker への Draw Data 転送は未実装のまま
 

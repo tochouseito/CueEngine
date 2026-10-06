@@ -40,6 +40,8 @@ struct WindowsHostCallbacks final
     // Message Pump 後、採用 Frame の Update より先に構築 Thread で呼ぶ
     // ImGui 等の具体型は捕捉先に閉じ、失敗時は Frame の投入を止める
     FrameCallback main;
+    // Graph の記録・提出・取消だけを囲む。Present は排他 / Snapshot の借用終了後に実行する
+    std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> recordFrame;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定

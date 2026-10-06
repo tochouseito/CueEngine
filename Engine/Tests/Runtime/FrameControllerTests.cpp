@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -547,6 +548,52 @@ int test_main_failure(cue::WindowsThreadServices &a_services)
     return 0;
 }
 
+/// @brief Main の転送待機中に Update が失敗しても取消通知で待機を解除し、主原因を保持する
+int test_main_wait_cancellation(cue::WindowsThreadServices &a_services)
+{
+    std::mutex mutex;
+    std::condition_variable_any changed;
+    bool isMainWaiting = false;
+    bool wasCancelled = false;
+    cue::FrameController controller({2, true, 0}, *a_services.clock, *a_services.waiter, *a_services.threadFactory);
+    auto registered = controller.register_callbacks(
+        [&](std::uint64_t, std::stop_token)
+        {
+            std::unique_lock lock(mutex);
+            if (!changed.wait_for(lock, std::chrono::seconds(2), [&]() { return isMainWaiting; }))
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.update.timeout"});
+            }
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.update.failure"});
+        },
+        [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); },
+        [&](std::uint64_t a_frame, std::stop_token a_token)
+        {
+            if (a_frame == 0)
+            {
+                return cue::Result<void>::success();
+            }
+            std::unique_lock lock(mutex);
+            isMainWaiting = true;
+            changed.notify_all();
+            [[maybe_unused]] const bool ready =
+                changed.wait_for(lock, a_token, std::chrono::seconds(2), []() { return false; });
+            wasCancelled = a_token.stop_requested();
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.main.cancelled"});
+        });
+    if (!registered.has_value() || !controller.start().has_value() || !controller.advance().has_value())
+    {
+        return 1;
+    }
+    auto result = controller.advance();
+    auto stopped = controller.stop();
+    return wasCancelled && !result.has_value() && !stopped.has_value() &&
+                   result.try_error()->operation == "Test.update.failure" &&
+                   stopped.try_error()->operation == "Test.update.failure"
+               ? 0
+               : 2;
+}
+
 /// @brief FrameControllerの有界実行、Fallback、失敗伝播を確認する
 int run_tests()
 {
@@ -556,6 +603,10 @@ int run_tests()
         return 1;
     }
     auto services = servicesResult.take_value();
+    if (const int result = test_main_wait_cancellation(services); result != 0)
+    {
+        return 130 + result;
+    }
     if (const int result = test_main_stage(services); result != 0)
     {
         return 110 + result;

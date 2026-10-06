@@ -60,32 +60,43 @@ class WindowsHost::State final
     bool hasWindowInitializationStarted = false;
 
     /// @brief 固定 Graph の Command を Graphics Queue に提出して表示する
-    [[nodiscard]] Result<void> render(std::uint64_t a_frameIndex, std::stop_token a_stopToken,
-                                      std::uint32_t a_frameCount)
+    [[nodiscard]] Result<void> render(
+        std::uint64_t a_frameIndex, std::stop_token a_stopToken, std::uint32_t a_frameCount,
+        const std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> &a_recordFrame)
     {
-        if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        bool wasSubmitted = false;
+        FrameCallback record = [&](std::uint64_t, std::stop_token) -> Result<void>
         {
+            // 表示を止める Frame も上位の Scope に通し、未記録 Snapshot を回収する
+            if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+            {
+                return Result<void>::success();
+            }
+            const auto *execution = dx12Backend->get_execution_context();
+            auto *swapChain = dx12Backend->get_swap_chain();
+            if (!execution || !swapChain || !swapChain->graphics_queue() || !graph)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
+            }
+            const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
+            auto executed = graph->execute(
+                frameSlot, *execution, [&]()
+                { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
+            if (!executed.has_value())
+            {
+                return Result<void>::failure(*executed.try_error());
+            }
+            wasSubmitted = *executed.try_value();
             return Result<void>::success();
-        }
-        const auto *execution = dx12Backend->get_execution_context();
-        auto *swapChain = dx12Backend->get_swap_chain();
-        if (!execution || !swapChain || !swapChain->graphics_queue() || !graph)
+        };
+        auto recorded =
+            a_recordFrame ? a_recordFrame(a_frameIndex, a_stopToken, record) : record(a_frameIndex, a_stopToken);
+        if (!recorded.has_value())
         {
-            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
+            return recorded;
         }
-        const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
-        auto executeResult = graph->execute(
-            frameSlot, *execution,
-            [&]() { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
-        if (!executeResult.has_value())
-        {
-            return Result<void>::failure(*executeResult.try_error());
-        }
-        if (!*executeResult.try_value())
-        {
-            return Result<void>::success();
-        }
-        return swapChain->present();
+        // DXGI が Message Thread を待つ場合に備え、上位の Context 排他と Pin を残さない
+        return wasSubmitted ? dx12Backend->get_swap_chain()->present() : Result<void>::success();
     }
 };
 
@@ -256,8 +267,11 @@ Result<void> WindowsHost::initialize()
         update = [](std::uint64_t, std::stop_token) { return Result<void>::success(); };
     }
     auto runtimeResult = m_state->runtime->initialize(
-        std::move(update), [state, frameCount](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
-        { return state->render(a_frameIndex, a_stopToken, frameCount); }, m_config.callbacks.main);
+        std::move(update),
+        [state, frameCount, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex,
+                                                                          std::stop_token a_stopToken)
+        { return state->render(a_frameIndex, a_stopToken, frameCount, recordFrame); },
+        m_config.callbacks.main);
     if (!runtimeResult.has_value())
     {
         return rollback(*runtimeResult.try_error());

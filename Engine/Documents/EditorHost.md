@@ -16,7 +16,7 @@ EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、
 
 `EditorHostConfig::imgui` は Layout 保存先、Font Size と Docking を指定し、`buildUi` は ImGui API を呼ぶ UI 構築 Callback を指定する。未指定なら Test Window を構築する。Callback は Manager の Context が Current の構築 Thread 上で実行し、失敗を `Result<void>` で返す
 
-WindowsHost に注入した汎用 Callback で Window 生成後の UI 初期化、採用 Frame の MainThread 段階での UI 構築、Graph 破棄後の UI 停止を行う。Loop の `step()` 回数ではなく、採用 Frame ごとに Main Callback で NewFrame → UI Callback → ImGui::Render を一度だけ呼び、その後に Update → Render を進める。FrameController は Main が成功するまで投入数を Worker に公開せず、枠が満杯なら Main を呼ばない。Main 失敗は step と shutdown に伝播し、Callback 内からの step / shutdown 再入は拒否する。`useWorkerThreads = true` は #83 の Data 転送実装まで InvalidArgument で拒否する
+WindowsHost に注入した汎用 Callback で Window 生成後の UI 初期化、採用 Frame の MainThread 段階での UI 構築、Graph 破棄後の UI 停止を行う。Loop の `step()` 回数ではなく、採用 Frame ごとに Main Callback で NewFrame → UI Callback → ImGui::Render を一度だけ呼び、その後に Update → Render を進める。FrameController は Main が成功するまで投入数を Worker に公開せず、枠が満杯なら Main を呼ばない。Main 失敗は step と shutdown に伝播し、Callback 内からの step / shutdown 再入は拒否する。#83 の Snapshot 転送により Worker と単一 Thread の両構成を使用できる。既定は Worker 有効。詳細は [Frame 転送](ImGuiFrameTransfer.md) を参照する
 
 Window は一つの外部 Message Handler を保持し、公式 Win32 Backend に Mouse / Keyboard / Unicode 文字 / Focus を配送する。UI が Message を処理しても Close / Resize / Destroy の必須処理は実行する。Capture Flag は Gameplay 入力の抑制用であり、ImGui への配送を止める条件にはしない。詳細は [ImGuiManager](ImGuiManager.md) を参照する
 

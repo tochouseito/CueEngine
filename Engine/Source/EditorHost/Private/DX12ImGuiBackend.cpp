@@ -1,7 +1,10 @@
 #include "DX12ImGuiBackend.h"
 
+#include "ImGuiSynchronization.h"
+
 #include <algorithm>
 #include <exception>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <vector>
@@ -26,7 +29,8 @@ class ContextScope final
 {
   public:
     /// @brief 呼出元の Context を退避する
-    explicit ContextScope(ImGuiContext *a_context) noexcept : m_previous(ImGui::GetCurrentContext())
+    explicit ContextScope(ImGuiContext *a_context)
+        : m_lock(imgui_context_mutex()), m_previous(ImGui::GetCurrentContext())
     {
         ImGui::SetCurrentContext(a_context);
     }
@@ -37,6 +41,7 @@ class ContextScope final
     }
 
   private:
+    std::unique_lock<std::recursive_mutex> m_lock;
     ImGuiContext *m_previous;
 };
 } // namespace
@@ -318,64 +323,10 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
             }
         }
     }
-    // 最小化等で公式 Ring と Graph 枠がずれても VB/IB を上書きしない初期の同期方式
-    // 公式 Texture Upload の Native 提出も新しい Queue Fence の完了点に含める
-    auto waited = state.queue->wait_idle();
-    if (!waited.has_value())
+    auto prepared = prepare(a_draw);
+    if (!prepared.has_value())
     {
-        return waited;
-    }
-    std::size_t creates = 0;
-    if (a_draw.Textures)
-    {
-        for (const auto *texture : *a_draw.Textures)
-        {
-            if (!texture ||
-                (texture->Status == ImTextureStatus_WantCreate &&
-                 (texture->Format != ImTextureFormat_RGBA32 || !texture->Pixels || texture->Width <= 0 ||
-                  texture->Height <= 0 || texture->Width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-                  texture->Height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)) ||
-                ((texture->Status == ImTextureStatus_WantUpdates ||
-                  (texture->Status == ImTextureStatus_WantDestroy && texture->BackendUserData)) &&
-                 !state.owns_texture(texture->GetTexID())))
-            {
-                return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.texture_data"});
-            }
-        }
-        // 完了済み旧 Texture を先に回収し、満杯の Heap でも返却可能な Slot を再利用する
-        for (auto *texture : *a_draw.Textures)
-        {
-            if (texture->Status == ImTextureStatus_WantDestroy &&
-                texture->UnusedFrames >= static_cast<int>(state.info.frameCount))
-            {
-                ImGui_ImplDX12_UpdateTexture(texture);
-            }
-        }
-        for (const auto *texture : *a_draw.Textures)
-        {
-            creates += texture->Status == ImTextureStatus_WantCreate ? 1 : 0;
-        }
-    }
-    auto reserved = state.reserve(creates);
-    if (!reserved.has_value())
-    {
-        return reserved;
-    }
-    if (a_draw.Textures)
-    {
-        for (auto *texture : *a_draw.Textures)
-        {
-            if (texture->Status != ImTextureStatus_OK)
-            {
-                ImGui_ImplDX12_UpdateTexture(texture);
-            }
-        }
-    }
-    state.release_reservations();
-    const auto removed = state.device->GetDeviceRemovedReason();
-    if (FAILED(removed))
-    {
-        return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.device_removed", removed});
+        return prepared;
     }
     for (const auto *list : a_draw.CmdLists)
     {
@@ -400,6 +351,89 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
                                                  ++state.info.recordedFrames;
                                                  return Result<void>::success();
                                              });
+}
+
+/// @brief GPU 完了と旧 Snapshot の参照を確認して公式 Texture 更新を完了する
+Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
+{
+    if (!m_state || !m_state->isInitialized || !a_draw.Valid)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiDX12.prepare"});
+    }
+    auto &state = *m_state;
+    ContextScope current(state.context);
+    // 最小化等で公式 Ring と Graph 枠がずれても VB/IB を上書きしない初期の同期方式
+    // 公式 Texture Upload の Native 提出も新しい Queue Fence の完了点に含める
+    auto waited = state.queue->wait_idle();
+    if (!waited.has_value())
+    {
+        return waited;
+    }
+    // 更新前に旧 Snapshot の CPU 参照が消えていることを Manager が保証する
+    if (a_draw.Textures)
+    {
+        for (const auto *texture : *a_draw.Textures)
+        {
+            if (texture && texture->Status == ImTextureStatus_WantUpdates && texture->QueueUserData)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiDX12.texture.pending_update"});
+            }
+        }
+    }
+    std::size_t creates = 0;
+    if (a_draw.Textures)
+    {
+        for (const auto *texture : *a_draw.Textures)
+        {
+            if (!texture ||
+                (texture->Status == ImTextureStatus_WantCreate &&
+                 (texture->Format != ImTextureFormat_RGBA32 || !texture->Pixels || texture->Width <= 0 ||
+                  texture->Height <= 0 || texture->Width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+                  texture->Height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)) ||
+                ((texture->Status == ImTextureStatus_WantUpdates ||
+                  (texture->Status == ImTextureStatus_WantDestroy && texture->BackendUserData)) &&
+                 !state.owns_texture(texture->GetTexID())))
+            {
+                return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.texture_data"});
+            }
+        }
+        // 完了済み旧 Texture を先に回収し、満杯の Heap でも返却可能な Slot を再利用する
+        for (auto *texture : *a_draw.Textures)
+        {
+            if (texture->Status == ImTextureStatus_WantDestroy &&
+                texture->UnusedFrames >= static_cast<int>(state.info.frameCount) && !texture->QueueUserData)
+            {
+                ImGui_ImplDX12_UpdateTexture(texture);
+            }
+        }
+        for (const auto *texture : *a_draw.Textures)
+        {
+            creates += texture->Status == ImTextureStatus_WantCreate ? 1 : 0;
+        }
+    }
+    auto reserved = state.reserve(creates);
+    if (!reserved.has_value())
+    {
+        return reserved;
+    }
+    if (a_draw.Textures)
+    {
+        for (auto *texture : *a_draw.Textures)
+        {
+            if (texture->Status != ImTextureStatus_OK &&
+                !(texture->Status == ImTextureStatus_WantDestroy && texture->QueueUserData))
+            {
+                ImGui_ImplDX12_UpdateTexture(texture);
+            }
+        }
+    }
+    state.release_reservations();
+    const auto removed = state.device->GetDeviceRemovedReason();
+    if (FAILED(removed))
+    {
+        return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.device_removed", removed});
+    }
+    return Result<void>::success();
 }
 
 /// @brief Snapshot は所有値だけで公開する
