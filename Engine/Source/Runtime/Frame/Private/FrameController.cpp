@@ -123,6 +123,10 @@ Result<bool> FrameController::advance()
     {
         return Result<bool>::failure({ErrorCategory::WrongThread, "FrameController.advance"});
     }
+    if (m_isExecutingMain)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "FrameController.advance"});
+    }
     std::uint64_t frame = 0;
     {
         std::lock_guard lock(m_mutex);
@@ -139,7 +143,31 @@ Result<bool> FrameController::advance()
             // 空きがない場合は失敗ではなく、次の Step で再試行させる
             return Result<bool>::success(false);
         }
-        frame = m_progress.submittedFrames++;
+        frame = m_progress.submittedFrames;
+    }
+
+    // Main の準備が完了するまで投入数を公開せず、Worker に未完成の Frame を渡さない
+    // Callback は共有 Lock 外で呼び、進行状態の参照を妨げない。再入による投入・停止は許可しない
+    if (m_main)
+    {
+        m_isExecutingMain = true;
+        auto mainResult = invoke_callback(m_main, frame, {}, "FrameController.main.exception");
+        m_isExecutingMain = false;
+        if (!mainResult.has_value())
+        {
+            Error error = std::move(*mainResult.try_error());
+            record_failure(error);
+            return Result<bool>::failure(std::move(error));
+        }
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        // Main の実行中に先行 Frame が失敗した場合も、後続を Worker に公開しない
+        if (m_failure)
+        {
+            return Result<bool>::failure(*m_failure);
+        }
+        ++m_progress.submittedFrames;
     }
 
     if (m_desc.useWorkerThreads)
@@ -200,7 +228,7 @@ Result<bool> FrameController::advance()
 }
 
 /// @brief HostのCallbackを開始前に一度だけ登録する
-Result<void> FrameController::register_callbacks(FrameCallback a_update, FrameCallback a_render)
+Result<void> FrameController::register_callbacks(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main)
 {
     if (std::this_thread::get_id() != m_ownerId)
     {
@@ -216,6 +244,7 @@ Result<void> FrameController::register_callbacks(FrameCallback a_update, FrameCa
     }
     m_update = std::move(a_update);
     m_render = std::move(a_render);
+    m_main = std::move(a_main);
     return Result<void>::success();
 }
 
@@ -245,6 +274,10 @@ Result<void> FrameController::stop()
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.stop"});
+    }
+    if (m_isExecutingMain)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.stop"});
     }
     {
         std::lock_guard lock(m_mutex);

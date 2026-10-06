@@ -26,7 +26,8 @@ public:
     /// @brief Callbackを登録してFrame実行を開始する
     ///
     /// 構築Threadから一度だけ呼ぶ。失敗時は停止済みとなり、再試行には新しいRuntimeを使う
-    [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render);
+    /// 任意の Main Callback は採用 Frame ごとに構築 Thread で Update より先に実行する
+    [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main = {});
 
     /// @brief 次のFrameを進める
     ///
@@ -56,5 +57,6 @@ private:
     std::thread::id m_ownerId;
     std::unique_ptr<FrameController> m_controller;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
+    bool m_isStepping = false;
 };
 } // namespace cue

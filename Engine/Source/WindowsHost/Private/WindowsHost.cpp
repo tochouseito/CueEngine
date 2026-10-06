@@ -20,6 +20,28 @@
 
 namespace cue
 {
+namespace
+{
+/// @brief Frame Callback から Host の実行中資源を破棄する再入を防ぐ
+class ScopedStep final
+{
+  public:
+    /// @brief Scope の間だけ実行中 Flag を立てる
+    explicit ScopedStep(bool &a_flag) noexcept : m_flag(a_flag)
+    {
+        m_flag = true;
+    }
+    /// @brief 例外時も実行中 Flag を解除する
+    ~ScopedStep()
+    {
+        m_flag = false;
+    }
+
+  private:
+    bool &m_flag;
+};
+} // namespace
+
 class WindowsHost::State final
 {
   public:
@@ -184,6 +206,16 @@ Result<void> WindowsHost::initialize()
     {
         return rollback(*swapResult.try_error());
     }
+    // Editor 等の GPU 接続を先に生成し、Graph の Pass が借用できる状態にする
+    if (m_config.callbacks.initializeRenderer)
+    {
+        m_state->hasWindowInitializationStarted = true;
+        auto hostResult = m_config.callbacks.initializeRenderer(*m_state->backend, m_config.frame.maxFramesInFlight);
+        if (!hostResult.has_value())
+        {
+            return rollback(*hostResult.try_error());
+        }
+    }
     const auto *resources = m_state->dx12Backend->get_resource_context();
     if (!resources)
     {
@@ -223,10 +255,9 @@ Result<void> WindowsHost::initialize()
     {
         update = [](std::uint64_t, std::stop_token) { return Result<void>::success(); };
     }
-    auto runtimeResult =
-        m_state->runtime->initialize(std::move(update),
-                                     [state, frameCount](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
-                                     { return state->render(a_frameIndex, a_stopToken, frameCount); });
+    auto runtimeResult = m_state->runtime->initialize(
+        std::move(update), [state, frameCount](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
+        { return state->render(a_frameIndex, a_stopToken, frameCount); }, m_config.callbacks.main);
     if (!runtimeResult.has_value())
     {
         return rollback(*runtimeResult.try_error());
@@ -250,11 +281,12 @@ Result<bool> WindowsHost::step()
     {
         return Result<bool>::failure({ErrorCategory::WrongThread, "WindowsHost.step"});
     }
-    if (m_lifecycle != Lifecycle::Running)
+    if (m_lifecycle != Lifecycle::Running || m_isStepping)
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.step"});
     }
 
+    ScopedStep stepping(m_isStepping);
     // Win32 Message を処理し、Queue 上の終了通知も同じ周回で反映する
     auto pumpResult = m_state->system->pump_events();
     if (!pumpResult.has_value())
@@ -323,6 +355,10 @@ Result<void> WindowsHost::shutdown()
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.shutdown"});
+    }
+    if (m_isStepping)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.shutdown"});
     }
     m_lifecycle = Lifecycle::Stopped;
     // Window や Backend の生成前に失敗した場合も未使用の Pass と Callback を回収する

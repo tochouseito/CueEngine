@@ -11,6 +11,9 @@
 
 namespace cue
 {
+class IBackend;
+class FrameGraphContext;
+
 /// @brief Editor が所有する Layout 保存先と Font / Style の初期設定
 struct ImGuiManagerConfig final
 {
@@ -18,6 +21,17 @@ struct ImGuiManagerConfig final
     std::string settingsFile = "out/editor/imgui.ini";
     float fontSize = 18.0f;
     bool isDockingEnabled = true;
+    // Renderer 共有 Heap と分離した UI 専用 SRV Heap の容量
+    std::uint32_t rendererDescriptorCapacity = 64;
+};
+
+/// @brief 具体 GPU 型を公開せず UI Backend の所有と利用状況を返す
+struct ImGuiRendererInfo final
+{
+    std::uint32_t frameCount = 0;
+    std::uint32_t descriptorCapacity = 0;
+    std::uint32_t activeDescriptors = 0;
+    std::uint64_t recordedFrames = 0;
 };
 
 /// @brief 最後に確定した UI Frame の入力 Capture と CPU 描画 Data の概要
@@ -36,7 +50,7 @@ using editorUiCallback = std::function<Result<void>()>;
 /// @brief ImGui Context、Font、Style、Layout と Win32 入力接続を一意所有する
 ///
 /// EditorHost が所有し、Window は shutdown 完了まで生存させる
-/// 全操作と破棄は生成 Thread で直列に行う。Renderer Backend は後続 Issue で接続する
+/// 全操作と破棄は生成 Thread で直列に行う。接続した Renderer Backend より先に停止する
 class ImGuiManager final
 {
     struct CreateToken final
@@ -58,6 +72,23 @@ public:
 
     ImGuiManager(const ImGuiManager&) = delete;
     ImGuiManager& operator=(const ImGuiManager&) = delete;
+
+    /// @brief SwapChain を持つ Backend を借用し、UI 専用 Heap と公式 GPU Backend を生成する
+    ///
+    /// Frame 数は CPU 描画枠数の 1 / 2 に合わせ、初回 begin_frame より前に接続する
+    /// Backend は shutdown 完了まで生存させる。通常失敗時は CPU UI 基盤を維持する
+    /// 公式 Init の途中配列生成例外は安全に復元できないため Fatal 停止する
+    [[nodiscard]] Result<void> initialize_renderer(IBackend &a_backend, std::uint32_t a_frameCount);
+
+    /// @brief 確定済み UI 描画を Graphics Pass の記録中 Context へ一度だけ記録する
+    ///
+    /// Pass は Write / RenderTarget を宣言して対象 RTV を先に設定する
+    /// 記録済み List を提出または破棄してから次の UI Frame へ進み、GPU 完了後に Manager を停止する
+    /// 外部記録後に同じ Context で描画を続ける場合は Pipeline / Target / Viewport / Binding を再設定する
+    [[nodiscard]] Result<void> record_draw_data(FrameGraphContext &a_context);
+
+    /// @brief GPU Backend の描画枠と Descriptor の所有数を Owner Thread へ返す
+    [[nodiscard]] Result<ImGuiRendererInfo> renderer_info() const;
 
     /// @brief Win32 入力を取り込み UI Frame を開始し、この Context を Current にする
     ///

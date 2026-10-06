@@ -4,12 +4,14 @@ set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT Release)
 find_package(imgui CONFIG REQUIRED GLOBAL)
 
 add_library(Cue.EditorHost STATIC
+    Public/EditorHost/ImGuiPass.h
     Private/EditorHost.cpp
     Private/ImGuiManager.cpp
+    Private/DX12ImGuiBackend.cpp
 )
 
 target_include_directories(Cue.EditorHost PUBLIC Public)
-target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost PRIVATE imgui::imgui Cue.Platform.Windows)
+target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost PRIVATE imgui::imgui Cue.Platform.Windows Cue.Renderer.DX12)
 target_compile_features(Cue.EditorHost PUBLIC cxx_std_20)
 
 add_executable(CueEditorHost WIN32 Main.cpp)

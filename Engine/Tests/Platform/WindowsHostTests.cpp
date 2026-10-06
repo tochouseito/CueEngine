@@ -57,7 +57,26 @@ int test_invalid_config()
 int test_window_lifecycle()
 {
     cue::WindowsHostConfig config{{"CueWindowsHost Test", {320, 240}}, {1, false, 0}, {3, true, false}};
+    cue::WindowsHost *borrowed = nullptr;
+    int mainCalls = 0;
+    const auto ownerId = std::this_thread::get_id();
+    config.callbacks.main = [&](std::uint64_t a_frame, std::stop_token)
+    {
+        auto nested = borrowed->step();
+        auto stopped = borrowed->shutdown();
+        auto progress = borrowed->frame_progress();
+        if (std::this_thread::get_id() != ownerId || nested.has_value() || stopped.has_value() ||
+            !progress.has_value() || progress.try_value()->submittedFrames != a_frame ||
+            nested.try_error()->category != cue::ErrorCategory::InvalidState ||
+            stopped.try_error()->category != cue::ErrorCategory::InvalidState)
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.host.main"});
+        }
+        ++mainCalls;
+        return cue::Result<void>::success();
+    };
     cue::WindowsHost host(std::move(config));
+    borrowed = &host;
     if (host.step().has_value() || host.frame_progress().has_value())
     {
         return 1;
@@ -94,8 +113,8 @@ int test_window_lifecycle()
     // 構成した単一 Thread の Frame 進行を Host から確認する
     auto secondStepResult = host.step();
     auto progressResult = host.frame_progress();
-    if (!secondStepResult.has_value() || !*secondStepResult.try_value() ||
-        !progressResult.has_value() || progressResult.try_value()->renderedFrames != 2)
+    if (!secondStepResult.has_value() || !*secondStepResult.try_value() || !progressResult.has_value() ||
+        progressResult.try_value()->renderedFrames != 2 || mainCalls != 2)
     {
         return 8;
     }

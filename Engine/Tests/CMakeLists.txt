@@ -182,6 +182,17 @@ if(WIN32)
     add_test(NAME Cue.Editor.ImGuiManager COMMAND CueImGuiManagerTests)
     set_tests_properties(Cue.Editor.ImGuiManager PROPERTIES TIMEOUT 15)
 
+    # 公式 DX12 の実画素、動的 Texture、容量不足回復と終了後の GPU Object を検証する
+    add_executable(CueImGuiDX12BackendTests Editor/ImGuiDX12BackendTests.cpp)
+    target_link_libraries(CueImGuiDX12BackendTests PRIVATE Cue.EditorHost Cue.Renderer.DX12 Cue.Platform.Windows imgui::imgui)
+    add_test(NAME Cue.Editor.ImGuiDX12Backend COMMAND CueImGuiDX12BackendTests)
+    set_tests_properties(Cue.Editor.ImGuiDX12Backend PROPERTIES TIMEOUT 30)
+
+    # Editor が所有する Pass の宣言、失敗伝播と Adapter 寿命を GPU なしで検証する
+    add_executable(CueImGuiPassTests Editor/ImGuiPassTests.cpp)
+    target_link_libraries(CueImGuiPassTests PRIVATE Cue.EditorHost)
+    add_test(NAME Cue.Editor.ImGuiPass COMMAND CueImGuiPassTests)
+
     # Editor の既定 Thread 構成と失敗時停止を実 Window で確認する
     add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
     target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)
@@ -197,6 +208,6 @@ endif()
 if(WIN32)
     cue_copy_shader_runtime(CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests
+        CueEditorHostTests CueImGuiDX12BackendTests
     )
 endif()

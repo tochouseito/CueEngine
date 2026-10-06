@@ -63,10 +63,12 @@ public:
     FrameController(const FrameController&) = delete;
     FrameController& operator=(const FrameController&) = delete;
 
-    /// @brief Runtimeから渡されたUpdateとRenderの処理を開始前に一度だけ登録する
+    /// @brief Runtime から渡された Main、Update と Render の処理を開始前に一度だけ登録する
     ///
     /// Callbackの借用先はstop完了まで有効に保つ。構築Threadから呼び、失敗時は未登録のままにする
-    [[nodiscard]] Result<void> register_callbacks(FrameCallback a_update, FrameCallback a_render);
+    /// 任意の Main は投入枠確保後、Worker へ公開する前に構築 Thread で呼ぶ
+    [[nodiscard]] Result<void> register_callbacks(FrameCallback a_update, FrameCallback a_render,
+                                                  FrameCallback a_main = {});
 
     /// @brief 設定を検証してWorkerを開始する
     ///
@@ -104,9 +106,10 @@ private:
     wait_for_render_limit(std::stop_token a_stopToken);
 
     FrameControllerDesc m_desc;
-    Clock& m_clock;
-    Waiter& m_waiter;
-    ThreadFactory& m_threadFactory;
+    Clock &m_clock;
+    Waiter &m_waiter;
+    ThreadFactory &m_threadFactory;
+    FrameCallback m_main;
     FrameCallback m_update;
     FrameCallback m_render;
     std::thread::id m_ownerId;
@@ -122,5 +125,7 @@ private:
     bool m_isStarted = false;
     bool m_hasStarted = false;
     bool m_stopRequested = false;
+    // Main Callback から同じ Controller を進行・停止し、未公開 Frame を変更する再入を拒否する
+    bool m_isExecutingMain = false;
 };
 } // namespace cue

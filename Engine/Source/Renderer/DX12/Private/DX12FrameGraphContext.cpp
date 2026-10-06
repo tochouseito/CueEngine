@@ -249,6 +249,51 @@ ID3D12GraphicsCommandList& DX12FrameGraphContext::command_list() const noexcept
     return *m_command->command_list();
 }
 
+/// @brief Native 記録の入口で Target を検証し、通常 Context の State Cache を引き継がない
+Result<void> DX12FrameGraphContext::record_external_graphics(
+    GpuTextureFormat a_format, const std::function<Result<void>(ID3D12GraphicsCommandList &)> &a_record)
+{
+    auto valid = validate_external_graphics(a_format);
+    if (!a_record || !valid.has_value())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.external_graphics"});
+    }
+    // Callback が Context API を使っても、Native 状態を後から書き換えた Cache は残さない
+    const auto invalidate = [&]()
+    {
+        m_pipeline = {};
+        m_pipelineFormat.reset();
+        m_targetFormat.reset();
+        m_boundParameters.clear();
+        m_isComputeBound = false;
+        m_hasViewport = false;
+        m_isSrvHeapBound = false;
+    };
+    invalidate();
+    Result<void> result = Result<void>::success();
+    try
+    {
+        result = a_record(command_list());
+    }
+    catch (...)
+    {
+        result = Result<void>::failure({ErrorCategory::PlatformFailure, "DX12FrameGraphContext.external_callback"});
+    }
+    invalidate();
+    return result;
+}
+
+/// @brief 未設定 Target と不一致の Format を副作用なしで拒否する
+Result<void> DX12FrameGraphContext::validate_external_graphics(GpuTextureFormat a_format) const
+{
+    if (m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording ||
+        !m_command->command_list() || !m_targetFormat || *m_targetFormat != a_format)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.external_graphics"});
+    }
+    return Result<void>::success();
+}
+
 /// @brief 検証済み対応表から Native Resource を返す
 ID3D12Resource* DX12FrameGraphContext::resource(FrameGraphResourceHandle a_handle) const noexcept
 {
