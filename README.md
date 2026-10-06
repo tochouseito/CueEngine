@@ -122,3 +122,5 @@ M04では`Cue.Renderer.DX12`と`DX12Backend`によるSwap Chain、RTV、Command 
 `Cue.Renderer.RHI`はPlatform型を含まない`IRenderDevice`契約を公開する。`Cue.Renderer.DX12`はこれを実装し、DXGI Factory、Adapter、D3D12 Deviceを所有する`DX12RenderDevice`を提供する。Hardware Adapterを高性能順で試し、対応するDeviceがなければWARPを使用する。検証用にWARPを明示選択することもできる。Debug構成では利用可能なDebug Layer、GPU Validation、DREDとInfoQueueを設定する。生成失敗はHRESULTを含む`Result`で返し、診断用の名前付け失敗はWarningとして扱う。
 
 `Cue.Renderer.RHI`の`create_backend()`は現在のWindows用実装として`DX12Backend`を生成する。Backendの生成中に`DX12RenderDevice::create()`を呼び、成功したDeviceを一意所有する。`CueWindowsHost.exe`はWindow生成後にBackendを作り、終了時はBackendを停止してからWindowを破棄する。Swap Chain、FrameGraph、Command／Queue Poolと描画処理は後続の移植対象となる。
+
+#83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](Engine/Documents/ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする

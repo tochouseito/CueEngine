@@ -186,7 +186,8 @@ if(WIN32)
     add_executable(CueImGuiDX12BackendTests Editor/ImGuiDX12BackendTests.cpp)
     target_link_libraries(CueImGuiDX12BackendTests PRIVATE Cue.EditorHost Cue.Renderer.DX12 Cue.Platform.Windows imgui::imgui)
     add_test(NAME Cue.Editor.ImGuiDX12Backend COMMAND CueImGuiDX12BackendTests)
-    set_tests_properties(Cue.Editor.ImGuiDX12Backend PROPERTIES TIMEOUT 30)
+    add_test(NAME Cue.Editor.ImGuiDX12Backend.Warp COMMAND CueImGuiDX12BackendTests --warp)
+    set_tests_properties(Cue.Editor.ImGuiDX12Backend Cue.Editor.ImGuiDX12Backend.Warp PROPERTIES TIMEOUT 30)
 
     # Editor が所有する Pass の宣言、失敗伝播と Adapter 寿命を GPU なしで検証する
     add_executable(CueImGuiPassTests Editor/ImGuiPassTests.cpp)
@@ -197,12 +198,16 @@ if(WIN32)
     add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
     target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)
     add_test(NAME Cue.EditorHost.Lifecycle COMMAND CueEditorHostTests)
-    set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 15)
+    set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 30)
 
     # 共通の Process Fixture で Editor の Executable の表示と正常 Close を確認する
     add_dependencies(CueWindowsHostProcessTests CueEditorHost)
-    add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost>)
-    set_tests_properties(Cue.EditorHost.Process PROPERTIES TIMEOUT 7)
+    add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain)
+    set_tests_properties(Cue.EditorHost.Process PROPERTIES TIMEOUT 15)
+    # GPU Resize の成否と区別し、Worker 表示中の Window 状態変更と終了応答を確認する
+    add_test(NAME Cue.EditorHost.ResizeMinimizeRestore
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --resize)
+    set_tests_properties(Cue.EditorHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
 endif()
 
 if(WIN32)

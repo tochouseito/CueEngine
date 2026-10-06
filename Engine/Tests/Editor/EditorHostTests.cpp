@@ -269,12 +269,14 @@ int test_failed_ui_callback()
     return 0;
 }
 /// @brief 既定 UI と既定 ImGuiPass の組合せで CPU 構築から GPU 提出まで進む
-int test_default_ui_display()
+int test_default_ui_display(bool a_usesWorkers, std::uint32_t a_frameCount)
 {
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
     config.frame.maxFps = 0;
+    config.frame.useWorkerThreads = a_usesWorkers;
+    config.frame.maxFramesInFlight = a_frameCount;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value())
     {
@@ -288,7 +290,7 @@ int test_default_ui_display()
         {
             return 2;
         }
-        if (current.try_value()->renderedFrames >= 12)
+        if (current.try_value()->renderedFrames >= 120)
         {
             break;
         }
@@ -301,11 +303,11 @@ int test_default_ui_display()
     auto ui = host.ui_frame_info();
     auto progress = host.frame_progress();
     auto transfer = host.ui_transfer_info();
-    if (!ui.has_value() || ui.try_value()->frames < 12 || ui.try_value()->vertexCount == 0 ||
-        ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames < 12 ||
-        progress.try_value()->renderThreadId == std::this_thread::get_id() || !transfer.has_value() ||
-        transfer.try_value()->pendingFrames > 2 || transfer.try_value()->consumedFrames < 12 ||
-        !host.shutdown().has_value())
+    if (!ui.has_value() || ui.try_value()->frames < 120 || ui.try_value()->vertexCount == 0 ||
+        ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames < 120 ||
+        (progress.try_value()->renderThreadId != std::this_thread::get_id()) != a_usesWorkers ||
+        !transfer.has_value() || transfer.try_value()->pendingFrames > a_frameCount ||
+        transfer.try_value()->consumedFrames < 120 || !host.shutdown().has_value())
     {
         return 3;
     }
@@ -316,9 +318,15 @@ int test_default_ui_display()
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
 int main()
 {
-    if (const int result = test_default_ui_display(); result != 0)
+    for (const auto frames : {1u, 2u})
     {
-        return 60 + result;
+        for (const bool usesWorkers : {false, true})
+        {
+            if (const int result = test_default_ui_display(usesWorkers, frames); result != 0)
+            {
+                return 60 + result;
+            }
+        }
     }
     if (const int result = test_failed_initialization(); result != 0)
     {
