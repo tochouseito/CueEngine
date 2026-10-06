@@ -1,11 +1,14 @@
 #include <EditorHost/ImGuiManager.h>
 
 #include <array>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -154,7 +157,7 @@ void transition(ID3D12GraphicsCommandList &a_list, ID3D12Resource &a_resource, D
 }
 
 /// @brief Present 前の実画素を読み戻し、公式 Draw と Heap 再設定が有効だったか確認する
-bool check_pixels(cue::dx12::DX12Backend &a_backend, bool a_isRestored)
+bool check_pixel_color(cue::dx12::DX12Backend &a_backend, const std::array<int, 3> &a_expected)
 {
     auto *device = dynamic_cast<cue::dx12::DX12RenderDevice *>(a_backend.get_render_device());
     auto *swap = a_backend.get_swap_chain();
@@ -199,17 +202,22 @@ bool check_pixels(cue::dx12::DX12Backend &a_backend, bool a_isRestored)
         return false;
     }
     const auto offset = 30 * layout.Footprint.RowPitch + 30 * 4;
-    const std::array<int, 3> expected = a_isRestored ? std::array{51, 102, 153} : std::array{250, 20, 30};
-    for (std::size_t channel = 0; channel < expected.size(); ++channel)
+    for (std::size_t channel = 0; channel < a_expected.size(); ++channel)
     {
-        if (std::to_integer<int>(pixels[offset + channel]) != expected[channel])
+        if (std::to_integer<int>(pixels[offset + channel]) != a_expected[channel])
         {
             std::fprintf(stderr, "pixel channel %zu = %d, expected %d\n", channel,
-                         std::to_integer<int>(pixels[offset + channel]), expected[channel]);
+                         std::to_integer<int>(pixels[offset + channel]), a_expected[channel]);
             return false;
         }
     }
     return true;
+}
+
+/// @brief 従来の UI 描画と標準表示への復帰を既定の色で確認する
+bool check_pixels(cue::dx12::DX12Backend &a_backend, bool a_isRestored)
+{
+    return check_pixel_color(a_backend, a_isRestored ? std::array{51, 102, 153} : std::array{250, 20, 30});
 }
 
 /// @brief Debug Layer の重大 Error と、全 Owner 停止後の残存 GPU Object を検出する
@@ -449,6 +457,300 @@ int run_case(std::uint32_t a_capacity)
     }
     return 0;
 }
+
+/// @brief 先に確定した二つの UI Frame を固定 Render Worker へ渡し、旧 Snapshot が上書きされないことを画素で確認する
+int run_transfer_case()
+{
+    // 異常終了経路でも Manager より後に Texture を破棄し、登録先の参照を保つ
+    ImTextureData texture;
+    auto systemResult = cue::create_windows_window_system();
+    if (!systemResult.has_value())
+    {
+        return 1;
+    }
+    auto system = systemResult.take_value();
+    auto windowResult = system->create_window({"ImGui DX12 Transfer Test", {96, 96}});
+    if (!windowResult.has_value())
+    {
+        return 2;
+    }
+    auto window = windowResult.take_value();
+    cue::ImGuiManagerConfig config;
+    config.settingsFile.clear();
+    auto managerResult = cue::ImGuiManager::create(*window, config);
+    auto backendResult = cue::dx12::DX12Backend::create();
+    if (!managerResult.has_value() || !backendResult.has_value())
+    {
+        return 3;
+    }
+    auto manager = managerResult.take_value();
+    auto backend = backendResult.take_value();
+    auto handle = cue::borrow_windows_window_handle(*window);
+    if (!handle.has_value() || !backend->create_swap_chain(handle.take_value(), {96, 96, 2}).has_value() ||
+        !manager->initialize_renderer(*backend, 2).has_value() || !manager->enable_frame_transfer().has_value())
+    {
+        return 4;
+    }
+
+    cue::dx12::DX12MainFrameGraphConfig graphConfig;
+    graphConfig.frameCount = 2;
+    graphConfig.displayPass = std::make_unique<cue::ImGuiPass>(std::make_unique<ManagerRenderer>(*manager));
+    auto graphResult = cue::dx12::DX12MainFrameGraph::create(*backend->get_resource_context(),
+                                                             *backend->get_swap_chain(), std::move(graphConfig));
+    if (!graphResult.has_value())
+    {
+        return 5;
+    }
+    auto graph = graphResult.take_value();
+    constexpr std::array<std::array<int, 3>, 2> colors{{{250, 20, 30}, {20, 220, 40}}};
+    for (std::uint64_t frame = 0; frame < colors.size(); ++frame)
+    {
+        auto built = manager->build_frame(
+            [&]()
+            {
+                const auto &color = colors[frame];
+                ImGui::GetBackgroundDrawList()->AddRectFilled({10, 10}, {60, 60},
+                                                              IM_COL32(color[0], color[1], color[2], 255));
+                return cue::Result<void>::success();
+            });
+        if (!built.has_value() || !manager->publish_frame(frame).has_value())
+        {
+            return 6;
+        }
+    }
+    auto pending = manager->transfer_info();
+    if (!pending.has_value() || pending.try_value()->publishedFrames != 2 || pending.try_value()->pendingFrames != 2 ||
+        pending.try_value()->consumedFrames != 0)
+    {
+        return 7;
+    }
+
+    std::mutex gateMutex;
+    std::condition_variable gate;
+    bool firstBatchDone = false;
+    bool secondBatchReady = false;
+    bool isSecondBatchAborted = false;
+    int workerFailure = 0;
+    std::thread::id renderThreadId;
+    std::thread worker(
+        [&]()
+        {
+            auto finish_first_batch = [&]()
+            {
+                {
+                    std::lock_guard lock(gateMutex);
+                    firstBatchDone = true;
+                }
+                gate.notify_one();
+            };
+            renderThreadId = std::this_thread::get_id();
+            for (std::uint64_t frame = 0; frame < colors.size(); ++frame)
+            {
+                auto rendered = manager->render_frame(
+                    frame, {},
+                    [&](std::uint64_t a_frame, std::stop_token a_token)
+                    {
+                        if (a_frame != frame || a_token.stop_requested())
+                        {
+                            return cue::Result<void>::failure(
+                                {cue::ErrorCategory::InvalidState, "Test.transfer.frame"});
+                        }
+                        auto executed =
+                            graph->execute(static_cast<std::uint32_t>(a_frame % 2), *backend->get_execution_context());
+                        if (!executed.has_value())
+                        {
+                            return cue::Result<void>::failure(*executed.try_error());
+                        }
+                        return *executed.try_value() ? cue::Result<void>::success()
+                                                     : cue::Result<void>::failure(
+                                                           {cue::ErrorCategory::InvalidState, "Test.transfer.skip"});
+                    });
+                if (!rendered.has_value())
+                {
+                    std::fprintf(stderr, "transfer frame %llu: %s\n", static_cast<unsigned long long>(frame),
+                                 rendered.try_error()->operation.c_str());
+                    workerFailure = 8;
+                    finish_first_batch();
+                    return;
+                }
+                // Present は render_frame Scope の外で行い、各枠の提出画素を個別に確認する
+                if (!check_pixel_color(*backend, colors[frame]))
+                {
+                    workerFailure = 9;
+                    finish_first_batch();
+                    return;
+                }
+                if (!backend->get_swap_chain()->present().has_value())
+                {
+                    workerFailure = 10;
+                    finish_first_batch();
+                    return;
+                }
+            }
+            finish_first_batch();
+            {
+                std::unique_lock lock(gateMutex);
+                gate.wait(lock, [&]() { return secondBatchReady; });
+                if (isSecondBatchAborted)
+                {
+                    return;
+                }
+            }
+            // 停止 Token による Skip でも Callback を呼び、GPU 未提出のまま Snapshot を回収する
+            std::stop_source cancelled;
+            cancelled.request_stop();
+            auto skipped =
+                manager->render_frame(2, cancelled.get_token(),
+                                      [&](std::uint64_t a_frame, std::stop_token a_token)
+                                      {
+                                          return a_frame == 2 && a_token.stop_requested()
+                                                     ? cue::Result<void>::success()
+                                                     : cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
+                                                                                   "Test.transfer.cancel_token"});
+                                      });
+            if (!skipped.has_value() || texture.QueueUserData == nullptr)
+            {
+                workerFailure = 15;
+                return;
+            }
+            auto failed = manager->render_frame(
+                3, {},
+                [&](std::uint64_t, std::stop_token)
+                {
+                    // 範囲外の Graph 枠で実際の Graph Error を返し、Render Scope の後始末を確認する
+                    auto rejected = graph->execute(2, *backend->get_execution_context());
+                    return rejected.has_value() ? cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
+                                                                              "Test.transfer.expected_graph_failure"})
+                                                : cue::Result<void>::failure(*rejected.try_error());
+                });
+            if (failed.has_value() || failed.try_error()->operation != "DX12MainFrameGraph.execute_queues" ||
+                texture.QueueUserData != nullptr)
+            {
+                workerFailure = 16;
+            }
+        });
+    {
+        std::unique_lock lock(gateMutex);
+        gate.wait(lock, [&]() { return firstBatchDone; });
+    }
+    if (workerFailure != 0)
+    {
+        worker.join();
+        return workerFailure;
+    }
+    auto firstTransfer = manager->transfer_info();
+    auto renderer = manager->renderer_info();
+    if (!firstTransfer.has_value() || !renderer.has_value() || firstTransfer.try_value()->publishedFrames != 2 ||
+        firstTransfer.try_value()->consumedFrames != 2 || firstTransfer.try_value()->discardedFrames != 0 ||
+        firstTransfer.try_value()->pendingFrames != 0 || firstTransfer.try_value()->renderThreadId != renderThreadId ||
+        renderThreadId == std::this_thread::get_id() || renderer.try_value()->recordedFrames != 2)
+    {
+        {
+            std::lock_guard lock(gateMutex);
+            secondBatchReady = true;
+            isSecondBatchAborted = true;
+        }
+        gate.notify_one();
+        worker.join();
+        return 11;
+    }
+    bool publishedSecondBatch = true;
+    for (std::uint64_t frame = 2; frame < 4; ++frame)
+    {
+        auto built = manager->build_frame(
+            [&]()
+            {
+                if (frame == 2)
+                {
+                    texture.Create(ImTextureFormat_RGBA32, 4, 4);
+                    std::memset(texture.Pixels, 255, 4 * 4 * 4);
+                    ImGui::RegisterUserTexture(&texture);
+                }
+                ImGui::GetBackgroundDrawList()->AddImage(texture.GetTexRef(), {10, 10}, {60, 60});
+                return cue::Result<void>::success();
+            });
+        if (!built.has_value() || !manager->publish_frame(frame).has_value())
+        {
+            publishedSecondBatch = false;
+            break;
+        }
+    }
+    auto queued = manager->transfer_info();
+    if (!queued.has_value() || queued.try_value()->pendingFrames != 2 || texture.QueueUserData == nullptr)
+    {
+        publishedSecondBatch = false;
+    }
+    {
+        std::lock_guard lock(gateMutex);
+        secondBatchReady = true;
+        isSecondBatchAborted = !publishedSecondBatch;
+    }
+    gate.notify_one();
+    worker.join();
+    if (!publishedSecondBatch || workerFailure != 0)
+    {
+        return publishedSecondBatch ? workerFailure : 17;
+    }
+    auto transfer = manager->transfer_info();
+    if (!transfer.has_value() || transfer.try_value()->publishedFrames != 4 ||
+        transfer.try_value()->consumedFrames != 4 || transfer.try_value()->discardedFrames != 2 ||
+        transfer.try_value()->pendingFrames != 0 || texture.QueueUserData != nullptr)
+    {
+        return 18;
+    }
+
+    // 未消費の Frame は停止時に回収し、登録 Texture の Queue Pin を残さない
+    auto lastBuilt = manager->build_frame(
+        [&]()
+        {
+            ImGui::GetBackgroundDrawList()->AddImage(texture.GetTexRef(), {10, 10}, {60, 60});
+            return cue::Result<void>::success();
+        });
+    if (!lastBuilt.has_value() || !manager->publish_frame(4).has_value() || texture.QueueUserData == nullptr)
+    {
+        return 19;
+    }
+    auto updateBuilt = manager->build_frame(
+        [&]()
+        {
+            // 前の Snapshot が借用中の Texture 更新を、停止済み待機として取消可能にする
+            texture.UpdateRect = {0, 0, 4, 4};
+            std::memset(texture.Pixels, 128, 4 * 4 * 4);
+            texture.SetStatus(ImTextureStatus_WantUpdates);
+            ImGui::GetBackgroundDrawList()->AddImage(texture.GetTexRef(), {10, 10}, {60, 60});
+            return cue::Result<void>::success();
+        });
+    std::stop_source updateCancelled;
+    updateCancelled.request_stop();
+    auto cancelledPublish =
+        updateBuilt.has_value()
+            ? manager->publish_frame(5, updateCancelled.get_token())
+            : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.transfer.update_build"});
+    auto beforeShutdown = manager->transfer_info();
+    if (cancelledPublish.has_value() || cancelledPublish.try_error()->operation != "ImGuiManager.publish.cancelled" ||
+        !beforeShutdown.has_value() || beforeShutdown.try_value()->publishedFrames != 5 ||
+        beforeShutdown.try_value()->pendingFrames != 1 || texture.QueueUserData == nullptr)
+    {
+        return 20;
+    }
+    if (!graph->shutdown().has_value())
+    {
+        return 12;
+    }
+    graph.reset();
+    if (!manager->shutdown().has_value() || texture.QueueUserData != nullptr || texture.BackendUserData != nullptr ||
+        !backend->shutdown().has_value())
+    {
+        return 13;
+    }
+    manager.reset();
+    backend.reset();
+    if (!window->destroy().has_value() || !system->pump_events().has_value())
+    {
+        return 14;
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief 公式 GPU Backend の描画、動的 Texture と Descriptor 不足からの回復を確認する
@@ -461,6 +763,11 @@ int main()
             std::fprintf(stderr, "capacity %u, failure %d\n", capacity, result);
             return static_cast<int>(capacity * 30) + result;
         }
+    }
+    if (const auto result = run_transfer_case(); result != 0)
+    {
+        std::fprintf(stderr, "transfer failure %d\n", result);
+        return 100 + result;
     }
     return 0;
 }

@@ -3,11 +3,13 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <thread>
 
 #include <Foundation/Result.h>
 #include <Platform/Window.h>
+#include <Runtime/FrameController.h>
 
 namespace cue
 {
@@ -47,10 +49,21 @@ struct ImGuiFrameInfo final
 
 using editorUiCallback = std::function<Result<void>()>;
 
+/// @brief CPU 描画 Snapshot の受渡しと回収数を所有値で返す
+struct ImGuiTransferInfo final
+{
+    std::uint64_t publishedFrames = 0;
+    std::uint64_t consumedFrames = 0;
+    std::uint64_t discardedFrames = 0;
+    std::uint32_t pendingFrames = 0;
+    std::thread::id renderThreadId;
+};
+
 /// @brief ImGui Context、Font、Style、Layout と Win32 入力接続を一意所有する
 ///
 /// EditorHost が所有し、Window は shutdown 完了まで生存させる
-/// 全操作と破棄は生成 Thread で直列に行う。接続した Renderer Backend より先に停止する
+/// UI 構築と破棄は生成 Thread に固定する。render_frame 内の記録だけ RenderThread に許可する
+/// Runtime の Worker と Graph を停止してから、この Manager と下位 Backend を停止する
 class ImGuiManager final
 {
     struct CreateToken final
@@ -80,10 +93,28 @@ public:
     /// 公式 Init の途中配列生成例外は安全に復元できないため Fatal 停止する
     [[nodiscard]] Result<void> initialize_renderer(IBackend &a_backend, std::uint32_t a_frameCount);
 
+    /// @brief Renderer の枠数に合わせた Snapshot 転送を初回 UI 構築前に有効にする
+    [[nodiscard]] Result<void> enable_frame_transfer();
+
+    /// @brief Owner Thread で閉じた UI Frame を複製し、単調増加する Frame ID で公開する
+    ///
+    /// Texture 更新は旧 Snapshot の回収まで取消可能に待つ。満杯 / 二重公開は状態を変えず拒否する
+    [[nodiscard]] Result<void> publish_frame(std::uint64_t a_frame, std::stop_token a_token = {});
+
+    /// @brief 固定 RenderThread で Graph の記録・提出を囲み、成功・取消・失敗でも Snapshot を回収する
+    ///
+    /// a_record は同期呼出し限定。Present は戻った後に行う。同一 Thread の構成も利用できる
+    [[nodiscard]] Result<void> render_frame(std::uint64_t a_frame, std::stop_token a_token,
+                                            const FrameCallback &a_record);
+
+    /// @brief Owner Thread へ転送状態を返す
+    [[nodiscard]] Result<ImGuiTransferInfo> transfer_info() const;
+
     /// @brief 確定済み UI 描画を Graphics Pass の記録中 Context へ一度だけ記録する
     ///
     /// Pass は Write / RenderTarget を宣言して対象 RTV を先に設定する
-    /// 記録済み List を提出または破棄してから次の UI Frame へ進み、GPU 完了後に Manager を停止する
+    /// 直接記録では次の UI Frame 前に提出 / 破棄する。転送時は render_frame 内で該当 Snapshot を借用する
+    /// GPU 完了後に Manager を停止する
     /// 外部記録後に同じ Context で描画を続ける場合は Pipeline / Target / Viewport / Binding を再設定する
     [[nodiscard]] Result<void> record_draw_data(FrameGraphContext &a_context);
 

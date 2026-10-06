@@ -73,6 +73,7 @@ Result<void> FrameController::start()
     }
     // 最初の Render は即時実行できるよう現在時刻を基準にする
     m_nextRenderTime = m_clock.now();
+    m_mainStopSource = std::stop_source{};
 
     if (m_desc.useWorkerThreads)
     {
@@ -151,13 +152,15 @@ Result<bool> FrameController::advance()
     if (m_main)
     {
         m_isExecutingMain = true;
-        auto mainResult = invoke_callback(m_main, frame, {}, "FrameController.main.exception");
+        auto mainResult =
+            invoke_callback(m_main, frame, m_mainStopSource.get_token(), "FrameController.main.exception");
         m_isExecutingMain = false;
         if (!mainResult.has_value())
         {
             Error error = std::move(*mainResult.try_error());
             record_failure(error);
-            return Result<bool>::failure(std::move(error));
+            std::lock_guard lock(m_mutex);
+            return Result<bool>::failure(*m_failure);
         }
     }
     {
@@ -279,6 +282,8 @@ Result<void> FrameController::stop()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.stop"});
     }
+    // stop_callback は同期実行されるため、Controller の共有 Lock 外で通知する
+    m_mainStopSource.request_stop();
     {
         std::lock_guard lock(m_mutex);
         m_stopRequested = true;
@@ -453,6 +458,8 @@ void FrameController::record_failure(Error a_error)
         }
         m_stopRequested = true;
     }
+    // Main が Texture の旧 Snapshot 回収を待っていても Worker 失敗を伝える
+    m_mainStopSource.request_stop();
     m_waiter.notify_all();
 }
 

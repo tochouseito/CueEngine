@@ -30,6 +30,8 @@ class DX12ImGuiBackend final
     ~DX12ImGuiBackend();
     /// @brief 生成済み Device Objects の公式 Frame 開始処理を実行する
     [[nodiscard]] Result<void> new_frame();
+    /// @brief MainThread 上で Texture 更新を完了し、Snapshot が固定 ID を参照できる状態にする
+    [[nodiscard]] Result<void> prepare(ImDrawData &a_draw);
     /// @brief Descriptor を事前予約し、GPU 完了後に Texture 更新と描画を記録する
     [[nodiscard]] Result<void> record(ImDrawData &a_draw, FrameGraphContext &a_context);
     /// @brief 所有 Heap と公式 Backend の描画枠の概要を返す

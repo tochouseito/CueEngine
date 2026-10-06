@@ -127,5 +127,7 @@ private:
     bool m_stopRequested = false;
     // Main Callback から同じ Controller を進行・停止し、未公開 Frame を変更する再入を拒否する
     bool m_isExecutingMain = false;
+    // Main の Snapshot / Texture 待機も Worker 失敗時に解除する
+    std::stop_source m_mainStopSource;
 };
 } // namespace cue

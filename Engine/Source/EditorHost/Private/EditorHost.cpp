@@ -70,7 +70,7 @@ class ScopedStep final
 EditorHost::EditorHost(EditorHostConfig a_config)
     : m_imguiConfig(std::move(a_config.imgui)),
       m_buildUi(a_config.buildUi ? std::move(a_config.buildUi) : editorUiCallback{build_test_window}),
-      m_ownerId(std::this_thread::get_id()), m_useWorkerThreads(a_config.frame.useWorkerThreads),
+      m_ownerId(std::this_thread::get_id()),
       m_windows({std::move(a_config.window),
                  a_config.frame,
                  a_config.presentation,
@@ -79,8 +79,13 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   {},
                   [this]() { return shutdown_ui(); },
                   [this](IBackend &a_backend, std::uint32_t a_frames)
-                  { return m_imgui->initialize_renderer(a_backend, a_frames); },
-                  [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); }}})
+                  {
+                      auto result = m_imgui->initialize_renderer(a_backend, a_frames);
+                      return result.has_value() ? m_imgui->enable_frame_transfer() : std::move(result);
+                  },
+                  [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); },
+                  [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
+                  { return m_imgui->render_frame(a_frame, a_token, a_record); }}})
 {
 }
 
@@ -142,6 +147,17 @@ Result<FrameProgress> EditorHost::frame_progress() const
     return m_windows.frame_progress();
 }
 
+/// @brief Owner Thread から転送枠の滞留と回収数を確認する
+Result<ImGuiTransferInfo> EditorHost::ui_transfer_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<ImGuiTransferInfo>::failure({ErrorCategory::WrongThread, "EditorHost.ui_transfer_info"});
+    }
+    return m_imgui ? m_imgui->transfer_info()
+                   : Result<ImGuiTransferInfo>::failure({ErrorCategory::InvalidState, "EditorHost.ui_transfer_info"});
+}
+
 /// @brief 所有する Windows 実行基盤の停止と GPU 完了待ちを委譲する
 Result<void> EditorHost::shutdown()
 {
@@ -156,13 +172,9 @@ Result<void> EditorHost::shutdown()
     return m_windows.shutdown();
 }
 
-/// @brief Worker への Context 共有を拒否し、Window の生成後に UI の Owner を作る
+/// @brief Window の生成 Thread に UI の Owner を固定する
 Result<void> EditorHost::initialize_ui(Window &a_window)
 {
-    if (m_useWorkerThreads)
-    {
-        return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorHost.ui_owner_thread"});
-    }
     auto result = ImGuiManager::create(a_window, std::move(m_imguiConfig));
     if (!result.has_value())
     {
@@ -173,13 +185,14 @@ Result<void> EditorHost::initialize_ui(Window &a_window)
 }
 
 /// @brief Message Pump 後に採用された Frame だけ UI を構築して CPU 描画 Data を確定する
-Result<void> EditorHost::build_ui(std::uint64_t, std::stop_token a_stopToken)
+Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopToken)
 {
     if (a_stopToken.stop_requested())
     {
         return Result<void>::success();
     }
-    return m_imgui->build_frame(m_buildUi);
+    auto built = m_imgui->build_frame(m_buildUi);
+    return built.has_value() ? m_imgui->publish_frame(a_frame, a_stopToken) : std::move(built);
 }
 
 /// @brief Graph が Manager を借用しなくなってから Context を停止する

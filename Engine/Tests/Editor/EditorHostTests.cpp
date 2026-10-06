@@ -1,5 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
+#include <chrono>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -100,6 +101,7 @@ int test_owner_thread_frames()
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.frame.maxFps = 0;
+    config.frame.useWorkerThreads = false;
     config.imgui.settingsFile.clear();
     config.buildUi = [&]()
     {
@@ -201,7 +203,7 @@ int test_failed_display()
     return 0;
 }
 
-/// @brief UI を Worker から触る構成を拒否し、Context の生成失敗も Window とともに回収する
+/// @brief Context / GPU Backend の生成失敗でも Window とともに回収する
 int test_invalid_ui_config()
 {
     for (int kind = 0; kind < 3; ++kind)
@@ -209,6 +211,10 @@ int test_invalid_ui_config()
         cue::EditorHostConfig config;
         config.imgui.settingsFile.clear();
         config.frame.useWorkerThreads = kind == 1;
+        if (kind == 1)
+        {
+            config.imgui.fontSize = -1.0f;
+        }
         if (kind == 0)
         {
             config.imgui.fontSize = 0.0f;
@@ -274,8 +280,18 @@ int test_default_ui_display()
     {
         return 1;
     }
-    for (int frame = 0; frame < 3; ++frame)
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline)
     {
+        auto current = host.frame_progress();
+        if (!current.has_value())
+        {
+            return 2;
+        }
+        if (current.try_value()->renderedFrames >= 12)
+        {
+            break;
+        }
         auto step = host.step();
         if (!step.has_value() || !*step.try_value())
         {
@@ -284,8 +300,11 @@ int test_default_ui_display()
     }
     auto ui = host.ui_frame_info();
     auto progress = host.frame_progress();
-    if (!ui.has_value() || ui.try_value()->frames != 3 || ui.try_value()->vertexCount == 0 ||
-        ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames != 3 ||
+    auto transfer = host.ui_transfer_info();
+    if (!ui.has_value() || ui.try_value()->frames < 12 || ui.try_value()->vertexCount == 0 ||
+        ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames < 12 ||
+        progress.try_value()->renderThreadId == std::this_thread::get_id() || !transfer.has_value() ||
+        transfer.try_value()->pendingFrames > 2 || transfer.try_value()->consumedFrames < 12 ||
         !host.shutdown().has_value())
     {
         return 3;

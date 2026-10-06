@@ -6,7 +6,7 @@ Issue: [#81](https://github.com/tochouseito/CueEngine/issues/81)
 
 EditorHost は WindowsHost の SwapChain 生成後・Graph 構築前の Callback から `ImGuiManager::initialize_renderer(IBackend&, frameCount)` を呼ぶ。Manager が Editor 内部の DX12ImGuiBackend を一意所有し、公開 API は ImGui / DirectX の具体型を公開しない
 
-Adapter は DX12Backend とその Device、SwapChain 所有の Graphics Queue を借用する。唯一の Graphics Queue は SwapChain が Lease を保持するため、QueuePool から再取得しない。Backend と Context は Adapter の shutdown 完了まで生存させる。全操作は Manager の Owner Thread 上で直列に行う
+Adapter は DX12Backend とその Device、SwapChain 所有の Graphics Queue を借用する。唯一の Graphics Queue は SwapChain が Lease を保持するため、QueuePool から再取得しない。Backend と Context は Adapter の shutdown 完了まで生存させる。Main の Texture 準備と Render の Snapshot 記録は共通 Context Mutex 上で直列に行う
 
 公式 `ImGui_ImplDX12_InitInfo` に Device、CommandQueue、専用 SRV Heap、Descriptor Callback、CPU 描画枠数、実 BackBuffer の RTV Format を設定する。`NumFramesInFlight` は FrameController / Graph の `maxFramesInFlight` に合わせ、SwapChain の BufferCount とは独立させる。初期対応は既存 SwapChain と同じ RGBA8 UNORM / SampleCount 1。二重接続、SwapChain 未生成、不正な枠数や容量は Result で拒否する
 
@@ -31,7 +31,7 @@ GPU 完了後、返却可能な WantDestroy を先に処理する。その後に
 
 Font と動的 ImTextureData の WantCreate / WantUpdates / WantDestroy は公式 UpdateTexture に渡す。公式は Graphics Queue へ独自の Command List を直接提出し、独自 Fence で転送完了を待つ。Engine CommandPool はこの提出を所有しない。Adapter は後続の Engine Queue Signal / wait により Native 提出も停止時の完了点に含める
 
-任意の別 Heap の Texture ID は描画前に拒否する。#82 はユーザー指定の Test / TEST だけを表示するため、FinalColor の UI Heap への View 登録は未実装のまま。共有 Context / Atlas や Worker 転送で Texture RefCount を増やす運用は #83 以降の対象とする
+任意の別 Heap の Texture ID は描画前に拒否する。#82 はユーザー指定の Test / TEST だけを表示するため、FinalColor の UI Heap への View 登録は未実装のまま。Worker 転送の Texture は RefCount を増やさず QueueUserData で Pin する。詳細は [Frame 転送](ImGuiFrameTransfer.md) を参照する
 
 ## 記録と State
 
@@ -45,7 +45,7 @@ DX12FrameGraphContext の外部記録入口は Callback の前後、例外時と
 
 ## 同期と停止
 
-初期版は記録前に Graphics Queue へ新しい完了点を発行して CPU 待機する。公式 Buffer Ring は RenderDrawData 呼出回数、Graph 枠は Runtime Frame 番号で進むため、最小化・取消し後に両者がずれても GPU 利用中の VB/IB を上書きしないようにする。GPU の並列進行を抑える方式であり、性能改善は主張しない。#83 では ImGui の描画枠と提出 Completion を対応させ、全面待機の削減を検討する
+初期版は記録前に Graphics Queue へ新しい完了点を発行して CPU 待機する。公式 Buffer Ring は RenderDrawData 呼出回数、Graph 枠は Runtime Frame 番号で進むため、最小化・取消し後に両者がずれても GPU 利用中の VB/IB を上書きしないようにする。GPU の並列進行を抑える方式であり、性能改善は主張しない。#83 の Snapshot 転送でも全面待機を維持する。削減は提出 Completion との対応付けを別途検証してから行う
 
 停止は Graph の停止・GPU 待機・Pass 破棄 → Adapter の新規 Fence 待機 → 公式 DX12 Shutdown → 専用 Heap 解放 → Win32 Handler / Backend 停止 → Context 破棄 → Engine Backend 停止の順。GPU 完了確認失敗では Context / Heap と下位 Backend を保持し、明示 shutdown を再試行する。Destructor まで完了を証明できない場合は Fatal 停止する
 

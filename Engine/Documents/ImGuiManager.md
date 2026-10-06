@@ -14,7 +14,7 @@ create は Font を登録するだけで Atlas を Build しない。GPU Backend
 
 ## Thread と UI Frame
 
-全操作と破棄を生成 Thread で直列に行う。異なる Thread は WrongThread、二重 Frame 開始や Callback からの begin / end / shutdown 再入は InvalidState を返す。EditorHost は `useWorkerThreads = true` を #83 まで拒否する
+UI 構築と破棄は生成 Thread、転送した Snapshot の記録は固定 RenderThread の同期 Scope 内で行う。異なる Thread は WrongThread、二重 Frame 開始や Callback からの begin / end / shutdown 再入は InvalidState を返す。EditorHost は #83 の [Snapshot 転送](ImGuiFrameTransfer.md) を利用し、Worker 構成を既定とする
 
 通常は `build_frame(editorUiCallback)` を使う。DX12 接続済みなら DX12 NewFrame、その後 Win32 NewFrame → ImGui NewFrame → UI Callback → ImGui Render で CPU Draw Data を確定する。Callback 中は対象 Context を Current にし、終了後は呼出元の Context に戻す。EditorHost は Runtime / FrameController の汎用 Main Callback に接続し、採用 Frame の Update 前に構築 Thread で UI を確定するため、Message Pump だけの step や Close で終了する step では UI Frame を増やさない
 
