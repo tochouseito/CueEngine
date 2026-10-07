@@ -4,6 +4,7 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <utility>
@@ -13,6 +14,7 @@
 #include <DX12/DX12MainFrameGraph.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
+#include <Foundation/ScopedFlag.h>
 #include <Platform/Diagnostics.h>
 #include <Platform/WindowSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
@@ -21,28 +23,6 @@
 
 namespace cue
 {
-namespace
-{
-/// @brief Frame Callback から Host の実行中資源を破棄する再入を防ぐ
-class ScopedStep final
-{
-  public:
-    /// @brief Scope の間だけ実行中 Flag を立てる
-    explicit ScopedStep(bool &a_flag) noexcept : m_flag(a_flag)
-    {
-        m_flag = true;
-    }
-    /// @brief 例外時も実行中 Flag を解除する
-    ~ScopedStep()
-    {
-        m_flag = false;
-    }
-
-  private:
-    bool &m_flag;
-};
-} // namespace
-
 class WindowsHost::State final
 {
   public:
@@ -61,6 +41,8 @@ class WindowsHost::State final
     bool isCloseRequested = false;
     bool isDestroyed = false;
     bool hasWindowInitializationStarted = false;
+    mutable std::mutex timingMutex;
+    TimingSamples presentTimings;
 
     /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
     void request_resize(WindowSize a_size)
@@ -137,10 +119,19 @@ class WindowsHost::State final
         }
         // DXGI が Message Thread を待つ場合に備え、上位の Context 排他と Pin を残さない
         // 記録中に最小化や Close が届いた場合も、提出済み GPU 作業の寿命を残して Present だけ止める
-        return wasSubmitted && !a_stopToken.stop_requested() && !isRenderStopped.load() &&
-                       !isPresentationSuspended.load()
-                   ? dx12Backend->get_swap_chain()->present()
-                   : Result<void>::success();
+        if (!wasSubmitted || a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        {
+            return Result<void>::success();
+        }
+        const auto presentStart = std::chrono::steady_clock::now();
+        auto presented = dx12Backend->get_swap_chain()->present();
+        const auto duration =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - presentStart);
+        {
+            std::lock_guard lock(timingMutex);
+            presentTimings.add(duration);
+        }
+        return presented;
     }
 };
 
@@ -346,7 +337,7 @@ Result<bool> WindowsHost::step()
         return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.step"});
     }
 
-    ScopedStep stepping(m_isStepping);
+    ScopedFlag stepping(m_isStepping);
     // Win32 Message を処理し、Queue 上の終了通知も同じ周回で反映する
     auto pumpResult = m_state->system->pump_events();
     if (!pumpResult.has_value())
@@ -428,6 +419,51 @@ Result<FrameProgress> WindowsHost::frame_progress() const
         return Result<FrameProgress>::failure({ErrorCategory::InvalidState, "WindowsHost.frame_progress"});
     }
     return m_state->runtime->progress();
+}
+
+/// @brief Owner と Runtime の寿命を検証し、固定容量の CPU 統計を取得する
+Result<FrameTimingInfo> WindowsHost::frame_timing_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.frame_timing_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.frame_timing_info"});
+    }
+    return m_state->runtime->timing_info();
+}
+
+/// @brief GPU 完了済み計測値と Present の CPU 経過時間を所有 Snapshot にまとめる
+Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::WrongThread, "WindowsHost.graph_performance"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->graph)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::InvalidState, "WindowsHost.graph_performance"});
+    }
+    try
+    {
+        auto performance = m_state->graph->performance();
+        TimingSamples present;
+        {
+            std::lock_guard lock(m_state->timingMutex);
+            present = m_state->presentTimings;
+        }
+        performance.present = present.statistics();
+        return Result<MainFrameGraphPerformance>::success(std::move(performance));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::PlatformFailure, "WindowsHost.graph_performance.allocation"});
+    }
 }
 
 /// @brief Runtime、Backend、Window を順に停止して Destroyed と Quit を処理する

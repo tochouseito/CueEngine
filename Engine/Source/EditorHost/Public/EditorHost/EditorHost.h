@@ -54,6 +54,12 @@ class EditorHost final
     ///
     /// GPU 完了状態は表さない。起動前と停止後は InvalidState を返す
     [[nodiscard]] Result<FrameProgress> frame_progress() const;
+    /// @brief Main / Update / Render / FPS 待機の直近 120 回の CPU 集計を返す
+    [[nodiscard]] Result<FrameTimingInfo> frame_timing_info() const;
+    /// @brief UI 構築・Snapshot Copy・Context Lock 待機の CPU 集計を返す
+    [[nodiscard]] Result<ImGuiTimingInfo> ui_timing_info() const;
+    /// @brief UI 構築前に取得した Graph / Present / GPU 計測を返す。Callback 内でも Graph Lock を取得しない
+    [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
 
     /// @brief 確定済み UI Frame の描画数と入力 Capture を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiFrameInfo> ui_frame_info() const;
@@ -83,6 +89,10 @@ class EditorHost final
     editorUiCallback m_buildUi;
     std::thread::id m_ownerId;
     bool m_isStepping = false;
+    // Graph Lock と ImGui Context Lock の取得順を逆転させず、Main の UI 構築前に更新する
+    MainFrameGraphPerformance m_graphPerformance;
+    FrameTimingInfo m_frameTiming;
+    ImGuiTimingInfo m_uiTiming;
     // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
     std::unique_ptr<ImGuiManager> m_imgui;
     WindowsHost m_windows;

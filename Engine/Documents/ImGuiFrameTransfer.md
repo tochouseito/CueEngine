@@ -10,7 +10,7 @@ Editor の既定設定は CPU 描画枠 2、Worker 有効。UI / Win32 入力 / 
 2. FrameController が採用 Frame を Update → Render へ進める
 3. WindowsHost の `recordFrame` Scope が `render_frame()` を呼ぶ
 4. ImGuiPass がその Frame の Snapshot を記録し、Graph が提出または取消を完了する
-5. Scope を終了して Snapshot / Texture Pin / Context 排他を解除した後、WindowsHost が Present する
+5. Graph の発行済 Fence を使用枠と Texture に接続し、Snapshot / Texture Pin を回収した後、WindowsHost が Present する
 
 Snapshot は頂点、Index、Command 配列を所有する。Texture は Native ID に固定し、Viewport の Metadata を複製する。公式 Backend の Viewport Data は停止まで借用する。次の NewFrame が原本を変更しても前の Frame の描画は変わらない。CloneOutput が複製しない任意 Callback UserData は持ち出さず、公式 Reset / Sampler 切替だけを許可する
 
@@ -18,7 +18,13 @@ Snapshot は頂点、Index、Command 配列を所有する。Texture は Native 
 
 Main の公開時に公式 Texture 生成 / 更新要求を処理する。更新対象を旧 Snapshot が参照していれば回収を待つ。待機は Context Lock を解放し、Main の StopToken で取消可能。Worker の失敗では FrameController がこの Token を停止し、最初の Worker Error を主原因として保持する
 
-Texture の `RefCount` は Context / Font Atlas 用のため転送参照数に使わない。Snapshot が参照中の Texture に `QueueUserData` Pin を設定し、最後の Snapshot の回収で解除する。WantDestroy は Pin がある間処理しない。GPU 使用完了は別途 Queue Fence の全面待機で証明する。Pin 解除だけでは GPU 完了を意味しない
+Texture の `RefCount` は Context / Font Atlas 用のため転送参照数に使わない。Snapshot が参照中の Texture に `QueueUserData` Pin を設定し、最後の Snapshot の回収で解除する。WantDestroy は Pin がある間処理しない。#93 では最後の GPU 利用 Fence を Texture ごとに保持し、更新・破棄のときだけ必要な完了を待つ。Pin 解除だけでは GPU 完了を意味しない
+
+## M06 の同期・容量再利用
+
+#94 では render_frame の開始と回収、公式 ImGui 記録だけを Context Mutex で保護する。同期 Graph Callback 全体では保持しないため、通常 Pass 記録中に Main が次の UI を構築できる。借用中の Snapshot は枠に残し、Main が再利用できない状態を維持する。Texture 更新待機は同じ Pin と停止 Token の規約に従う
+
+#95 では回収した Snapshot と DrawList を描画枠ごとに保管し、Vertex / Index / Command 配列を resize と Copy で更新する。ImVector の代入は容量を捨てるため使用しない。UI が減ったときも確保済み容量を保持し、増加時だけ拡張する。非所有 Texture ID の固定と公式 Callback の許可規則は維持する。transfer_info の snapshotAllocations は Snapshot 本体・DrawList・出力配列の確保、copiedBytes は出力配列の複製量を計数する
 
 公式 Vertex / Index Ring の再利用と Texture 変更前には Graphics Queue の完了待機を維持する。GPU 並列性の最適化や高速化を主張しない。全面待機を減らすには、公式 Ring と実際の提出 Completion の対応付けが必要
 

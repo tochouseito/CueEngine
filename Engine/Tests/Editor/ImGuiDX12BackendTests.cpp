@@ -1,6 +1,7 @@
 #include <EditorHost/ImGuiManager.h>
 
 #include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
@@ -574,6 +575,8 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
     bool firstBatchDone = false;
     bool secondBatchReady = false;
     bool isSecondBatchAborted = false;
+    bool renderEntered = false;
+    bool mainUiBuilt = false;
     int workerFailure = 0;
     std::thread::id renderThreadId;
     std::thread worker(
@@ -594,6 +597,19 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
                     frame, {},
                     [&](std::uint64_t a_frame, std::stop_token a_token)
                     {
+                        if (a_frame == 0)
+                        {
+                            // 通常 Graph Callback の待機中に Main が Context を取得できることを確認する
+                            // 全 Graph を Lock した回帰でも無期限に止めず、失敗として回収する
+                            std::unique_lock lock(gateMutex);
+                            renderEntered = true;
+                            gate.notify_one();
+                            if (!gate.wait_for(lock, std::chrono::seconds(2), [&]() { return mainUiBuilt; }))
+                            {
+                                return cue::Result<void>::failure(
+                                    {cue::ErrorCategory::InvalidState, "Test.transfer.graph_context_lock"});
+                            }
+                        }
                         if (a_frame != frame || a_token.stop_requested())
                         {
                             return cue::Result<void>::failure(
@@ -675,6 +691,21 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
         });
     {
         std::unique_lock lock(gateMutex);
+        gate.wait(lock, [&]() { return renderEntered; });
+    }
+    auto concurrentBuilt = manager->build_frame(
+        []()
+        {
+            ImGui::GetBackgroundDrawList()->AddRectFilled({10, 10}, {60, 60}, IM_COL32(40, 50, 60, 255));
+            return cue::Result<void>::success();
+        });
+    {
+        std::lock_guard lock(gateMutex);
+        mainUiBuilt = concurrentBuilt.has_value();
+    }
+    gate.notify_one();
+    {
+        std::unique_lock lock(gateMutex);
         gate.wait(lock, [&]() { return firstBatchDone; });
     }
     if (workerFailure != 0)
@@ -684,7 +715,10 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
     }
     auto firstTransfer = manager->transfer_info();
     auto renderer = manager->renderer_info();
-    if (!firstTransfer.has_value() || !renderer.has_value() || firstTransfer.try_value()->publishedFrames != 2 ||
+    auto timing = manager->timing_info();
+    if (!concurrentBuilt.has_value() || !timing.has_value() || !timing.try_value()->uiBuild.sampleCount ||
+        timing.try_value()->snapshotCopy.sampleCount != 2 || !timing.try_value()->contextWait.sampleCount ||
+        !firstTransfer.has_value() || !renderer.has_value() || firstTransfer.try_value()->publishedFrames != 2 ||
         firstTransfer.try_value()->consumedFrames != 2 || firstTransfer.try_value()->discardedFrames != 0 ||
         firstTransfer.try_value()->pendingFrames != 0 || firstTransfer.try_value()->renderThreadId != renderThreadId ||
         renderThreadId == std::this_thread::get_id() || renderer.try_value()->recordedFrames != 2)
@@ -753,6 +787,13 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
     if (!lastBuilt.has_value() || !manager->publish_frame(4).has_value() || texture.QueueUserData == nullptr)
     {
         return 19;
+    }
+    auto reused = manager->transfer_info();
+    if (!reused.has_value() || reused.try_value()->snapshotAllocations != transfer.try_value()->snapshotAllocations ||
+        reused.try_value()->copiedBytes <= transfer.try_value()->copiedBytes)
+    {
+        // 同じ Image UI の枠を再利用し、Copy を維持しながら出力 Buffer の追加確保がないことを確認する
+        return 26;
     }
     auto updateBuilt = manager->build_frame(
         [&]()

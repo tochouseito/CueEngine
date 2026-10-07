@@ -1,23 +1,43 @@
 #include <EditorHost/EditorHost.h>
 
 #include <chrono>
+#include <new>
 #include <utility>
 
 #include <imgui.h>
 
 #include <EditorHost/ImGuiPass.h>
+#include <Foundation/ScopedFlag.h>
 #include <Platform/Diagnostics.h>
 
 namespace cue
 {
 namespace
 {
-/// @brief Main が取得した FrameController の進行情報を既定 Test Window に表示する
-[[nodiscard]] Result<void> build_test_window(const FrameProgress &a_progress)
+/// @brief Sample がある CPU 区間の平均・p95・最大経過時間を ms で表示する
+void show_timing(const char *a_name, const TimingStatistics &a_statistics)
+{
+    if (a_statistics.sampleCount)
+    {
+        ImGui::Text("%s: avg %.3f / p95 %.3f / max %.3f ms", a_name,
+                    std::chrono::duration<double, std::milli>(a_statistics.averageDuration).count(),
+                    std::chrono::duration<double, std::milli>(a_statistics.p95Duration).count(),
+                    std::chrono::duration<double, std::milli>(a_statistics.maxDuration).count());
+    }
+    else
+    {
+        ImGui::Text("%s: --", a_name);
+    }
+}
+
+/// @brief Main が取得した計測 Snapshot を既定 Test Window に表示する
+[[nodiscard]] Result<void> build_test_window(const FrameProgress &a_progress, const FrameTimingInfo &a_frameTiming,
+                                             const ImGuiTimingInfo &a_uiTiming,
+                                             const MainFrameGraphPerformance &a_graphPerformance)
 {
     // 初回の位置と寸法だけ指定し、以後の移動と Layout 保存を妨げない
     ImGui::SetNextWindowPos({32.0f, 32.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({240.0f, 120.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({640.0f, 480.0f}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Test"))
     {
         ImGui::Text("TEST");
@@ -31,6 +51,31 @@ namespace
         {
             // 二つの Render 完了点が揃うまでは FPS を計算せず、起動直後の零除算を避ける
             ImGui::Text("FrameController FPS: --");
+        }
+        // GPU 時間と混同しないよう CPU の経過時間であることと集計枠数を表示する
+        ImGui::Text("CPU timings (last 120 samples)");
+        show_timing("Main", a_frameTiming.main);
+        show_timing("Update", a_frameTiming.update);
+        show_timing("Render", a_frameTiming.render);
+        show_timing("FPS wait", a_frameTiming.limitWait);
+        show_timing("UI build", a_uiTiming.uiBuild);
+        show_timing("Snapshot copy", a_uiTiming.snapshotCopy);
+        show_timing("ImGui lock wait", a_uiTiming.contextWait);
+        show_timing("ImGui GPU fence wait", a_uiTiming.gpuWait);
+        show_timing("Graph record", a_graphPerformance.record);
+        show_timing("Graph frame fence wait", a_graphPerformance.frameWait);
+        show_timing("Present", a_graphPerformance.present);
+        ImGui::Text("GPU timings (last 120 completed samples)");
+        for (const auto &pass : a_graphPerformance.gpuPasses)
+        {
+            if (pass.isAvailable)
+            {
+                show_timing(pass.name.c_str(), pass.statistics);
+            }
+            else
+            {
+                ImGui::Text("%s: --", pass.name.c_str());
+            }
         }
     }
     ImGui::End();
@@ -57,25 +102,6 @@ class EditorImGuiRenderer final : public IImGuiRenderer
     const std::unique_ptr<ImGuiManager> *m_manager;
 };
 
-/// @brief 例外時も Step の再入検出状態を解除する
-class ScopedStep final
-{
-  public:
-    /// @brief 非所有の実行中 Flag を Scope の間だけ立てる
-    explicit ScopedStep(bool &a_flag) noexcept : m_flag(a_flag)
-    {
-        m_flag = true;
-    }
-
-    /// @brief Step の終了を記録する
-    ~ScopedStep()
-    {
-        m_flag = false;
-    }
-
-  private:
-    bool &m_flag;
-};
 } // namespace
 
 /// @brief Editor の表示設定を保持し、下位基盤へ Editor 型を渡さない
@@ -91,7 +117,8 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                                                         {
                                                             return Result<void>::failure(*progress.try_error());
                                                         }
-                                                        return build_test_window(*progress.try_value());
+                                                        return build_test_window(*progress.try_value(), m_frameTiming,
+                                                                                 m_uiTiming, m_graphPerformance);
                                                     }}),
       m_ownerId(std::this_thread::get_id()),
       m_windows({std::move(a_config.window),
@@ -151,7 +178,7 @@ Result<bool> EditorHost::step()
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "EditorHost.step"});
     }
-    ScopedStep stepping(m_isStepping);
+    ScopedFlag stepping(m_isStepping);
     return m_windows.step();
 }
 
@@ -170,6 +197,46 @@ Result<ImGuiFrameInfo> EditorHost::ui_frame_info() const
 Result<FrameProgress> EditorHost::frame_progress() const
 {
     return m_windows.frame_progress();
+}
+
+/// @brief 下位 Runtime が保持する同期済み CPU 集計を取得する
+Result<FrameTimingInfo> EditorHost::frame_timing_info() const
+{
+    return m_windows.frame_timing_info();
+}
+
+/// @brief Editor の所有 Context 内で集計した CPU 時間を公開する
+Result<ImGuiTimingInfo> EditorHost::ui_timing_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<ImGuiTimingInfo>::failure({ErrorCategory::WrongThread, "EditorHost.ui_timing_info"});
+    }
+    return m_imgui ? m_imgui->timing_info()
+                   : Result<ImGuiTimingInfo>::failure({ErrorCategory::InvalidState, "EditorHost.ui_timing_info"});
+}
+
+/// @brief UI Callback 中に Render の Graph Lock を待たず、直前の Main Snapshot を複製する
+Result<MainFrameGraphPerformance> EditorHost::graph_performance() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<MainFrameGraphPerformance>::failure({ErrorCategory::WrongThread, "EditorHost.graph_performance"});
+    }
+    auto running = m_windows.frame_progress();
+    if (!running.has_value())
+    {
+        return Result<MainFrameGraphPerformance>::failure(*running.try_error());
+    }
+    try
+    {
+        return Result<MainFrameGraphPerformance>::success(m_graphPerformance);
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::PlatformFailure, "EditorHost.graph_performance.allocation"});
+    }
 }
 
 /// @brief Owner Thread から転送枠の滞留と回収数を確認する
@@ -216,6 +283,20 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
     {
         return Result<void>::success();
     }
+    // Render は Graph Lock から ImGui Context を借りるため、逆順で同時に保持しない
+    // 計測 Snapshot を UI 開始前に取得し、Callback 内では所有値だけを表示する
+    auto graphPerformance = m_windows.graph_performance();
+    auto frameTiming = m_windows.frame_timing_info();
+    auto uiTiming = m_imgui->timing_info();
+    if (!graphPerformance.has_value() || !frameTiming.has_value() || !uiTiming.has_value())
+    {
+        return Result<void>::failure(!graphPerformance.has_value() ? *graphPerformance.try_error()
+                                     : !frameTiming.has_value()    ? *frameTiming.try_error()
+                                                                   : *uiTiming.try_error());
+    }
+    m_graphPerformance = graphPerformance.take_value();
+    m_frameTiming = frameTiming.take_value();
+    m_uiTiming = uiTiming.take_value();
     auto built = m_imgui->build_frame(m_buildUi);
     return built.has_value() ? m_imgui->publish_frame(a_frame, a_stopToken) : std::move(built);
 }

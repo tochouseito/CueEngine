@@ -85,6 +85,12 @@ class WindowsHost final
     /// Runtime 停止後は InvalidState を返す。GPU 完了状態は表さない
     [[nodiscard]] Result<FrameProgress> frame_progress() const;
 
+    /// @brief 実行中の CPU Frame 時間と FPS 待機の集計を Owner Thread に返す
+    [[nodiscard]] Result<FrameTimingInfo> frame_timing_info() const;
+
+    /// @brief Graph 記録・GPU 完了待機・Present と完了済 GPU Pass の統計を返す
+    [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
+
     /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
     ///
     /// 構築 Thread から複数回呼べる。最初の Error を返す

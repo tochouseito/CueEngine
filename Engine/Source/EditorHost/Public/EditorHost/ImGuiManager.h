@@ -8,6 +8,7 @@
 #include <thread>
 
 #include <Foundation/Result.h>
+#include <Foundation/TimingSamples.h>
 #include <Platform/Window.h>
 #include <Runtime/FrameController.h>
 
@@ -34,6 +35,7 @@ struct ImGuiRendererInfo final
     std::uint32_t descriptorCapacity = 0;
     std::uint32_t activeDescriptors = 0;
     std::uint64_t recordedFrames = 0;
+    TimingStatistics gpuWait;
 };
 
 /// @brief 最後に確定した UI Frame の入力 Capture と CPU 描画 Data の概要
@@ -57,6 +59,18 @@ struct ImGuiTransferInfo final
     std::uint64_t discardedFrames = 0;
     std::uint32_t pendingFrames = 0;
     std::thread::id renderThreadId;
+    // 同じ容量の UI なら初期枠確保後に増加しない出力配列の確保回数
+    std::uint64_t snapshotAllocations = 0;
+    std::uint64_t copiedBytes = 0;
+};
+
+/// @brief 直近 120 回の CPU 計測値。待機は begin / publish / render / record の Context Lock 取得を対象にする
+struct ImGuiTimingInfo final
+{
+    TimingStatistics uiBuild;
+    TimingStatistics snapshotCopy;
+    TimingStatistics contextWait;
+    TimingStatistics gpuWait;
 };
 
 /// @brief ImGui Context、Font、Style、Layout と Win32 入力接続を一意所有する
@@ -109,6 +123,8 @@ public:
 
     /// @brief Owner Thread へ転送状態を返す
     [[nodiscard]] Result<ImGuiTransferInfo> transfer_info() const;
+    /// @brief Owner Thread へ UI 構築・複製・Context Lock 待機の経過時間を所有値で返す
+    [[nodiscard]] Result<ImGuiTimingInfo> timing_info() const;
 
     /// @brief 確定済み UI 描画を Graphics Pass の記録中 Context へ一度だけ記録する
     ///
