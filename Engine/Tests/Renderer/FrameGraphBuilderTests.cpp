@@ -16,8 +16,8 @@ int main()
     if (builder->create_transient_buffer({0}).has_value() ||
         builder->create_transient_buffer({64, cue::GpuMemoryUsage::Upload}).has_value() ||
         builder->create_transient_texture2d({0, 4}).has_value() ||
-        builder->import_texture2d({4, 0}, cue::FrameGraphResourceState::Common,
-                                  cue::FrameGraphResourceState::Common).has_value() ||
+        builder->import_texture2d({4, 0}, cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common)
+            .has_value() ||
         builder->add_pass("").has_value())
     {
         return 2;
@@ -25,8 +25,8 @@ int main()
 
     auto bufferResult = builder->create_transient_buffer({64});
     auto textureResult = builder->create_transient_texture2d({4, 4});
-    auto externalResult = builder->import_texture2d({4, 4}, cue::FrameGraphResourceState::Present,
-                                                    cue::FrameGraphResourceState::Present);
+    auto externalResult =
+        builder->import_texture2d({4, 4}, cue::FrameGraphResourceState::Present, cue::FrameGraphResourceState::Present);
     auto unusedResult = builder->create_transient_buffer({128});
     auto foreignResourceResult = foreign->create_transient_buffer({64});
     auto foreignPassResult = foreign->add_pass("Foreign");
@@ -52,28 +52,29 @@ int main()
     const auto seed = seedResult.take_value();
     const auto draw = drawResult.take_value();
     const auto finish = finishResult.take_value();
-    if (builder->use(foreignPass, buffer, cue::FrameGraphAccess::Write,
-                     cue::FrameGraphResourceState::CopyDestination).has_value() ||
-        builder->use(seed, foreignResource, cue::FrameGraphAccess::Write,
-                     cue::FrameGraphResourceState::CopyDestination).has_value() ||
-        builder->use(seed, {buffer.graphId, 999}, cue::FrameGraphAccess::Write,
-                     cue::FrameGraphResourceState::CopyDestination).has_value() ||
+    if (builder->use(foreignPass, buffer, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+            .has_value() ||
+        builder->use(seed, foreignResource, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+            .has_value() ||
+        builder
+            ->use(seed, {buffer.graphId, 999}, cue::FrameGraphAccess::Write,
+                  cue::FrameGraphResourceState::CopyDestination)
+            .has_value() ||
         builder->depends_on(seed, foreignPass).has_value() || builder->depends_on(seed, seed).has_value())
     {
         return 5;
     }
-    if (!builder->use(seed, buffer, cue::FrameGraphAccess::Write,
-                      cue::FrameGraphResourceState::CopyDestination).has_value() ||
-        builder->use(seed, buffer, cue::FrameGraphAccess::Read,
-                     cue::FrameGraphResourceState::CopySource).has_value() ||
-        !builder->use(draw, buffer, cue::FrameGraphAccess::Read,
-                      cue::FrameGraphResourceState::CopySource).has_value() ||
-        !builder->use(draw, texture, cue::FrameGraphAccess::Write,
-                      cue::FrameGraphResourceState::CopyDestination).has_value() ||
-        !builder->use(finish, texture, cue::FrameGraphAccess::Read,
-                      cue::FrameGraphResourceState::CopySource).has_value() ||
-        !builder->use(finish, external, cue::FrameGraphAccess::Write,
-                      cue::FrameGraphResourceState::CopyDestination).has_value())
+    if (!builder->use(seed, buffer, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+             .has_value() ||
+        builder->use(seed, buffer, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource).has_value() ||
+        !builder->use(draw, buffer, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource)
+             .has_value() ||
+        !builder->use(draw, texture, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+             .has_value() ||
+        !builder->use(finish, texture, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource)
+             .has_value() ||
+        !builder->use(finish, external, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+             .has_value())
     {
         return 6;
     }
@@ -92,10 +93,8 @@ int main()
     {
         return 8;
     }
-    if (plan.passes()[1].dependencies.size() != 1 ||
-        plan.passes()[1].dependencies[0].index != seed.index ||
-        plan.passes()[2].dependencies.size() != 1 ||
-        plan.passes()[2].dependencies[0].index != draw.index)
+    if (plan.passes()[1].dependencies.size() != 1 || plan.passes()[1].dependencies[0].index != seed.index ||
+        plan.passes()[2].dependencies.size() != 1 || plan.passes()[2].dependencies[0].index != draw.index)
     {
         return 9;
     }
@@ -108,16 +107,14 @@ int main()
         plan.passes()[1].barriersBefore[0].after != cue::FrameGraphResourceState::CopySource ||
         plan.passes()[2].barriersBefore.size() != 2 ||
         plan.passes()[2].barriersBefore[1].before != cue::FrameGraphResourceState::Present ||
-        plan.passes()[0].barriersAfter.size() != 0 ||
-        plan.passes()[1].barriersAfter.size() != 1 ||
+        plan.passes()[0].barriersAfter.size() != 0 || plan.passes()[1].barriersAfter.size() != 1 ||
         plan.passes()[1].barriersAfter[0].resource.index != buffer.index ||
         plan.passes()[1].barriersAfter[0].before != cue::FrameGraphResourceState::CopySource ||
         plan.passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
         plan.passes()[2].barriersAfter.size() != 1 ||
         plan.passes()[2].barriersAfter[0].resource.index != texture.index ||
         plan.passes()[2].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
-        plan.final_barriers().size() != 1 ||
-        plan.final_barriers()[0].resource.index != external.index ||
+        plan.final_barriers().size() != 1 || plan.final_barriers()[0].resource.index != external.index ||
         plan.final_barriers()[0].before != cue::FrameGraphResourceState::CopyDestination ||
         plan.final_barriers()[0].after != cue::FrameGraphResourceState::Present)
     {
@@ -131,8 +128,8 @@ int main()
         return 10;
     }
     const auto overwrite = overwriteResult.take_value();
-    if (!builder->use(overwrite, buffer, cue::FrameGraphAccess::Write,
-                      cue::FrameGraphResourceState::CopyDestination).has_value())
+    if (!builder->use(overwrite, buffer, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination)
+             .has_value())
     {
         return 11;
     }
@@ -143,8 +140,7 @@ int main()
     }
     auto extended = extendedResult.take_value();
     if (extended.passes().size() != 4 || extended.resources()[buffer.index].lastUse != 3 ||
-        extended.passes()[3].dependencies.size() != 2 ||
-        extended.passes()[3].dependencies[0].index != seed.index ||
+        extended.passes()[3].dependencies.size() != 2 || extended.passes()[3].dependencies[0].index != seed.index ||
         extended.passes()[3].dependencies[1].index != draw.index)
     {
         return 13;
@@ -159,9 +155,10 @@ int main()
     auto uninitializedResourceResult = uninitialized->create_transient_buffer({64});
     auto readerResult = uninitialized->add_pass("ReadFirst");
     if (!uninitializedResourceResult.has_value() || !readerResult.has_value() ||
-        !uninitialized->use(readerResult.take_value(), uninitializedResourceResult.take_value(),
-                            cue::FrameGraphAccess::Read,
-                            cue::FrameGraphResourceState::CopySource).has_value() ||
+        !uninitialized
+             ->use(readerResult.take_value(), uninitializedResourceResult.take_value(), cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::CopySource)
+             .has_value() ||
         uninitialized->build().has_value())
     {
         return 15;
@@ -207,11 +204,13 @@ int main()
     auto uavResourceResult = uavBuilder->import_buffer({64}, cue::FrameGraphResourceState::UnorderedAccess,
                                                        cue::FrameGraphResourceState::Common);
     if (!uavResourceResult.has_value() ||
-        uavBuilder->import_buffer({64, cue::GpuMemoryUsage::Upload},
-                                  cue::FrameGraphResourceState::Common,
-                                  cue::FrameGraphResourceState::Common).has_value() ||
-        uavBuilder->import_texture2d({4, 4}, cue::FrameGraphResourceState::GenericRead,
-                                     cue::FrameGraphResourceState::Common).has_value())
+        uavBuilder
+            ->import_buffer({64, cue::GpuMemoryUsage::Upload}, cue::FrameGraphResourceState::Common,
+                            cue::FrameGraphResourceState::Common)
+            .has_value() ||
+        uavBuilder
+            ->import_texture2d({4, 4}, cue::FrameGraphResourceState::GenericRead, cue::FrameGraphResourceState::Common)
+            .has_value())
     {
         return 23;
     }
@@ -221,8 +220,8 @@ int main()
     auto writeResult = uavBuilder->add_pass("Write");
     auto readCResult = uavBuilder->add_pass("ReadC");
     auto copyResult = uavBuilder->add_pass("Copy");
-    if (!readAResult.has_value() || !readBResult.has_value() || !writeResult.has_value() ||
-        !readCResult.has_value() || !copyResult.has_value())
+    if (!readAResult.has_value() || !readBResult.has_value() || !writeResult.has_value() || !readCResult.has_value() ||
+        !copyResult.has_value())
     {
         return 24;
     }
@@ -231,22 +230,23 @@ int main()
     const auto write = writeResult.take_value();
     const auto readC = readCResult.take_value();
     const auto copy = copyResult.take_value();
-    if (uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Write,
-                        cue::FrameGraphResourceState::CopySource).has_value() ||
-        uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read,
-                        cue::FrameGraphResourceState::RenderTarget).has_value() ||
-        uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read,
-                        cue::FrameGraphResourceState::Present).has_value() ||
-        !uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read,
-                         cue::FrameGraphResourceState::UnorderedAccess).has_value() ||
-        !uavBuilder->use(readB, uavResource, cue::FrameGraphAccess::Read,
-                         cue::FrameGraphResourceState::UnorderedAccess).has_value() ||
-        !uavBuilder->use(write, uavResource, cue::FrameGraphAccess::Write,
-                         cue::FrameGraphResourceState::UnorderedAccess).has_value() ||
-        !uavBuilder->use(readC, uavResource, cue::FrameGraphAccess::Read,
-                         cue::FrameGraphResourceState::UnorderedAccess).has_value() ||
-        !uavBuilder->use(copy, uavResource, cue::FrameGraphAccess::Read,
-                         cue::FrameGraphResourceState::CopySource).has_value())
+    if (uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopySource)
+            .has_value() ||
+        uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::RenderTarget)
+            .has_value() ||
+        uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::Present)
+            .has_value() ||
+        !uavBuilder->use(readA, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value() ||
+        !uavBuilder->use(readB, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value() ||
+        !uavBuilder
+             ->use(write, uavResource, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value() ||
+        !uavBuilder->use(readC, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value() ||
+        !uavBuilder->use(copy, uavResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource)
+             .has_value())
     {
         return 25;
     }
@@ -268,5 +268,137 @@ int main()
     {
         return 27;
     }
+    // Compute の ShaderRead は Pixel Bit を含めず、同 State の Graphics/Compute Read は並列にする
+    auto parallelBuilderResult = cue::FrameGraphBuilder::create();
+    if (!parallelBuilderResult.has_value())
+        return 30;
+    auto parallel = parallelBuilderResult.take_value();
+    auto parallelResourceResult =
+        parallel->import_buffer({64}, cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+    auto computeReadResult = parallel->add_pass("ComputeRead", cue::QueueType::Compute);
+    auto graphicsReadResult = parallel->add_pass("GraphicsRead");
+    auto writerResult = parallel->add_pass("Writer");
+    if (!parallelResourceResult.has_value() || !computeReadResult.has_value() || !graphicsReadResult.has_value() ||
+        !writerResult.has_value())
+        return 31;
+    const auto parallelResource = parallelResourceResult.take_value();
+    const auto computeRead = computeReadResult.take_value();
+    const auto graphicsRead = graphicsReadResult.take_value();
+    const auto writer = writerResult.take_value();
+    if (parallel
+            ->use(computeRead, parallelResource, cue::FrameGraphAccess::Read,
+                  cue::FrameGraphResourceState::PixelShaderRead)
+            .has_value() ||
+        !parallel
+             ->use(computeRead, parallelResource, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::ShaderRead)
+             .has_value() ||
+        !parallel
+             ->use(graphicsRead, parallelResource, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::NonPixelShaderRead)
+             .has_value() ||
+        !parallel
+             ->use(writer, parallelResource, cue::FrameGraphAccess::Write,
+                   cue::FrameGraphResourceState::CopyDestination)
+             .has_value())
+        return 32;
+    auto parallelPlanResult = parallel->build();
+    if (!parallelPlanResult.has_value())
+        return 33;
+    const auto parallelPlan = parallelPlanResult.take_value();
+    if (parallelPlan.initial_barriers().size() != 1 ||
+        parallelPlan.initial_barriers()[0].after != cue::FrameGraphResourceState::NonPixelShaderRead ||
+        parallelPlan.passes()[0].uses[0].state != cue::FrameGraphResourceState::NonPixelShaderRead ||
+        !parallelPlan.passes()[0].dependencies.empty() || !parallelPlan.passes()[1].dependencies.empty() ||
+        !parallelPlan.passes()[0].barriersBefore.empty() || !parallelPlan.passes()[1].barriersBefore.empty() ||
+        parallelPlan.passes()[2].dependencies.size() != 2 || !parallelPlan.resources()[0].isWritten)
+        return 34;
+
+    // RenderTarget から Compute へ渡す場合は Graphics 側で Common に戻してから Non-Pixel へ遷移する
+    auto handoffResult = cue::FrameGraphBuilder::create();
+    if (!handoffResult.has_value())
+        return 35;
+    auto handoff = handoffResult.take_value();
+    auto handoffTextureResult = handoff->create_transient_texture2d({4, 4});
+    auto renderResult = handoff->add_pass("Render");
+    auto computeResult = handoff->add_pass("Compute", cue::QueueType::Compute);
+    if (!handoffTextureResult.has_value() || !renderResult.has_value() || !computeResult.has_value())
+        return 36;
+    auto handoffTexture = handoffTextureResult.take_value();
+    if (!handoff
+             ->use(renderResult.take_value(), handoffTexture, cue::FrameGraphAccess::Write,
+                   cue::FrameGraphResourceState::RenderTarget)
+             .has_value() ||
+        !handoff
+             ->use(computeResult.take_value(), handoffTexture, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::NonPixelShaderRead)
+             .has_value())
+        return 37;
+    auto handoffPlan = handoff->build();
+    if (!handoffPlan.has_value() || handoffPlan.try_value()->passes()[0].barriersAfter.size() != 1 ||
+        handoffPlan.try_value()->passes()[0].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        handoffPlan.try_value()->passes()[1].barriersBefore[0].before != cue::FrameGraphResourceState::Common ||
+        handoffPlan.try_value()->passes()[1].dependencies.size() != 1)
+        return 38;
+    // 並列 Reader の後で Copy へ渡す Release は、全 Reader が終わってから行う
+    auto releaseResult = cue::FrameGraphBuilder::create();
+    if (!releaseResult.has_value())
+        return 39;
+    auto release = releaseResult.take_value();
+    auto releasedResource = release->import_buffer({64}, cue::FrameGraphResourceState::NonPixelShaderRead,
+                                                   cue::FrameGraphResourceState::Common);
+    auto releaseGraphics = release->add_pass("GraphicsRead");
+    auto releaseCompute = release->add_pass("ComputeRead", cue::QueueType::Compute);
+    auto releaseCopy = release->add_pass("CopyRead", cue::QueueType::Copy);
+    if (!releasedResource.has_value() || !releaseGraphics.has_value() || !releaseCompute.has_value() ||
+        !releaseCopy.has_value())
+        return 40;
+    const auto released = releasedResource.take_value();
+    if (!release
+             ->use(releaseGraphics.take_value(), released, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::NonPixelShaderRead)
+             .has_value() ||
+        !release
+             ->use(releaseCompute.take_value(), released, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::NonPixelShaderRead)
+             .has_value() ||
+        !release
+             ->use(releaseCopy.take_value(), released, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::CopySource)
+             .has_value())
+        return 41;
+    auto releasePlan = release->build();
+    if (!releasePlan.has_value() || releasePlan.try_value()->passes()[1].dependencies.size() != 1 ||
+        releasePlan.try_value()->passes()[1].dependencies[0].index != 0 ||
+        releasePlan.try_value()->passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
+        releasePlan.try_value()->passes()[2].dependencies.size() != 2 ||
+        releasePlan.try_value()->resources()[0].isWritten ||
+        !releasePlan.try_value()->resources()[0].needsExclusiveStateAccess)
+        return 42;
+
+    // UAV は Read 宣言でも書込み可能 State なので Queue を跨いで並列利用しない
+    auto exclusiveResult = cue::FrameGraphBuilder::create();
+    if (!exclusiveResult.has_value())
+        return 43;
+    auto exclusive = exclusiveResult.take_value();
+    auto exclusiveResource = exclusive->import_buffer({64}, cue::FrameGraphResourceState::UnorderedAccess,
+                                                      cue::FrameGraphResourceState::Common);
+    auto exclusiveGraphics = exclusive->add_pass("GraphicsUavRead");
+    auto exclusiveCompute = exclusive->add_pass("ComputeUavRead", cue::QueueType::Compute);
+    if (!exclusiveResource.has_value() || !exclusiveGraphics.has_value() || !exclusiveCompute.has_value())
+        return 44;
+    const auto exclusiveHandle = exclusiveResource.take_value();
+    if (!exclusive
+             ->use(exclusiveGraphics.take_value(), exclusiveHandle, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value() ||
+        !exclusive
+             ->use(exclusiveCompute.take_value(), exclusiveHandle, cue::FrameGraphAccess::Read,
+                   cue::FrameGraphResourceState::UnorderedAccess)
+             .has_value())
+        return 45;
+    auto exclusivePlan = exclusive->build();
+    if (!exclusivePlan.has_value() || exclusivePlan.try_value()->passes()[1].dependencies.size() != 1 ||
+        !exclusivePlan.try_value()->resources()[0].needsExclusiveStateAccess)
+        return 46;
     return 0;
 }

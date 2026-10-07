@@ -5,6 +5,7 @@
 #include <new>
 #include <utility>
 
+#include <FrameGraph/FrameGraphPerformance.h>
 #include <Passes/ClearFinalColorPass.h>
 #include <Passes/PresentToSwapChainPass.h>
 
@@ -13,7 +14,7 @@ namespace cue
 /// @brief Clear と表示の間に Pass を追加する Backend 非依存の設定 Callback
 ///
 /// 初回構築時と Resize 時に、それぞれの呼出 Thread で実行される。毎回新しい Pass を作る
-using frameGraphConfigure = std::function<Result<void>(FrameGraph&, FrameGraphResourceHandle)>;
+using frameGraphConfigure = std::function<Result<void>(FrameGraph &, FrameGraphResourceHandle)>;
 
 /// @brief Host が追加描画と最後の表示 Pass を選ぶ Backend 非依存の構築設定
 ///
@@ -54,8 +55,8 @@ struct FrameGraphComposition final
     }
     auto builder = builderResult.take_value();
     const auto finalColor = builder->final_color();
-    auto backResult = builder->import_texture2d(
-        "BackBuffer", a_colorDesc, FrameGraphResourceState::Present, FrameGraphResourceState::Present);
+    auto backResult = builder->import_texture2d("BackBuffer", a_colorDesc, FrameGraphResourceState::Present,
+                                                FrameGraphResourceState::Present);
     if (!backResult.has_value())
     {
         return GraphResult::failure(*backResult.try_error());
@@ -70,7 +71,7 @@ struct FrameGraphComposition final
     try
     {
         auto clear = std::make_unique<ClearFinalColorPass>(a_colorDesc.clearColor);
-        const auto* clearPass = clear.get();
+        const auto *clearPass = clear.get();
         auto clearResult = graph->add_pass(std::move(clear));
         if (!clearResult.has_value())
         {
@@ -98,7 +99,7 @@ struct FrameGraphComposition final
             a_config.displayPass = std::make_unique<PresentToSwapChainPass>();
         }
         // 具体型や名前には依存せず、選択した Pass 自体が最後に残ることを検証する
-        const auto* displayPass = a_config.displayPass.get();
+        const auto *displayPass = a_config.displayPass.get();
         auto presentResult = graph->add_pass(std::move(a_config.displayPass));
         if (!presentResult.has_value())
         {
@@ -109,17 +110,16 @@ struct FrameGraphComposition final
         {
             return GraphResult::failure(*buildResult.try_error());
         }
-        const auto* plan = graph->plan();
-        if (!plan || plan->passes().size() < 2 ||
-            graph->pass(plan->passes().front().handle) != clearPass ||
+        const auto *plan = graph->plan();
+        if (!plan || plan->passes().size() < 2 || graph->pass(plan->passes().front().handle) != clearPass ||
             graph->pass(plan->passes().back().handle) != displayPass)
         {
             return GraphResult::failure({ErrorCategory::InvalidState, "create_main_frame_graph.plan"});
         }
         // 表示先は Graphics の BackBuffer 書込みとし、Present への復帰は Graph の終了 Barrier に任せる
-        const auto& display = plan->passes().back();
+        const auto &display = plan->passes().back();
         bool writesBackBuffer = false;
-        for (const auto& use : display.uses)
+        for (const auto &use : display.uses)
         {
             if (use.resource.graphId == backBuffer.graphId && use.resource.index == backBuffer.index &&
                 use.access == FrameGraphAccess::Write && use.state == FrameGraphResourceState::RenderTarget)
@@ -133,7 +133,7 @@ struct FrameGraphComposition final
         }
         return GraphResult::success({std::move(graph), finalColor, backBuffer});
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return GraphResult::failure({ErrorCategory::PlatformFailure, "create_main_frame_graph.allocation"});
     }

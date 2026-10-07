@@ -4,47 +4,13 @@
 #include <new>
 #include <utility>
 
+#include <RHI/CommandCompletion.h>
+
 namespace cue
 {
-namespace
-{
-/// @brief 提出前に共有 Control Block を確保し、提出後の Allocation 失敗を避ける
-class GraphCompletion final : public ICommandCompletion
-{
-public:
-    /// @brief 提出後に所有 Token を移す
-    void set(commandCompletion a_completion) noexcept
-    {
-        m_completion = std::move(a_completion);
-    }
-
-    /// @brief 登録済み Token の Queue 種類を返す
-    [[nodiscard]] QueueType type() const noexcept override
-    {
-        return m_completion ? m_completion->type() : QueueType::Graphics;
-    }
-
-    /// @brief 登録済み Token の GPU 完了を返す
-    [[nodiscard]] bool is_complete() const noexcept override
-    {
-        return m_completion && m_completion->is_complete();
-    }
-
-    /// @brief 登録済み Token の GPU 完了を待つ
-    [[nodiscard]] Result<void> wait() override
-    {
-        return m_completion ? m_completion->wait() :
-            Result<void>::failure({ErrorCategory::InvalidState, "GraphCompletion.wait"});
-    }
-
-private:
-    commandCompletion m_completion;
-};
-} // namespace
-
 /// @brief 記録中に有効な借用情報を保持する
-FrameGraphContext::FrameGraphContext(std::uint32_t a_width, std::uint32_t a_height,
-                                     std::uint32_t a_frameIndex, ICommandContext& a_command) noexcept
+FrameGraphContext::FrameGraphContext(std::uint32_t a_width, std::uint32_t a_height, std::uint32_t a_frameIndex,
+                                     ICommandContext &a_command) noexcept
     : m_width(a_width), m_height(a_height), m_frameIndex(a_frameIndex), m_command(&a_command)
 {
 }
@@ -68,7 +34,7 @@ std::uint32_t FrameGraphContext::frame_index() const noexcept
 }
 
 /// @brief 記録中の Command を返す
-ICommandContext& FrameGraphContext::command_context() const noexcept
+ICommandContext &FrameGraphContext::command_context() const noexcept
 {
     return *m_command;
 }
@@ -111,19 +77,18 @@ bool FrameGraphPass::is_enabled() const noexcept
 
 /// @brief 空でない Builder と寸法だけを受け付ける
 Result<std::unique_ptr<FrameGraph>> FrameGraph::create(std::unique_ptr<FrameGraphBuilder> a_builder,
-                                                        std::uint32_t a_width, std::uint32_t a_height)
+                                                       std::uint32_t a_width, std::uint32_t a_height)
 {
     if (!a_builder || a_builder->pass_count() != 0 || a_width == 0 || a_height == 0)
     {
-        return Result<std::unique_ptr<FrameGraph>>::failure(
-            {ErrorCategory::InvalidArgument, "FrameGraph.create"});
+        return Result<std::unique_ptr<FrameGraph>>::failure({ErrorCategory::InvalidArgument, "FrameGraph.create"});
     }
     try
     {
         return Result<std::unique_ptr<FrameGraph>>::success(
             std::make_unique<FrameGraph>(CreateToken{}, std::move(a_builder), a_width, a_height));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<std::unique_ptr<FrameGraph>>::failure(
             {ErrorCategory::PlatformFailure, "FrameGraph.create.allocation"});
@@ -131,8 +96,8 @@ Result<std::unique_ptr<FrameGraph>> FrameGraph::create(std::unique_ptr<FrameGrap
 }
 
 /// @brief Builder と寸法の所有を開始する
-FrameGraph::FrameGraph(CreateToken, std::unique_ptr<FrameGraphBuilder> a_builder,
-                       std::uint32_t a_width, std::uint32_t a_height) noexcept
+FrameGraph::FrameGraph(CreateToken, std::unique_ptr<FrameGraphBuilder> a_builder, std::uint32_t a_width,
+                       std::uint32_t a_height) noexcept
     : m_builder(std::move(a_builder)), m_width(a_width), m_height(a_height)
 {
 }
@@ -149,7 +114,7 @@ Result<void> FrameGraph::add_pass(std::unique_ptr<FrameGraphPass> a_pass)
         m_passes.push_back(std::move(a_pass));
         return Result<void>::success();
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<void>::failure({ErrorCategory::PlatformFailure, "FrameGraph.add_pass.allocation"});
     }
@@ -193,14 +158,14 @@ Result<void> FrameGraph::build_passes()
     }
     m_buildAttempted = true;
     // 無効 Pass がある場合は setup による Resource 宣言を始めずに Build を拒否する
-    for (const auto& pass : m_passes)
+    for (const auto &pass : m_passes)
     {
         if (!pass->is_enabled())
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build.disabled_pass"});
         }
     }
-    for (const auto& pass : m_passes)
+    for (const auto &pass : m_passes)
     {
         auto setupResult = pass->setup(*m_builder);
         if (!setupResult.has_value())
@@ -236,21 +201,20 @@ Result<void> FrameGraph::validate_enabled() const
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.validate_enabled.plan"});
     }
-    for (const auto& pass : m_passes)
+    for (const auto &pass : m_passes)
     {
         if (!pass->is_enabled())
         {
-            return Result<void>::failure({ErrorCategory::InvalidState,
-                                          "FrameGraph.validate_enabled.disabled_pass"});
+            return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.validate_enabled.disabled_pass"});
         }
     }
     return Result<void>::success();
 }
 
 /// @brief Pool の Lease を提出後の完了点へ移し、Backend Owner へ共有する
-Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
-    std::uint32_t a_frameIndex, ICommandPool& a_commandPool, IQueueContext& a_queue,
-    IFrameGraphRecorder& a_recorder, std::function<bool()> a_shouldCancel)
+Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(std::uint32_t a_frameIndex, ICommandPool &a_commandPool,
+                                                                IQueueContext &a_queue, IFrameGraphRecorder &a_recorder,
+                                                                std::function<bool()> a_shouldCancel)
 {
     using CompletionResult = Result<std::shared_ptr<ICommandCompletion>>;
     if (!m_plan || a_queue.type() != QueueType::Graphics)
@@ -262,7 +226,7 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
     {
         return CompletionResult::failure(*enabledResult.try_error());
     }
-    for (const auto& pass : m_plan->passes())
+    for (const auto &pass : m_plan->passes())
     {
         if (pass.queue != a_queue.type())
         {
@@ -292,12 +256,12 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
         a_recorder.discard_unsubmitted(a_frameIndex);
         return CompletionResult::failure(*closeResult.try_error());
     }
-    std::shared_ptr<GraphCompletion> completion;
+    std::shared_ptr<SharedCommandCompletion> completion;
     try
     {
-        completion = std::make_shared<GraphCompletion>();
+        completion = std::make_shared<SharedCommandCompletion>();
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         a_recorder.discard_unsubmitted(a_frameIndex);
         return CompletionResult::failure({ErrorCategory::PlatformFailure, "FrameGraph.execute.allocation"});
@@ -322,19 +286,19 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(
 }
 
 /// @brief Build 済みの場合だけ Plan を公開する
-const FrameGraphPlan* FrameGraph::plan() const noexcept
+const FrameGraphPlan *FrameGraph::plan() const noexcept
 {
     return m_plan ? &*m_plan : nullptr;
 }
 
 /// @brief Plan の識別子と Index を検証して Pass を返す
-FrameGraphPass* FrameGraph::pass(FrameGraphPassHandle a_handle) const noexcept
+FrameGraphPass *FrameGraph::pass(FrameGraphPassHandle a_handle) const noexcept
 {
     if (!m_plan || a_handle.index >= m_passes.size())
     {
         return nullptr;
     }
-    for (const auto& planned : m_plan->passes())
+    for (const auto &planned : m_plan->passes())
     {
         if (planned.handle.index == a_handle.index && planned.handle.graphId == a_handle.graphId)
         {

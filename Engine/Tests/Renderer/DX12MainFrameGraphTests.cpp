@@ -28,26 +28,34 @@ namespace
 /// @brief 追加 Pass が Graph の Resource 宣言と記録契約を通ることを確認する
 class TestPass final : public cue::FrameGraphPass
 {
-public:
+  public:
     /// @brief Graph の論理 Texture と実行回数を保持する
-    TestPass(cue::FrameGraphResourceHandle a_color, int& a_count, bool& a_enabled) noexcept
+    TestPass(cue::FrameGraphResourceHandle a_color, int &a_count, bool &a_enabled) noexcept
         : m_color(a_color), m_count(&a_count), m_enabled(&a_enabled)
     {
     }
 
-    [[nodiscard]] const char* name() const noexcept override { return "AfterClear"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
-    [[nodiscard]] bool is_enabled() const noexcept override { return *m_enabled; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder&) override
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "AfterClear";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+    [[nodiscard]] bool is_enabled() const noexcept override
+    {
+        return *m_enabled;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &) override
     {
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return a_builder.use(m_color, cue::FrameGraphAccess::Read,
-                             cue::FrameGraphResourceState::ShaderRead);
+        return a_builder.use(m_color, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::ShaderRead);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         if (a_context.command_context().type() != cue::QueueType::Graphics)
         {
@@ -57,28 +65,35 @@ public:
         return cue::Result<void>::success();
     }
 
-private:
+  private:
     cue::FrameGraphResourceHandle m_color;
-    int* m_count = nullptr;
-    bool* m_enabled = nullptr;
+    int *m_count = nullptr;
+    bool *m_enabled = nullptr;
 };
 
 /// @brief Pool 所有 Buffer の世代付き Handle を Graph へ取り込む
 class PoolPass final : public cue::FrameGraphPass
 {
-public:
+  public:
     /// @brief Pool の寿命を Graph より長く保つ呼出側から借用する
-    PoolPass(cue::IGpuResourcePool& a_pool, cue::GpuResourceHandle a_handle, int& a_count) noexcept
+    PoolPass(cue::IGpuResourcePool &a_pool, cue::GpuResourceHandle a_handle, int &a_count) noexcept
         : m_pool(&a_pool), m_handle(a_handle), m_count(&a_count)
     {
     }
 
-    [[nodiscard]] const char* name() const noexcept override { return "PoolRead"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Copy; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] const char *name() const noexcept override
     {
-        auto result = a_builder.import_pool_buffer("PoolBuffer", *m_pool, m_handle, {64},
-            cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+        return "PoolRead";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Copy;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
+    {
+        auto result =
+            a_builder.import_pool_buffer("PoolBuffer", *m_pool, m_handle, {64}, cue::FrameGraphResourceState::Common,
+                                         cue::FrameGraphResourceState::Common);
         if (!result.has_value())
         {
             return cue::Result<void>::failure(*result.try_error());
@@ -86,12 +101,11 @@ public:
         m_buffer = result.take_value();
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return a_builder.use(m_buffer, cue::FrameGraphAccess::Read,
-                             cue::FrameGraphResourceState::CopySource);
+        return a_builder.use(m_buffer, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         if (a_context.command_context().type() != cue::QueueType::Copy)
         {
@@ -101,30 +115,39 @@ public:
         return cue::Result<void>::success();
     }
 
-private:
-    cue::IGpuResourcePool* m_pool = nullptr;
+  private:
+    cue::IGpuResourcePool *m_pool = nullptr;
     cue::GpuResourceHandle m_handle;
     cue::FrameGraphResourceHandle m_buffer;
-    int* m_count = nullptr;
+    int *m_count = nullptr;
 };
 
 /// @brief Pool 所有 Texture を RenderTarget として使い、記録前の RTV 準備を通す
 class PoolTexturePass final : public cue::FrameGraphPass
 {
-public:
-    PoolTexturePass(cue::IGpuResourcePool& a_pool, cue::GpuResourceHandle a_handle) noexcept
-        : m_pool(&a_pool), m_handle(a_handle) {}
+  public:
+    PoolTexturePass(cue::IGpuResourcePool &a_pool, cue::GpuResourceHandle a_handle) noexcept
+        : m_pool(&a_pool), m_handle(a_handle)
+    {
+    }
 
-    [[nodiscard]] const char* name() const noexcept override { return "PoolTextureWrite"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "PoolTextureWrite";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
         cue::GpuTexture2DDesc desc{64, 64};
         desc.isRenderTarget = true;
         desc.isShaderReadable = true;
         desc.clearColor = {0.1f, 0.2f, 0.3f, 1.0f};
-        auto result = a_builder.import_pool_texture2d("PoolTexture", *m_pool, m_handle, desc,
-            cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
+        auto result =
+            a_builder.import_pool_texture2d("PoolTexture", *m_pool, m_handle, desc,
+                                            cue::FrameGraphResourceState::Common, cue::FrameGraphResourceState::Common);
         if (!result.has_value())
         {
             return cue::Result<void>::failure(*result.try_error());
@@ -132,18 +155,17 @@ public:
         m_texture = result.take_value();
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return a_builder.use(m_texture, cue::FrameGraphAccess::Write,
-                             cue::FrameGraphResourceState::RenderTarget);
+        return a_builder.use(m_texture, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::RenderTarget);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         return a_context.clear_render_target(m_texture, {0.1f, 0.2f, 0.3f, 1.0f});
     }
 
-private:
-    cue::IGpuResourcePool* m_pool = nullptr;
+  private:
+    cue::IGpuResourcePool *m_pool = nullptr;
     cue::GpuResourceHandle m_handle;
     cue::FrameGraphResourceHandle m_texture;
 };
@@ -151,10 +173,16 @@ private:
 /// @brief 同じ Pool Texture の ShaderRead 宣言で SRV の準備も通す
 class PoolTextureReadPass final : public cue::FrameGraphPass
 {
-public:
-    [[nodiscard]] const char* name() const noexcept override { return "PoolTextureRead"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+  public:
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "PoolTextureRead";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
         auto result = a_builder.get_texture("PoolTexture");
         if (!result.has_value())
@@ -164,31 +192,39 @@ public:
         m_texture = result.take_value();
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return a_builder.use(m_texture, cue::FrameGraphAccess::Read,
-                             cue::FrameGraphResourceState::ShaderRead);
+        return a_builder.use(m_texture, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::ShaderRead);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext&) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &) override
     {
         return cue::Result<void>::success();
     }
 
-private:
+  private:
     cue::FrameGraphResourceHandle m_texture;
 };
 
 /// @brief Pass 設定からの Compute PSO 生成と抽象 Context の Dispatch を確認する
 class ComputePass final : public cue::FrameGraphPass
 {
-public:
+  public:
     /// @brief 実行回数を呼出側で検証する
-    explicit ComputePass(int& a_count) noexcept : m_count(&a_count) {}
+    explicit ComputePass(int &a_count, cue::FrameGraphResourceHandle a_color = {}) noexcept
+        : m_count(&a_count), m_color(a_color)
+    {
+    }
 
     /// @brief 診断に使う名前を返す
-    [[nodiscard]] const char* name() const noexcept override { return "Compute"; }
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "Compute";
+    }
     /// @brief Compute List へ記録する
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Compute; }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Compute;
+    }
     /// @brief Root、CS と PSO の生成を Builder に依頼する
     [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
@@ -211,13 +247,15 @@ public:
         m_pipeline = pipeline.take_value();
         return cue::Result<void>::success();
     }
-    /// @brief Resource を使わない Shader の実行だけを宣言する
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder&) override
+    /// @brief Graphics が使った Texture を Compute の ShaderRead へ遷移する
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return cue::Result<void>::success();
+        return m_color.is_valid()
+                   ? a_builder.use(m_color, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::ShaderRead)
+                   : cue::Result<void>::success();
     }
     /// @brief 無効な Group 数を拒否してから一回の Dispatch を記録する
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         if (a_context.command_context().type() != cue::QueueType::Compute)
         {
@@ -240,18 +278,25 @@ public:
         return dispatch;
     }
 
-private:
-    int* m_count = nullptr;
+  private:
+    int *m_count = nullptr;
     cue::PipelineStateHandle m_pipeline;
+    cue::FrameGraphResourceHandle m_color;
 };
 
 /// @brief Pass 自身の setup で作った RenderTexture に色を書き込む
 class ProduceColorPass final : public cue::FrameGraphPass
 {
-public:
-    [[nodiscard]] const char* name() const noexcept override { return "ProduceColor"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+  public:
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "ProduceColor";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
         cue::GpuTexture2DDesc desc{64, 64};
         desc.isRenderTarget = true;
@@ -264,17 +309,15 @@ public:
         m_output = result.take_value();
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        return a_builder.use(m_output, cue::FrameGraphAccess::Write,
-                             cue::FrameGraphResourceState::RenderTarget);
+        return a_builder.use(m_output, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::RenderTarget);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         if (a_context.clear_render_target(m_output, {0.0f, 0.0f, 0.0f, 1.0f}).has_value())
         {
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
-                                               "ProduceColorPass.unexpected_clear"});
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ProduceColorPass.unexpected_clear"});
         }
         auto bindResult = a_context.set_render_target(m_output);
         if (!bindResult.has_value())
@@ -284,46 +327,50 @@ public:
         return a_context.clear_render_target(m_output, {0.8f, 0.1f, 0.3f, 1.0f});
     }
 
-private:
+  private:
     cue::FrameGraphResourceHandle m_output;
 };
 
 /// @brief 前の Pass の名前付き Texture を取得して FinalColor に複写する
 class ConsumeColorPass final : public cue::FrameGraphPass
 {
-public:
-    [[nodiscard]] const char* name() const noexcept override { return "ConsumeColor"; }
-    [[nodiscard]] cue::QueueType type() const noexcept override { return cue::QueueType::Copy; }
-    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder& a_builder) override
+  public:
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "ConsumeColor";
+    }
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Copy;
+    }
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
     {
         auto sourceResult = a_builder.get_texture("PassAOutput");
         auto targetResult = a_builder.get_texture("FinalColorTexture");
         if (!sourceResult.has_value() || !targetResult.has_value())
         {
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
-                                               "ConsumeColorPass.setup"});
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ConsumeColorPass.setup"});
         }
         m_source = sourceResult.take_value();
         m_target = targetResult.take_value();
         return cue::Result<void>::success();
     }
-    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder& a_builder) override
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
-        auto sourceResult = a_builder.use(m_source, cue::FrameGraphAccess::Read,
-                                          cue::FrameGraphResourceState::CopySource);
+        auto sourceResult =
+            a_builder.use(m_source, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource);
         if (!sourceResult.has_value())
         {
             return sourceResult;
         }
-        return a_builder.use(m_target, cue::FrameGraphAccess::Write,
-                             cue::FrameGraphResourceState::CopyDestination);
+        return a_builder.use(m_target, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::CopyDestination);
     }
-    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext& a_context) override
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
     {
         return a_context.copy_texture2d(m_source, m_target);
     }
 
-private:
+  private:
     cue::FrameGraphResourceHandle m_source;
     cue::FrameGraphResourceHandle m_target;
 };
@@ -340,6 +387,46 @@ void transition(ID3D12GraphicsCommandList &a_list, ID3D12Resource &a_resource, D
     barrier.Transition.StateAfter = a_after;
     a_list.ResourceBarrier(1, &barrier);
 }
+
+/// @brief 多数の同 Queue Pass の提出集約を GPU Queue 上で検証する
+class BatchTestPass final : public cue::FrameGraphPass
+{
+  public:
+    /// @brief 実行回数と Queue を保持する
+    BatchTestPass(int &a_count, cue::QueueType a_type) noexcept : m_count(&a_count), m_type(a_type)
+    {
+    }
+    /// @brief Capture で提出範囲を識別する
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "BatchTest";
+    }
+    /// @brief 記録 Queue を固定する
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return m_type;
+    }
+    /// @brief 固有 Resource を生成しない
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &) override
+    {
+        return cue::Result<void>::success();
+    }
+    /// @brief Queue 間 Resource 依存を持たない
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &) override
+    {
+        return cue::Result<void>::success();
+    }
+    /// @brief 全 Pass の Callback が呼ばれたことを数える
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &) override
+    {
+        ++*m_count;
+        return cue::Result<void>::success();
+    }
+
+  private:
+    int *m_count = nullptr;
+    cue::QueueType m_type = cue::QueueType::Compute;
+};
 
 /// @brief 固定 Pass の State 計画と WARP の Back Buffer 画素を確認する
 int run_tests()
@@ -415,8 +502,7 @@ int run_tests()
         plan.passes()[1].barriersBefore[1].after != cue::FrameGraphResourceState::RenderTarget ||
         plan.passes()[1].barriersAfter.size() != 1 ||
         plan.passes()[1].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
-        plan.final_barriers().size() != 1 ||
-        plan.final_barriers()[0].after != cue::FrameGraphResourceState::Present)
+        plan.final_barriers().size() != 1 || plan.final_barriers()[0].after != cue::FrameGraphResourceState::Present)
     {
         return 8;
     }
@@ -557,7 +643,7 @@ int run_tests()
              {
                  return poolTextureReadResult;
              }
-             return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount));
+             return a_graph.add_pass(std::make_unique<ComputePass>(computeCallCount, a_finalColor));
          }});
     if (!extendedResult.has_value())
     {
@@ -565,20 +651,17 @@ int run_tests()
     }
     auto extended = extendedResult.take_value();
     if (extended->plan().passes().size() != 9 || extended->plan().passes()[0].name != "ClearFinalColor" ||
-        extended->plan().passes()[1].name != "AfterClear" ||
-        extended->plan().passes()[2].name != "ProduceColor" ||
-        extended->plan().passes()[3].name != "ConsumeColor" ||
-        extended->plan().passes()[4].name != "PoolRead" ||
+        extended->plan().passes()[1].name != "AfterClear" || extended->plan().passes()[2].name != "ProduceColor" ||
+        extended->plan().passes()[3].name != "ConsumeColor" || extended->plan().passes()[4].name != "PoolRead" ||
         extended->plan().passes()[5].name != "PoolTextureWrite" ||
-        extended->plan().passes()[6].name != "PoolTextureRead" ||
-        extended->plan().passes()[7].name != "Compute" ||
+        extended->plan().passes()[6].name != "PoolTextureRead" || extended->plan().passes()[7].name != "Compute" ||
         extended->plan().passes()[8].name != "PresentToSwapChain" ||
         extended->plan().passes()[2].barriersAfter.size() != 1 ||
         extended->plan().passes()[2].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
         extended->plan().passes()[3].barriersBefore[0].before != cue::FrameGraphResourceState::Common ||
         extended->plan().passes()[3].barriersAfter.size() != 2 ||
         extended->plan().passes()[3].barriersAfter[0].after != cue::FrameGraphResourceState::Common ||
-        extended->plan().passes()[8].barriersBefore[0].before != cue::FrameGraphResourceState::Common)
+        extended->plan().passes()[8].barriersBefore[0].before != cue::FrameGraphResourceState::NonPixelShaderRead)
     {
         return 20;
     }
@@ -590,30 +673,28 @@ int run_tests()
     }
     customEnabled = true;
     auto executeResult = extended->execute(0, {*commandPool, *queuePool});
-    if (!executeResult.has_value() || !*executeResult.try_value() ||
-        customCallCount != 1 || poolCallCount != 1 || computeCallCount != 1)
+    if (!executeResult.has_value() || !*executeResult.try_value() || customCallCount != 1 || poolCallCount != 1 ||
+        computeCallCount != 1)
     {
         return 22;
     }
-    auto* extendedBackBuffer = swapChain->back_buffer(swapChain->current_index());
+    auto *extendedBackBuffer = swapChain->back_buffer(swapChain->current_index());
     auto verifyCommandResult = commandPool->acquire(cue::QueueType::Graphics);
     if (!extendedBackBuffer || !verifyCommandResult.has_value())
     {
         return 24;
     }
     auto verifyCommand = verifyCommandResult.take_value();
-    auto* verifyContext = dynamic_cast<cue::dx12::DX12GpuCommandContext*>(verifyCommand.get());
+    auto *verifyContext = dynamic_cast<cue::dx12::DX12GpuCommandContext *>(verifyCommand.get());
     if (!verifyContext || !verifyContext->command_list())
     {
         return 25;
     }
-    auto* verifyList = verifyContext->command_list();
-    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_PRESENT,
-               D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto *verifyList = verifyContext->command_list();
+    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
     source.pResource = extendedBackBuffer;
     verifyList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE,
-               D3D12_RESOURCE_STATE_PRESENT);
+    transition(*verifyList, *extendedBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
     if (!verifyCommand->close().has_value())
     {
         return 26;
@@ -634,17 +715,65 @@ int run_tests()
         const auto red = std::to_integer<int>(pixels[offset]);
         const auto green = std::to_integer<int>(pixels[offset + 1]);
         const auto blue = std::to_integer<int>(pixels[offset + 2]);
-        return red >= 203 && red <= 205 && green >= 25 && green <= 27 &&
-               blue >= 76 && blue <= 78 && std::to_integer<int>(pixels[offset + 3]) == 255;
+        return red >= 203 && red <= 205 && green >= 25 && green <= 27 && blue >= 76 && blue <= 78 &&
+               std::to_integer<int>(pixels[offset + 3]) == 255;
     };
     if (!outputMatches(0, 0) || !outputMatches(63, 63))
     {
         return 29;
     }
+    // 元の Graph の Descriptor を回収し、同じ小容量 Fixture を Stress Graph に再利用する
+    if (!extended->shutdown().has_value())
+        return 66;
+    // 32 Context を超える 96 Compute Pass を一つの提出へまとめ、各 Frame の Signal を一回にする
+    int batchCalls = 0;
+    auto stressResult = cue::dx12::DX12MainFrameGraph::create(
+        resources, *swapChain,
+        {2, clearColor, [&batchCalls](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle) -> cue::Result<void>
+         {
+             for (int index = 0; index < 96; ++index)
+             {
+                 auto added = a_graph.add_pass(std::make_unique<BatchTestPass>(batchCalls, cue::QueueType::Compute));
+                 if (!added.has_value())
+                     return added;
+             }
+             return cue::Result<void>::success();
+         }});
+    if (!stressResult.has_value())
+    {
+        std::fprintf(stderr, "Stress graph create: %s (%lld)\n", stressResult.try_error()->operation.c_str(),
+                     static_cast<long long>(stressResult.try_error()->nativeCode));
+        return 60;
+    }
+    auto stress = stressResult.take_value();
+    auto computeQueueResult = queuePool->acquire(cue::QueueType::Compute);
+    if (!computeQueueResult.has_value())
+        return 61;
+    auto computeQueue = computeQueueResult.take_value();
+    const auto fenceBefore = computeQueue->latest_fence_value();
+    computeQueue.reset();
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        auto executed = stress->execute(0, {*commandPool, *queuePool});
+        if (!executed.has_value() || !*executed.try_value())
+            return 62;
+    }
+    computeQueueResult = queuePool->acquire(cue::QueueType::Compute);
+    if (!computeQueueResult.has_value())
+        return 63;
+    computeQueue = computeQueueResult.take_value();
+    if (computeQueue->latest_fence_value() != fenceBefore + 2 || batchCalls != 192)
+        return 64;
+    computeQueue.reset();
+    const auto measured = stress->performance();
+    if (measured.record.sampleCount != 2 || measured.frameWait.sampleCount != 2 || measured.completedGpuFrames != 1 ||
+        measured.gpuPasses.size() != 98 || !measured.gpuPasses.front().isAvailable ||
+        !measured.gpuPasses[1].isAvailable || measured.gpuPasses[1].queue != cue::QueueType::Compute ||
+        !stress->shutdown().has_value())
+        return 65;
     verifyCommand.reset();
     if (!extended->shutdown().has_value() || !commandPool->shutdown().has_value() ||
-        !queuePool->shutdown().has_value() ||
-        !pool->retire(poolBuffer).has_value() || !pool->shutdown().has_value() ||
+        !queuePool->shutdown().has_value() || !pool->retire(poolBuffer).has_value() || !pool->shutdown().has_value() ||
         !swapChain->shutdown().has_value() || !window->destroy().has_value())
     {
         return 23;

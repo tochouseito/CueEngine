@@ -1,4 +1,5 @@
 # DX12 固有の Device と Queue／Command Pool の作成・所有を独立した Module にする
+include("${PROJECT_SOURCE_DIR}/ThirdParty/WinPixEventRuntime.cmake")
 # Pass の Shader 設定は FrameGraph Build 中に DXC でコンパイルする
 file(GLOB CUE_DXC_CANDIDATES
     "$ENV{SystemDrive}/Program Files (x86)/Windows Kits/10/bin/*/x64/dxc.exe"
@@ -60,7 +61,7 @@ target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
 target_include_directories(Cue.Renderer.DX12 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Generated")
 target_link_libraries(Cue.Renderer.DX12
     PUBLIC Cue.Foundation Cue.Renderer.FrameGraph Cue.Renderer.Passes Cue.Renderer.RHI
-    PRIVATE Cue.Foundation.Windows Cue.Platform.Windows d3d12 dxgi dxguid
+    PRIVATE Cue.Foundation.Windows Cue.Platform.Windows Cue.WinPixEventRuntime d3d12 dxgi dxguid
 )
 target_compile_features(Cue.Renderer.DX12 PUBLIC cxx_std_20)
 

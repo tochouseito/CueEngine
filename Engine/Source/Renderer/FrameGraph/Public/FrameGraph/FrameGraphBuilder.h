@@ -58,6 +58,8 @@ enum class FrameGraphResourceState
     CopySource,
     CopyDestination,
     ShaderRead,
+    PixelShaderRead,
+    NonPixelShaderRead,
     UnorderedAccess,
     RenderTarget,
     DepthRead,
@@ -111,9 +113,16 @@ struct FrameGraphResourcePlan final
     GpuTexture2DDesc textureDesc;
     bool isImported = false;
     /// Pool と Resource は Plan と GPU 完了より長く生存させる。nullptr は Pool 外の Resource
-    IGpuResourcePool* pool = nullptr;
+    IGpuResourcePool *pool = nullptr;
     GpuResourceHandle poolHandle;
     bool restoreFinalState = false;
+    /// Build で集約した用途。記録時に全 Pass を再走査しない
+    bool isWritten = false;
+    /// Transition / UAV State は Read 宣言でも他 Graph の同時 State 使用を排他する
+    bool needsExclusiveStateAccess = false;
+    bool needsRenderTarget = false;
+    bool needsDepthStencil = false;
+    bool needsUnorderedAccess = false;
     FrameGraphResourceState initialState = FrameGraphResourceState::Common;
     FrameGraphResourceState finalState = FrameGraphResourceState::Common;
     std::optional<std::size_t> firstUse;
@@ -133,37 +142,40 @@ struct FrameGraphAliasSlotPlan final
 /// Alias Slot は直列 Queue の実行順を前提とする。物理配置と Barrier は Backend が決める
 class FrameGraphPlan final
 {
-public:
+  public:
     /// @brief 同じ Build 結果を複写した Plan で共有する識別子を返す
     [[nodiscard]] std::uint64_t id() const noexcept;
 
     /// @brief 実行順に並んだ Pass を返す
-    [[nodiscard]] const std::vector<FrameGraphPassPlan>& passes() const noexcept;
+    [[nodiscard]] const std::vector<FrameGraphPassPlan> &passes() const noexcept;
 
     /// @brief Handle の Index 順に並んだ Resource と寿命を返す
-    [[nodiscard]] const std::vector<FrameGraphResourcePlan>& resources() const noexcept;
+    [[nodiscard]] const std::vector<FrameGraphResourcePlan> &resources() const noexcept;
 
     /// @brief 一時 Resource の非重複寿命から作った共有候補を返す
-    [[nodiscard]] const std::vector<FrameGraphAliasSlotPlan>& alias_slots() const noexcept;
+    [[nodiscard]] const std::vector<FrameGraphAliasSlotPlan> &alias_slots() const noexcept;
 
     /// @brief 外部 Resource と再利用する固定 Resource を終了 State に戻す Barrier を返す
-    [[nodiscard]] const std::vector<FrameGraphBarrierPlan>& final_barriers() const noexcept;
+    [[nodiscard]] const std::vector<FrameGraphBarrierPlan> &final_barriers() const noexcept;
 
-private:
+    /// @brief 他 Queue が扱えない開始 State と並列 Read の開始遷移を Graphics で先行記録する
+    [[nodiscard]] const std::vector<FrameGraphBarrierPlan> &initial_barriers() const noexcept;
+
+  private:
     friend class FrameGraphBuilder;
 
     /// @brief 検証済み Pass と Resource の Snapshot だけを所有する
-    FrameGraphPlan(std::vector<FrameGraphPassPlan> a_passes,
-                   std::vector<FrameGraphResourcePlan> a_resources,
+    FrameGraphPlan(std::vector<FrameGraphPassPlan> a_passes, std::vector<FrameGraphResourcePlan> a_resources,
                    std::vector<FrameGraphAliasSlotPlan> a_aliasSlots,
                    std::vector<FrameGraphBarrierPlan> a_finalBarriers,
-                   std::uint64_t a_id) noexcept;
+                   std::vector<FrameGraphBarrierPlan> a_initialBarriers, std::uint64_t a_id) noexcept;
 
     std::uint64_t m_id = 0;
     std::vector<FrameGraphPassPlan> m_passes;
     std::vector<FrameGraphResourcePlan> m_resources;
     std::vector<FrameGraphAliasSlotPlan> m_aliasSlots;
     std::vector<FrameGraphBarrierPlan> m_finalBarriers;
+    std::vector<FrameGraphBarrierPlan> m_initialBarriers;
 };
 
 /// @brief Graph Build 中の生成依頼先を型付きで非所有参照する
@@ -187,7 +199,7 @@ class FrameGraphBuilder final
     {
     };
 
-public:
+  public:
     /// @brief create だけが Builder を構築する
     explicit FrameGraphBuilder(CreateToken) noexcept;
 
@@ -217,15 +229,14 @@ public:
     /// @brief 本番用 Graph に固定した FinalColorTexture の論理 Handle を返す
     [[nodiscard]] FrameGraphResourceHandle final_color() const noexcept;
 
-    FrameGraphBuilder(const FrameGraphBuilder&) = delete;
-    FrameGraphBuilder& operator=(const FrameGraphBuilder&) = delete;
+    FrameGraphBuilder(const FrameGraphBuilder &) = delete;
+    FrameGraphBuilder &operator=(const FrameGraphBuilder &) = delete;
 
     /// @brief Default Buffer を論理的な一時 Resource として登録する
     [[nodiscard]] Result<FrameGraphResourceHandle> create_transient_buffer(GpuBufferDesc a_desc);
 
     /// @brief 名前を付けて一時 Buffer を登録する
-    [[nodiscard]] Result<FrameGraphResourceHandle> create_transient_buffer(std::string a_name,
-                                                                           GpuBufferDesc a_desc);
+    [[nodiscard]] Result<FrameGraphResourceHandle> create_transient_buffer(std::string a_name, GpuBufferDesc a_desc);
 
     /// @brief 二次元 Texture を論理的な一時 Resource として登録する
     [[nodiscard]] Result<FrameGraphResourceHandle> create_transient_texture2d(GpuTexture2DDesc a_desc);
@@ -250,20 +261,23 @@ public:
                                                                     FrameGraphResourceState a_final);
 
     /// @brief 名前付きの外部 Texture を Graph に取り込む
-    [[nodiscard]] Result<FrameGraphResourceHandle> import_texture2d(std::string a_name,
-                                                                    GpuTexture2DDesc a_desc,
+    [[nodiscard]] Result<FrameGraphResourceHandle> import_texture2d(std::string a_name, GpuTexture2DDesc a_desc,
                                                                     FrameGraphResourceState a_initial,
                                                                     FrameGraphResourceState a_final);
 
     /// @brief Pool 所有 Buffer を世代付き Handle で取り込む。Pool と Resource は Graph より長く生存させる
-    [[nodiscard]] Result<FrameGraphResourceHandle> import_pool_buffer(
-        std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
-        GpuBufferDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final);
+    [[nodiscard]] Result<FrameGraphResourceHandle> import_pool_buffer(std::string a_name, IGpuResourcePool &a_pool,
+                                                                      GpuResourceHandle a_poolHandle,
+                                                                      GpuBufferDesc a_desc,
+                                                                      FrameGraphResourceState a_initial,
+                                                                      FrameGraphResourceState a_final);
 
     /// @brief Pool 所有 Texture を世代付き Handle で取り込む。Pool と Resource は Graph より長く生存させる
-    [[nodiscard]] Result<FrameGraphResourceHandle> import_pool_texture2d(
-        std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
-        GpuTexture2DDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final);
+    [[nodiscard]] Result<FrameGraphResourceHandle> import_pool_texture2d(std::string a_name, IGpuResourcePool &a_pool,
+                                                                         GpuResourceHandle a_poolHandle,
+                                                                         GpuTexture2DDesc a_desc,
+                                                                         FrameGraphResourceState a_initial,
+                                                                         FrameGraphResourceState a_final);
 
     /// @brief Legacy の get_texture と同様、先に登録した名前を検索する
     [[nodiscard]] Result<FrameGraphResourceHandle> get_texture(std::string_view a_name) const;
@@ -272,8 +286,7 @@ public:
     [[nodiscard]] Result<FrameGraphResourceHandle> get_buffer(std::string_view a_name) const;
 
     /// @brief 診断に使う名前を持つ Pass を追加する
-    [[nodiscard]] Result<FrameGraphPassHandle> add_pass(std::string a_name,
-                                                         QueueType a_queue = QueueType::Graphics);
+    [[nodiscard]] Result<FrameGraphPassHandle> add_pass(std::string a_name, QueueType a_queue = QueueType::Graphics);
 
     /// @brief Pass 内の Resource Access と必要 State を一度だけ登録する
     ///
@@ -296,7 +309,7 @@ public:
     /// @brief Graph が Pass の Index 対応を確認するため現在数を返す
     [[nodiscard]] std::size_t pass_count() const noexcept;
 
-private:
+  private:
     friend class FrameGraph;
 
     /// @brief Graph Build の生成物を回収し、途中失敗では未回収 Handle を残す

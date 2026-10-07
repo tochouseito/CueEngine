@@ -36,8 +36,7 @@ bool is_valid_texture(GpuTexture2DDesc a_desc) noexcept
 }
 
 /// @brief Resource 種類と Heap 用途に対して宣言可能な境界 State か判定する
-bool is_valid_boundary_state(FrameGraphResourceState a_state, GpuResourceKind a_kind,
-                             GpuMemoryUsage a_memory) noexcept
+bool is_valid_boundary_state(FrameGraphResourceState a_state, GpuResourceKind a_kind, GpuMemoryUsage a_memory) noexcept
 {
     if (a_memory == GpuMemoryUsage::Upload)
     {
@@ -53,6 +52,8 @@ bool is_valid_boundary_state(FrameGraphResourceState a_state, GpuResourceKind a_
     case FrameGraphResourceState::CopySource:
     case FrameGraphResourceState::CopyDestination:
     case FrameGraphResourceState::ShaderRead:
+    case FrameGraphResourceState::PixelShaderRead:
+    case FrameGraphResourceState::NonPixelShaderRead:
     case FrameGraphResourceState::UnorderedAccess:
         return true;
     case FrameGraphResourceState::GenericRead:
@@ -74,6 +75,8 @@ bool is_valid_use_state(FrameGraphResourceState a_state, FrameGraphAccess a_acce
     case FrameGraphResourceState::GenericRead:
     case FrameGraphResourceState::CopySource:
     case FrameGraphResourceState::ShaderRead:
+    case FrameGraphResourceState::PixelShaderRead:
+    case FrameGraphResourceState::NonPixelShaderRead:
     case FrameGraphResourceState::DepthRead:
         return a_access == FrameGraphAccess::Read;
     case FrameGraphResourceState::CopyDestination:
@@ -99,6 +102,31 @@ bool is_same_state(FrameGraphResourceState a_left, FrameGraphResourceState a_rig
     return (a_left == FrameGraphResourceState::Common && a_right == FrameGraphResourceState::Present) ||
            (a_left == FrameGraphResourceState::Present && a_right == FrameGraphResourceState::Common);
 }
+
+/// @brief Barrier の遷移前後に Queue が扱えない Graphics 専用 State を含めない
+bool supports_queue_state(QueueType a_queue, FrameGraphResourceState a_state) noexcept
+{
+    if (a_queue == QueueType::Graphics)
+    {
+        return true;
+    }
+    if (a_queue == QueueType::Copy)
+    {
+        return a_state == FrameGraphResourceState::Common || a_state == FrameGraphResourceState::Present ||
+               a_state == FrameGraphResourceState::CopySource || a_state == FrameGraphResourceState::CopyDestination;
+    }
+    return a_state != FrameGraphResourceState::ShaderRead && a_state != FrameGraphResourceState::PixelShaderRead &&
+           a_state != FrameGraphResourceState::GenericRead && a_state != FrameGraphResourceState::RenderTarget &&
+           a_state != FrameGraphResourceState::DepthRead && a_state != FrameGraphResourceState::DepthWrite;
+}
+
+/// @brief Copy Queue の Common 受渡しを除き、同一 State の Read だけ同時実行を許す
+bool can_parallel_read(QueueType a_left, QueueType a_right, FrameGraphResourceState a_state) noexcept
+{
+    return a_left == a_right || (a_state != FrameGraphResourceState::UnorderedAccess && a_left != QueueType::Copy &&
+                                 a_right != QueueType::Copy && supports_queue_state(a_left, a_state) &&
+                                 supports_queue_state(a_right, a_state));
+}
 } // namespace
 
 /// @brief 検証済みの Pass と Resource の Snapshot を受け取る
@@ -106,9 +134,10 @@ FrameGraphPlan::FrameGraphPlan(std::vector<FrameGraphPassPlan> a_passes,
                                std::vector<FrameGraphResourcePlan> a_resources,
                                std::vector<FrameGraphAliasSlotPlan> a_aliasSlots,
                                std::vector<FrameGraphBarrierPlan> a_finalBarriers,
-                               std::uint64_t a_id) noexcept
+                               std::vector<FrameGraphBarrierPlan> a_initialBarriers, std::uint64_t a_id) noexcept
     : m_id(a_id), m_passes(std::move(a_passes)), m_resources(std::move(a_resources)),
-      m_aliasSlots(std::move(a_aliasSlots)), m_finalBarriers(std::move(a_finalBarriers))
+      m_aliasSlots(std::move(a_aliasSlots)), m_finalBarriers(std::move(a_finalBarriers)),
+      m_initialBarriers(std::move(a_initialBarriers))
 {
 }
 
@@ -119,27 +148,33 @@ std::uint64_t FrameGraphPlan::id() const noexcept
 }
 
 /// @brief 物理実行へ渡す Pass の順序を返す
-const std::vector<FrameGraphPassPlan>& FrameGraphPlan::passes() const noexcept
+const std::vector<FrameGraphPassPlan> &FrameGraphPlan::passes() const noexcept
 {
     return m_passes;
 }
 
 /// @brief Alias 計画に渡す Resource の寿命を返す
-const std::vector<FrameGraphResourcePlan>& FrameGraphPlan::resources() const noexcept
+const std::vector<FrameGraphResourcePlan> &FrameGraphPlan::resources() const noexcept
 {
     return m_resources;
 }
 
 /// @brief 直列実行で同じ物理領域へ置ける論理 Resource 群を返す
-const std::vector<FrameGraphAliasSlotPlan>& FrameGraphPlan::alias_slots() const noexcept
+const std::vector<FrameGraphAliasSlotPlan> &FrameGraphPlan::alias_slots() const noexcept
 {
     return m_aliasSlots;
 }
 
 /// @brief Present や呼出側指定 State に戻すための最後の Barrier を返す
-const std::vector<FrameGraphBarrierPlan>& FrameGraphPlan::final_barriers() const noexcept
+const std::vector<FrameGraphBarrierPlan> &FrameGraphPlan::final_barriers() const noexcept
 {
     return m_finalBarriers;
+}
+
+/// @brief 全 Queue に先行する Graphics の開始遷移を返す
+const std::vector<FrameGraphBarrierPlan> &FrameGraphPlan::initial_barriers() const noexcept
+{
+    return m_initialBarriers;
 }
 
 /// @brief create の内部でのみ空の Builder を構築する
@@ -166,7 +201,7 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create()
         builder->m_graphId = id;
         return BuilderResult::success(std::move(builder));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return BuilderResult::failure({ErrorCategory::PlatformFailure, "FrameGraphBuilder.create.allocation"});
     }
@@ -375,8 +410,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(GpuB
 }
 
 /// @brief 名前付きの Default Buffer を登録する
-Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(std::string a_name,
-                                                                            GpuBufferDesc a_desc)
+Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_buffer(std::string a_name, GpuBufferDesc a_desc)
 {
     if (a_desc.byteSize == 0 || a_desc.memory != GpuMemoryUsage::Default)
     {
@@ -414,8 +448,8 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::create_transient_texture2d(s
 
 /// @brief Pool 所有などの外部 Buffer の論理形状を登録する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(GpuBufferDesc a_desc,
-                                                                 FrameGraphResourceState a_initial,
-                                                                 FrameGraphResourceState a_final)
+                                                                  FrameGraphResourceState a_initial,
+                                                                  FrameGraphResourceState a_final)
 {
     return import_buffer({}, a_desc, a_initial, a_final);
 }
@@ -446,15 +480,14 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(std::string a_
 
 /// @brief SwapChain Back Buffer などの外部 Texture を論理的に登録する
 Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(GpuTexture2DDesc a_desc,
-                                                                    FrameGraphResourceState a_initial,
-                                                                    FrameGraphResourceState a_final)
+                                                                     FrameGraphResourceState a_initial,
+                                                                     FrameGraphResourceState a_final)
 {
     return import_texture2d({}, a_desc, a_initial, a_final);
 }
 
 /// @brief 名前付きの外部 Texture を取り込む
-Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(std::string a_name,
-                                                                     GpuTexture2DDesc a_desc,
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(std::string a_name, GpuTexture2DDesc a_desc,
                                                                      FrameGraphResourceState a_initial,
                                                                      FrameGraphResourceState a_final)
 {
@@ -476,9 +509,11 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_texture2d(std::string
 }
 
 /// @brief 物理 Buffer の所有は Pool に残し、Graph は非所有 Handle を保持する
-Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(
-    std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
-    GpuBufferDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final)
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(std::string a_name, IGpuResourcePool &a_pool,
+                                                                       GpuResourceHandle a_poolHandle,
+                                                                       GpuBufferDesc a_desc,
+                                                                       FrameGraphResourceState a_initial,
+                                                                       FrameGraphResourceState a_final)
 {
     if (!a_poolHandle.is_valid())
     {
@@ -488,7 +523,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(
     auto result = import_buffer(std::move(a_name), a_desc, a_initial, a_final);
     if (result.has_value())
     {
-        auto& resource = m_resources[result.try_value()->index];
+        auto &resource = m_resources[result.try_value()->index];
         resource.pool = &a_pool;
         resource.poolHandle = a_poolHandle;
     }
@@ -496,9 +531,11 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(
 }
 
 /// @brief 物理 Texture の所有は Pool に残し、Graph は非所有 Handle を保持する
-Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(
-    std::string a_name, IGpuResourcePool& a_pool, GpuResourceHandle a_poolHandle,
-    GpuTexture2DDesc a_desc, FrameGraphResourceState a_initial, FrameGraphResourceState a_final)
+Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(std::string a_name, IGpuResourcePool &a_pool,
+                                                                          GpuResourceHandle a_poolHandle,
+                                                                          GpuTexture2DDesc a_desc,
+                                                                          FrameGraphResourceState a_initial,
+                                                                          FrameGraphResourceState a_final)
 {
     if (!a_poolHandle.is_valid())
     {
@@ -508,7 +545,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(
     auto result = import_texture2d(std::move(a_name), a_desc, a_initial, a_final);
     if (result.has_value())
     {
-        auto& resource = m_resources[result.try_value()->index];
+        auto &resource = m_resources[result.try_value()->index];
         resource.pool = &a_pool;
         resource.poolHandle = a_poolHandle;
     }
@@ -518,29 +555,27 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(
 /// @brief 名前と種類が一致する Texture の Handle を返す
 Result<FrameGraphResourceHandle> FrameGraphBuilder::get_texture(std::string_view a_name) const
 {
-    for (const auto& resource : m_resources)
+    for (const auto &resource : m_resources)
     {
         if (!a_name.empty() && resource.name == a_name && resource.kind == GpuResourceKind::Texture2D)
         {
             return Result<FrameGraphResourceHandle>::success(resource.handle);
         }
     }
-    return Result<FrameGraphResourceHandle>::failure(
-        {ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_texture"});
+    return Result<FrameGraphResourceHandle>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_texture"});
 }
 
 /// @brief 名前と種類が一致する Buffer の Handle を返す
 Result<FrameGraphResourceHandle> FrameGraphBuilder::get_buffer(std::string_view a_name) const
 {
-    for (const auto& resource : m_resources)
+    for (const auto &resource : m_resources)
     {
         if (!a_name.empty() && resource.name == a_name && resource.kind == GpuResourceKind::Buffer)
         {
             return Result<FrameGraphResourceHandle>::success(resource.handle);
         }
     }
-    return Result<FrameGraphResourceHandle>::failure(
-        {ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_buffer"});
+    return Result<FrameGraphResourceHandle>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.get_buffer"});
 }
 
 /// @brief 診断名を確保して新しい Pass Handle を発行する
@@ -561,7 +596,7 @@ Result<FrameGraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, Que
         m_passes.push_back(std::move(pass));
         return Result<FrameGraphPassHandle>::success(handle);
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<FrameGraphPassHandle>::failure(
             {ErrorCategory::PlatformFailure, "FrameGraphBuilder.add_pass.allocation"});
@@ -572,25 +607,29 @@ Result<FrameGraphPassHandle> FrameGraphBuilder::add_pass(std::string a_name, Que
 Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResourceHandle a_resource,
                                     FrameGraphAccess a_access, FrameGraphResourceState a_state)
 {
-    if (!owns(a_pass) || !owns(a_resource) ||
-        !is_valid_use_state(a_state, a_access) ||
+    // 既存の ShaderRead 宣言は Compute では Non-Pixel に限定し、Pixel 専用の明示指定は拒否する
+    if (owns(a_pass) && m_passes[a_pass.index].queue == QueueType::Compute &&
+        a_state == FrameGraphResourceState::ShaderRead)
+    {
+        a_state = FrameGraphResourceState::NonPixelShaderRead;
+    }
+    if (!owns(a_pass) || !owns(a_resource) || !is_valid_use_state(a_state, a_access) ||
         !is_valid_boundary_state(a_state, m_resources[a_resource.index].kind,
                                  m_resources[a_resource.index].bufferDesc.memory) ||
-        (m_passes[a_pass.index].queue == QueueType::Copy &&
-         a_state != FrameGraphResourceState::CopySource &&
+        (m_passes[a_pass.index].queue == QueueType::Copy && a_state != FrameGraphResourceState::CopySource &&
          a_state != FrameGraphResourceState::CopyDestination) ||
         (m_passes[a_pass.index].queue == QueueType::Compute &&
-         (a_state == FrameGraphResourceState::RenderTarget ||
-          a_state == FrameGraphResourceState::DepthRead ||
-          a_state == FrameGraphResourceState::DepthWrite ||
-          a_state == FrameGraphResourceState::Present)))
+         (a_state == FrameGraphResourceState::RenderTarget || a_state == FrameGraphResourceState::DepthRead ||
+          a_state == FrameGraphResourceState::DepthWrite || a_state == FrameGraphResourceState::Present ||
+          a_state == FrameGraphResourceState::PixelShaderRead ||
+          (a_state == FrameGraphResourceState::GenericRead &&
+           m_resources[a_resource.index].bufferDesc.memory != GpuMemoryUsage::Upload))))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.handle"});
     }
-    auto& uses = m_passes[a_pass.index].uses;
-    if (std::any_of(uses.begin(), uses.end(), [a_resource](const FrameGraphUse& a_use) {
-            return a_use.resource.index == a_resource.index;
-        }))
+    auto &uses = m_passes[a_pass.index].uses;
+    if (std::any_of(uses.begin(), uses.end(),
+                    [a_resource](const FrameGraphUse &a_use) { return a_use.resource.index == a_resource.index; }))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.duplicate"});
     }
@@ -599,7 +638,7 @@ Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResou
         uses.push_back({a_resource, a_access, a_state});
         return Result<void>::success();
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<void>::failure({ErrorCategory::PlatformFailure, "FrameGraphBuilder.use.allocation"});
     }
@@ -645,7 +684,7 @@ Result<void> FrameGraphBuilder::depends_on(FrameGraphPassHandle a_pass, FrameGra
         m_dependencies.push_back(dependency);
         return Result<void>::success();
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<void>::failure({ErrorCategory::PlatformFailure, "FrameGraphBuilder.depends_on.allocation"});
     }
@@ -659,7 +698,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
     {
         const std::size_t passCount = m_passes.size();
         std::vector<std::vector<bool>> edges(passCount, std::vector<bool>(passCount, false));
-        for (const auto& [before, after] : m_dependencies)
+        for (const auto &[before, after] : m_dependencies)
         {
             edges[before][after] = true;
         }
@@ -672,24 +711,25 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             FrameGraphResourceState state = FrameGraphResourceState::Common;
         };
         std::vector<std::vector<AccessRecord>> accesses(m_resources.size());
-        for (const auto& pass : m_passes)
+        for (const auto &pass : m_passes)
         {
-            for (const auto& use : pass.uses)
+            for (const auto &use : pass.uses)
             {
                 accesses[use.resource.index].push_back({pass.handle.index, use.access, use.state});
             }
         }
-        for (const auto& resourceAccesses : accesses)
+        for (const auto &resourceAccesses : accesses)
         {
             for (std::size_t earlier = 0; earlier < resourceAccesses.size(); ++earlier)
             {
                 for (std::size_t later = earlier + 1; later < resourceAccesses.size(); ++later)
                 {
-                    const auto& first = resourceAccesses[earlier];
-                    const auto& second = resourceAccesses[later];
+                    const auto &first = resourceAccesses[earlier];
+                    const auto &second = resourceAccesses[later];
                     if (first.access == FrameGraphAccess::Write || second.access == FrameGraphAccess::Write ||
                         first.state != second.state ||
-                        m_passes[first.passIndex].queue != m_passes[second.passIndex].queue)
+                        !can_parallel_read(m_passes[first.passIndex].queue, m_passes[second.passIndex].queue,
+                                           first.state))
                     {
                         edges[first.passIndex][second.passIndex] = true;
                     }
@@ -742,9 +782,17 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         auto resources = m_resources;
         for (std::size_t order = 0; order < ordered.size(); ++order)
         {
-            for (const auto& use : ordered[order].uses)
+            for (const auto &use : ordered[order].uses)
             {
-                auto& resource = resources[use.resource.index];
+                auto &resource = resources[use.resource.index];
+                resource.isWritten = resource.isWritten || use.access == FrameGraphAccess::Write;
+                resource.needsRenderTarget =
+                    resource.needsRenderTarget || use.state == FrameGraphResourceState::RenderTarget;
+                resource.needsDepthStencil = resource.needsDepthStencil ||
+                                             use.state == FrameGraphResourceState::DepthRead ||
+                                             use.state == FrameGraphResourceState::DepthWrite;
+                resource.needsUnorderedAccess =
+                    resource.needsUnorderedAccess || use.state == FrameGraphResourceState::UnorderedAccess;
                 if (!resource.firstUse)
                 {
                     if (!resource.isImported && use.access != FrameGraphAccess::Write)
@@ -761,54 +809,166 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         // Pass 開始前に State を合わせ、同じ UAV State の依存する Access だけを同期する
         std::vector<FrameGraphResourceState> currentStates;
         currentStates.reserve(resources.size());
-        for (const auto& resource : resources)
+        for (const auto &resource : resources)
         {
             currentStates.push_back(resource.initialState);
         }
         std::vector<std::optional<FrameGraphAccess>> previousAccess(resources.size());
+        std::vector<FrameGraphBarrierPlan> initialBarriers;
         for (std::size_t order = 0; order < ordered.size(); ++order)
         {
-            auto& pass = ordered[order];
-            for (const auto& use : pass.uses)
+            auto &pass = ordered[order];
+            for (const auto &use : pass.uses)
             {
                 const std::size_t index = use.resource.index;
+                const auto &resource = resources[index];
                 const auto before = currentStates[index];
                 if (!is_same_state(before, use.state))
                 {
-                    pass.barriersBefore.push_back({FrameGraphBarrierKind::Transition, use.resource,
-                                                   before, use.state});
+                    // Parallel Read は最初の Reader に遷移を持たせず、直前の依存 Producer または
+                    // 全 Queue に先行する Graphics 区間で State を確定する
+                    bool hasParallelReader = false;
+                    if (use.access == FrameGraphAccess::Read)
+                    {
+                        for (std::size_t later = order + 1; later < ordered.size(); ++later)
+                        {
+                            const auto next = std::find_if(ordered[later].uses.begin(), ordered[later].uses.end(),
+                                                           [&use](const FrameGraphUse &a_next)
+                                                           { return a_next.resource.index == use.resource.index; });
+                            if (next == ordered[later].uses.end())
+                                continue;
+                            if (next->access != FrameGraphAccess::Read || next->state != use.state)
+                                break;
+                            hasParallelReader = hasParallelReader || ordered[later].queue != pass.queue;
+                        }
+                    }
+                    const auto barrier =
+                        FrameGraphBarrierPlan{FrameGraphBarrierKind::Transition, use.resource, before, use.state};
+                    if (resource.firstUse == order && (hasParallelReader || !supports_queue_state(pass.queue, before)))
+                    {
+                        initialBarriers.push_back(barrier);
+                    }
+                    else if (hasParallelReader)
+                    {
+                        // 直前の State の使用を終えた全 Pass に依存する最後の Producer へ移す
+                        std::size_t previous = order;
+                        while (previous > 0)
+                        {
+                            --previous;
+                            if (std::any_of(ordered[previous].uses.begin(), ordered[previous].uses.end(),
+                                            [&use](const FrameGraphUse &a_previous)
+                                            { return a_previous.resource.index == use.resource.index; }))
+                                break;
+                        }
+                        if (!supports_queue_state(ordered[previous].queue, use.state))
+                        {
+                            // Copy Producer が Shader State を生成できない場合は最初の Reader が
+                            // Common から遷移し、残りの Reader はその遷移を含む提出完了を待つ
+                            pass.barriersBefore.push_back(barrier);
+                            for (std::size_t later = order + 1; later < ordered.size(); ++later)
+                            {
+                                const auto next = std::find_if(ordered[later].uses.begin(), ordered[later].uses.end(),
+                                                               [&use](const auto &a_next)
+                                                               { return a_next.resource.index == use.resource.index; });
+                                if (next == ordered[later].uses.end())
+                                    continue;
+                                if (next->access != FrameGraphAccess::Read || next->state != use.state)
+                                    break;
+                                ordered[later].dependencies.push_back(pass.handle);
+                            }
+                        }
+                        else
+                        {
+                            // 直前の Read 群の全 Queue が完了してから共有 State を変更する
+                            for (std::size_t earlier = 0; earlier < previous; ++earlier)
+                            {
+                                if (std::any_of(ordered[earlier].uses.begin(), ordered[earlier].uses.end(),
+                                                [&use](const auto &a_previous)
+                                                { return a_previous.resource.index == use.resource.index; }))
+                                    ordered[previous].dependencies.push_back(ordered[earlier].handle);
+                            }
+                            ordered[previous].barriersAfter.push_back(barrier);
+                        }
+                    }
+                    else
+                    {
+                        pass.barriersBefore.push_back(barrier);
+                    }
                 }
                 else if (use.state == FrameGraphResourceState::UnorderedAccess && previousAccess[index] &&
-                         (*previousAccess[index] == FrameGraphAccess::Write ||
-                          use.access == FrameGraphAccess::Write))
+                         (*previousAccess[index] == FrameGraphAccess::Write || use.access == FrameGraphAccess::Write))
                 {
-                    pass.barriersBefore.push_back({FrameGraphBarrierKind::UnorderedAccess, use.resource,
-                                                   use.state, use.state});
+                    pass.barriersBefore.push_back(
+                        {FrameGraphBarrierKind::UnorderedAccess, use.resource, use.state, use.state});
                 }
                 currentStates[index] = use.state;
                 previousAccess[index] = use.access;
             }
             // 最終使用直後に戻し、次の Alias Resource を有効化する前に State を確定する
-            for (const auto& use : pass.uses)
+            for (const auto &use : pass.uses)
             {
                 const std::size_t index = use.resource.index;
-                const auto& resource = resources[index];
-                const auto nextPass = std::find_if(ordered.begin() + order + 1, ordered.end(),
-                                                   [&use](const FrameGraphPassPlan& a_candidate)
-                                                   {
-                                                       return std::any_of(a_candidate.uses.begin(), a_candidate.uses.end(),
-                                                                          [&use](const FrameGraphUse& a_nextUse)
-                                                                          { return a_nextUse.resource.index == use.resource.index; });
-                                                   });
+                const auto &resource = resources[index];
+                const auto nextPass =
+                    std::find_if(ordered.begin() + order + 1, ordered.end(),
+                                 [&use](const FrameGraphPassPlan &a_candidate)
+                                 {
+                                     return std::any_of(a_candidate.uses.begin(), a_candidate.uses.end(),
+                                                        [&use](const FrameGraphUse &a_nextUse)
+                                                        { return a_nextUse.resource.index == use.resource.index; });
+                                 });
                 // Copy Queue との境界では Common を経由し、各 Queue の遷移を自分の List に記録する
-                const bool copyBoundary = pass.queue == QueueType::Copy ||
-                    (nextPass != ordered.end() && nextPass->queue == QueueType::Copy);
+                const bool copyBoundary =
+                    (pass.queue == QueueType::Copy &&
+                     (nextPass == ordered.end() || nextPass->queue != QueueType::Copy)) ||
+                    (nextPass != ordered.end() && pass.queue != nextPass->queue && nextPass->queue == QueueType::Copy);
+                const bool queueBoundary =
+                    nextPass != ordered.end() && !supports_queue_state(nextPass->queue, currentStates[index]);
                 const bool lastTransientUse = !resource.isImported && resource.lastUse == order;
-                const auto after = copyBoundary ? FrameGraphResourceState::Common : resource.initialState;
-                if ((copyBoundary || lastTransientUse) && !is_same_state(currentStates[index], after))
+                // 複数 Queue の Reader が残る可能性のある Resource は全 Queue 合流後に戻す
+                const bool hasOtherQueueReader =
+                    use.access == FrameGraphAccess::Read &&
+                    std::any_of(ordered.begin(), ordered.end(),
+                                [&use, &pass](const auto &a_candidate)
+                                {
+                                    return a_candidate.queue != pass.queue &&
+                                           can_parallel_read(pass.queue, a_candidate.queue, use.state) &&
+                                           std::any_of(a_candidate.uses.begin(), a_candidate.uses.end(),
+                                                       [&use](const auto &a_other)
+                                                       {
+                                                           return a_other.resource.index == use.resource.index &&
+                                                                  a_other.access == FrameGraphAccess::Read &&
+                                                                  a_other.state == use.state;
+                                                       });
+                                });
+                const auto after =
+                    copyBoundary || queueBoundary ? FrameGraphResourceState::Common : resource.initialState;
+                if ((copyBoundary || queueBoundary || (lastTransientUse && !hasOtherQueueReader)) &&
+                    !is_same_state(currentStates[index], after))
                 {
-                    pass.barriersAfter.push_back({FrameGraphBarrierKind::Transition, use.resource,
-                                                  currentStates[index], after});
+                    // Release Barrier が並列 Reader の完了に先行しないよう、全先行 Reader を待つ
+                    if (use.access == FrameGraphAccess::Read)
+                    {
+                        for (std::size_t earlier = 0; earlier < order; ++earlier)
+                        {
+                            if (ordered[earlier].queue == pass.queue)
+                                continue;
+                            const bool hasEarlierRead =
+                                std::any_of(ordered[earlier].uses.begin(), ordered[earlier].uses.end(),
+                                            [&use](const auto &a_previous)
+                                            {
+                                                return a_previous.resource.index == use.resource.index &&
+                                                       a_previous.access == FrameGraphAccess::Read;
+                                            });
+                            if (hasEarlierRead &&
+                                std::none_of(pass.dependencies.begin(), pass.dependencies.end(),
+                                             [&ordered, earlier](const auto &a_dependency)
+                                             { return a_dependency.index == ordered[earlier].handle.index; }))
+                                pass.dependencies.push_back(ordered[earlier].handle);
+                        }
+                    }
+                    pass.barriersAfter.push_back(
+                        {FrameGraphBarrierKind::Transition, use.resource, currentStates[index], after});
                     currentStates[index] = after;
                 }
             }
@@ -816,14 +976,30 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         std::vector<FrameGraphBarrierPlan> finalBarriers;
         for (std::size_t index = 0; index < resources.size(); ++index)
         {
-            const auto& resource = resources[index];
-            if ((resource.isImported || resource.restoreFinalState) &&
+            const auto &resource = resources[index];
+            if ((resource.isImported || resource.restoreFinalState || resource.lastUse) &&
                 !is_same_state(currentStates[index], resource.finalState))
             {
-                finalBarriers.push_back({FrameGraphBarrierKind::Transition, resource.handle,
-                                         currentStates[index], resource.finalState});
+                finalBarriers.push_back(
+                    {FrameGraphBarrierKind::Transition, resource.handle, currentStates[index], resource.finalState});
             }
         }
+
+        // Pool の Read Lease は State も不変のときだけ並行利用できる
+        for (const auto &pass : ordered)
+        {
+            for (const auto &use : pass.uses)
+                if (use.state == FrameGraphResourceState::UnorderedAccess)
+                    resources[use.resource.index].needsExclusiveStateAccess = true;
+            for (const auto &barrier : pass.barriersBefore)
+                resources[barrier.resource.index].needsExclusiveStateAccess = true;
+            for (const auto &barrier : pass.barriersAfter)
+                resources[barrier.resource.index].needsExclusiveStateAccess = true;
+        }
+        for (const auto &barrier : initialBarriers)
+            resources[barrier.resource.index].needsExclusiveStateAccess = true;
+        for (const auto &barrier : finalBarriers)
+            resources[barrier.resource.index].needsExclusiveStateAccess = true;
 
         // 初回使用順に処理し、最後の使用が次の初回使用より前の Slot だけを再利用する
         std::vector<std::uint32_t> transientIndices;
@@ -834,21 +1010,41 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 transientIndices.push_back(index);
             }
         }
-        std::stable_sort(transientIndices.begin(), transientIndices.end(), [&resources](std::uint32_t a_left,
-                                                                                         std::uint32_t a_right) {
-            return resources[a_left].firstUse < resources[a_right].firstUse;
-        });
+        std::stable_sort(transientIndices.begin(), transientIndices.end(),
+                         [&resources](std::uint32_t a_left, std::uint32_t a_right)
+                         { return resources[a_left].firstUse < resources[a_right].firstUse; });
         std::vector<FrameGraphAliasSlotPlan> slots;
         for (std::uint32_t index : transientIndices)
         {
-            const auto& resource = resources[index];
-            auto available = std::find_if(slots.begin(), slots.end(), [&resources, &resource](const auto& a_slot) {
-                const auto& last = resources[a_slot.resources.back().index];
-                const bool isSameTextureHeap = resource.kind != GpuResourceKind::Texture2D ||
-                                               last.textureDesc.isRenderTarget == resource.textureDesc.isRenderTarget;
-                return a_slot.kind == resource.kind && isSameTextureHeap &&
-                       *last.lastUse < *resource.firstUse;
-            });
+            const auto &resource = resources[index];
+            const auto usesMultipleQueues = [&ordered](const FrameGraphResourcePlan &a_resource)
+            {
+                std::optional<QueueType> firstQueue;
+                for (const auto &pass : ordered)
+                {
+                    if (std::any_of(pass.uses.begin(), pass.uses.end(), [&a_resource](const auto &a_use)
+                                    { return a_use.resource.index == a_resource.handle.index; }))
+                    {
+                        if (firstQueue && *firstQueue != pass.queue)
+                            return true;
+                        firstQueue = pass.queue;
+                    }
+                }
+                return false;
+            };
+            auto available =
+                std::find_if(slots.begin(), slots.end(),
+                             [&resources, &resource, &usesMultipleQueues](const auto &a_slot)
+                             {
+                                 const auto &last = resources[a_slot.resources.back().index];
+                                 const bool isSameTextureHeap =
+                                     resource.kind != GpuResourceKind::Texture2D ||
+                                     last.textureDesc.isRenderTarget == resource.textureDesc.isRenderTarget;
+                                 // Queue を跨ぐ Resource の終了遷移は最終合流に置くため、途中 Alias 再利用を行わない
+                                 return !usesMultipleQueues(resource) && !usesMultipleQueues(last) &&
+                                        a_slot.kind == resource.kind && isSameTextureHeap &&
+                                        *last.lastUse < *resource.firstUse;
+                             });
             if (available == slots.end())
             {
                 slots.push_back({resource.kind, {resource.handle}});
@@ -859,18 +1055,29 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             }
         }
         // Alias Slot の再利用は Resource Hazard がなくても GPU の実行順を要求する
-        for (const auto& slot : slots)
+        for (const auto &slot : slots)
         {
             for (std::size_t index = 1; index < slot.resources.size(); ++index)
             {
-                const auto& previous = resources[slot.resources[index - 1].index];
-                const auto& next = resources[slot.resources[index].index];
-                auto& dependencies = ordered[*next.firstUse].dependencies;
+                const auto &previous = resources[slot.resources[index - 1].index];
+                const auto &next = resources[slot.resources[index].index];
+                auto &dependencies = ordered[*next.firstUse].dependencies;
                 const auto before = ordered[*previous.lastUse].handle;
-                if (std::none_of(dependencies.begin(), dependencies.end(), [before](FrameGraphPassHandle a_handle)
-                                 { return a_handle.index == before.index; }))
+                if (std::none_of(dependencies.begin(), dependencies.end(),
+                                 [before](FrameGraphPassHandle a_handle) { return a_handle.index == before.index; }))
                 {
                     dependencies.push_back(before);
+                }
+                // 実行順の最後の Reader だけでは他 Queue の Reader 完了を保証できない
+                for (std::size_t order = *previous.firstUse; order <= *previous.lastUse; ++order)
+                {
+                    const bool usesPrevious = std::any_of(ordered[order].uses.begin(), ordered[order].uses.end(),
+                                                          [&previous](const auto &a_use)
+                                                          { return a_use.resource.index == previous.handle.index; });
+                    if (usesPrevious &&
+                        std::none_of(dependencies.begin(), dependencies.end(), [&ordered, order](const auto &a_handle)
+                                     { return a_handle.index == ordered[order].handle.index; }))
+                        dependencies.push_back(ordered[order].handle);
                 }
             }
         }
@@ -883,10 +1090,10 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         {
             return PlanResult::failure({ErrorCategory::Fatal, "FrameGraphBuilder.plan_id_exhausted"});
         }
-        return PlanResult::success(FrameGraphPlan(std::move(ordered), std::move(resources),
-                                                  std::move(slots), std::move(finalBarriers), planId));
+        return PlanResult::success(FrameGraphPlan(std::move(ordered), std::move(resources), std::move(slots),
+                                                  std::move(finalBarriers), std::move(initialBarriers), planId));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return PlanResult::failure({ErrorCategory::PlatformFailure, "FrameGraphBuilder.build.allocation"});
     }
@@ -906,8 +1113,9 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::add_resource(FrameGraphResou
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidState, "FrameGraphBuilder.add_resource.exhausted"});
     }
-    if (!a_resource.name.empty() && std::any_of(m_resources.begin(), m_resources.end(),
-        [&a_resource](const FrameGraphResourcePlan& a_existing) { return a_existing.name == a_resource.name; }))
+    if (!a_resource.name.empty() &&
+        std::any_of(m_resources.begin(), m_resources.end(), [&a_resource](const FrameGraphResourcePlan &a_existing)
+                    { return a_existing.name == a_resource.name; }))
     {
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.add_resource.duplicate_name"});
@@ -919,7 +1127,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::add_resource(FrameGraphResou
         m_resources.push_back(std::move(a_resource));
         return Result<FrameGraphResourceHandle>::success(handle);
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::PlatformFailure, "FrameGraphBuilder.add_resource.allocation"});

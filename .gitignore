@@ -367,3 +367,4 @@ FodyWeavers.xsd
 
 # vcpkg の生成物は管理せず、Manifest と License のみを記録する
 /ThirdParty/vcpkg_installed/
+/ThirdParty/WinPixEventRuntime/
