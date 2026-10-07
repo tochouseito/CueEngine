@@ -89,3 +89,5 @@ GPU Resize は #59 で接続した。Window Message を処理しながら新規 
 - `git diff --check` 成功。Development / Release と手動の連続 UI 操作は未実施。ImGui GPU 描画、Worker Data 転送、日本語 Font は未接続
 
 #83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする
+
+既定 Test Window には [FrameController FPS](FrameControllerFps.md) を ImGui Text で表示する。FPS は Render 完了間隔の逆数で、ImGui 自身の UI 更新頻度や GPU 完了数を表さない。
