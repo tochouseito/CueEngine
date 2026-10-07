@@ -241,6 +241,15 @@ int test_fps_limit(cue::WindowsThreadServices& a_services)
     {
         return 3;
     }
+    // Callback の時間と FPS 待機を別に集計し、二つ目の完了間隔だけを記録する
+    const auto timings = controller.timing_info();
+    if (timings.update.sampleCount != 2 || timings.render.sampleCount != 2 || timings.limitWait.sampleCount != 2 ||
+        timings.frameInterval.sampleCount != 1 || timings.limitWait.lastDuration < std::chrono::milliseconds(40) ||
+        timings.render.lastDuration != progress.lastRenderDuration ||
+        timings.limitWait.lastDuration != progress.lastLimitWaitDuration)
+    {
+        return 5;
+    }
     return controller.stop().has_value() ? 0 : 4;
 }
 

@@ -1,5 +1,6 @@
 #include <Runtime/FrameController.h>
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <utility>
@@ -15,10 +16,6 @@ Result<void> invoke_callback(FrameCallback& a_callback, std::uint64_t a_frame, s
     try
     {
         return a_callback(a_frame, a_stopToken);
-    }
-    catch (const std::exception&)
-    {
-        return Result<void>::failure({ErrorCategory::InvalidState, a_operation});
     }
     catch (...)
     {
@@ -152,9 +149,17 @@ Result<bool> FrameController::advance()
     if (m_main)
     {
         m_isExecutingMain = true;
+        const auto mainStart = m_clock.now();
         auto mainResult =
             invoke_callback(m_main, frame, m_mainStopSource.get_token(), "FrameController.main.exception");
         m_isExecutingMain = false;
+        const auto mainDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - mainStart);
+        {
+            std::lock_guard lock(m_mutex);
+            m_progress.mainThreadId = std::this_thread::get_id();
+            m_progress.lastMainDuration = mainDuration;
+            m_mainTimings.add(mainDuration);
+        }
         if (!mainResult.has_value())
         {
             Error error = std::move(*mainResult.try_error());
@@ -197,6 +202,7 @@ Result<bool> FrameController::advance()
         m_progress.lastUpdateFrame = frame;
         m_progress.updateThreadId = std::this_thread::get_id();
         m_progress.lastUpdateDuration = updateDuration;
+        m_updateTimings.add(updateDuration);
     }
 
     const auto renderStart = m_clock.now();
@@ -220,12 +226,16 @@ Result<bool> FrameController::advance()
         {
             m_progress.lastFrameInterval =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(*completion - m_lastRenderCompletion);
+            m_intervalTimings.add(m_progress.lastFrameInterval);
         }
         m_lastRenderCompletion = *completion;
         ++m_progress.renderedFrames;
         m_progress.lastRenderFrame = frame;
         m_progress.renderThreadId = std::this_thread::get_id();
         m_progress.lastRenderDuration = renderDuration;
+        m_progress.lastLimitWaitDuration = m_lastLimitWaitDuration;
+        m_renderTimings.add(renderDuration);
+        m_limitTimings.add(m_lastLimitWaitDuration);
     }
     return Result<bool>::success(true);
 }
@@ -329,6 +339,21 @@ FrameProgress FrameController::progress() const
     return m_progress;
 }
 
+/// @brief Sample の整列を Worker の Lock 外で行い、統計表示が Frame 完了公開を妨げない
+FrameTimingInfo FrameController::timing_info() const
+{
+    TimingSamples main, update, render, limit, interval;
+    {
+        std::lock_guard lock(m_mutex);
+        main = m_mainTimings;
+        update = m_updateTimings;
+        render = m_renderTimings;
+        limit = m_limitTimings;
+        interval = m_intervalTimings;
+    }
+    return {main.statistics(), update.statistics(), render.statistics(), limit.statistics(), interval.statistics()};
+}
+
 /// @brief Frame 投入を増やさず、非同期 Callback の完了または最初の失敗を返す
 Result<bool> FrameController::is_idle() const
 {
@@ -394,6 +419,7 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
             m_progress.lastUpdateFrame = frame;
             m_progress.updateThreadId = std::this_thread::get_id();
             m_progress.lastUpdateDuration = duration;
+            m_updateTimings.add(duration);
         }
         m_waiter.notify_all();
     }
@@ -452,12 +478,16 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             {
                 m_progress.lastFrameInterval =
                     std::chrono::duration_cast<std::chrono::nanoseconds>(*completion - m_lastRenderCompletion);
+                m_intervalTimings.add(m_progress.lastFrameInterval);
             }
             m_lastRenderCompletion = *completion;
             ++m_progress.renderedFrames;
             m_progress.lastRenderFrame = frame;
             m_progress.renderThreadId = std::this_thread::get_id();
             m_progress.lastRenderDuration = duration;
+            m_progress.lastLimitWaitDuration = m_lastLimitWaitDuration;
+            m_renderTimings.add(duration);
+            m_limitTimings.add(m_lastLimitWaitDuration);
         }
         m_waiter.notify_all();
     }
@@ -484,6 +514,7 @@ void FrameController::record_failure(Error a_error)
 std::optional<std::chrono::steady_clock::time_point>
 FrameController::wait_for_render_limit(std::stop_token a_stopToken)
 {
+    m_lastLimitWaitDuration = std::chrono::nanoseconds::zero();
     // 停止要求中に FPS 待機や次回時刻の更新を行わない
     if (a_stopToken.stop_requested())
     {
@@ -495,19 +526,28 @@ FrameController::wait_for_render_limit(std::stop_token a_stopToken)
     }
     // 予定時刻までだけ待機し、遅れた場合は現在の完了時刻から次回を計算する
     const auto now = m_clock.now();
-    if (now < m_nextRenderTime &&
-        m_waiter.sleep_for(m_nextRenderTime - now, a_stopToken) == WaitStatus::Stopped)
+    const auto interval = std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps);
+    // 旧 CueEngine と同じく通常 FPS は大半を休止し、最後 250 us〜1 ms だけ時計で合わせる
+    const auto spin = std::chrono::nanoseconds(std::clamp<std::int64_t>(interval.count() / 8, 250'000, 1'000'000));
+    const auto sleepUntil = m_nextRenderTime - spin;
+    if (interval > std::chrono::milliseconds(2) && now < sleepUntil &&
+        m_waiter.sleep_for(sleepUntil - now, a_stopToken) == WaitStatus::Stopped)
     {
         return std::nullopt;
+    }
+    // 追い込み中も停止を確認し、低 FPS の待機や高 FPS のスピンを速やかに中断する
+    while (!a_stopToken.stop_requested() && m_clock.now() < m_nextRenderTime)
+    {
+        m_waiter.relax();
     }
     if (a_stopToken.stop_requested())
     {
         return std::nullopt;
     }
     const auto completion = m_clock.now();
-    // 切り上げで 1 Frame の間隔を確保する
-    const auto interval = (1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps;
-    m_nextRenderTime = completion + std::chrono::nanoseconds(interval);
+    m_lastLimitWaitDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(completion - now);
+    // 切り上げで最小間隔を確保し、遅れた Frame の取り戻しによる連続投入を避ける
+    m_nextRenderTime = completion + interval;
     return completion;
 }
 } // namespace cue

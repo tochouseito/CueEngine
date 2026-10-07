@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Foundation/Result.h>
+#include <Foundation/TimingSamples.h>
 #include <Platform/Clock.h>
 #include <Platform/Thread.h>
 #include <Platform/Waiter.h>
@@ -35,9 +36,22 @@ struct FrameProgress final
     std::uint64_t lastRenderFrame = 0;
     std::thread::id updateThreadId{};
     std::thread::id renderThreadId{};
+    std::thread::id mainThreadId{};
+    std::chrono::nanoseconds lastMainDuration{};
     std::chrono::nanoseconds lastUpdateDuration{};
     std::chrono::nanoseconds lastRenderDuration{};
     std::chrono::nanoseconds lastFrameInterval{};
+    std::chrono::nanoseconds lastLimitWaitDuration{};
+};
+
+/// @brief 経過時間と FPS 待機を分け、直近 120 Frame の分布を公開する
+struct FrameTimingInfo final
+{
+    TimingStatistics main;
+    TimingStatistics update;
+    TimingStatistics render;
+    TimingStatistics limitWait;
+    TimingStatistics frameInterval;
 };
 
 using FrameCallback = std::function<Result<void>(std::uint64_t, std::stop_token)>;
@@ -91,6 +105,9 @@ public:
     /// @brief 完了数、直近のFrame番号、実行Thread、処理時間を取得する
     [[nodiscard]] FrameProgress progress() const;
 
+    /// @brief 固定容量の Sample を同期してコピーし、集計を共有 Lock 外で行う
+    [[nodiscard]] FrameTimingInfo timing_info() const;
+
     /// @brief 新規投入せず、投入済み CPU Frame の完了と Worker の失敗を確認する
     ///
     /// GPU 完了は表さない。呼出側が advance / step を止めている間だけ静止判定に使える
@@ -120,6 +137,13 @@ public:
     std::thread::id m_ownerId;
     mutable std::mutex m_mutex;
     FrameProgress m_progress;
+    TimingSamples m_mainTimings;
+    TimingSamples m_updateTimings;
+    TimingSamples m_renderTimings;
+    TimingSamples m_limitTimings;
+    TimingSamples m_intervalTimings;
+    // Render の実行 Thread だけが書き、完了公開時に共有 Snapshot へ移す
+    std::chrono::nanoseconds m_lastLimitWaitDuration{};
     std::uint64_t m_nextUpdateFrame = 0;
     std::uint64_t m_nextRenderFrame = 0;
     std::chrono::steady_clock::time_point m_nextRenderTime{};
