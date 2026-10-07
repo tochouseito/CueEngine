@@ -1,5 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
+#include <chrono>
 #include <utility>
 
 #include <imgui.h>
@@ -11,8 +12,8 @@ namespace cue
 {
 namespace
 {
-/// @brief Context が Current の UI Frame 内で既定の Test Window だけを構築する
-[[nodiscard]] Result<void> build_test_window()
+/// @brief Main が取得した FrameController の進行情報を既定 Test Window に表示する
+[[nodiscard]] Result<void> build_test_window(const FrameProgress &a_progress)
 {
     // 初回の位置と寸法だけ指定し、以後の移動と Layout 保存を妨げない
     ImGui::SetNextWindowPos({32.0f, 32.0f}, ImGuiCond_FirstUseEver);
@@ -20,6 +21,17 @@ namespace
     if (ImGui::Begin("Test"))
     {
         ImGui::Text("TEST");
+        // Render Callback と FPS 上限待機を含む完了間隔を使い、ImGui の UI 構築頻度と区別する
+        const auto interval = std::chrono::duration<double>(a_progress.lastFrameInterval).count();
+        if (a_progress.renderedFrames >= 2 && interval > 0.0)
+        {
+            ImGui::Text("FrameController FPS: %.1f", 1.0 / interval);
+        }
+        else
+        {
+            // 二つの Render 完了点が揃うまでは FPS を計算せず、起動直後の零除算を避ける
+            ImGui::Text("FrameController FPS: --");
+        }
     }
     ImGui::End();
     return Result<void>::success();
@@ -69,7 +81,18 @@ class ScopedStep final
 /// @brief Editor の表示設定を保持し、下位基盤へ Editor 型を渡さない
 EditorHost::EditorHost(EditorHostConfig a_config)
     : m_imguiConfig(std::move(a_config.imgui)),
-      m_buildUi(a_config.buildUi ? std::move(a_config.buildUi) : editorUiCallback{build_test_window}),
+      m_buildUi(a_config.buildUi ? std::move(a_config.buildUi)
+                                 : editorUiCallback{[this]() -> Result<void>
+                                                    {
+                                                        // UI の Owner Thread から同期済み Snapshot を取得し、Worker
+                                                        // の可変状態を直接参照しない
+                                                        auto progress = m_windows.frame_progress();
+                                                        if (!progress.has_value())
+                                                        {
+                                                            return Result<void>::failure(*progress.try_error());
+                                                        }
+                                                        return build_test_window(*progress.try_value());
+                                                    }}),
       m_ownerId(std::this_thread::get_id()),
       m_windows({std::move(a_config.window),
                  a_config.frame,
