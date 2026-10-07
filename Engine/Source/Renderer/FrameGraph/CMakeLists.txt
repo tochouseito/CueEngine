@@ -9,5 +9,10 @@ target_link_libraries(Cue.Renderer.FrameGraph PUBLIC Cue.Foundation Cue.Renderer
 target_compile_features(Cue.Renderer.FrameGraph PUBLIC cxx_std_20)
 
 if(MSVC)
-    target_compile_options(Cue.Renderer.FrameGraph PRIVATE /utf-8)
+    # Development でも他の Renderer Module と同じ最適化と Debug 情報を使う
+    target_compile_options(Cue.Renderer.FrameGraph PRIVATE
+        /utf-8
+        $<$<CONFIG:Development>:/O2>
+        $<$<CONFIG:Development>:/Zi>
+    )
 endif()
