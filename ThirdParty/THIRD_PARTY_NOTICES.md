@@ -1,5 +1,16 @@
 # Third-party notices
 
+## WinPixEventRuntime
+
+- 出自: https://github.com/microsoft/PixEvents
+- 公式 Package: https://www.nuget.org/packages/WinPixEventRuntime/1.0.240308001
+- Version: `1.0.240308001`
+- Archive SHA-256: `726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4`
+- License: MIT、全文は [Licenses/WinPixEventRuntime-MIT.txt](Licenses/WinPixEventRuntime-MIT.txt)
+- 同梱 Notice: [Licenses/WinPixEventRuntime-ThirdPartyNotices.txt](Licenses/WinPixEventRuntime-ThirdPartyNotices.txt)
+
+公式 Archive を CMake で Hash 検証して展開し、Header と x64 DLL／Import Library を変更せず利用する。NuGet restore は実行しない。Debug／Development の FrameGraph Pass の PIX Marker に使用し、Release では Marker を無効にする。Binary 配布時は DLL と上記 License／Notice を同梱する。
+
 ## Dear ImGui
 
 - 出自: https://github.com/ocornut/imgui

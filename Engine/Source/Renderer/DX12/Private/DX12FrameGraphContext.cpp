@@ -21,10 +21,10 @@ DX12FrameGraphContext::DX12FrameGraphContext(const DX12FrameGraphRecordContext &
 
 /// @brief 実行中 Pass の Resource 使用宣言だけを許可する
 bool DX12FrameGraphContext::allows(FrameGraphResourceHandle a_handle, FrameGraphAccess a_access,
-                                    FrameGraphResourceState a_state) const noexcept
+                                   FrameGraphResourceState a_state) const noexcept
 {
     return std::any_of(m_pass->uses.begin(), m_pass->uses.end(),
-                       [a_handle, a_access, a_state](const FrameGraphUse& a_use)
+                       [a_handle, a_access, a_state](const FrameGraphUse &a_use)
                        {
                            return a_use.resource.graphId == a_handle.graphId &&
                                   a_use.resource.index == a_handle.index && a_use.access == a_access &&
@@ -33,8 +33,8 @@ bool DX12FrameGraphContext::allows(FrameGraphResourceHandle a_handle, FrameGraph
 }
 
 /// @brief 論理 Handle と枠の RTV の対応を検証して Clear を記録する
-Result<void> DX12FrameGraphContext::clear_render_target(
-    FrameGraphResourceHandle a_target, const std::array<float, 4>& a_color)
+Result<void> DX12FrameGraphContext::clear_render_target(FrameGraphResourceHandle a_target,
+                                                        const std::array<float, 4> &a_color)
 {
     if (!allows(a_target, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) ||
         a_target.index >= m_plan->resources().size() || !resource(a_target) ||
@@ -46,8 +46,8 @@ Result<void> DX12FrameGraphContext::clear_render_target(
     // Placed RT の最適化 Clear 値と異なる色は Debug Layer 上で記録を進めない
     if (m_plan->resources()[a_target.index].textureDesc.clearColor != a_color)
     {
-        return Result<void>::failure({ErrorCategory::InvalidArgument,
-                                      "DX12FrameGraphContext.clear_render_target.color"});
+        return Result<void>::failure(
+            {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.clear_render_target.color"});
     }
     auto rtvResult = m_frames->rtv(frame_index(), a_target);
     if (!rtvResult.has_value())
@@ -61,9 +61,9 @@ Result<void> DX12FrameGraphContext::clear_render_target(
 /// @brief Pass が宣言した任意の RTV を単一描画先として Bind する
 Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a_target)
 {
-    if (!allows(a_target, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) ||
-        !resource(a_target) || m_command->type() != QueueType::Graphics ||
-        m_command->state() != CommandState::Recording || !m_command->command_list())
+    if (!allows(a_target, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) || !resource(a_target) ||
+        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording ||
+        !m_command->command_list())
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.set_render_target"});
     }
@@ -85,11 +85,12 @@ Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a
 }
 
 /// @brief ShaderRead の SRV を現在の Graphics Root Signature に Bind する
-Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_source,
-                                                    std::uint32_t a_rootParameter)
+Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_source, std::uint32_t a_rootParameter)
 {
-    if (!allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead) ||
-        !resource(a_source) || !m_frames->srv_heap() || m_command->type() != QueueType::Graphics ||
+    const bool hasShaderRead = allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead) ||
+                               allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::PixelShaderRead) ||
+                               allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::NonPixelShaderRead);
+    if (!hasShaderRead || !resource(a_source) || !m_frames->srv_heap() || m_command->type() != QueueType::Graphics ||
         m_command->state() != CommandState::Recording || !m_command->command_list())
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.bind_texture2d"});
@@ -117,7 +118,7 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     }
     if (!m_isSrvHeapBound)
     {
-        ID3D12DescriptorHeap* heaps[] = {m_frames->srv_heap()};
+        ID3D12DescriptorHeap *heaps[] = {m_frames->srv_heap()};
         command_list().SetDescriptorHeaps(1, heaps);
         m_isSrvHeapBound = true;
     }
@@ -212,26 +213,24 @@ Result<void> DX12FrameGraphContext::dispatch(std::uint32_t a_x, std::uint32_t a_
 }
 
 /// @brief 同一形状で別の物理 Texture にだけ Copy を記録する
-Result<void> DX12FrameGraphContext::copy_texture2d(
-    FrameGraphResourceHandle a_source, FrameGraphResourceHandle a_destination)
+Result<void> DX12FrameGraphContext::copy_texture2d(FrameGraphResourceHandle a_source,
+                                                   FrameGraphResourceHandle a_destination)
 {
-    auto* source = resource(a_source);
-    auto* destination = resource(a_destination);
+    auto *source = resource(a_source);
+    auto *destination = resource(a_destination);
     if (!allows(a_source, FrameGraphAccess::Read, FrameGraphResourceState::CopySource) ||
-        !allows(a_destination, FrameGraphAccess::Write, FrameGraphResourceState::CopyDestination) ||
-        !source || !destination || source == destination ||
+        !allows(a_destination, FrameGraphAccess::Write, FrameGraphResourceState::CopyDestination) || !source ||
+        !destination || source == destination ||
         (m_command->type() != QueueType::Graphics && m_command->type() != QueueType::Copy) ||
-        m_command->state() != CommandState::Recording ||
-        !m_command->command_list())
+        m_command->state() != CommandState::Recording || !m_command->command_list())
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.copy_texture2d"});
     }
     const auto sourceDesc = source->GetDesc();
     const auto destinationDesc = destination->GetDesc();
     if (sourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        destinationDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        sourceDesc.Width != destinationDesc.Width || sourceDesc.Height != destinationDesc.Height ||
-        sourceDesc.Format != destinationDesc.Format ||
+        destinationDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || sourceDesc.Width != destinationDesc.Width ||
+        sourceDesc.Height != destinationDesc.Height || sourceDesc.Format != destinationDesc.Format ||
         sourceDesc.DepthOrArraySize != destinationDesc.DepthOrArraySize ||
         sourceDesc.MipLevels != destinationDesc.MipLevels ||
         sourceDesc.SampleDesc.Count != destinationDesc.SampleDesc.Count ||
@@ -244,7 +243,7 @@ Result<void> DX12FrameGraphContext::copy_texture2d(
 }
 
 /// @brief 記録中の List を返す
-ID3D12GraphicsCommandList& DX12FrameGraphContext::command_list() const noexcept
+ID3D12GraphicsCommandList &DX12FrameGraphContext::command_list() const noexcept
 {
     return *m_command->command_list();
 }
@@ -295,7 +294,7 @@ Result<void> DX12FrameGraphContext::validate_external_graphics(GpuTextureFormat 
 }
 
 /// @brief 検証済み対応表から Native Resource を返す
-ID3D12Resource* DX12FrameGraphContext::resource(FrameGraphResourceHandle a_handle) const noexcept
+ID3D12Resource *DX12FrameGraphContext::resource(FrameGraphResourceHandle a_handle) const noexcept
 {
     return m_resources->resource(a_handle);
 }
