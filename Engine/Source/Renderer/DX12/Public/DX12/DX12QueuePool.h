@@ -44,6 +44,12 @@ public:
     /// @brief 作成時に固定した Queue の種類を返す
     [[nodiscard]] QueueType type() const noexcept override;
 
+    /// @brief Completion と照合する Fence Timeline の識別子を返す
+    [[nodiscard]] std::uint64_t identity() const noexcept override;
+
+    /// @brief tracked submit と signal の最新発行済み Fence 値を返す
+    [[nodiscard]] std::uint64_t latest_fence_value() const noexcept override;
+
     /// @brief Queue を生成した Native Device を Queue の生存中だけ借用させる
     [[nodiscard]] ID3D12Device* device() const noexcept;
 

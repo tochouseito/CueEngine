@@ -16,7 +16,7 @@ namespace
 /// @brief 完了前後の破棄予約を再現する制御可能な Completion
 class ManualCompletion final : public cue::ICommandCompletion
 {
-public:
+  public:
     /// @brief GPU 完了を模した状態を切り替える
     void complete() noexcept
     {
@@ -45,9 +45,78 @@ public:
         return cue::Result<void>::success();
     }
 
-private:
+  private:
     std::atomic<bool> m_isComplete = false;
 };
+
+/// @brief 待機の呼出時にだけ GPU 完了を再現し、非待機と安全待機を区別する
+class WaitCompletion final : public cue::ICommandCompletion
+{
+  public:
+    /// @brief Test の Queue 種類を返す
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+
+    /// @brief 待機が実際に完了を確認したか返す
+    [[nodiscard]] bool is_complete() const noexcept override
+    {
+        return waitCount != 0;
+    }
+
+    /// @brief 未完了状態を一度の待機で正常完了へ変える
+    [[nodiscard]] cue::Result<void> wait() override
+    {
+        ++waitCount;
+        return cue::Result<void>::success();
+    }
+
+    std::size_t waitCount = 0;
+};
+
+/// @brief Default の連続更新と Upload の CPU 上書きが GPU 完了後だけ許可されることを確認する
+bool verify_wait_acquire(cue::dx12::DX12GpuResourcePool &a_pool)
+{
+    for (const auto usage : {cue::GpuMemoryUsage::Default, cue::GpuMemoryUsage::Upload})
+    {
+        auto handleResult = a_pool.create_buffer({64, usage});
+        if (!handleResult.has_value())
+        {
+            return false;
+        }
+        const auto handle = handleResult.take_value();
+        auto leaseResult = a_pool.acquire(handle, cue::GpuResourceAccess::Read);
+        if (!leaseResult.has_value())
+        {
+            return false;
+        }
+        auto lease = leaseResult.take_value();
+        auto pending = std::make_shared<WaitCompletion>();
+        if (!lease->mark_submitted(pending).has_value() ||
+            a_pool.acquire_wait(handle, cue::GpuResourceAccess::Write).has_value() || pending->waitCount != 0)
+        {
+            return false;
+        }
+        lease.reset();
+        if (a_pool.acquire(handle, cue::GpuResourceAccess::Write).has_value() || pending->waitCount != 0)
+        {
+            return false;
+        }
+        auto next = a_pool.acquire_wait(handle, cue::GpuResourceAccess::Write);
+        if (!next.has_value() || pending->waitCount != 1)
+        {
+            return false;
+        }
+        next.take_value().reset();
+        if (!a_pool.retire(handle).has_value() ||
+            a_pool.acquire_wait(handle, cue::GpuResourceAccess::Write).has_value())
+        {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 /// @brief 世代付き借用、並列読み取り、遅延破棄と WARP での実コピーを検証する
@@ -67,6 +136,11 @@ int main()
     }
     auto pool = poolResult.take_value();
     auto foreignPool = foreignPoolResult.take_value();
+
+    if (!verify_wait_acquire(*pool))
+    {
+        return 50;
+    }
 
     auto sharedResult = pool->create_buffer({64, cue::GpuMemoryUsage::Default});
     if (!sharedResult.has_value())

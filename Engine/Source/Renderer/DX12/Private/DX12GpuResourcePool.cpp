@@ -402,6 +402,58 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle
     }
 }
 
+/// @brief GPU 完了待機を Pool Mutex の外で行い、待機後の世代・停止・CPU 競合を再検証する
+Result<gpuResourceLease> DX12GpuResourcePool::acquire_wait(GpuResourceHandle a_handle, GpuResourceAccess a_access)
+{
+    const auto state = m_state;
+    for (;;)
+    {
+        auto leaseResult = acquire(a_handle, a_access);
+        if (leaseResult.has_value() || leaseResult.try_error()->operation != "DX12GpuResourcePool.acquire.gpu_conflict")
+        {
+            return leaseResult;
+        }
+        std::shared_ptr<ICommandCompletion> pending;
+        {
+            std::lock_guard lock(state->mutex);
+            // Resource の Pointer は待機区間へ持ち出さず、Completion の所有権だけを保持する
+            if (state->isClosed || !state->is_current_locked(a_handle))
+            {
+                return Result<gpuResourceLease>::failure(
+                    {ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire_wait.unavailable"});
+            }
+            auto& slot = state->slots[a_handle.index];
+            if (slot.hasActiveWriter || (a_access == GpuResourceAccess::Write && slot.activeReaders != 0))
+            {
+                return Result<gpuResourceLease>::failure(
+                    {ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire.active_conflict"});
+            }
+            for (const auto& use : slot.pending)
+            {
+                if (a_access == GpuResourceAccess::Write || use.access == GpuResourceAccess::Write)
+                {
+                    pending = use.completion;
+                    break;
+                }
+            }
+        }
+        if (!pending)
+        {
+            continue;
+        }
+        auto waitResult = pending->wait();
+        if (!waitResult.has_value())
+        {
+            return Result<gpuResourceLease>::failure(*waitResult.try_error());
+        }
+        if (!pending->is_complete())
+        {
+            return Result<gpuResourceLease>::failure(
+                {ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire_wait.incomplete"});
+        }
+    }
+}
+
 /// @brief Handle を無効化し、借用と GPU 参照の両方が終わるまで実体を保つ
 Result<void> DX12GpuResourcePool::retire(GpuResourceHandle a_handle)
 {

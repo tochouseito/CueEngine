@@ -32,6 +32,22 @@ public:
     /// @brief Queue が受け付ける Command の種類を返す
     [[nodiscard]] virtual QueueType type() const noexcept = 0;
 
+    /// @brief Queue の生存中に固定された Fence Timeline の識別子を返す
+    ///
+    /// 0 は未対応を表す。完了 Token が Timeline を保持する間は識別子を再利用しない
+    [[nodiscard]] virtual std::uint64_t identity() const noexcept
+    {
+        return 0;
+    }
+
+    /// @brief tracked submit または signal が正常発行した最新 Fence 値を返す
+    ///
+    /// Native Queue への外部提出は含まない。値の取得だけでは Resource の寿命を保証しない
+    [[nodiscard]] virtual std::uint64_t latest_fence_value() const noexcept
+    {
+        return 0;
+    }
+
     /// @brief 既に投入した GPU 作業の完了点を記録して Fence 値を返す
     [[nodiscard]] virtual Result<std::uint64_t> signal() = 0;
 
