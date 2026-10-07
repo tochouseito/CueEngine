@@ -3,30 +3,10 @@
 #include <cstdio>
 #include <utility>
 
+#include <Foundation/ScopedFlag.h>
+
 namespace cue
 {
-namespace
-{
-/// @brief Callback 内の再入から Controller の実行寿命を保護する
-class ScopedStep final
-{
-  public:
-    /// @brief Scope の間だけ実行中 Flag を立てる
-    explicit ScopedStep(bool &a_flag) noexcept : m_flag(a_flag)
-    {
-        m_flag = true;
-    }
-    /// @brief 例外時も実行中 Flag を解除する
-    ~ScopedStep()
-    {
-        m_flag = false;
-    }
-
-  private:
-    bool &m_flag;
-};
-} // namespace
-
 /// @brief 借用するPlatform Serviceと構築Threadを記録する
 Runtime::Runtime(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter, ThreadFactory& a_threadFactory)
     : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
@@ -103,7 +83,7 @@ Result<bool> Runtime::step()
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "Runtime.step"});
     }
-    ScopedStep stepping(m_isStepping);
+    ScopedFlag stepping(m_isStepping);
     return m_controller->step();
 }
 
@@ -120,6 +100,20 @@ Result<FrameProgress> Runtime::progress() const
         return Result<FrameProgress>::failure({ErrorCategory::InvalidState, "Runtime.progress"});
     }
     return Result<FrameProgress>::success(m_controller->progress());
+}
+
+/// @brief Controller を破棄できる Owner の操作と統計参照を同じ Thread に固定する
+Result<FrameTimingInfo> Runtime::timing_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::WrongThread, "Runtime.timing_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::InvalidState, "Runtime.timing_info"});
+    }
+    return Result<FrameTimingInfo>::success(m_controller->timing_info());
 }
 
 /// @brief Resize などの新規投入停止中も Worker の失敗を伝える

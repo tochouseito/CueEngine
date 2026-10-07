@@ -37,6 +37,9 @@ public:
     /// @brief 実行中のFrame進行状態を取得する
     [[nodiscard]] Result<FrameProgress> progress() const;
 
+    /// @brief 実行中の Main / Update / Render と待機時間の分布を返す
+    [[nodiscard]] Result<FrameTimingInfo> timing_info() const;
+
     /// @brief Owner Thread から新規投入せず CPU Frame の完了と非同期失敗を確認する
     [[nodiscard]] Result<bool> is_idle() const;
 

@@ -42,5 +42,8 @@ public:
     /// OS Schedulerのため待機時間の厳密な長さは保証しない
     [[nodiscard]] virtual WaitStatus sleep_for(std::chrono::nanoseconds a_duration,
                                                std::stop_token a_stopToken) noexcept = 0;
+
+    /// @brief 短い最終待機で CPU の実行資源への負荷を抑える。Thread を休止しない
+    virtual void relax() noexcept = 0;
 };
 } // namespace cue

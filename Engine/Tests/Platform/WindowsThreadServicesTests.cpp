@@ -4,12 +4,51 @@
 #include <chrono>
 #include <stdexcept>
 #include <stop_token>
+#include <thread>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 namespace
 {
+/// @brief Thread ごとの Timer が互いを上書きせず、Sleep 中の停止を即座に解除する
+int test_timer_isolation(cue::WindowsThreadServices &a_services)
+{
+    std::atomic<bool> isSleeping = false;
+    cue::WaitStatus stoppedStatus = cue::WaitStatus::TimedOut;
+    const auto begin = std::chrono::steady_clock::now();
+    std::jthread sleeper(
+        [&](std::stop_token a_token)
+        {
+            isSleeping = true;
+            isSleeping.notify_all();
+            stoppedStatus = a_services.waiter->sleep_for(std::chrono::seconds(10), a_token);
+        });
+    isSleeping.wait(false);
+    // 同じ Waiter を Main と Worker が借用しても別々の Timer を使用する
+    if (a_services.waiter->sleep_for(std::chrono::milliseconds(20), {}) != cue::WaitStatus::TimedOut)
+    {
+        return 1;
+    }
+    const auto afterSleep = std::chrono::steady_clock::now();
+    sleeper.request_stop();
+    sleeper.join();
+    if (stoppedStatus != cue::WaitStatus::Stopped || afterSleep - begin < std::chrono::milliseconds(20) ||
+        std::chrono::steady_clock::now() - afterSleep > std::chrono::seconds(1))
+    {
+        return 2;
+    }
+    // 停止 Event の状態が次の Sleep へ残らないことを同じ Thread で確認する
+    std::stop_source stopped;
+    stopped.request_stop();
+    if (a_services.waiter->sleep_for(std::chrono::seconds(1), stopped.get_token()) != cue::WaitStatus::Stopped ||
+        a_services.waiter->sleep_for(std::chrono::milliseconds(1), {}) != cue::WaitStatus::TimedOut)
+    {
+        return 3;
+    }
+    return 0;
+}
+
 /// @brief 通知の先行、停止、Routine失敗がHostへ伝わることを確認する
 int run_tests()
 {
@@ -20,6 +59,10 @@ int run_tests()
         return 1;
     }
     auto services = servicesResult.take_value();
+    if (const auto result = test_timer_isolation(services); result != 0)
+    {
+        return 20 + result;
+    }
 
     // Clock は後戻りしない時刻を返す
     const auto firstTime = services.clock->now();

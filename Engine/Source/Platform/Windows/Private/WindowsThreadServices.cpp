@@ -1,5 +1,6 @@
 #include <Platform/Windows/WindowsPlatform.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -10,12 +11,76 @@
 #include <utility>
 
 #define WIN32_LEAN_AND_MEAN
+#include <intrin.h>
 #include <windows.h>
 
 namespace cue
 {
 namespace
 {
+/// @brief 同じ Thread 内の Timer を再利用し、複数 Thread の待機期限を混線させない
+class ThreadTimer final
+{
+  public:
+    /// @brief 高精度 Timer と取消 Event を所有し、未対応 OS では通常 Timer へ戻す
+    ThreadTimer() noexcept
+    {
+        m_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                         TIMER_MODIFY_STATE | SYNCHRONIZE);
+        if (!m_timer)
+        {
+            m_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        }
+        m_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
+
+    /// @brief Thread の終了時に取消 Callback の借用を残さず Handle を解放する
+    ~ThreadTimer()
+    {
+        if (m_timer)
+        {
+            CloseHandle(m_timer);
+        }
+        if (m_stop)
+        {
+            CloseHandle(m_stop);
+        }
+    }
+
+    ThreadTimer(const ThreadTimer &) = delete;
+    ThreadTimer &operator=(const ThreadTimer &) = delete;
+
+    /// @brief 相対期限を 100 ns 単位で切り上げ、通知に短縮されず停止だけを受け付ける
+    [[nodiscard]] std::optional<WaitStatus> sleep(std::chrono::nanoseconds a_duration, std::stop_token a_token) noexcept
+    {
+        if (!m_timer || !m_stop || !ResetEvent(m_stop))
+        {
+            return std::nullopt;
+        }
+        LARGE_INTEGER due{};
+        const auto count = a_duration.count();
+        due.QuadPart = -(count / 100 + (count % 100 != 0));
+        if (!SetWaitableTimer(m_timer, &due, 0, nullptr, nullptr, FALSE))
+        {
+            return std::nullopt;
+        }
+        // Callback は ThreadTimer より先に破棄し、別 Thread の取消完了まで Handle を維持する
+        std::stop_callback cancelled(a_token, [this]() noexcept { SetEvent(m_stop); });
+        const HANDLE handles[] = {m_stop, m_timer};
+        const DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        if (a_token.stop_requested() || result == WAIT_OBJECT_0)
+        {
+            CancelWaitableTimer(m_timer);
+            return WaitStatus::Stopped;
+        }
+        return result == WAIT_OBJECT_0 + 1 ? std::optional{WaitStatus::TimedOut} : std::nullopt;
+    }
+
+  private:
+    HANDLE m_timer = nullptr;
+    HANDLE m_stop = nullptr;
+};
+
 /// @brief Worker終了待ちの間も呼出Thread宛てのWindow Messageを処理する
 Result<void> wait_for_thread_with_messages(HANDLE a_thread)
 {
@@ -126,7 +191,6 @@ public:
                                        std::stop_token a_stopToken) noexcept override
     {
         // FPS 制御では通常通知で短縮せず、停止要求だけを割り込ませる
-        std::unique_lock lock(m_mutex);
         if (a_stopToken.stop_requested())
         {
             return WaitStatus::Stopped;
@@ -135,11 +199,31 @@ public:
         {
             return WaitStatus::TimedOut;
         }
+        // Timer は Thread ごとに所有し、Main と Worker の同時 Sleep でも Set の期限を分離する
+        thread_local ThreadTimer timer;
+        if (auto status = timer.sleep(a_duration, a_stopToken))
+        {
+            return *status;
+        }
+        // Native Timer が作れない場合も従来の停止可能な待機で継続する
+        std::unique_lock lock(m_mutex);
         m_condition.wait_for(lock, a_stopToken, a_duration, []() { return false; });
         return a_stopToken.stop_requested() ? WaitStatus::Stopped : WaitStatus::TimedOut;
     }
 
-private:
+    /// @brief 最終スピン中に SMT の実行資源へ配慮し、Scheduler に長い休止を依頼しない
+    void relax() noexcept override
+    {
+#if defined(_M_IX86) || defined(_M_X64)
+        _mm_pause();
+#elif defined(_M_ARM64)
+        __yield();
+#else
+        std::atomic_signal_fence(std::memory_order_relaxed);
+#endif
+    }
+
+  private:
     mutable std::mutex m_mutex;
     std::condition_variable_any m_condition;
     std::uint64_t m_generation = 0;

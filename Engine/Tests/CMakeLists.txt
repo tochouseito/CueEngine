@@ -8,6 +8,11 @@ add_executable(CueFoundationResultTests Foundation/ResultTests.cpp)
 target_link_libraries(CueFoundationResultTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
 
+# 計測分布の p95、固定容量、Overflow と入れ子 Guard を確認する
+add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
+target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Foundation)
+add_test(NAME Cue.Foundation.TimingSamples COMMAND CueFoundationTimingTests)
+
 add_executable(CuePlatformHeaderCompile Platform/PublicHeaderCompile.cpp)
 target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
@@ -141,6 +146,10 @@ if(WIN32)
     target_link_libraries(CueFrameControllerTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
     add_test(NAME Cue.Runtime.FrameController COMMAND CueFrameControllerTests)
     set_tests_properties(Cue.Runtime.FrameController PROPERTIES TIMEOUT 5)
+
+    # 時間計測は環境依存のため CTest の速度判定に使わず、手動の比較用 Target とする
+    add_executable(CueFrameControllerTimingProbe Performance/FrameControllerTimingProbe.cpp)
+    target_link_libraries(CueFrameControllerTimingProbe PRIVATE Cue.Runtime.Frame Cue.Platform.Windows user32)
 
     add_executable(CueWindowsThreadServicesTests Platform/WindowsThreadServicesTests.cpp)
     target_link_libraries(CueWindowsThreadServicesTests PRIVATE Cue.Platform.Windows)
