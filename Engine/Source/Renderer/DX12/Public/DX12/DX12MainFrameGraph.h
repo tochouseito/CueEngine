@@ -27,6 +27,10 @@ class DX12RenderDevice;
 class DX12SwapChain;
 
 /// @brief 本番 Graph の描画枠、初期色、追加描画と Host 選択の表示 Pass の設定
+///
+/// configure / displayPassFactory と生成 Pass の setup は構築の呼出 Thread、旧 Pass の破棄は Resize の呼出 Thread
+/// で行われる Callback は Graph ごとに新しい Pass と Handle を構築する。WindowsHost の Resize 呼出元は Owner Main
+/// Thread
 struct DX12MainFrameGraphConfig final
 {
     std::uint32_t frameCount = 2;
@@ -34,6 +38,8 @@ struct DX12MainFrameGraphConfig final
     frameGraphConfigure configure;
     // Graph へ一意所有を移し、未指定時は標準の表示 Pass を使う
     std::unique_ptr<FrameGraphPass> displayPass;
+    // サイズ変更後の Graph に同じ実体を再利用せず、新しい表示 Pass を生成する
+    std::function<std::unique_ptr<FrameGraphPass>()> displayPassFactory;
 };
 
 /// @brief 旧 FrameGraphPass 契約で本番描画 Graph を構築・記録する
@@ -52,6 +58,7 @@ public:
   /// @brief Context の参照先を借用し、SwapChain と同じ形状の Graph を用意する
   ///
   /// 参照先と SwapChain は shutdown より長く生存させる。途中失敗は部分生成物を回収する
+  /// configure / displayPassFactory は初回の呼出 Thread で実行し、Resize 時はその呼出 Thread で再実行する
   [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create(const DX12ResourceContext &a_resources,
                                                                           DX12SwapChain &a_swapChain,
                                                                           DX12MainFrameGraphConfig a_config = {});
@@ -89,6 +96,15 @@ public:
   /// @brief 枠の GPU 完了後に物理 Resource を破棄する
   [[nodiscard]] Result<void> shutdown();
 
+  /// @brief GPU 完了後に旧 Graph と BackBuffer を解放し、指定寸法の Graph を再生成する
+  ///
+  /// 呼出側は新しい Render 投入を止め、全 execute の完了を待ってから直列に呼ぶ
+  /// WindowsHost からは Owner Main Thread で呼ぶ。0 寸法、未提出枠、再生成不能な一回限りの Pass は変更前に拒否する
+  /// SwapChain の変更後に Graph 再生成が失敗した場合は停止状態を保ち、同じ Backend で再試行できる
+  /// 保持した configure / displayPassFactory、新 Pass の setup、旧 Pass の破棄は呼出 Thread で実行する
+  [[nodiscard]] Result<void> resize(const DX12ResourceContext &a_resources, std::uint32_t a_width,
+                                    std::uint32_t a_height);
+
 private:
   /// @brief 全 Pass が Graphics の場合は単一 Queue に記録して提出する
   [[nodiscard]] Result<bool> execute_graphics(std::uint32_t a_frameIndex, ICommandPool &a_commandPool,
@@ -112,5 +128,10 @@ private:
   std::vector<std::vector<DX12FrameGraphExternalResource>> m_externalBindings;
   std::vector<bool> m_isPrepared;
   DX12SwapChain *m_swapChain = nullptr;
+  frameGraphConfigure m_configure;
+  std::function<std::unique_ptr<FrameGraphPass>()> m_displayPassFactory;
+  std::array<float, 4> m_clearColor{};
+  std::uint32_t m_frameCount = 0;
+  bool m_hasOneShotDisplayPass = false;
 };
 } // namespace cue::dx12

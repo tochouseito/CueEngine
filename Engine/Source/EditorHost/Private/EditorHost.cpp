@@ -92,9 +92,11 @@ EditorHost::EditorHost(EditorHostConfig a_config)
 /// @brief Editor の表示を抽象 Pass として下位 Host へ渡し、明示された Pass は優先する
 MainFrameGraphConfig EditorHost::prepare_graph(MainFrameGraphConfig a_config)
 {
-    if (!a_config.displayPass)
+    if (!a_config.displayPass && !a_config.displayPassFactory)
     {
-        a_config.displayPass = std::make_unique<ImGuiPass>(std::make_unique<EditorImGuiRenderer>(m_imgui));
+        // Resize 後の新しい Graph Handle を持つ Pass を作る。Manager と Texture Heap は継続所有する
+        a_config.displayPassFactory = [this]()
+        { return std::make_unique<ImGuiPass>(std::make_unique<EditorImGuiRenderer>(m_imgui)); };
     }
     return a_config;
 }

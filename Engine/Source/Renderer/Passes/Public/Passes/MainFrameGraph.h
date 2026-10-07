@@ -11,16 +11,23 @@
 namespace cue
 {
 /// @brief Clear と表示の間に Pass を追加する Backend 非依存の設定 Callback
+///
+/// 初回構築時と Resize 時に、それぞれの呼出 Thread で実行される。毎回新しい Pass を作る
 using frameGraphConfigure = std::function<Result<void>(FrameGraph&, FrameGraphResourceHandle)>;
 
 /// @brief Host が追加描画と最後の表示 Pass を選ぶ Backend 非依存の構築設定
 ///
 /// displayPass の所有権は構築先へ移る。未指定なら標準の全画面表示を使う
 /// Pass が借用する UI 等は Graph の停止と破棄より長く生存させる
+/// displayPassFactory と Pass の setup は構築の呼出 Thread、旧 Pass の破棄は Resize の呼出 Thread で行われる
+/// 呼出側は Graph の execute を静止させ、構築と Resize を直列化する
 struct MainFrameGraphConfig final
 {
     frameGraphConfigure configure;
     std::unique_ptr<FrameGraphPass> displayPass;
+    // 再構築する Graph ごとに新しい Pass を渡す。displayPass 指定時は初回の実体を優先する
+    // 生成した Pass の setup / describe_resources も構築の呼出 Thread で実行される
+    std::function<std::unique_ptr<FrameGraphPass>()> displayPassFactory;
 };
 
 /// @brief 表示 Pass を所有する Graph と、Backend が物理化する Resource Handle
@@ -78,6 +85,14 @@ struct FrameGraphComposition final
                 return GraphResult::failure(*configureResult.try_error());
             }
         }
+        if (!a_config.displayPass && a_config.displayPassFactory)
+        {
+            a_config.displayPass = a_config.displayPassFactory();
+            if (!a_config.displayPass)
+            {
+                return GraphResult::failure({ErrorCategory::InvalidState, "create_main_frame_graph.display_factory"});
+            }
+        }
         if (!a_config.displayPass)
         {
             a_config.displayPass = std::make_unique<PresentToSwapChainPass>();
@@ -121,6 +136,10 @@ struct FrameGraphComposition final
     catch (const std::bad_alloc&)
     {
         return GraphResult::failure({ErrorCategory::PlatformFailure, "create_main_frame_graph.allocation"});
+    }
+    catch (...)
+    {
+        return GraphResult::failure({ErrorCategory::PlatformFailure, "create_main_frame_graph.callback.exception"});
     }
 }
 } // namespace cue

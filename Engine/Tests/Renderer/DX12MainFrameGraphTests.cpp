@@ -3,8 +3,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <vector>
+
+#include <d3d12sdklayers.h>
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
@@ -15,6 +20,7 @@
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
 #include <DX12/DX12ViewManager.h>
+#include <Passes/PresentToSwapChainPass.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
 namespace
@@ -645,10 +651,444 @@ int run_tests()
     }
     return 0;
 }
+
+/// @brief FinalColor の全画面表示を新しい寸法の四隅から読み戻し、Viewport の更新も検証する
+bool check_resized_pixels(cue::dx12::DX12RenderDevice &a_device, cue::dx12::DX12MainFrameGraph &a_graph,
+                          cue::dx12::DX12SwapChain &a_swapChain, cue::dx12::DX12CommandPool &a_commandPool,
+                          std::uint32_t a_width, std::uint32_t a_height, std::uint32_t a_frameIndex)
+{
+    auto *backBuffer = a_swapChain.back_buffer(a_swapChain.current_index());
+    if (!backBuffer || !a_swapChain.graphics_queue())
+    {
+        return false;
+    }
+    const auto desc = backBuffer->GetDesc();
+    if (desc.Width != a_width || desc.Height != a_height)
+    {
+        return false;
+    }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT64 totalBytes = 0;
+    a_device.device()->GetCopyableFootprints(&desc, 0, 1, 0, &layout, nullptr, nullptr, &totalBytes);
+    auto readbackResult =
+        cue::dx12::DX12GpuResource::create_buffer(*a_device.device(), {totalBytes, cue::GpuMemoryUsage::Readback});
+    auto commandResult = a_commandPool.acquire(cue::QueueType::Graphics);
+    if (!readbackResult.has_value() || !commandResult.has_value())
+    {
+        return false;
+    }
+    auto readback = readbackResult.take_value();
+    auto command = commandResult.take_value();
+    auto *context = dynamic_cast<cue::dx12::DX12GpuCommandContext *>(command.get());
+    if (!context || !context->command_list() || !a_graph.record(a_frameIndex, *context).has_value())
+    {
+        return false;
+    }
+    auto *list = context->command_list();
+    // Graph が Present へ戻した BackBuffer を CopySource として借用し、読み戻し後に同じ State へ戻す
+    transition(*list, *backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION source{};
+    source.pResource = backBuffer;
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION destination{};
+    destination.pResource = readback->resource();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint = layout;
+    list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    transition(*list, *backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+    if (!command->close().has_value())
+    {
+        a_graph.discard_unsubmitted(a_frameIndex);
+        return false;
+    }
+    auto submitted = a_commandPool.submit(*a_swapChain.graphics_queue(), *command);
+    if (!submitted.has_value())
+    {
+        a_graph.discard_unsubmitted(a_frameIndex);
+        return false;
+    }
+    std::shared_ptr<cue::ICommandCompletion> completion(submitted.take_value());
+    if (!a_graph.mark_submitted(a_frameIndex, completion).has_value() || !completion->wait().has_value())
+    {
+        return false;
+    }
+    std::vector<std::byte> pixels(static_cast<std::size_t>(totalBytes));
+    if (!readback->read(0, pixels).has_value())
+    {
+        return false;
+    }
+    const auto matches = [&pixels, &layout](std::uint32_t a_x, std::uint32_t a_y)
+    {
+        const auto offset = static_cast<std::size_t>(a_y) * layout.Footprint.RowPitch + a_x * 4;
+        return std::to_integer<int>(pixels[offset]) == 51 && std::to_integer<int>(pixels[offset + 1]) == 102 &&
+               std::to_integer<int>(pixels[offset + 2]) == 153 && std::to_integer<int>(pixels[offset + 3]) == 255;
+    };
+    // 四隅を検証することで、旧寸法の Viewport／Scissor が残る不具合も検出する
+    const bool valid =
+        matches(0, 0) && matches(a_width - 1, 0) && matches(0, a_height - 1) && matches(a_width - 1, a_height - 1);
+    command.reset();
+    return valid && a_swapChain.present().has_value();
+}
+
+/// @brief 全 Graph 所有者の停止後に Descriptor Slot が残らないことを検証する
+bool check_free_descriptors(cue::dx12::DX12DescriptorAllocator &a_allocator, std::uint32_t a_capacity)
+{
+    std::vector<cue::dx12::DX12DescriptorHandle> handles;
+    bool valid = true;
+    for (std::uint32_t index = 0; index < a_capacity; ++index)
+    {
+        auto result = a_allocator.allocate();
+        if (!result.has_value())
+        {
+            valid = false;
+            break;
+        }
+        handles.push_back(result.take_value());
+    }
+    valid = valid && !a_allocator.allocate().has_value();
+    for (const auto handle : handles)
+    {
+        valid = a_allocator.release(handle).has_value() && valid;
+    }
+    return valid;
+}
+
+/// @brief Resize 中の重大診断と、全 Owner 破棄後に残る GPU Object を検出する
+bool check_resize_messages(ID3D12InfoQueue &a_queue, bool a_checkLeaks)
+{
+    bool valid = true;
+    for (UINT64 index = 0; index < a_queue.GetNumStoredMessagesAllowedByRetrievalFilter(); ++index)
+    {
+        SIZE_T size = 0;
+        if (FAILED(a_queue.GetMessage(index, nullptr, &size)))
+        {
+            return false;
+        }
+        std::vector<std::byte> storage(size);
+        auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+        if (FAILED(a_queue.GetMessage(index, message, &size)))
+        {
+            return false;
+        }
+        const bool leak = a_checkLeaks && std::strstr(message->pDescription, "Live ID3D12") &&
+                          !std::strstr(message->pDescription, "Live ID3D12Device ");
+        if (leak || message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+            message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
+        {
+            std::fprintf(stderr, "%s\n", message->pDescription);
+            valid = false;
+        }
+    }
+    return valid;
+}
+
+/// @brief WARP 上で連続 Resize、再構築 Callback、GPU 待機と表示画素を一つの寿命で検証する
+int run_resize_tests()
+{
+    std::fprintf(stderr, "MainFrameGraph resize: create owners\n");
+    auto systemResult = cue::create_windows_window_system();
+    auto deviceResult = cue::dx12::DX12RenderDevice::create(cue::dx12::AdapterSelection::Warp);
+    if (!systemResult.has_value() || !deviceResult.has_value())
+    {
+        return 101;
+    }
+    auto system = systemResult.take_value();
+    auto device = deviceResult.take_value();
+    auto windowResult = system->create_window({"CueEngine Graph Resize Test", {64, 64}});
+    if (!windowResult.has_value())
+    {
+        return 102;
+    }
+    auto window = windowResult.take_value();
+    auto handleResult = cue::borrow_windows_window_handle(*window);
+    if (!handleResult.has_value() || !window->show().has_value())
+    {
+        return 103;
+    }
+#if defined(_DEBUG)
+    Microsoft::WRL::ComPtr<ID3D12Device> probe = device->device();
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+    if (FAILED(probe.As(&infoQueue)))
+    {
+        return 104;
+    }
+    infoQueue->ClearStoredMessages();
+#endif
+    // 小さい Heap のまま繰り返し再構築し、旧 RTV／SRV が返却されない場合は容量不足で失敗させる
+    constexpr std::uint32_t k_capacity = 8;
+    auto rtvResult =
+        cue::dx12::DX12DescriptorAllocator::create(*device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, k_capacity);
+    auto srvResult = cue::dx12::DX12DescriptorAllocator::create(
+        *device->device(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, k_capacity, true);
+    auto pipelineResult = cue::dx12::DX12PipelineManager::create(*device);
+    auto commandPoolResult = cue::dx12::DX12CommandPool::create(*device);
+    auto queuePoolResult = cue::dx12::DX12QueuePool::create(*device);
+    if (!rtvResult.has_value() || !srvResult.has_value() || !pipelineResult.has_value() ||
+        !commandPoolResult.has_value() || !queuePoolResult.has_value())
+    {
+        return 105;
+    }
+    auto rtv = rtvResult.take_value();
+    auto srv = srvResult.take_value();
+    auto pipelines = pipelineResult.take_value();
+    auto commandPool = commandPoolResult.take_value();
+    auto queuePool = queuePoolResult.take_value();
+    auto viewsResult = cue::dx12::DX12ViewManager::create(*device, *rtv, *srv);
+    if (!viewsResult.has_value())
+    {
+        return 106;
+    }
+    auto views = viewsResult.take_value();
+    const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
+    auto queueResult = cue::dx12::DX12GpuCommandQueue::create(*device->device(), cue::QueueType::Graphics, 0);
+    if (!queueResult.has_value())
+    {
+        return 107;
+    }
+    cue::queueLease queue(queueResult.take_value().release(), [](cue::IQueueContext *a_queue) { delete a_queue; });
+    auto swapResult = cue::dx12::DX12SwapChain::create(resources, std::move(queue), *handleResult.try_value(),
+                                                       {64, 64, 2, DXGI_FORMAT_R8G8B8A8_UNORM, false, true});
+    if (!swapResult.has_value())
+    {
+        return 108;
+    }
+    auto swapChain = swapResult.take_value();
+    int configureCount = 0;
+    int factoryCount = 0;
+    int passCount = 0;
+    bool enabled = true;
+    cue::FrameGraphResourceHandle finalColor;
+    cue::dx12::DX12MainFrameGraphConfig config;
+    config.clearColor = {0.2f, 0.4f, 0.6f, 1.0f};
+    config.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle a_color)
+    {
+        ++configureCount;
+        finalColor = a_color;
+        return a_graph.add_pass(std::make_unique<TestPass>(a_color, passCount, enabled));
+    };
+    config.displayPassFactory = [&factoryCount]() -> std::unique_ptr<cue::FrameGraphPass>
+    {
+        ++factoryCount;
+        return std::make_unique<cue::PresentToSwapChainPass>();
+    };
+    auto graphResult = cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, std::move(config));
+    if (!graphResult.has_value())
+    {
+        return 109;
+    }
+    auto graph = graphResult.take_value();
+    const auto initialHandle = finalColor;
+    auto *initialBuffer = swapChain->back_buffer(0);
+    auto *graphicsQueue = swapChain->graphics_queue();
+    const bool isTearingEnabled = swapChain->is_tearing_enabled();
+    if (configureCount != 1 || factoryCount != 1 || graph->resize(resources, 0, 64).has_value() ||
+        graph->resize(resources, 64, 0).has_value() || !graph->resize(resources, 64, 64).has_value() ||
+        configureCount != 1 || factoryCount != 1 || finalColor.graphId != initialHandle.graphId ||
+        swapChain->back_buffer(0) != initialBuffer)
+    {
+        return 110;
+    }
+    const std::array<std::array<std::uint32_t, 2>, 7> sizes{
+        {{96, 48}, {33, 79}, {128, 96}, {32, 32}, {75, 51}, {64, 64}, {160, 90}}};
+    auto previousHandle = initialHandle;
+    std::uint32_t frameIndex = 0;
+    for (const auto size : sizes)
+    {
+        std::fprintf(stderr, "MainFrameGraph resize: %u x %u, frame %u\n", size[0], size[1], frameIndex);
+        // CPU 側で Fence を待たず次の Resize を要求し、Graph が提出済み枠を待ってから解放する経路を通す
+        auto submitted = graph->execute(frameIndex, {*commandPool, *queuePool});
+        if (!submitted.has_value() || !*submitted.try_value())
+        {
+            if (auto *error = submitted.try_error())
+            {
+                std::fprintf(stderr, "MainFrameGraph execute: %s, native %lld\n", error->operation.c_str(),
+                             static_cast<long long>(error->nativeCode));
+            }
+            return 111;
+        }
+        auto resized = graph->resize(resources, size[0], size[1]);
+        if (!resized.has_value())
+        {
+            auto *error = resized.try_error();
+            std::fprintf(stderr, "MainFrameGraph resize: %s, native %lld\n", error->operation.c_str(),
+                         static_cast<long long>(error->nativeCode));
+            return 111;
+        }
+        if (finalColor.graphId == previousHandle.graphId || configureCount != factoryCount ||
+            swapChain->graphics_queue() != graphicsQueue || swapChain->is_tearing_enabled() != isTearingEnabled)
+        {
+            return 111;
+        }
+        const auto &color = graph->plan().resources()[finalColor.index];
+        if (color.handle.graphId != finalColor.graphId || color.textureDesc.width != size[0] ||
+            color.textureDesc.height != size[1] ||
+            !check_resized_pixels(*device, *graph, *swapChain, *commandPool, size[0], size[1], frameIndex))
+        {
+            return 112;
+        }
+        previousHandle = finalColor;
+        frameIndex = (frameIndex + 1) % 2;
+    }
+    if (configureCount != 8 || factoryCount != 8 || passCount != 14 || !graph->shutdown().has_value())
+    {
+        return 113;
+    }
+    graph.reset();
+    std::fprintf(stderr, "MainFrameGraph resize: stale handle and one-shot rejection\n");
+    // 旧 Graph の Handle を新しい Pass に渡しても、世代の違いを Build で検出して受け付けない
+    cue::dx12::DX12MainFrameGraphConfig staleConfig;
+    staleConfig.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle)
+    { return a_graph.add_pass(std::make_unique<TestPass>(initialHandle, passCount, enabled)); };
+    if (cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, std::move(staleConfig)).has_value())
+    {
+        return 122;
+    }
+    // 一度だけ渡す独自 Pass は作り直せないため、サイズ変更前に失敗して旧 Graph を維持する
+    cue::dx12::DX12MainFrameGraphConfig oneShotConfig;
+    oneShotConfig.clearColor = {0.2f, 0.4f, 0.6f, 1.0f};
+    oneShotConfig.displayPass = std::make_unique<cue::PresentToSwapChainPass>();
+    auto oneShotResult = cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, std::move(oneShotConfig));
+    if (!oneShotResult.has_value())
+    {
+        return 114;
+    }
+    auto oneShot = oneShotResult.take_value();
+    const auto oneShotGraphId = oneShot->plan().resources()[0].handle.graphId;
+    if (oneShot->resize(resources, 80, 60).has_value() ||
+        oneShot->plan().resources()[0].handle.graphId != oneShotGraphId ||
+        !check_resized_pixels(*device, *oneShot, *swapChain, *commandPool, 160, 90, 0) ||
+        !oneShot->shutdown().has_value() || oneShot->resize(resources, 80, 60).has_value())
+    {
+        return 115;
+    }
+    oneShot.reset();
+    std::fprintf(stderr, "MainFrameGraph resize: default pass rebuild\n");
+    // Factory のない標準表示は組み込み Pass を再生成し、既定経路でも Resize 後の描画を継続する
+    cue::dx12::DX12MainFrameGraphConfig defaultConfig;
+    defaultConfig.clearColor = {0.2f, 0.4f, 0.6f, 1.0f};
+    auto defaultResult = cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, std::move(defaultConfig));
+    if (!defaultResult.has_value())
+    {
+        return 120;
+    }
+    auto defaultGraph = defaultResult.take_value();
+    if (!defaultGraph->resize(resources, 80, 60).has_value() ||
+        !check_resized_pixels(*device, *defaultGraph, *swapChain, *commandPool, 80, 60, 1) ||
+        !defaultGraph->shutdown().has_value())
+    {
+        return 121;
+    }
+    defaultGraph.reset();
+    std::fprintf(stderr, "MainFrameGraph resize: factory failure and recovery\n");
+    // Graph 再構築の失敗後は実体のない Graph を実行させず、同じ寸法への再試行で復帰させる
+    bool failFactory = false;
+    bool throwFactory = false;
+    int recoveryFactoryCount = 0;
+    cue::dx12::DX12MainFrameGraphConfig recoveryConfig;
+    recoveryConfig.clearColor = {0.2f, 0.4f, 0.6f, 1.0f};
+    recoveryConfig.displayPassFactory = [&]() -> std::unique_ptr<cue::FrameGraphPass>
+    {
+        ++recoveryFactoryCount;
+        if (throwFactory)
+        {
+            throw std::runtime_error("Resize display factory failure");
+        }
+        return failFactory ? nullptr : std::make_unique<cue::PresentToSwapChainPass>();
+    };
+    auto recoveryResult = cue::dx12::DX12MainFrameGraph::create(resources, *swapChain, std::move(recoveryConfig));
+    if (!recoveryResult.has_value())
+    {
+        return 123;
+    }
+    auto recovery = recoveryResult.take_value();
+    const std::array<std::array<std::uint32_t, 2>, 2> recoverySizes{{{96, 72}, {110, 70}}};
+    for (std::uint32_t index = 0; index < recoverySizes.size(); ++index)
+    {
+        failFactory = index == 0;
+        throwFactory = index == 1;
+        const auto size = recoverySizes[index];
+        auto failedResize = recovery->resize(resources, size[0], size[1]);
+        auto stoppedExecution = recovery->execute(index, {*commandPool, *queuePool});
+        const auto expectedCategory =
+            throwFactory ? cue::ErrorCategory::PlatformFailure : cue::ErrorCategory::InvalidState;
+        if (failedResize.has_value() || failedResize.try_error()->category != expectedCategory ||
+            stoppedExecution.has_value() ||
+            stoppedExecution.try_error()->category != cue::ErrorCategory::InvalidState || !swapChain->back_buffer(0) ||
+            swapChain->back_buffer(0)->GetDesc().Width != size[0] ||
+            swapChain->back_buffer(0)->GetDesc().Height != size[1])
+        {
+            return 124;
+        }
+        // SwapChain は既に新しい寸法でも、Graph の実体がない状態では再構築を省略しない
+        failFactory = false;
+        throwFactory = false;
+        if (!recovery->resize(resources, size[0], size[1]).has_value() ||
+            !check_resized_pixels(*device, *recovery, *swapChain, *commandPool, size[0], size[1], index))
+        {
+            return 125;
+        }
+    }
+    if (recoveryFactoryCount != 5 || !recovery->shutdown().has_value())
+    {
+        return 126;
+    }
+    recovery.reset();
+    std::fprintf(stderr, "MainFrameGraph resize: owner shutdown and descriptor check\n");
+    if (!commandPool->shutdown().has_value() || !queuePool->shutdown().has_value() ||
+        !swapChain->shutdown().has_value() || !check_free_descriptors(*rtv, k_capacity) ||
+        !check_free_descriptors(*srv, k_capacity))
+    {
+        return 116;
+    }
+#if defined(_DEBUG)
+    // Leak Probe が Device を保持する正常停止では Live Device Warning が出るため、この診断時だけ停止を解除する
+    // Error／Corruption は停止対象のままとし、残存 Object は InfoQueue の内容で検証する
+    if (FAILED(infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, false)))
+    {
+        return 127;
+    }
+#endif
+    // D3D12Device 自身と診断 Interface 以外の Owner を破棄してから Leak 診断を行う
+    commandPool.reset();
+    queuePool.reset();
+    swapChain.reset();
+    pipelines.reset();
+    views.reset();
+    rtv.reset();
+    srv.reset();
+    device.reset();
+#if defined(_DEBUG)
+    std::fprintf(stderr, "MainFrameGraph resize: inspect debug messages\n");
+    if (!check_resize_messages(*infoQueue.Get(), false))
+    {
+        return 117;
+    }
+    infoQueue->ClearStoredMessages();
+    std::fprintf(stderr, "MainFrameGraph resize: report live device objects\n");
+    Microsoft::WRL::ComPtr<ID3D12DebugDevice> debug;
+    if (FAILED(probe.As(&debug)) ||
+        FAILED(debug->ReportLiveDeviceObjects(
+            static_cast<D3D12_RLDO_FLAGS>(D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL))) ||
+        !check_resize_messages(*infoQueue.Get(), true))
+    {
+        return 118;
+    }
+#endif
+    return window->destroy().has_value() && system->pump_events().has_value() ? 0 : 119;
+}
 } // namespace
 
 /// @brief 固定 Main Graph だけで Clear 色を表示できることを確認する
 int main()
 {
-    return run_tests();
+    std::fprintf(stderr, "MainFrameGraph: original graph tests\n");
+    const auto result = run_tests();
+    if (result != 0)
+    {
+        std::fprintf(stderr, "MainFrameGraph: original graph tests failed, code %d\n", result);
+        return result;
+    }
+    const auto resizeResult = run_resize_tests();
+    std::fprintf(stderr, "MainFrameGraph: resize tests completed, code %d\n", resizeResult);
+    return resizeResult;
 }

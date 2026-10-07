@@ -5,6 +5,7 @@
 #include <DX12/DX12SwapChain.h>
 #include <DX12/DX12ViewManager.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -91,6 +92,16 @@ int run_tests()
             return 8;
         }
         auto swapChain = swapResult.take_value();
+        auto *graphicsQueue = swapChain->graphics_queue();
+        auto *originalBuffer = swapChain->back_buffer(0);
+        const bool isTearingEnabled = swapChain->is_tearing_enabled();
+        // 無効な寸法と同一寸法では旧 BackBuffer／RTV／Queue の所有状態を変えない
+        if (swapChain->resize(0, 240).has_value() || swapChain->resize(320, 0).has_value() ||
+            !swapChain->resize(320, 240).has_value() || swapChain->back_buffer(0) != originalBuffer ||
+            swapChain->graphics_queue() != graphicsQueue)
+        {
+            return 14;
+        }
         for (std::uint32_t index = 0; index < 2; ++index)
         {
             auto* buffer = swapChain->back_buffer(index);
@@ -100,11 +111,40 @@ int run_tests()
                 return 9;
             }
         }
-        if (swapChain->back_buffer(2) || swapChain->rtv(2).has_value() ||
-            swapChain->current_index() >= 2 || !swapChain->present().has_value() ||
-            !swapChain->shutdown().has_value() || !swapChain->shutdown().has_value())
+        // VSync の有無を切り替えたそれぞれの SwapChain で連続 Resize と Present を行う
+        // Queue Lease と Tearing の実際の許可状態は Native SwapChain の再利用中も保持する
+        const std::array<std::array<std::uint32_t, 2>, 5> sizes{
+            {{480, 270}, {123, 97}, {640, 360}, {64, 64}, {320, 240}}};
+        for (const auto size : sizes)
+        {
+            if (!swapChain->resize(size[0], size[1]).has_value() || swapChain->graphics_queue() != graphicsQueue ||
+                swapChain->is_tearing_enabled() != isTearingEnabled || swapChain->current_index() >= 2)
+            {
+                return 15;
+            }
+            for (std::uint32_t index = 0; index < 2; ++index)
+            {
+                auto *buffer = swapChain->back_buffer(index);
+                if (!buffer || buffer->GetDesc().Width != size[0] || buffer->GetDesc().Height != size[1] ||
+                    buffer->GetDesc().Format != config.format || !swapChain->rtv(index).has_value())
+                {
+                    return 16;
+                }
+            }
+            if (!swapChain->present().has_value())
+            {
+                return 17;
+            }
+        }
+        if (swapChain->back_buffer(2) || swapChain->rtv(2).has_value() || swapChain->current_index() >= 2 ||
+            !swapChain->present().has_value() || !swapChain->shutdown().has_value() ||
+            !swapChain->shutdown().has_value())
         {
             return 10;
+        }
+        if (swapChain->resize(320, 240).has_value() || swapChain->resize(640, 480).has_value())
+        {
+            return 18;
         }
     }
 

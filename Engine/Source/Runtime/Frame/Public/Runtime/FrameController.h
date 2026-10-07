@@ -91,7 +91,12 @@ public:
     /// @brief 完了数、直近のFrame番号、実行Thread、処理時間を取得する
     [[nodiscard]] FrameProgress progress() const;
 
-private:
+    /// @brief 新規投入せず、投入済み CPU Frame の完了と Worker の失敗を確認する
+    ///
+    /// GPU 完了は表さない。呼出側が advance / step を止めている間だけ静止判定に使える
+    [[nodiscard]] Result<bool> is_idle() const;
+
+  private:
     /// @brief Update Workerが投入済みFrameを順番に処理する
     [[nodiscard]] Result<void> update_loop(std::stop_token a_stopToken);
 

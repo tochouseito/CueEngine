@@ -37,6 +37,9 @@ public:
     /// @brief 実行中のFrame進行状態を取得する
     [[nodiscard]] Result<FrameProgress> progress() const;
 
+    /// @brief Owner Thread から新規投入せず CPU Frame の完了と非同期失敗を確認する
+    [[nodiscard]] Result<bool> is_idle() const;
+
     /// @brief Workerを停止・joinして最初の失敗を返す
     ///
     /// 構築Threadから複数回呼べる。失敗してもWorkerは残さない

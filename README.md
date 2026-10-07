@@ -124,3 +124,5 @@ M04では`Cue.Renderer.DX12`と`DX12Backend`によるSwap Chain、RTV、Command 
 `Cue.Renderer.RHI`の`create_backend()`は現在のWindows用実装として`DX12Backend`を生成する。Backendの生成中に`DX12RenderDevice::create()`を呼び、成功したDeviceを一意所有する。`CueWindowsHost.exe`はWindow生成後にBackendを作り、終了時はBackendを停止してからWindowを破棄する。Swap Chain、FrameGraph、Command／Queue Poolと描画処理は後続の移植対象となる。
 
 #83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](Engine/Documents/ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする
+
+#59 の SwapChain / FinalColor / Graph Resize と最小化・復帰の契約は [Presentation Resize](Engine/Documents/PresentationResize.md) を参照する。

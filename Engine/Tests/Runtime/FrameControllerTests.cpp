@@ -327,7 +327,9 @@ int test_failure(cue::WindowsThreadServices& a_services)
         auto result = controller.advance();
         if (!result.has_value())
         {
-            sawFailure = result.try_error()->nativeCode == 37;
+            auto idle = controller.is_idle();
+            sawFailure =
+                result.try_error()->nativeCode == 37 && !idle.has_value() && idle.try_error()->nativeCode == 37;
             break;
         }
         const auto generation = a_services.waiter->generation();
@@ -357,7 +359,9 @@ int test_render_failure(cue::WindowsThreadServices& a_services)
         auto result = controller.advance();
         if (!result.has_value())
         {
-            sawFailure = result.try_error()->operation == "FrameController.render.exception";
+            auto idle = controller.is_idle();
+            sawFailure = result.try_error()->operation == "FrameController.render.exception" && !idle.has_value() &&
+                         idle.try_error()->operation == "FrameController.render.exception";
             break;
         }
         const auto generation = a_services.waiter->generation();
@@ -436,6 +440,11 @@ int test_main_stage(cue::WindowsThreadServices &a_services)
         int mainCalls = 0;
         cue::FrameController controller({1, usesWorkers, 0}, *a_services.clock, *a_services.waiter,
                                         *a_services.threadFactory);
+        auto beforeStart = controller.is_idle();
+        if (beforeStart.has_value() || beforeStart.try_error()->category != cue::ErrorCategory::InvalidState)
+        {
+            return 5;
+        }
         auto registered = controller.register_callbacks(
             [&](std::uint64_t a_frame, std::stop_token a_token)
             {
@@ -476,6 +485,11 @@ int test_main_stage(cue::WindowsThreadServices &a_services)
         {
             return 1;
         }
+        auto initiallyIdle = controller.is_idle();
+        if (!initiallyIdle.has_value() || !*initiallyIdle.try_value())
+        {
+            return 6;
+        }
         auto accepted = controller.advance();
         if (!accepted.has_value() || !*accepted.try_value() || mainCalls != 1)
         {
@@ -483,6 +497,11 @@ int test_main_stage(cue::WindowsThreadServices &a_services)
         }
         if (usesWorkers)
         {
+            auto pending = controller.is_idle();
+            if (!pending.has_value() || *pending.try_value())
+            {
+                return 7;
+            }
             auto full = controller.step();
             if (!full.has_value() || *full.try_value() || mainCalls != 1)
             {
@@ -495,7 +514,9 @@ int test_main_stage(cue::WindowsThreadServices &a_services)
         {
             [[maybe_unused]] const auto status = a_services.waiter->sleep_for(std::chrono::milliseconds(1), {});
         }
-        if (controller.progress().renderedFrames != 1 || !controller.stop().has_value())
+        auto completed = controller.is_idle();
+        if (controller.progress().renderedFrames != 1 || !completed.has_value() || !*completed.try_value() ||
+            !controller.stop().has_value())
         {
             return 4;
         }

@@ -1,6 +1,7 @@
 #include <WindowsHost/WindowsHost.h>
 
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -54,10 +55,49 @@ class WindowsHost::State final
     std::unique_ptr<Runtime> runtime;
     std::atomic<bool> isRenderStopped = false;
     std::atomic<bool> isPresentationSuspended = false;
+    // 要求寸法と実際の表示寸法は Window を所有する Main Thread だけが操作する
+    WindowSize requestedSize{};
     WindowSize presentationSize{};
     bool isCloseRequested = false;
     bool isDestroyed = false;
     bool hasWindowInitializationStarted = false;
+
+    /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
+    void request_resize(WindowSize a_size)
+    {
+        requestedSize = a_size;
+        isPresentationSuspended.store(a_size.width == 0 || a_size.height == 0 ||
+                                      a_size.width != presentationSize.width ||
+                                      a_size.height != presentationSize.height);
+    }
+
+    /// @brief 全 CPU Frame の完了後、Owner Thread でサイズ依存資源を再生成する
+    [[nodiscard]] Result<void> prepare_presentation()
+    {
+        const auto size = requestedSize;
+        if (size.width == 0 || size.height == 0 || isRenderStopped.load())
+        {
+            return Result<void>::success();
+        }
+        if (size.width == presentationSize.width && size.height == presentationSize.height)
+        {
+            return Result<void>::success();
+        }
+        const auto *resources = dx12Backend->get_resource_context();
+        if (!resources || !graph)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.resize.resources"});
+        }
+        // Graph は全枠の完了を待ち、旧 External Binding と View を外してから SwapChain を更新する
+        auto result = graph->resize(*resources, size.width, size.height);
+        if (!result.has_value())
+        {
+            return result;
+        }
+        presentationSize = size;
+        isPresentationSuspended.store(false);
+        return Result<void>::success();
+    }
 
     /// @brief 固定 Graph の Command を Graphics Queue に提出して表示する
     [[nodiscard]] Result<void> render(
@@ -96,7 +136,11 @@ class WindowsHost::State final
             return recorded;
         }
         // DXGI が Message Thread を待つ場合に備え、上位の Context 排他と Pin を残さない
-        return wasSubmitted ? dx12Backend->get_swap_chain()->present() : Result<void>::success();
+        // 記録中に最小化や Close が届いた場合も、提出済み GPU 作業の寿命を残して Present だけ止める
+        return wasSubmitted && !a_stopToken.stop_requested() && !isRenderStopped.load() &&
+                       !isPresentationSuspended.load()
+                   ? dx12Backend->get_swap_chain()->present()
+                   : Result<void>::success();
     }
 };
 
@@ -204,6 +248,7 @@ Result<void> WindowsHost::initialize()
         return rollback(*handleResult.try_error());
     }
     m_state->presentationSize = m_state->window->client_size();
+    m_state->request_resize(m_state->presentationSize);
 
     // Swap Chain の設定を構築する
     dx12::DX12SwapChainConfig swapConfig{};
@@ -240,6 +285,7 @@ Result<void> WindowsHost::initialize()
     // Host が選択した抽象 Pass を Graph に移し、DX12 層には Editor の具体型を伝えない
     graphConfig.configure = std::move(m_config.graph.configure);
     graphConfig.displayPass = std::move(m_config.graph.displayPass);
+    graphConfig.displayPassFactory = std::move(m_config.graph.displayPassFactory);
     auto graphResult =
         dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
     if (!graphResult.has_value())
@@ -323,10 +369,8 @@ Result<bool> WindowsHost::step()
         else if (event.type == WindowEventType::Minimized || event.type == WindowEventType::Resized ||
                  event.type == WindowEventType::Restored)
         {
-            // Resize 対応までは旧 Back Buffer サイズでの追加提出を止める
-            m_state->isPresentationSuspended.store(event.clientSize.width == 0 || event.clientSize.height == 0 ||
-                                                   event.clientSize.width != m_state->presentationSize.width ||
-                                                   event.clientSize.height != m_state->presentationSize.height);
+            // 最新寸法にまとめ、既に投入済みの Frame は Snapshot を回収しながら完了させる
+            m_state->request_resize(event.clientSize);
         }
     }
 
@@ -338,6 +382,29 @@ Result<bool> WindowsHost::step()
     if (m_state->isCloseRequested || m_state->isDestroyed || *pumpResult.try_value() == PumpStatus::QuitRequested)
     {
         return Result<bool>::success(false);
+    }
+
+    if (m_state->isPresentationSuspended.load())
+    {
+        // 新規 Frame を投入せず、全 Update / Render / Present と ImGui Snapshot の消費を待つ
+        // Worker の失敗もここで返し、未完了 Frame を永久に待たない
+        auto idleResult = m_state->runtime->is_idle();
+        if (!idleResult.has_value())
+        {
+            return Result<bool>::failure(*idleResult.try_error());
+        }
+        if (!*idleResult.try_value() || m_state->requestedSize.width == 0 || m_state->requestedSize.height == 0)
+        {
+            // Main を join や GPU 待機で塞がず、次の step でも Win32 Message を処理する
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return Result<bool>::success(true);
+        }
+        // CPU 側が静止した後にだけ GPU 完了を待つ。ImGui の Context 排他は保持しない
+        auto resizeResult = m_state->prepare_presentation();
+        if (!resizeResult.has_value())
+        {
+            return Result<bool>::failure(*resizeResult.try_error());
+        }
     }
 
     // 終了 Event がない周回だけ次の Frame を進める。枠が満杯なら次の周回で再試行する
