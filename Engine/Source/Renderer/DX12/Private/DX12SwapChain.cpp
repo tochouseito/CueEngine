@@ -118,34 +118,11 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
                          DiagnosticSeverity::Warning);
         }
 
-        // Back Buffer を生成して RTV を割り当てる
-        for (std::uint32_t index = 0; index < a_config.bufferCount; ++index)
+        // 初回生成と Resize で同じ取得経路を使い、Object 名と RTV の所有を揃える
+        auto buffersResult = result->acquire_buffers();
+        if (!buffersResult.has_value())
         {
-            // Back Buffer を取得する
-            Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
-            const HRESULT bufferResult = result->m_swapChain->GetBuffer(index, IID_PPV_ARGS(&buffer));
-            if (FAILED(bufferResult))
-            {
-                return SwapResult::failure(swap_chain_error("IDXGISwapChain.GetBuffer", bufferResult));
-            }
-            const std::wstring bufferName = L"CueEngine DX12 Back Buffer " + std::to_wstring(index);
-            const HRESULT bufferNameResult = buffer->SetName(bufferName.c_str());
-            if (FAILED(bufferNameResult))
-            {
-                report_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", bufferNameResult),
-                             DiagnosticSeverity::Warning);
-            }
-
-            // RTV を生成する
-            auto viewResult = viewManager.create_rtv(*buffer.Get());
-            if (!viewResult.has_value())
-            {
-                return SwapResult::failure(*viewResult.try_error());
-            }
-
-            // Back Buffer と RTV Handle を保持する
-            result->m_rtvHandles.push_back(viewResult.take_value());
-            result->m_backBuffers.push_back(std::move(buffer));
+            return SwapResult::failure(*buffersResult.try_error());
         }
         return SwapResult::success(std::move(result));
     }
@@ -198,7 +175,7 @@ IQueueContext* DX12SwapChain::graphics_queue() const noexcept
 /// @brief VSync と DXGI のティアリング制約を一箇所で適用する
 Result<void> DX12SwapChain::present()
 {
-    if (!m_swapChain)
+    if (!m_swapChain || m_backBuffers.size() != m_config.bufferCount || m_rtvHandles.size() != m_config.bufferCount)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12SwapChain.present"});
     }
@@ -207,6 +184,106 @@ Result<void> DX12SwapChain::present()
     const HRESULT result = m_swapChain->Present(syncInterval, flags);
     return FAILED(result) ? Result<void>::failure(swap_chain_error("IDXGISwapChain.Present", result))
                           : Result<void>::success();
+}
+
+/// @brief Graph が借用を解除した後に、同じ Native SwapChain の表示枠だけを更新する
+Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height)
+{
+    // 最小化は Host が表示を停止して扱う。DXGI の暗黙 ClientSize 取得へ零寸法を渡さない
+    if (a_width == 0 || a_height == 0)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12SwapChain.resize.size"});
+    }
+    auto *queue = dynamic_cast<DX12GpuCommandQueue *>(m_queue.get());
+    if (!m_swapChain || !m_viewManager || !queue)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12SwapChain.resize"});
+    }
+    // 再取得途中の失敗では同じ寸法でも再試行する。正常な同一サイズだけを省略する
+    if (a_width == m_config.width && a_height == m_config.height && m_backBuffers.size() == m_config.bufferCount &&
+        m_rtvHandles.size() == m_config.bufferCount)
+    {
+        return Result<void>::success();
+    }
+    // Present を含む同一 Queue の処理完了まで、旧 RTV と BackBuffer を残す
+    auto idleResult = queue->wait_idle();
+    if (!idleResult.has_value())
+    {
+        return idleResult;
+    }
+    auto releaseResult = release_buffers();
+    if (!releaseResult.has_value())
+    {
+        return releaseResult;
+    }
+    // Flip Model の枠数と Format、生成時の Tearing Flag を維持する
+    const UINT flags = m_isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    const HRESULT resizeResult =
+        m_swapChain->ResizeBuffers(m_config.bufferCount, a_width, a_height, m_config.format, flags);
+    if (FAILED(resizeResult))
+    {
+        // 旧 Buffer を公開し直さず、元の DXGI Error を保持して停止または再試行する
+        return Result<void>::failure(swap_chain_error("IDXGISwapChain.ResizeBuffers", resizeResult));
+    }
+    m_config.width = a_width;
+    m_config.height = a_height;
+    try
+    {
+        return acquire_buffers();
+    }
+    catch (const std::bad_alloc &)
+    {
+        // 部分取得した Buffer と View は Owner に残し、次の resize / shutdown で回収する
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "DX12SwapChain.resize.allocation"});
+    }
+}
+
+/// @brief 全 BackBuffer を再取得し、同じ命名と View 生成規則を適用する
+Result<void> DX12SwapChain::acquire_buffers()
+{
+    for (std::uint32_t index = 0; index < m_config.bufferCount; ++index)
+    {
+        // Native Resource は RTV 生成の成功まで Local の COM 所有で保護する
+        Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+        const HRESULT bufferResult = m_swapChain->GetBuffer(index, IID_PPV_ARGS(&buffer));
+        if (FAILED(bufferResult))
+        {
+            return Result<void>::failure(swap_chain_error("IDXGISwapChain.GetBuffer", bufferResult));
+        }
+        const std::wstring bufferName = L"CueEngine DX12 Back Buffer " + std::to_wstring(index);
+        const HRESULT nameResult = buffer->SetName(bufferName.c_str());
+        if (FAILED(nameResult))
+        {
+            report_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", nameResult),
+                         DiagnosticSeverity::Warning);
+        }
+        auto viewResult = m_viewManager->create_rtv(*buffer.Get());
+        if (!viewResult.has_value())
+        {
+            return Result<void>::failure(*viewResult.try_error());
+        }
+        // create で全枠分の capacity を確保済みのため、View 取得後の push は Allocation しない
+        m_rtvHandles.push_back(viewResult.take_value());
+        m_backBuffers.push_back(std::move(buffer));
+    }
+    return Result<void>::success();
+}
+
+/// @brief 解放済み Handle を残さず、途中失敗後の再試行で二重返却しない
+Result<void> DX12SwapChain::release_buffers()
+{
+    while (!m_rtvHandles.empty())
+    {
+        auto releaseResult = m_viewManager->release(m_rtvHandles.back());
+        if (!releaseResult.has_value())
+        {
+            return releaseResult;
+        }
+        m_rtvHandles.pop_back();
+    }
+    // Descriptor Slot を返してから Owner の BackBuffer 直接参照を解除する
+    m_backBuffers.clear();
+    return Result<void>::success();
 }
 
 /// @brief Factory が許可した場合だけティアリングを有効と示す
@@ -235,19 +312,11 @@ Result<void> DX12SwapChain::shutdown()
             return idleResult;
         }
     }
-    if (m_viewManager)
+    auto releaseResult = release_buffers();
+    if (!releaseResult.has_value())
     {
-        for (const auto handle : m_rtvHandles)
-        {
-            auto releaseResult = m_viewManager->release(handle);
-            if (!releaseResult.has_value())
-            {
-                return releaseResult;
-            }
-        }
+        return releaseResult;
     }
-    m_rtvHandles.clear();
-    m_backBuffers.clear();
     m_swapChain.Reset();
     m_queue.reset();
     m_viewManager = nullptr;

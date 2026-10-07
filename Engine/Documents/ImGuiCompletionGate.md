@@ -47,8 +47,10 @@ Visual Studio では生成済み `out/build/windows-vs2026/CueEngine.slnx` の C
 
 ## M05 Gate に残る前提
 
-**M05 全体の完了判定は保留**。実際の SwapChain / FinalColor GPU Resize は [#59](https://github.com/tochouseito/CueEngine/issues/59) / [#22](https://github.com/tochouseito/CueEngine/issues/22) の責務で、#84 では重複実装しない
+**M05 全体の完了判定は保留**。#59 の GPU Resize 実装は develop へ統合済み
 
-現 WindowsHost は Client Size が初期値と異なる間と最小化中に GPU 描画を停止する。元寸法へ戻ると再開する。Window 状態変更 Test の成功は、変更後のサイズで SwapChain / FinalColor / RTV / SRV を再生成して描画できる証拠にはならない
+2026-10-07 の #59 検証では、SwapChain / FinalColor / RTV / SRV / Graph の再生成、WARP 四隅の画素、WindowsHost / EditorHost の最小化・復帰、ImGui Snapshot と Worker の継続を確認し、Debug の全 CTest は 38 / 38 成功した。詳細は [Presentation Resize](PresentationResize.md) を参照する。上の Development / Release 結果は #84 時点の記録であり、#59 変更後の両構成は未実施
 
-残る確認は #59 の GPU Resize 実装後の再検証と、実 UI の目視・操作。UI は日本語文字を配送するが内蔵 Font に日本語 Glyph はない。公式 Backend 内の void / Assert GPU 失敗のすべてを回復可能な Result へ変換する保証はなく、任意 GPU 失敗注入は未実施。全面 Queue 待機の削減や性能改善は今回主張しない
+WindowsHost の実画面ではクリアカラー、最大化、最小化、復帰、Close を確認した。Editor の Test / TEST 表示も取得できたが、操作前にツール経由の Window が消えたため、Editor の手動 Resize は未完了。終了原因は未確定。自動 Process 検証では Resize / 復帰 / 6 秒以上継続後の正常終了を確認している
+
+UI は日本語文字を配送するが内蔵 Font に日本語 Glyph はない。公式 Backend 内の void / Assert GPU 失敗のすべてを回復可能な Result へ変換する保証はなく、任意 GPU 失敗注入は未実施。全面 Queue 待機の削減や性能改善は今回主張しない

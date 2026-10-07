@@ -1,9 +1,14 @@
 #include <EditorHost/EditorHost.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <utility>
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 
 #include <Passes/PresentToSwapChainPass.h>
 
@@ -64,6 +69,63 @@ private:
     bool m_failsSetup = false;
     cue::PresentToSwapChainPass m_present;
 };
+
+/// @brief Resize 前後の UI 構築と Snapshot 消費が同じ Host で進むまで Frame を送る
+[[nodiscard]] bool wait_for_editor_progress(cue::EditorHost &a_host, std::uint64_t a_afterUi,
+                                            std::uint64_t a_afterRendered, std::uint64_t a_afterConsumed,
+                                            std::uint64_t a_afterRecorded, std::uint32_t a_frameCount,
+                                            bool a_usesWorkers)
+{
+    const auto ownerId = std::this_thread::get_id();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto step = a_host.step();
+        auto ui = a_host.ui_frame_info();
+        auto progress = a_host.frame_progress();
+        auto transfer = a_host.ui_transfer_info();
+        if (!step.has_value() || !*step.try_value() || !ui.has_value() || !progress.has_value() ||
+            !transfer.has_value())
+        {
+            return false;
+        }
+        if (ui.try_value()->frames > a_afterUi && ui.try_value()->vertexCount > 0 && ui.try_value()->indexCount > 0 &&
+            progress.try_value()->renderedFrames > a_afterRendered &&
+            transfer.try_value()->consumedFrames > a_afterConsumed &&
+            transfer.try_value()->consumedFrames > transfer.try_value()->discardedFrames &&
+            transfer.try_value()->consumedFrames - transfer.try_value()->discardedFrames > a_afterRecorded &&
+            transfer.try_value()->pendingFrames <= a_frameCount &&
+            (progress.try_value()->renderThreadId != ownerId) == a_usesWorkers &&
+            transfer.try_value()->renderThreadId == progress.try_value()->renderThreadId)
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+/// @brief Window 側を止めず、最小化前に採用した CPU Callback の完了を待つ
+[[nodiscard]] bool wait_for_editor_idle(cue::EditorHost &a_host)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto step = a_host.step();
+        auto progress = a_host.frame_progress();
+        if (!step.has_value() || !*step.try_value() || !progress.has_value())
+        {
+            return false;
+        }
+        if (progress.try_value()->updatedFrames == progress.try_value()->submittedFrames &&
+            progress.try_value()->renderedFrames == progress.try_value()->submittedFrames)
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
 
 /// @brief 初期化途中の失敗後も停止でき、同じ Host を再初期化しない
 int test_failed_initialization()
@@ -313,6 +375,107 @@ int test_default_ui_display(bool a_usesWorkers, std::uint32_t a_frameCount)
     }
     return 0;
 }
+
+/// @brief 最小化と復帰を越えて既定 Test UI、ImGui Snapshot と描画 Thread が継続する
+int test_resize_ui_display(bool a_usesWorkers)
+{
+    cue::EditorHostConfig config;
+    config.window.title = a_usesWorkers ? "CueEditorHost Resize Worker" : "CueEditorHost Resize Single";
+    config.window.clientSize = {320, 240};
+    config.frame.maxFps = 0;
+    config.frame.useWorkerThreads = a_usesWorkers;
+    config.frame.maxFramesInFlight = a_usesWorkers ? 2 : 1;
+    config.imgui.settingsFile.clear();
+    const auto frameCount = config.frame.maxFramesInFlight;
+    cue::EditorHost host(std::move(config));
+    if (!host.initialize().has_value() || !wait_for_editor_progress(host, 0, 0, 0, 0, frameCount, a_usesWorkers))
+    {
+        return 1;
+    }
+    auto initialProgress = host.frame_progress();
+    auto initialTransfer = host.ui_transfer_info();
+    if (!initialProgress.has_value() || !initialTransfer.has_value())
+    {
+        return 1;
+    }
+    const HWND handle =
+        FindWindowW(nullptr, a_usesWorkers ? L"CueEditorHost Resize Worker" : L"CueEditorHost Resize Single");
+    if (!handle || GetWindowThreadProcessId(handle, nullptr) != GetCurrentThreadId())
+    {
+        return 2;
+    }
+    RECT initialClient{};
+    if (!GetClientRect(handle, &initialClient))
+    {
+        return 2;
+    }
+
+    // 最小化中も Host と UI Owner が有効で、GPU 提出を休止して安全に Frame を回収する
+    ShowWindow(handle, SW_MINIMIZE);
+    if (!IsIconic(handle) || !wait_for_editor_idle(host))
+    {
+        return 3;
+    }
+    auto pausedTransfer = host.ui_transfer_info();
+    if (!pausedTransfer.has_value() ||
+        pausedTransfer.try_value()->consumedFrames < pausedTransfer.try_value()->discardedFrames)
+    {
+        return 3;
+    }
+    const auto pausedRecorded =
+        pausedTransfer.try_value()->consumedFrames - pausedTransfer.try_value()->discardedFrames;
+    for (int index = 0; index < 12; ++index)
+    {
+        auto step = host.step();
+        if (!step.has_value() || !*step.try_value())
+        {
+            return 4;
+        }
+    }
+    auto minimizedUi = host.ui_frame_info();
+    auto minimizedProgress = host.frame_progress();
+    auto minimizedTransfer = host.ui_transfer_info();
+    if (!minimizedUi.has_value() || !minimizedProgress.has_value() || !minimizedTransfer.has_value() ||
+        minimizedTransfer.try_value()->consumedFrames < minimizedTransfer.try_value()->discardedFrames ||
+        minimizedTransfer.try_value()->consumedFrames - minimizedTransfer.try_value()->discardedFrames !=
+            pausedRecorded ||
+        minimizedTransfer.try_value()->pendingFrames > frameCount)
+    {
+        return 4;
+    }
+
+    // 復帰と寸法変更の後も同じ ImGuiManager が Test UI の Snapshot を消費する
+    ShowWindow(handle, SW_RESTORE);
+    ShowWindow(handle, SW_SHOWNORMAL);
+    if (IsIconic(handle) || !SetWindowPos(handle, nullptr, 0, 0, 640, 460, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+    {
+        return 5;
+    }
+    RECT client{};
+    if (!GetClientRect(handle, &client) || client.right <= 0 || client.bottom <= 0 ||
+        (client.right == initialClient.right && client.bottom == initialClient.bottom) ||
+        !wait_for_editor_progress(host, minimizedUi.try_value()->frames, minimizedProgress.try_value()->renderedFrames,
+                                  minimizedTransfer.try_value()->consumedFrames, pausedRecorded, frameCount,
+                                  a_usesWorkers))
+    {
+        return 6;
+    }
+    auto transfer = host.ui_transfer_info();
+    auto progress = host.frame_progress();
+    if (!transfer.has_value() || !progress.has_value() ||
+        transfer.try_value()->publishedFrames < transfer.try_value()->consumedFrames ||
+        transfer.try_value()->pendingFrames > frameCount ||
+        (progress.try_value()->updateThreadId != std::this_thread::get_id()) != a_usesWorkers ||
+        progress.try_value()->updateThreadId != initialProgress.try_value()->updateThreadId ||
+        progress.try_value()->renderThreadId != initialProgress.try_value()->renderThreadId ||
+        transfer.try_value()->renderThreadId != initialTransfer.try_value()->renderThreadId ||
+        transfer.try_value()->consumedFrames <= initialTransfer.try_value()->consumedFrames ||
+        !host.shutdown().has_value() || IsWindow(handle))
+    {
+        return 7;
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
@@ -326,6 +489,13 @@ int main()
             {
                 return 60 + result;
             }
+        }
+    }
+    for (const bool usesWorkers : {false, true})
+    {
+        if (const int result = test_resize_ui_display(usesWorkers); result != 0)
+        {
+            return 70 + result;
         }
     }
     if (const int result = test_failed_initialization(); result != 0)

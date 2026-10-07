@@ -122,6 +122,20 @@ Result<FrameProgress> Runtime::progress() const
     return Result<FrameProgress>::success(m_controller->progress());
 }
 
+/// @brief Resize などの新規投入停止中も Worker の失敗を伝える
+Result<bool> Runtime::is_idle() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<bool>::failure({ErrorCategory::WrongThread, "Runtime.is_idle"});
+    }
+    if (m_lifecycle != Lifecycle::Running || m_isStepping)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "Runtime.is_idle"});
+    }
+    return m_controller->is_idle();
+}
+
 /// @brief Worker停止後にControllerを解放しService借用を終える
 Result<void> Runtime::shutdown()
 {

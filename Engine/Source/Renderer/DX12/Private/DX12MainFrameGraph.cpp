@@ -104,15 +104,20 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     {
         return GraphResult::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.create.pipeline_device"});
     }
-    auto compositionResult = create_main_frame_graph(
-        colorDesc, {pipelines}, {std::move(a_config.configure), std::move(a_config.displayPass)});
-    if (!compositionResult.has_value())
-    {
-        return GraphResult::failure(*compositionResult.try_error());
-    }
-    auto composition = compositionResult.take_value();
     try
     {
+        // Graph が消費する設定とは別に、Resize で再実行する Callback と Factory を保持する
+        const bool hasOneShotDisplayPass = a_config.displayPass != nullptr;
+        MainFrameGraphConfig compositionConfig;
+        compositionConfig.configure = a_config.configure;
+        compositionConfig.displayPass = std::move(a_config.displayPass);
+        compositionConfig.displayPassFactory = a_config.displayPassFactory;
+        auto compositionResult = create_main_frame_graph(colorDesc, {pipelines}, std::move(compositionConfig));
+        if (!compositionResult.has_value())
+        {
+            return GraphResult::failure(*compositionResult.try_error());
+        }
+        auto composition = compositionResult.take_value();
         // Plan に従って枠ごとの一時 Resource と RTV／SRV を生成する
         // BackBuffer の RTV は SwapChain から借用するため、Graph 側で重複生成しない
         auto framesResult = DX12FrameGraphFrames::create(a_resources, *composition.graph->plan(),
@@ -132,6 +137,11 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
         result->m_frames = framesResult.take_value();
         result->m_pipelineManager = &pipelines;
         result->m_swapChain = &a_swapChain;
+        result->m_configure = std::move(a_config.configure);
+        result->m_displayPassFactory = std::move(a_config.displayPassFactory);
+        result->m_clearColor = a_config.clearColor;
+        result->m_frameCount = a_config.frameCount;
+        result->m_hasOneShotDisplayPass = hasOneShotDisplayPass;
         return GraphResult::success(std::move(result));
     }
     catch (const std::bad_alloc&)
@@ -615,11 +625,86 @@ const FrameGraphPlan& DX12MainFrameGraph::plan() const noexcept
     return *m_graph->plan();
 }
 
+/// @brief 旧 Graph の GPU 利用を終えてから BackBuffer を変更し、新しい Plan と物理枠を作る
+Result<void> DX12MainFrameGraph::resize(const DX12ResourceContext &a_resources, std::uint32_t a_width,
+                                        std::uint32_t a_height)
+{
+    if (a_width == 0 || a_height == 0 || !m_swapChain || m_frameCount == 0 ||
+        (m_pipelineManager && m_pipelineManager != &a_resources.get_pipeline_manager()))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.resize"});
+    }
+    if (m_graph && m_frames && m_graph->width() == a_width && m_graph->height() == a_height)
+    {
+        return Result<void>::success();
+    }
+    // 一回限りの表示 Pass は旧 Graph が所有する。Factory がなければ破棄前に拒否する
+    if (m_hasOneShotDisplayPass && !m_displayPassFactory)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.resize.display_factory"});
+    }
+    for (std::size_t index = 0; index < m_poolLeases.size(); ++index)
+    {
+        if (m_isPrepared[index] || !m_poolLeases[index].empty())
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.resize.pending_submission"});
+        }
+    }
+
+    DX12MainFrameGraphConfig rebuildConfig;
+    rebuildConfig.frameCount = m_frameCount;
+    rebuildConfig.clearColor = m_clearColor;
+    try
+    {
+        // Callback の複製失敗は旧 Graph と BackBuffer に手を触れる前に返す
+        rebuildConfig.configure = m_configure;
+        rebuildConfig.displayPassFactory = m_displayPassFactory;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "DX12MainFrameGraph.resize.config_allocation"});
+    }
+
+    auto *swapChain = m_swapChain;
+    if (m_frames)
+    {
+        auto stopped = shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        // 再構築が失敗しても同じ SwapChain に対する再試行入口を維持する
+        m_swapChain = swapChain;
+    }
+    // SwapChain 自身が同一サイズの完成状態を省略し、途中取得失敗の部分状態は再試行する
+    auto resized = swapChain->resize(a_width, a_height);
+    if (!resized.has_value())
+    {
+        return resized;
+    }
+    auto rebuiltResult = create(a_resources, *swapChain, std::move(rebuildConfig));
+    if (!rebuiltResult.has_value())
+    {
+        return Result<void>::failure(*rebuiltResult.try_error());
+    }
+    auto rebuilt = rebuiltResult.take_value();
+    m_graph = std::move(rebuilt->m_graph);
+    m_backBuffer = rebuilt->m_backBuffer;
+    m_frames = std::move(rebuilt->m_frames);
+    m_pipelineManager = rebuilt->m_pipelineManager;
+    m_poolLeases = std::move(rebuilt->m_poolLeases);
+    m_externalBindings = std::move(rebuilt->m_externalBindings);
+    m_isPrepared = std::move(rebuilt->m_isPrepared);
+    m_swapChain = swapChain;
+    return Result<void>::success();
+}
+
 /// @brief GPU 完了後に枠の Resource を解放する
 Result<void> DX12MainFrameGraph::shutdown()
 {
     if (!m_frames)
     {
+        m_swapChain = nullptr;
         return Result<void>::success();
     }
     for (std::size_t index = 0; index < m_poolLeases.size(); ++index)

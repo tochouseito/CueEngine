@@ -329,6 +329,23 @@ FrameProgress FrameController::progress() const
     return m_progress;
 }
 
+/// @brief Frame 投入を増やさず、非同期 Callback の完了または最初の失敗を返す
+Result<bool> FrameController::is_idle() const
+{
+    std::lock_guard lock(m_mutex);
+    // 失敗した Frame は完了数に加わらないため、静止数の比較より先に失敗を確認する
+    if (m_failure)
+    {
+        return Result<bool>::failure(*m_failure);
+    }
+    if (!m_isStarted || m_stopRequested)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "FrameController.is_idle"});
+    }
+    return Result<bool>::success(m_progress.submittedFrames == m_progress.updatedFrames &&
+                                 m_progress.submittedFrames == m_progress.renderedFrames);
+}
+
 /// @brief 投入済みFrameをUpdate Workerが順番に処理する
 Result<void> FrameController::update_loop(std::stop_token a_stopToken)
 {

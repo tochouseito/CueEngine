@@ -62,7 +62,7 @@ Dear ImGui の Docking 版と公式 Win32／DX12 Backend は #79 で PRIVATE 依
 
 公式 DX12 Backend の接続、専用 Descriptor Heap、GPU 完了と外部 Command 記録の契約は [ImGuiDX12Backend](ImGuiDX12Backend.md) を参照する。`WindowsHostCallbacks::initializeRenderer` は SwapChain 生成後・Graph 構築前に Backend の抽象参照と CPU Frame 枠数を上位 Host へ渡す。Editor の具体型は下位へ渡さない
 
-実際の GPU Resize は M04 の #22 / #59 の残作業。現在の WindowsHost は初期サイズと異なる間は描画を停止し、SwapChain / FinalColor を再生成しない。M05 の最終検証では Window 状態変更と GPU の描画復帰を分けて確認する
+GPU Resize は #59 で接続した。Window Message を処理しながら新規 Frame 投入を止め、投入済み CPU Frame の完了後に SwapChain / FinalColor / View / Graph を再生成する。ImGuiManager と Worker は維持する。最小化中は Frame 投入と Present を停止し、復帰後に再開する。詳細と検証は [Presentation Resize](PresentationResize.md) を参照する
 
 ## M05-01 の検証記録（2026-10-05）
 
