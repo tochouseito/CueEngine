@@ -108,6 +108,16 @@ public:
     [[nodiscard]] virtual Result<gpuResourceLease> acquire(GpuResourceHandle a_handle,
                                                             GpuResourceAccess a_access) = 0;
 
+    /// @brief GPU 利用との競合だけを完了待機し、Default の更新と Upload の CPU 上書きを安全にする
+    ///
+    /// CPU の active Lease 競合は待たずに拒否する。待機中の退役・停止・世代変更は再検証する
+    /// Queue 依存や Resource State 遷移は呼出側が管理する。未対応実装は従来の非待機借用を使う
+    [[nodiscard]] virtual Result<gpuResourceLease> acquire_wait(GpuResourceHandle a_handle,
+                                                               GpuResourceAccess a_access)
+    {
+        return acquire(a_handle, a_access);
+    }
+
     /// @brief Handle を直ちに無効化し、全 Lease と GPU 利用の完了後に実体を破棄する
     [[nodiscard]] virtual Result<void> retire(GpuResourceHandle a_handle) = 0;
 

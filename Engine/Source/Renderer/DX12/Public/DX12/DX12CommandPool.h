@@ -99,7 +99,7 @@ public:
     DX12CommandPool(const DX12CommandPool&) = delete;
     DX12CommandPool& operator=(const DX12CommandPool&) = delete;
 
-    /// @brief 完了済み Slot を優先して貸し出し、必要なときだけ新規生成する
+    /// @brief 完了済み Slot を優先し、容量到達時だけ返却済みの最古 GPU 提出を待つ
     [[nodiscard]] Result<commandLease> acquire(QueueType a_type) override;
 
     /// @brief 指定された同一 Device・同種類の Queue に Close 済み Context を投入する

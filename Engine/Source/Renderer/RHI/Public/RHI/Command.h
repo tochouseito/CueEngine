@@ -62,6 +62,18 @@ public:
     /// @brief 提出した Queue の種類を返す
     [[nodiscard]] virtual QueueType type() const noexcept = 0;
 
+    /// @brief 提出先 Fence Timeline の識別子を返す。0 は未対応を表す
+    [[nodiscard]] virtual std::uint64_t queue_identity() const noexcept
+    {
+        return 0;
+    }
+
+    /// @brief 提出と同じ操作で発行した Fence 値を返す。0 は未対応を表す
+    [[nodiscard]] virtual std::uint64_t fence_value() const noexcept
+    {
+        return 0;
+    }
+
     /// @brief 対応する GPU 作業が正常に完了したか返す
     [[nodiscard]] virtual bool is_complete() const noexcept = 0;
 
@@ -88,7 +100,9 @@ public:
     ICommandPool(const ICommandPool&) = delete;
     ICommandPool& operator=(const ICommandPool&) = delete;
 
-    /// @brief 記録可能な Context を借用し、未完了の Slot は再利用しない
+    /// @brief 記録可能な Context を借用し、容量到達時は返却済みの最古 GPU 提出を待つ
+    ///
+    /// 全 Slot が CPU 借用中なら待たずに InvalidState を返す。GPU 完了前の Reset は行わない
     [[nodiscard]] virtual Result<commandLease> acquire(QueueType a_type) = 0;
 
     /// @brief Close 済みの借用 Context を指定 Queue に投入し、対応 Fence 値を記録する

@@ -134,6 +134,18 @@ public:
         return m_type;
     }
 
+    /// @brief Token が共有所有する Fence の Timeline を識別する
+    [[nodiscard]] std::uint64_t queue_identity() const noexcept override
+    {
+        return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(m_fence.Get()));
+    }
+
+    /// @brief Command 提出と同時に発行した完了点を追加 Signal なしで参照する
+    [[nodiscard]] std::uint64_t fence_value() const noexcept override
+    {
+        return m_value;
+    }
+
     /// @brief この Token が保持する Fence の完了だけを確認する
     [[nodiscard]] bool is_complete() const noexcept override
     {
@@ -308,6 +320,7 @@ struct DX12CommandPool::State
     {
         std::unique_ptr<DX12GpuCommandContext> context;
         bool isBorrowed = false;
+        std::uint64_t submissionOrder = 0;
     };
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
@@ -317,6 +330,7 @@ struct DX12CommandPool::State
     bool isFatal = false;
     bool hasUnknownSubmission = false;
     bool hasWaitedIdle = false;
+    std::uint64_t nextSubmissionOrder = 1;
 
     /// @brief 最後の Lease が消えた後も GPU 作業を完了させてから Slot を破棄する
     ~State()
@@ -441,32 +455,61 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
         return Result<commandLease>::failure({ErrorCategory::InvalidArgument, "DX12CommandPool.acquire.type"});
     }
     auto state = m_state;
-    std::lock_guard lock(state->mutex);
+    std::unique_lock lock(state->mutex);
     if (state->isStopping || state->isFatal)
     {
         return Result<commandLease>::failure({state->isFatal ? ErrorCategory::Fatal : ErrorCategory::InvalidState,
                                               "DX12CommandPool.acquire.unavailable"});
     }
-    auto& slots = state->slots[*typeIndex];
+    auto &slots = state->slots[*typeIndex];
     std::size_t slotIndex = slots.size();
-    for (std::size_t index = 0; index < slots.size(); ++index)
+    for (;;)
     {
-        auto& slot = slots[index];
-        if (slot.isBorrowed || slot.context->m_state == CommandState::SubmissionUnknown)
+        std::optional<std::size_t> oldestPending;
+        slotIndex = slots.size();
+        for (std::size_t index = 0; index < slots.size(); ++index)
         {
-            continue;
-        }
-        bool shouldRebuild = slot.context->m_state == CommandState::Failed;
-        if (shouldRebuild && slot.context->m_isFatalFailure)
-        {
-            // 不正な記録内容は Slot の再生成では直せない
-            state->isFatal = true;
-            return Result<commandLease>::failure({ErrorCategory::Fatal, "DX12CommandPool.acquire.recording_failure"});
-        }
-        if (!shouldRebuild)
-        {
-            if (slot.context->m_state == CommandState::Submitted &&
-                !State::is_submission_complete(*slot.context))
+            auto &slot = slots[index];
+            if (slot.isBorrowed || slot.context->m_state == CommandState::SubmissionUnknown)
+            {
+                continue;
+            }
+            bool shouldRebuild = slot.context->m_state == CommandState::Failed;
+            if (shouldRebuild && slot.context->m_isFatalFailure)
+            {
+                // 不正な記録内容は Slot の再生成では直せない
+                state->isFatal = true;
+                return Result<commandLease>::failure(
+                    {ErrorCategory::Fatal, "DX12CommandPool.acquire.recording_failure"});
+            }
+            if (!shouldRebuild)
+            {
+                if (slot.context->m_state == CommandState::Submitted && !State::is_submission_complete(*slot.context))
+                {
+                    const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
+                    if (FAILED(deviceStatus))
+                    {
+                        state->isFatal = true;
+                        auto error = command_error("ID3D12Device.GetDeviceRemovedReason", deviceStatus);
+                        error.category = ErrorCategory::Fatal;
+                        return Result<commandLease>::failure(std::move(error));
+                    }
+                    // Fence 値は Queue ごとに異なるため、Pool 内の提出順で最古を選ぶ
+                    if (!oldestPending || slot.submissionOrder < slots[*oldestPending].submissionOrder)
+                    {
+                        oldestPending = index;
+                    }
+                    continue;
+                }
+                auto resetResult = slot.context->reset_for_recording();
+                if (!resetResult.has_value())
+                {
+                    // Reset 失敗後も前回の提出完了は確認済みなので、Device が有効なら Slot を再生成する
+                    report_error("DX12CommandPool.acquire", *resetResult.try_error(), DiagnosticSeverity::Error);
+                    shouldRebuild = true;
+                }
+            }
+            if (shouldRebuild)
             {
                 const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                 if (FAILED(deviceStatus))
@@ -475,30 +518,63 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                     auto error = command_error("ID3D12Device.GetDeviceRemovedReason", deviceStatus);
                     error.category = ErrorCategory::Fatal;
                     return Result<commandLease>::failure(std::move(error));
+                }
+                auto replacementResult =
+                    DX12GpuCommandContext::create(*state->device.Get(), a_type, static_cast<std::uint32_t>(index));
+                if (!replacementResult.has_value())
+                {
+                    const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
+                    if (FAILED(deviceStatus))
+                    {
+                        state->isFatal = true;
+                        auto error = command_error("ID3D12Device.GetDeviceRemovedReason", deviceStatus);
+                        error.category = ErrorCategory::Fatal;
+                        return Result<commandLease>::failure(std::move(error));
+                    }
+                    return Result<commandLease>::failure(*replacementResult.try_error());
+                }
+                slot.context = replacementResult.take_value();
+            }
+            slotIndex = index;
+            break;
+        }
+        if (slotIndex == slots.size())
+        {
+            if (slots.size() == k_maxContextsPerType)
+            {
+                if (!oldestPending)
+                {
+                    // CPU 借用の返却を待つと同一 Thread が保持する Lease と循環するため待たない
+                    return Result<commandLease>::failure(
+                        {ErrorCategory::InvalidState, "DX12CommandPool.acquire.capacity.borrowed"});
+                }
+                const std::size_t pendingIndex = *oldestPending;
+                auto &pendingSlot = slots[pendingIndex];
+                pendingSlot.isBorrowed = true;
+                auto *pendingContext = pendingSlot.context.get();
+                // Slot を予約してから Mutex を解放し、他の提出や Lease 返却を GPU 待機で止めない
+                lock.unlock();
+                auto waitResult = state->wait_for_submission(*pendingContext);
+                lock.lock();
+                slots[pendingIndex].isBorrowed = false;
+                if (!waitResult.has_value())
+                {
+                    state->isFatal = true;
+                    auto error = *waitResult.try_error();
+                    error.category = ErrorCategory::Fatal;
+                    return Result<commandLease>::failure(std::move(error));
+                }
+                if (state->isStopping || state->isFatal)
+                {
+                    return Result<commandLease>::failure(
+                        {state->isFatal ? ErrorCategory::Fatal : ErrorCategory::InvalidState,
+                         "DX12CommandPool.acquire.unavailable"});
                 }
                 continue;
             }
-            auto resetResult = slot.context->reset_for_recording();
-            if (!resetResult.has_value())
-            {
-                // Reset 失敗後も前回の提出完了は確認済みなので、Device が有効なら Slot を再生成する
-                report_error("DX12CommandPool.acquire", *resetResult.try_error(), DiagnosticSeverity::Error);
-                shouldRebuild = true;
-            }
-        }
-        if (shouldRebuild)
-        {
-            const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
-            if (FAILED(deviceStatus))
-            {
-                state->isFatal = true;
-                auto error = command_error("ID3D12Device.GetDeviceRemovedReason", deviceStatus);
-                error.category = ErrorCategory::Fatal;
-                return Result<commandLease>::failure(std::move(error));
-            }
-            auto replacementResult = DX12GpuCommandContext::create(*state->device.Get(), a_type,
-                                                                    static_cast<std::uint32_t>(index));
-            if (!replacementResult.has_value())
+            auto contextResult =
+                DX12GpuCommandContext::create(*state->device.Get(), a_type, static_cast<std::uint32_t>(slots.size()));
+            if (!contextResult.has_value())
             {
                 const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                 if (FAILED(deviceStatus))
@@ -508,55 +584,35 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                     error.category = ErrorCategory::Fatal;
                     return Result<commandLease>::failure(std::move(error));
                 }
-                return Result<commandLease>::failure(*replacementResult.try_error());
+                return Result<commandLease>::failure(*contextResult.try_error());
             }
-            slot.context = replacementResult.take_value();
+            slots.push_back({contextResult.take_value(), false});
         }
-        slotIndex = index;
         break;
     }
-    if (slotIndex == slots.size())
-    {
-        if (slots.size() == k_maxContextsPerType)
-        {
-            return Result<commandLease>::failure({ErrorCategory::InvalidState, "DX12CommandPool.acquire.capacity"});
-        }
-        auto contextResult = DX12GpuCommandContext::create(*state->device.Get(), a_type,
-                                                            static_cast<std::uint32_t>(slots.size()));
-        if (!contextResult.has_value())
-        {
-            const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
-            if (FAILED(deviceStatus))
-            {
-                state->isFatal = true;
-                auto error = command_error("ID3D12Device.GetDeviceRemovedReason", deviceStatus);
-                error.category = ErrorCategory::Fatal;
-                return Result<commandLease>::failure(std::move(error));
-            }
-            return Result<commandLease>::failure(*contextResult.try_error());
-        }
-        slots.push_back({contextResult.take_value(), false});
-    }
 
-    auto& slot = slots[slotIndex];
-    commandLease lease(slot.context.get(), [state, typeIndex = *typeIndex, slotIndex](ICommandContext*) mutable {
-        // 未提出の記録を閉じてから返し、Close に失敗した Slot は再利用しない
-        {
-            std::lock_guard leaseLock(state->mutex);
-            auto& returned = state->slots[typeIndex][slotIndex];
-            if (returned.context->m_state == CommandState::Recording)
-            {
-                auto closeResult = returned.context->close();
-                if (!closeResult.has_value())
-                {
-                    report_error("DX12CommandPool.release", *closeResult.try_error(), DiagnosticSeverity::Error);
-                }
-            }
-            returned.isBorrowed = false;
-        }
-        // reset() 後も Deleter 自体は残るため、共有所有をここで明示的に終える
-        state.reset();
-    });
+    auto &slot = slots[slotIndex];
+    commandLease lease(slot.context.get(),
+                       [state, typeIndex = *typeIndex, slotIndex](ICommandContext *) mutable
+                       {
+                           // 未提出の記録を閉じてから返し、Close に失敗した Slot は再利用しない
+                           {
+                               std::lock_guard leaseLock(state->mutex);
+                               auto &returned = state->slots[typeIndex][slotIndex];
+                               if (returned.context->m_state == CommandState::Recording)
+                               {
+                                   auto closeResult = returned.context->close();
+                                   if (!closeResult.has_value())
+                                   {
+                                       report_error("DX12CommandPool.release", *closeResult.try_error(),
+                                                    DiagnosticSeverity::Error);
+                                   }
+                               }
+                               returned.isBorrowed = false;
+                           }
+                           // reset() 後も Deleter 自体は残るため、共有所有をここで明示的に終える
+                           state.reset();
+                       });
     slot.isBorrowed = true;
     state->hasWaitedIdle = false;
     return Result<commandLease>::success(std::move(lease));
@@ -600,6 +656,10 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
     {
         return Result<commandCompletion>::failure({ErrorCategory::InvalidState, "DX12CommandPool.submit.state"});
     }
+    if (state->nextSubmissionOrder == (std::numeric_limits<std::uint64_t>::max)())
+    {
+        return Result<commandCompletion>::failure({ErrorCategory::Fatal, "DX12CommandPool.submit.order_exhausted"});
+    }
     // ExecuteCommandLists の後に Allocation 失敗を起こさないよう Token を先に生成する
     auto completion = std::make_unique<DX12CommandCompletion>(state->device, queue->completion_fence(),
                                                               context->m_type);
@@ -640,6 +700,14 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
     context->m_submissionFence = queue->completion_fence();
     context->m_fenceValue = *result.try_value();
     context->m_state = CommandState::Submitted;
+    for (auto& slot : state->slots[*typeIndex])
+    {
+        if (slot.context.get() == context)
+        {
+            slot.submissionOrder = state->nextSubmissionOrder++;
+            break;
+        }
+    }
     state->hasWaitedIdle = false;
     completion->set_value(context->m_fenceValue);
     return Result<commandCompletion>::success(std::move(completion));

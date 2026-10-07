@@ -116,6 +116,18 @@ QueueType DX12GpuCommandQueue::type() const noexcept
     return m_type;
 }
 
+/// @brief Queue と Completion が共有する Fence の生存期間内で Timeline を識別する
+std::uint64_t DX12GpuCommandQueue::identity() const noexcept
+{
+    return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(m_fence.Get()));
+}
+
+/// @brief Native 外部提出を除く最新の追跡済み完了点を読み取る
+std::uint64_t DX12GpuCommandQueue::latest_fence_value() const noexcept
+{
+    return m_fenceValue.load(std::memory_order_acquire);
+}
+
 /// @brief Command 提出元と Queue の Device が一致するか検証するために返す
 ID3D12Device* DX12GpuCommandQueue::device() const noexcept
 {

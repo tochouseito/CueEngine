@@ -1,14 +1,101 @@
 #include <DX12/DX12CommandPool.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <memory>
+#include <vector>
 
 #include <wrl/client.h>
 
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
+#include <RHI/CommandCompletion.h>
+
+namespace
+{
+/// @brief 32 Slot の CPU 満杯と GPU 満杯を区別し、最古提出の完了後だけ再利用する
+bool verify_capacity(cue::dx12::DX12RenderDevice &a_device)
+{
+    auto poolResult = cue::dx12::DX12CommandPool::create(a_device);
+    auto queueResult = cue::dx12::DX12GpuCommandQueue::create(*a_device.device(), cue::QueueType::Copy, 7);
+    if (!poolResult.has_value() || !queueResult.has_value())
+    {
+        return false;
+    }
+    auto pool = poolResult.take_value();
+    auto queue = queueResult.take_value();
+    std::vector<cue::commandLease> borrowed;
+    for (std::size_t index = 0; index < 32; ++index)
+    {
+        auto result = pool->acquire(cue::QueueType::Copy);
+        if (!result.has_value())
+        {
+            return false;
+        }
+        borrowed.push_back(result.take_value());
+    }
+    auto exhausted = pool->acquire(cue::QueueType::Copy);
+    if (exhausted.has_value() || exhausted.try_error()->operation != "DX12CommandPool.acquire.capacity.borrowed")
+    {
+        return false;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Fence> gate;
+    if (FAILED(a_device.device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate))) ||
+        FAILED(gate->SetName(L"CueEngine Command Capacity Test Gate")) ||
+        FAILED(queue->command_queue()->Wait(gate.Get(), 1)))
+    {
+        return false;
+    }
+    // Test の早期失敗でも Native Queue を永久待機させない
+    struct ReleaseGate final
+    {
+        ID3D12Fence *fence;
+        /// @brief CPU から Gate を解放し、提出済み作業の破棄を安全にする
+        ~ReleaseGate()
+        {
+            static_cast<void>(fence->Signal(1));
+        }
+    } release{gate.Get()};
+    auto *oldest = borrowed.front().get();
+    for (auto &context : borrowed)
+    {
+        if (!context->close().has_value())
+        {
+            return false;
+        }
+        auto submitted = pool->submit(*queue, *context);
+        if (!submitted.has_value() || (*submitted.try_value())->fence_value() == 0 ||
+            (*submitted.try_value())->queue_identity() != queue->identity() ||
+            (*submitted.try_value())->fence_value() != queue->latest_fence_value())
+        {
+            return false;
+        }
+        context.reset();
+    }
+    std::promise<void> started;
+    auto entered = started.get_future();
+    auto pending = std::async(std::launch::async,
+                              [&]()
+                              {
+                                  started.set_value();
+                                  return pool->acquire(cue::QueueType::Copy);
+                              });
+    entered.wait();
+    const bool didWait = pending.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout;
+    static_cast<void>(gate->Signal(1));
+    auto recycled = pending.get();
+    if (!didWait || !recycled.has_value() || (*recycled.try_value()).get() != oldest ||
+        (*recycled.try_value())->state() != cue::CommandState::Recording)
+    {
+        return false;
+    }
+    recycled.take_value().reset();
+    return pool->shutdown().has_value();
+}
+} // namespace
 
 /// @brief WARP の実コピーで Command 貸出、提出、Fence 後再利用を検証する
 int main()
@@ -158,6 +245,16 @@ int main()
         return 13;
     }
     auto firstCompletion = submittedResult.take_value();
+    const auto firstFenceValue = firstCompletion->fence_value();
+    const auto firstTimeline = firstCompletion->queue_identity();
+    auto shared = std::make_unique<cue::SharedCommandCompletion>();
+    shared->set(std::move(firstCompletion));
+    firstCompletion = std::move(shared);
+    if (firstFenceValue == 0 || firstCompletion->fence_value() != firstFenceValue ||
+        firstTimeline != copyFirstQueue->identity() || firstCompletion->queue_identity() != firstTimeline)
+    {
+        return 38;
+    }
     if (!second->close().has_value())
     {
         return 28;
@@ -229,6 +326,11 @@ int main()
         return 20;
     }
     pool.reset();
+
+    if (!verify_capacity(*device))
+    {
+        return 37;
+    }
 
     // Backend 停止後も残る Command Lease が依存 Object の寿命を維持する
     auto lifetime = std::make_shared<int>(1);
