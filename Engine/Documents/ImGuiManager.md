@@ -34,6 +34,8 @@ Capture Flag の真偽にかかわらず入力を ImGui に配送する。Gamepl
 
 ## 設定保存と停止
 
+#98 では SaveIniSettingsToMemory の結果を Context Lock 内で所有文字列へ複製し、Directory 作成・一時 File 書込み・置換は Lock 外で行う。end_frame は Frame Lock と自身の Lock を両方解除してから保存し、shutdown も保存区間で外側の再帰 Lock を保持しない。保存成功後に Context を短く再取得して WantSaveIniSettings を解除する。開いた UI Frame からの明示保存は InvalidState とし、Callback 中に File I/O を開始しない
+
 `settingsFile` は UTF-8 Path、既定 `out/editor/imgui.ini`。相対 Path は実行時 Working Directory を基準とし、空なら File 保存を無効にする。ImGui の IniFilename は null にして自動 File I/O を止め、Manager が Memory API から読込・保存する。初回 File 不在は許容し、既存 File の読込失敗は初期化失敗にする
 
 保存要求と明示 `save_settings()`、shutdown 時に一時 File `<path>.tmp` へ書き、成功後に rename して置き換える。書込みや置換の失敗は Result で返す。同じ保存先を複数 Process / Manager から同時更新する運用は対象外とする

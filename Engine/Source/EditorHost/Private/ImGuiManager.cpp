@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -111,10 +113,16 @@ public:
     std::unique_lock<std::recursive_mutex> frameLock;
     std::condition_variable_any released;
     std::array<std::unique_ptr<DrawSnapshot>, 2> snapshots;
+    // Render が返した枠は配列の容量を保持し、次の CPU 複製で再利用する
+    std::array<std::unique_ptr<DrawSnapshot>, 2> cachedSnapshots;
     ImGuiTransferInfo transfer;
     DrawSnapshot *activeSnapshot = nullptr;
     std::uint64_t lastPublishedUi = 0;
     std::uint32_t frameCount = 0;
+    TimingSamples uiBuildTimes;
+    TimingSamples snapshotCopyTimes;
+    TimingSamples contextWaitTimes;
+    std::chrono::steady_clock::time_point frameStarted;
 
     /// @brief 他の枠から借用中の Texture は残し、最後の CPU 参照だけ Queue Pin を解除する
     void release_snapshot(std::size_t a_slot)
@@ -137,6 +145,10 @@ public:
                 texture->QueueUserData = nullptr;
             }
         }
+        snapshot->textures.clear();
+        snapshot->draw.CmdLists.resize(0);
+        snapshot->wasRecorded = false;
+        cachedSnapshots[a_slot] = std::move(snapshot);
         --transfer.pendingFrames;
         released.notify_all();
     }
@@ -342,6 +354,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.publish_frame"});
     }
+    const auto lockStarted = std::chrono::steady_clock::now();
     std::unique_lock lock(imgui_context_mutex());
     auto valid = validate("ImGuiManager.publish_frame");
     if (!valid.has_value())
@@ -349,7 +362,8 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         return valid;
     }
     auto &state = *m_state;
-    if (!state.frameCount || state.isFrameOpen || state.activeSnapshot || state.lastPublishedUi == state.info.frames ||
+    state.contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+    if (!state.frameCount || state.isFrameOpen || state.lastPublishedUi == state.info.frames ||
         a_frame != state.transfer.publishedFrames || state.snapshots[a_frame % state.frameCount])
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.publish_frame"});
@@ -390,10 +404,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     {
         for (const auto &command : list->CmdBuffer)
         {
-            if (command.UserCallback && command.UserCallback != ImDrawCallback_ResetRenderState &&
-                command.UserCallback != platform.DrawCallback_ResetRenderState &&
-                command.UserCallback != platform.DrawCallback_SetSamplerLinear &&
-                command.UserCallback != platform.DrawCallback_SetSamplerNearest)
+            if (!is_imgui_draw_callback_supported(command.UserCallback, platform))
             {
                 return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiManager.publish.callback"});
             }
@@ -406,7 +417,14 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     }
     try
     {
-        auto snapshot = std::make_unique<DrawSnapshot>();
+        const auto copyStarted = std::chrono::steady_clock::now();
+        const auto slot = static_cast<std::size_t>(a_frame % state.frameCount);
+        auto snapshot = std::move(state.cachedSnapshots[slot]);
+        if (!snapshot)
+        {
+            snapshot = std::make_unique<DrawSnapshot>();
+            ++state.transfer.snapshotAllocations;
+        }
         snapshot->frame = a_frame;
         snapshot->viewport = *source->OwnerViewport;
         snapshot->draw.Valid = true;
@@ -418,9 +436,38 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         snapshot->draw.FramebufferScale = source->FramebufferScale;
         snapshot->draw.OwnerViewport = &snapshot->viewport;
         snapshot->lists.reserve(source->CmdLists.Size);
+        std::size_t listIndex = 0;
         for (const auto *list : source->CmdLists)
         {
-            std::unique_ptr<ImDrawList, DrawListDeleter> clone(list->CloneOutput());
+            if (listIndex == snapshot->lists.size())
+            {
+                // 公式 CloneOutput と同じ非所有 SharedData なしの出力専用 DrawList を保つ
+                snapshot->lists.emplace_back(IM_NEW(ImDrawList(nullptr)));
+                ++state.transfer.snapshotAllocations;
+            }
+            auto *clone = snapshot->lists[listIndex++].get();
+            state.transfer.snapshotAllocations += clone->CmdBuffer.Capacity < list->CmdBuffer.Size ? 1 : 0;
+            state.transfer.snapshotAllocations += clone->IdxBuffer.Capacity < list->IdxBuffer.Size ? 1 : 0;
+            state.transfer.snapshotAllocations += clone->VtxBuffer.Capacity < list->VtxBuffer.Size ? 1 : 0;
+            state.transfer.copiedBytes +=
+                list->CmdBuffer.size_in_bytes() + list->IdxBuffer.size_in_bytes() + list->VtxBuffer.size_in_bytes();
+            // ImVector の operator= は clear() で容量を捨てるため、resize と所有配列への Copy を使う
+            clone->CmdBuffer.resize(list->CmdBuffer.Size);
+            clone->IdxBuffer.resize(list->IdxBuffer.Size);
+            clone->VtxBuffer.resize(list->VtxBuffer.Size);
+            if (list->CmdBuffer.Size)
+            {
+                std::memcpy(clone->CmdBuffer.Data, list->CmdBuffer.Data, list->CmdBuffer.size_in_bytes());
+            }
+            if (list->IdxBuffer.Size)
+            {
+                std::memcpy(clone->IdxBuffer.Data, list->IdxBuffer.Data, list->IdxBuffer.size_in_bytes());
+            }
+            if (list->VtxBuffer.Size)
+            {
+                std::memcpy(clone->VtxBuffer.Data, list->VtxBuffer.Data, list->VtxBuffer.size_in_bytes());
+            }
+            clone->Flags = list->Flags;
             for (auto &command : clone->CmdBuffer)
             {
                 auto *texture = command.TexRef._TexData;
@@ -451,8 +498,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
                 // Atlas が次の NewFrame で差し替わっても、提出済み Frame は元の Native ID を参照する
                 command.TexRef = ImTextureRef(command.GetTexID());
             }
-            snapshot->draw.CmdLists.push_back(clone.get());
-            snapshot->lists.push_back(std::move(clone));
+            snapshot->draw.CmdLists.push_back(clone);
         }
         snapshot->draw.CmdListsCount = snapshot->draw.CmdLists.Size;
         for (auto *texture : snapshot->textures)
@@ -463,6 +509,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         state.lastPublishedUi = state.info.frames;
         ++state.transfer.publishedFrames;
         ++state.transfer.pendingFrames;
+        state.snapshotCopyTimes.add(std::chrono::steady_clock::now() - copyStarted);
         return Result<void>::success();
     }
     catch (const std::bad_alloc &)
@@ -471,15 +518,17 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     }
 }
 
-/// @brief Graph の提出完了まで排他し、Present を待たずに CPU Snapshot と Texture Pin を回収する
+/// @brief Snapshot の借用だけを排他し、通常 Graph 記録中に Main の Context 操作を止めない
 Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
 {
-    std::lock_guard lock(imgui_context_mutex());
+    const auto lockStarted = std::chrono::steady_clock::now();
+    std::unique_lock lock(imgui_context_mutex());
     if (!m_state || !m_state->isReady || !m_state->frameCount || m_state->activeSnapshot || !a_record)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.render_frame"});
     }
     auto &state = *m_state;
+    state.contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
     const auto thread = std::this_thread::get_id();
     if (state.transfer.renderThreadId != std::thread::id{} && state.transfer.renderThreadId != thread)
     {
@@ -494,6 +543,8 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     state.activeSnapshot = state.snapshots[slot].get();
     const auto *previous = g_recordingManager;
     g_recordingManager = this;
+    // Snapshot は枠に残して Main の再利用と Texture 更新を禁止する。通常 Pass は Context を借用しない
+    lock.unlock();
     Result<void> result = Result<void>::success();
     try
     {
@@ -504,12 +555,37 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     {
         result = Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.render.callback"});
     }
+    lock.lock();
+    auto finished = state.renderer->finish_submission();
+    if (result.has_value() && !finished.has_value())
+    {
+        result = std::move(finished);
+    }
     state.transfer.discardedFrames += state.activeSnapshot->wasRecorded ? 0 : 1;
     g_recordingManager = previous;
     state.activeSnapshot = nullptr;
     state.release_snapshot(slot);
     ++state.transfer.consumedFrames;
     return result;
+}
+
+/// @brief 可変な計測配列を公開せず、Owner へ同じ時点の集計を返す
+Result<ImGuiTimingInfo> ImGuiManager::timing_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<ImGuiTimingInfo>::failure({ErrorCategory::WrongThread, "ImGuiManager.timing_info"});
+    }
+    std::lock_guard lock(imgui_context_mutex());
+    auto valid = validate("ImGuiManager.timing_info");
+    if (!valid.has_value())
+    {
+        return Result<ImGuiTimingInfo>::failure(*valid.try_error());
+    }
+    return Result<ImGuiTimingInfo>::success(
+        {m_state->uiBuildTimes.statistics(), m_state->snapshotCopyTimes.statistics(),
+         m_state->contextWaitTimes.statistics(),
+         m_state->renderer ? m_state->renderer->info().gpuWait : TimingStatistics{}});
 }
 
 /// @brief 内部の排他状態を公開せず Owner へ進行数を返す
@@ -532,7 +608,12 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.record_draw_data"});
     }
+    const auto lockStarted = std::chrono::steady_clock::now();
     std::lock_guard lock(imgui_context_mutex());
+    if (m_state)
+    {
+        m_state->contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+    }
     if (m_state && m_state->activeSnapshot && m_state->transfer.renderThreadId == std::this_thread::get_id())
     {
         auto &snapshot = *m_state->activeSnapshot;
@@ -593,6 +674,7 @@ Result<void> ImGuiManager::begin_frame()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.begin_frame"});
     }
+    const auto lockStarted = std::chrono::steady_clock::now();
     std::unique_lock lock(imgui_context_mutex());
     auto valid = validate("ImGuiManager.begin_frame");
     if (!valid.has_value())
@@ -603,6 +685,8 @@ Result<void> ImGuiManager::begin_frame()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.begin_frame"});
     }
+    m_state->contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+    m_state->frameStarted = std::chrono::steady_clock::now();
     if (m_state->renderer)
     {
         auto renderer = m_state->renderer->new_frame();
@@ -642,7 +726,7 @@ Result<void> ImGuiManager::end_frame()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.end_frame"});
     }
-    std::lock_guard lock(imgui_context_mutex());
+    std::unique_lock lock(imgui_context_mutex());
     auto valid = validate("ImGuiManager.end_frame");
     if (!valid.has_value())
     {
@@ -664,9 +748,11 @@ Result<void> ImGuiManager::end_frame()
     m_state->isFrameOpen = false;
     ImGui::SetCurrentContext(m_state->previousFrameContext);
     m_state->previousFrameContext = nullptr;
-    auto result = io.WantSaveIniSettings ? save_settings() : Result<void>::success();
+    const bool wantsSave = io.WantSaveIniSettings;
+    m_state->uiBuildTimes.add(std::chrono::steady_clock::now() - m_state->frameStarted);
     m_state->frameLock.unlock();
-    return result;
+    lock.unlock();
+    return wantsSave ? save_settings() : Result<void>::success();
 }
 
 /// @brief UI Callback をこの Context の開いた Frame に限定して実行する
@@ -744,7 +830,7 @@ Result<void> ImGuiManager::save_settings()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.save_settings"});
     }
-    std::lock_guard lock(imgui_context_mutex());
+    std::unique_lock lock(imgui_context_mutex());
     auto valid = validate("ImGuiManager.save_settings");
     if (!valid.has_value())
     {
@@ -754,26 +840,39 @@ Result<void> ImGuiManager::save_settings()
     {
         return Result<void>::success();
     }
-    ScopedContext current(m_state->context);
+    if (m_state->isFrameOpen || m_state->isBuilding)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.save_settings.frame"});
+    }
     try
     {
         const auto path = std::filesystem::u8path(m_state->config.settingsFile);
+        std::string settings;
+        {
+            // ImGui の内部文字列は次の UI 更新で変更されるため、Lock 内で所有値へ複製する
+            ScopedContext current(m_state->context);
+            std::size_t size = 0;
+            const auto *data = ImGui::SaveIniSettingsToMemory(&size);
+            settings.assign(data, size);
+        }
+        // File I/O 中は Render の公式記録や別 Context の操作を待たせない
+        lock.unlock();
         if (path.has_parent_path())
         {
             std::filesystem::create_directories(path.parent_path());
         }
         auto temporary = path;
         temporary += L".tmp";
-        std::size_t size = 0;
-        const auto* data = ImGui::SaveIniSettingsToMemory(&size);
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        output.write(data, static_cast<std::streamsize>(size));
+        output.write(settings.data(), static_cast<std::streamsize>(settings.size()));
         output.close();
         if (!output)
         {
             return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.save_settings.write"});
         }
         std::filesystem::rename(temporary, path);
+        lock.lock();
+        ScopedContext current(m_state->context);
         ImGui::GetIO().WantSaveIniSettings = false;
         return Result<void>::success();
     }
@@ -794,11 +893,7 @@ Result<void> ImGuiManager::shutdown()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.shutdown"});
     }
-    std::lock_guard lock(imgui_context_mutex());
-    if (std::this_thread::get_id() != m_ownerId)
-    {
-        return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.shutdown"});
-    }
+    std::unique_lock lock(imgui_context_mutex());
     if (!m_state || !m_state->context)
     {
         return Result<void>::success();
@@ -837,7 +932,9 @@ Result<void> ImGuiManager::shutdown()
     }
     cancel_frame();
     // 保存失敗は通知するが、登録解除済みの Context と Win32 Backend の解放は続ける
+    lock.unlock();
     auto saved = m_state->isReady ? save_settings() : Result<void>::success();
+    lock.lock();
     auto* previous = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(m_state->context);
     if (m_state->isWin32Initialized)

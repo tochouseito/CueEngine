@@ -91,3 +91,7 @@ GPU Resize は #59 で接続した。Window Message を処理しながら新規 
 #83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする
 
 既定 Test Window には [FrameController FPS](FrameControllerFps.md) を ImGui Text で表示する。FPS は Render 完了間隔の逆数で、ImGui 自身の UI 更新頻度や GPU 完了数を表さない。
+
+#100 では CPU の Main / Update / Render / FPS 待機 / UI 構築 / Snapshot Copy / ImGui Context Lock 待機 / ImGui 資源 Fence 待機 / Graph 記録 / Graph 枠 Fence 待機 / Present を平均・p95・最大 ms で表示する。集計期間は直近 120 Sample。GPU 各 Pass は完了済み Frame の Timestamp から得た直近 120 Sample の平均・p95・最大を別表示し、CPU 時間や FPS と混同しない
+
+Graph 計測は ImGui Frame を開始する前に取得して EditorHost が所有 Snapshot を保つ。UI Callback 内から graph_performance を呼んでもこの Snapshot を返し、Context Lock を保持したまま Graph Lock を取得しない。実行中 Graph の記録へ Main が割り込む操作は行わない。UI 構築中に表示される値は今回の UI を含む前の完了値である

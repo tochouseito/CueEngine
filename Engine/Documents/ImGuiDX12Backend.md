@@ -45,7 +45,9 @@ DX12FrameGraphContext の外部記録入口は Callback の前後、例外時と
 
 ## 同期と停止
 
-初期版は記録前に Graphics Queue へ新しい完了点を発行して CPU 待機する。公式 Buffer Ring は RenderDrawData 呼出回数、Graph 枠は Runtime Frame 番号で進むため、最小化・取消し後に両者がずれても GPU 利用中の VB/IB を上書きしないようにする。GPU の並列進行を抑える方式であり、性能改善は主張しない。#83 の Snapshot 転送でも全面待機を維持する。削減は提出 Completion との対応付けを別途検証してから行う
+初期版の全面 Queue 待機は #93 で枠・Texture ごとの Fence 待機へ変更した。公式 Buffer Ring は DisplaySize が正の RenderDrawData 呼出だけで進め、Graph 枠番号から推定しない。Render Scope の同期 Graph Callback が戻った時点の発行済み Graphics Fence を使用した VB/IB 枠と Texture に記録する。次の記録では再利用する Ring 枠、Texture 準備では更新・破棄する Texture だけを待つ。通常の OK Texture と未使用枠は新しい Signal や待機を行わない。停止時の全面待機は維持する
+
+転送を使わない直接記録では、次の UI Frame より前に提出または破棄を完了する既存契約を維持する。次の公式記録の先頭で前回の発行済み Fence を回収する。未知の Native Command 提出を Adapter 外から行わない。Queue の提出が Fatal 失敗した場合は Texture 更新を拒否して停止へ進む
 
 停止は Graph の停止・GPU 待機・Pass 破棄 → Adapter の新規 Fence 待機 → 公式 DX12 Shutdown → 専用 Heap 解放 → Win32 Handler / Backend 停止 → Context 破棄 → Engine Backend 停止の順。GPU 完了確認失敗では Context / Heap と下位 Backend を保持し、明示 shutdown を再試行する。Destructor まで完了を証明できない場合は Fatal 停止する
 

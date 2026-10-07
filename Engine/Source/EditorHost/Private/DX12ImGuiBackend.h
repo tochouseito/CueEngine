@@ -12,7 +12,8 @@ namespace cue
 {
 /// @brief Manager の Context を借用する Editor 内部の公式 DX12 Backend 接続
 ///
-/// Manager と Native Backend はこの Adapter より長く生存させ、Owner Thread で直列に操作する
+/// Manager と Native Backend はこの Adapter より長く生存させる
+/// Manager の Context Lock 内で直列に操作し、記録だけは固定 RenderThread に許可する
 class DX12ImGuiBackend final
 {
     struct CreateToken final
@@ -32,8 +33,11 @@ class DX12ImGuiBackend final
     [[nodiscard]] Result<void> new_frame();
     /// @brief MainThread 上で Texture 更新を完了し、Snapshot が固定 ID を参照できる状態にする
     [[nodiscard]] Result<void> prepare(ImDrawData &a_draw);
-    /// @brief Descriptor を事前予約し、GPU 完了後に Texture 更新と描画を記録する
+    /// @brief 必要な VB/IB 枠の GPU 完了後に Texture 更新と描画を記録する
     [[nodiscard]] Result<void> record(ImDrawData &a_draw, FrameGraphContext &a_context);
+    /// @brief 同期 Graph Callback の提出済 Fence を VB/IB Ring と Texture の最終利用へ接続する
+    /// 失敗 Callback でも呼ぶ。Queue の致命的な提出失敗では Resource を保全して失敗する
+    [[nodiscard]] Result<void> finish_submission();
     /// @brief 所有 Heap と公式 Backend の描画枠の概要を返す
     [[nodiscard]] ImGuiRendererInfo info() const noexcept;
     /// @brief 新しい Fence の完了後に公式 Backend と専用 Heap を解放する

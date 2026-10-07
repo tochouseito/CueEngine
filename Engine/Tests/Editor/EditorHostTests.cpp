@@ -198,11 +198,21 @@ int test_owner_thread_frames()
     }
     const auto &progress = *progressResult.try_value();
     auto ui = host.ui_frame_info();
+    auto frameTiming = host.frame_timing_info();
+    auto uiTiming = host.ui_timing_info();
+    auto graphTiming = host.graph_performance();
     if (!ui.has_value() || ui.try_value()->frames != 3 || uiFrames != 3 || recorded != 3 || destroyed != 0 ||
         progress.submittedFrames != 3 || progress.updatedFrames != 3 || progress.renderedFrames != 3 ||
         progress.updateThreadId != ownerId || progress.renderThreadId != ownerId)
     {
         return 5;
+    }
+    if (!frameTiming.has_value() || !uiTiming.has_value() || !graphTiming.has_value() ||
+        frameTiming.try_value()->main.sampleCount != 3 || frameTiming.try_value()->update.sampleCount != 3 ||
+        frameTiming.try_value()->render.sampleCount != 3 || uiTiming.try_value()->uiBuild.sampleCount != 3 ||
+        uiTiming.try_value()->snapshotCopy.sampleCount != 3 || !graphTiming.try_value()->record.sampleCount)
+    {
+        return 9;
     }
 
     bool rejectedOtherThread = false;
@@ -213,14 +223,21 @@ int test_owner_thread_frames()
             auto step = host.step();
             auto progress = host.frame_progress();
             auto ui = host.ui_frame_info();
+            auto frameTiming = host.frame_timing_info();
+            auto uiTiming = host.ui_timing_info();
+            auto graphTiming = host.graph_performance();
             auto stop = host.shutdown();
             rejectedOtherThread = !initialize.has_value() && !step.has_value() && !progress.has_value() &&
-                                  !stop.has_value() && !ui.has_value() &&
+                                  !stop.has_value() && !ui.has_value() && !frameTiming.has_value() &&
+                                  !uiTiming.has_value() && !graphTiming.has_value() &&
                                   initialize.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   step.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   progress.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   stop.try_error()->category == cue::ErrorCategory::WrongThread &&
-                                  ui.try_error()->category == cue::ErrorCategory::WrongThread;
+                                  ui.try_error()->category == cue::ErrorCategory::WrongThread &&
+                                  frameTiming.try_error()->category == cue::ErrorCategory::WrongThread &&
+                                  uiTiming.try_error()->category == cue::ErrorCategory::WrongThread &&
+                                  graphTiming.try_error()->category == cue::ErrorCategory::WrongThread;
         });
     worker.join();
     if (!rejectedOtherThread)

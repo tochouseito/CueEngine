@@ -3,6 +3,8 @@
 #include "ImGuiSynchronization.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <exception>
 #include <mutex>
 #include <new>
@@ -55,6 +57,8 @@ class DX12ImGuiBackend::State final
         D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
         D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
         bool isReserved = false;
+        std::uint64_t lastFence = 0;
+        bool isRecorded = false;
     };
 
     ImGuiContext *context = nullptr;
@@ -65,6 +69,23 @@ class DX12ImGuiBackend::State final
     ImGuiRendererInfo info;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
     bool isInitialized = false;
+    std::array<std::uint64_t, 2> ringFences{};
+    std::optional<std::size_t> recordedRing;
+    std::uint64_t ringCalls = 0;
+    TimingSamples gpuWaitTimes;
+
+    /// @brief 再利用する資源の完了済 Fence は待たず、必要な CPU 待機の経過時間だけを記録する
+    [[nodiscard]] Result<void> wait_for_usage(std::uint64_t a_fence)
+    {
+        if (!a_fence || queue->is_fence_complete(a_fence))
+        {
+            return Result<void>::success();
+        }
+        const auto started = std::chrono::steady_clock::now();
+        auto result = queue->wait_for_fence(a_fence);
+        gpuWaitTimes.add(std::chrono::steady_clock::now() - started);
+        return result;
+    }
 
     /// @brief void Callback が失敗した状態で公式 CreateSRV を続けない
     [[noreturn]] static void invariant_failure(const char *a_operation) noexcept
@@ -314,14 +335,17 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
     {
         for (const auto &command : list->CmdBuffer)
         {
-            if (command.UserCallback && command.UserCallback != ImDrawCallback_ResetRenderState &&
-                command.UserCallback != platform.DrawCallback_ResetRenderState &&
-                command.UserCallback != platform.DrawCallback_SetSamplerLinear &&
-                command.UserCallback != platform.DrawCallback_SetSamplerNearest)
+            if (!is_imgui_draw_callback_supported(command.UserCallback, platform))
             {
                 return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.draw_callback"});
             }
         }
+    }
+    // 直接記録では前回の同期 Graph 呼出が既に戻っているため、その提出点をここで回収する
+    auto finished = finish_submission();
+    if (!finished.has_value())
+    {
+        return finished;
     }
     auto prepared = prepare(a_draw);
     if (!prepared.has_value())
@@ -338,6 +362,18 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
             }
         }
     }
+    // 公式 Backend の Ring は Graph 枠番号ではなく、DisplaySize が正の呼出だけで進む
+    // Resize / Skip / 最小化で両者がずれても、再利用する VB/IB だけを待つ
+    const bool advancesRing = a_draw.DisplaySize.x > 0.0f && a_draw.DisplaySize.y > 0.0f;
+    const auto ring = static_cast<std::size_t>(state.ringCalls % state.info.frameCount);
+    if (advancesRing && state.ringFences[ring] != 0)
+    {
+        auto waited = state.wait_for_usage(state.ringFences[ring]);
+        if (!waited.has_value())
+        {
+            return waited;
+        }
+    }
     return context->record_external_graphics(state.format,
                                              [&](ID3D12GraphicsCommandList &a_list)
                                              {
@@ -348,9 +384,58 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
                                                  a_draw.Textures = nullptr;
                                                  ImGui_ImplDX12_RenderDrawData(&a_draw, &a_list);
                                                  a_draw.Textures = textures;
+                                                 if (advancesRing)
+                                                 {
+                                                     ++state.ringCalls;
+                                                     state.recordedRing = ring;
+                                                     for (const auto *list : a_draw.CmdLists)
+                                                     {
+                                                         for (const auto &command : list->CmdBuffer)
+                                                         {
+                                                             if (!command.UserCallback && command.ElemCount)
+                                                             {
+                                                                 for (auto &slot : state.descriptors)
+                                                                 {
+                                                                     slot.isRecorded |=
+                                                                         slot.gpu.ptr == command.GetTexID();
+                                                                 }
+                                                             }
+                                                         }
+                                                     }
+                                                 }
                                                  ++state.info.recordedFrames;
                                                  return Result<void>::success();
                                              });
+}
+
+/// @brief 提出 Callback が戻った後に発行済 Fence を借用資源の再利用条件へ記録する
+Result<void> DX12ImGuiBackend::finish_submission()
+{
+    if (!m_state || !m_state->isInitialized)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiDX12.finish_submission"});
+    }
+    auto &state = *m_state;
+    if (!state.recordedRing)
+    {
+        return Result<void>::success();
+    }
+    if (state.queue->is_poisoned())
+    {
+        return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.submission.unconfirmed"});
+    }
+    const auto fence = state.queue->latest_fence_value();
+    state.ringFences[*state.recordedRing] = fence;
+    state.recordedRing.reset();
+    for (auto &slot : state.descriptors)
+    {
+        if (slot.isRecorded)
+        {
+            slot.lastFence = fence;
+            slot.isRecorded = false;
+        }
+    }
+    return Result<void>::success();
 }
 
 /// @brief GPU 完了と旧 Snapshot の参照を確認して公式 Texture 更新を完了する
@@ -362,12 +447,9 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
     }
     auto &state = *m_state;
     ContextScope current(state.context);
-    // 最小化等で公式 Ring と Graph 枠がずれても VB/IB を上書きしない初期の同期方式
-    // 公式 Texture Upload の Native 提出も新しい Queue Fence の完了点に含める
-    auto waited = state.queue->wait_idle();
-    if (!waited.has_value())
+    if (state.queue->is_poisoned())
     {
-        return waited;
+        return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.prepare.poisoned"});
     }
     // 更新前に旧 Snapshot の CPU 参照が消えていることを Manager が保証する
     if (a_draw.Textures)
@@ -395,6 +477,28 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
                  !state.owns_texture(texture->GetTexID())))
             {
                 return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.texture_data"});
+            }
+        }
+        // 全入力の検証後、変更・破棄する Texture の最後の利用だけを待つ。OK の通常経路は待機しない
+        for (const auto *texture : *a_draw.Textures)
+        {
+            const bool needsWait =
+                texture->Status == ImTextureStatus_WantUpdates ||
+                (texture->Status == ImTextureStatus_WantDestroy &&
+                 texture->UnusedFrames >= static_cast<int>(state.info.frameCount) && !texture->QueueUserData);
+            if (needsWait)
+            {
+                for (const auto &slot : state.descriptors)
+                {
+                    if (slot.handle.is_valid() && slot.gpu.ptr == texture->GetTexID() && slot.lastFence)
+                    {
+                        auto waited = state.wait_for_usage(slot.lastFence);
+                        if (!waited.has_value())
+                        {
+                            return waited;
+                        }
+                    }
+                }
             }
         }
         // 完了済み旧 Texture を先に回収し、満杯の Heap でも返却可能な Slot を再利用する
@@ -439,7 +543,12 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
 /// @brief Snapshot は所有値だけで公開する
 ImGuiRendererInfo DX12ImGuiBackend::info() const noexcept
 {
-    return m_state ? m_state->info : ImGuiRendererInfo{};
+    auto info = m_state ? m_state->info : ImGuiRendererInfo{};
+    if (m_state)
+    {
+        info.gpuWait = m_state->gpuWaitTimes.statistics();
+    }
+    return info;
 }
 
 /// @brief 公式 Texture、PSO、Root、Vertex / Index Buffer を Heap より先に解放する
