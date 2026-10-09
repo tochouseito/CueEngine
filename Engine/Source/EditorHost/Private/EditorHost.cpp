@@ -135,7 +135,9 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   },
                   [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); },
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
-                  { return m_imgui->render_frame(a_frame, a_token, a_record); }}})
+                  { return m_imgui->render_frame(a_frame, a_token, a_record); }},
+                 std::move(a_config.storage),
+                 std::move(a_config.fileSystem)})
 {
 }
 
@@ -267,6 +269,22 @@ Result<void> EditorHost::shutdown()
 /// @brief Window の生成 Thread に UI の Owner を固定する
 Result<void> EditorHost::initialize_ui(Window &a_window)
 {
+    auto *files = m_windows.file_system();
+    const auto *paths = m_windows.storage_paths();
+    if (!files || !paths)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.file_system"});
+    }
+    m_imguiConfig.fileSystem = files;
+    if (!m_imguiConfig.settingsFile.empty())
+    {
+        auto path = paths->dataRoot.join(m_imguiConfig.settingsFile);
+        if (!path.has_value())
+        {
+            return Result<void>::failure(*path.try_error());
+        }
+        m_imguiConfig.settingsFile = path.try_value()->utf8();
+    }
     auto result = ImGuiManager::create(a_window, std::move(m_imguiConfig));
     if (!result.has_value())
     {

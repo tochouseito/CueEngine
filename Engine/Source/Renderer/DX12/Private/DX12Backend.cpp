@@ -32,14 +32,16 @@ DX12Backend::DX12Backend(CreateToken) noexcept
 }
 
 /// @brief Device、全 Descriptor Heap、各 Pool が揃うまで Backend を公開しない
-Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHeapConfig& a_descriptorConfig)
+Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHeapConfig &a_descriptorConfig,
+                                                         IFileSystem *a_files)
 {
-    return create(AdapterSelection::HardwarePreferred, a_descriptorConfig);
+    return create(AdapterSelection::HardwarePreferred, a_descriptorConfig, a_files);
 }
 
 /// @brief Adapter 選択以外は本番と同じ生成と Rollback を利用する
 Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_selection,
-                                                         const DX12DescriptorHeapConfig &a_descriptorConfig)
+                                                         const DX12DescriptorHeapConfig &a_descriptorConfig,
+                                                         IFileSystem *a_files)
 {
     using BackendResult = Result<std::unique_ptr<DX12Backend>>;
     if (a_descriptorConfig.cpuViewCapacity == 0 || a_descriptorConfig.shaderViewCapacity == 0 ||
@@ -105,7 +107,7 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_sele
         return BackendResult::failure(*resourcePoolResult.try_error());
     }
 
-    auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value());
+    auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value(), a_files);
     if (!pipelineResult.has_value())
     {
         return BackendResult::failure(*pipelineResult.try_error());

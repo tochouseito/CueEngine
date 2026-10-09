@@ -16,16 +16,20 @@ namespace cue
 {
 class IBackend;
 class FrameGraphContext;
+class IFileSystem;
 
 /// @brief Editor が所有する Layout 保存先と Font / Style の初期設定
 struct ImGuiManagerConfig final
 {
-    // 空なら保存しない。相対 Path は実行時の Working Directory を基準とする
-    std::string settingsFile = "out/editor/imgui.ini";
+    // 空なら保存しない。EditorHost は相対 Path を保存 Root へ解決する
+    // Manager を直接生成する利用者は絶対 Path を渡すことを推奨する
+    std::string settingsFile = "editor/imgui.ini";
     float fontSize = 18.0f;
     bool isDockingEnabled = true;
     // Renderer 共有 Heap と分離した UI 専用 SRV Heap の容量
     std::uint32_t rendererDescriptorCapacity = 64;
+    // Manager の停止・破棄まで借用する。未指定なら Windows FileSystem を内部所有する
+    IFileSystem *fileSystem = nullptr;
 };
 
 /// @brief 具体 GPU 型を公開せず UI Backend の所有と利用状況を返す

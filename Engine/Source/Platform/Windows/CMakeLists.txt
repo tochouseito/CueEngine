@@ -3,6 +3,7 @@ add_library(Cue.Platform.Windows STATIC
     Private/Diagnostics.cpp
     Private/WindowsPlatform.cpp
     Private/WindowsThreadServices.cpp
+    Private/WindowsFileSystem.cpp
 )
 
 target_include_directories(Cue.Platform.Windows PUBLIC
@@ -34,4 +35,4 @@ target_compile_definitions(Cue.Platform.Windows PRIVATE
 )
 
 # Window と Message API を使う実装だけが user32 に依存する
-target_link_libraries(Cue.Platform.Windows PRIVATE user32)
+target_link_libraries(Cue.Platform.Windows PRIVATE user32 shell32 ole32)

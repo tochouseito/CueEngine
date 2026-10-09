@@ -2,6 +2,7 @@
 
 #include <Platform/Clock.h>
 #include <Platform/Diagnostics.h>
+#include <Platform/FileSystem.h>
 #include <Platform/Thread.h>
 #include <Platform/Waiter.h>
 #include <Platform/Window.h>

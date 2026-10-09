@@ -32,6 +32,8 @@ Build Tree、生成されたVisual Studio Project、Test Logは`out/build/window
 
 ## EditorHost（M05）
 
+File 操作は独自の Path / IFile / IFileSystem を使用する。Repository 起動時の保存先は `out/`、製品 Host の既定は `%LOCALAPPDATA%/<会社名>/<アプリ名>/`。所有権と保存契約、ポータブルモードは [File 操作基盤](Engine/Documents/FileSystem.md) を参照する。
+
 ```powershell
 & 'out/build/windows-vs2026/bin/Debug/CueEditorHost.exe'
 ctest --preset windows-vs2026-debug -R 'Cue.EditorHost' --output-on-failure

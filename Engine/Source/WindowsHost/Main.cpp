@@ -14,6 +14,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     {
         // 設定 File の導入までは起動設定を所有値で構築する
         cue::WindowsHostConfig config{{"CueEngine Windows Host", {1280, 720}}, {}, {}};
+        // Repository 内の検証 Host は全 Build 構成で開発保存先を明示する
+        auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
+        if (!root.has_value())
+        {
+            cue::report_error("CueWindowsHost storage", *root.try_error(), cue::DiagnosticSeverity::Fatal);
+            return 1;
+        }
+        config.storage.mode = cue::StorageMode::Development;
+        config.storage.repositoryRoot = root.take_value();
         cue::WindowsHost host(std::move(config));
 
         // Window を生成して表示する

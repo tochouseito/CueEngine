@@ -8,6 +8,11 @@
 #include <Foundation/Result.h>
 #include <RHI/Backend.h>
 
+namespace cue
+{
+class IFileSystem;
+}
+
 namespace cue::dx12
 {
 class DX12RenderDevice;
@@ -63,11 +68,12 @@ public:
   ///
   /// 容量 0 は拒否し、途中失敗時は生成済みの Heap と Device を解放する
   [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create(
-      const DX12DescriptorHeapConfig &a_descriptorConfig = {});
+      const DX12DescriptorHeapConfig &a_descriptorConfig = {}, IFileSystem *a_files = nullptr);
 
   /// @brief Software 描画の検証等で Adapter 選択を明示して同じ Backend 所有経路を生成する
   [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create(
-      AdapterSelection a_selection, const DX12DescriptorHeapConfig &a_descriptorConfig = {});
+      AdapterSelection a_selection, const DX12DescriptorHeapConfig &a_descriptorConfig = {},
+      IFileSystem *a_files = nullptr);
 
   /// @brief 明示停止されていない Queue の GPU 作業も待って解放する
   ~DX12Backend() override;

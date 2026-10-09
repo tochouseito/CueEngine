@@ -10,6 +10,7 @@
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
 #include <Runtime/FrameController.h>
+#include <WindowsHost/StoragePaths.h>
 
 namespace cue
 {
@@ -53,6 +54,9 @@ struct WindowsHostConfig final
     // Editor 等の具体型を公開せず、追加描画と表示 Pass の所有権を受け取る
     MainFrameGraphConfig graph;
     WindowsHostCallbacks callbacks;
+    StoragePathsConfig storage;
+    // 未指定なら Windows 実装を生成する。指定された実装も Host が所有する
+    std::unique_ptr<IFileSystem> fileSystem;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -74,6 +78,12 @@ class WindowsHost final
     ///
     /// 構築 Thread から一度だけ呼ぶ。失敗時は部分資源を破棄して停止済みにする
     [[nodiscard]] Result<void> initialize();
+
+    /// @brief 初期化 Callback から停止完了まで FileSystem を非所有で借用する
+    /// 構築 Thread だけで取得する。停止後は nullptr を返す
+    [[nodiscard]] IFileSystem *file_system() const noexcept;
+    /// @brief FileSystem と同じ借用期間の保存先を返す
+    [[nodiscard]] const StoragePaths *storage_paths() const noexcept;
 
     /// @brief Window Event を処理し、継続中なら true を返す
     ///

@@ -1,4 +1,5 @@
 #include <exception>
+#include <utility>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -26,7 +27,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     try
     {
-        cue::EditorHost host;
+        cue::EditorHostConfig config;
+        auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
+        if (!root.has_value())
+        {
+            cue::report_error("CueEditorHost storage", *root.try_error(), cue::DiagnosticSeverity::Fatal);
+            return 1;
+        }
+        // 製品 Host の既定は Product。Repository の Editor 起動は構成に関係なく Development を選ぶ
+        config.storage.mode = cue::StorageMode::Development;
+        config.storage.repositoryRoot = root.take_value();
+        config.storage.applicationName = "CueEngineEditor";
+        cue::EditorHost host(std::move(config));
         auto initResult = host.initialize();
         if (!initResult.has_value())
         {

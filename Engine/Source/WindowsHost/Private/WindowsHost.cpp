@@ -17,6 +17,7 @@
 #include <Foundation/ScopedFlag.h>
 #include <Platform/Diagnostics.h>
 #include <Platform/WindowSystem.h>
+#include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
 #include <RHI/BackendFactory.h>
 #include <Runtime/Runtime.h>
@@ -26,6 +27,9 @@ namespace cue
 class WindowsHost::State final
 {
   public:
+    // Backend、UI と Worker より長く生存させる
+    std::unique_ptr<IFileSystem> files;
+    StoragePaths paths;
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     std::unique_ptr<IBackend> backend;
@@ -141,6 +145,16 @@ WindowsHost::WindowsHost(WindowsHostConfig a_config)
 {
 }
 
+IFileSystem *WindowsHost::file_system() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state ? m_state->files.get() : nullptr;
+}
+
+const StoragePaths *WindowsHost::storage_paths() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state && m_state->files ? &m_state->paths : nullptr;
+}
+
 /// @brief 明示停止がない場合も Window を回収する
 WindowsHost::~WindowsHost()
 {
@@ -193,6 +207,24 @@ Result<void> WindowsHost::initialize()
 
     // WindowSystem は Window より長く生存させる
     m_state = std::make_unique<State>();
+    auto files = m_config.fileSystem ? Result<std::unique_ptr<IFileSystem>>::success(std::move(m_config.fileSystem))
+                                     : create_windows_file_system();
+    if (!files.has_value())
+    {
+        return rollback(*files.try_error());
+    }
+    m_state->files = files.take_value();
+    auto paths = resolve_storage_paths(*m_state->files, m_config.storage);
+    if (!paths.has_value())
+    {
+        return rollback(*paths.try_error());
+    }
+    m_state->paths = paths.take_value();
+    auto directories = create_storage_directories(*m_state->files, m_state->paths);
+    if (!directories.has_value())
+    {
+        return rollback(*directories.try_error());
+    }
     auto systemResult = create_windows_window_system();
     if (!systemResult.has_value())
     {
@@ -220,7 +252,7 @@ Result<void> WindowsHost::initialize()
     }
 
     // Backend が Device を所有し、Window より先に停止できる順序で保持する
-    auto backendResult = create_backend();
+    auto backendResult = create_backend(m_state->files.get());
     if (!backendResult.has_value())
     {
         return rollback(*backendResult.try_error());

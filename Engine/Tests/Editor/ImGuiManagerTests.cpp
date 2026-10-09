@@ -15,7 +15,10 @@
 
 #include <imgui.h>
 
+#include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
+
+#include "../Support/FileSystemProbe.h"
 
 namespace
 {
@@ -75,6 +78,14 @@ int test_manager()
     }
     const auto handle = static_cast<HWND>(handleResult.take_value());
     cue::ImGuiManagerConfig config;
+    auto filesResult = cue::create_windows_file_system();
+    if (!filesResult.has_value())
+    {
+        return __LINE__;
+    }
+    auto files = filesResult.take_value();
+    cue::tests::FileSystemProbe probe(*files);
+    config.fileSystem = &probe;
     const auto settingsPath = temporary.path / L"設定" / "layout.ini";
     const auto utf8Path = settingsPath.u8string();
     config.settingsFile.assign(utf8Path.begin(), utf8Path.end());
@@ -242,10 +253,24 @@ int test_manager()
             return 18;
         }
     }
-    if (!manager->save_settings().has_value() || !manager->save_settings().has_value() ||
-        !std::filesystem::exists(settingsPath) || !manager->shutdown().has_value() ||
-        !manager->shutdown().has_value() || manager->begin_frame().has_value() || manager->frame_info().has_value() ||
-        ImGui::GetCurrentContext() != external.get())
+    if (!manager->save_settings().has_value())
+    {
+        return __LINE__;
+    }
+    auto storedPath = cue::Path::create(config.settingsFile);
+    auto before = files->read_all(*storedPath.try_value());
+    probe.failSave = true;
+    auto failedSave = manager->save_settings();
+    auto after = files->read_all(*storedPath.try_value());
+    if (failedSave.has_value() || !before.has_value() || !after.has_value() ||
+        *before.try_value() != *after.try_value())
+    {
+        return __LINE__;
+    }
+    probe.failSave = false;
+    if (!manager->save_settings().has_value() || probe.saveCount < 3 || !std::filesystem::exists(settingsPath) ||
+        !manager->shutdown().has_value() || !manager->shutdown().has_value() || manager->begin_frame().has_value() ||
+        manager->frame_info().has_value() || ImGui::GetCurrentContext() != external.get())
     {
         return 13;
     }
@@ -269,6 +294,14 @@ int test_manager()
         return 15;
     }
     loaded.reset();
+    probe.failRead = true;
+    auto failedLoad = cue::ImGuiManager::create(*window, config);
+    if (failedLoad.has_value() || failedLoad.try_error()->operation != "Probe.open" ||
+        ImGui::GetCurrentContext() != external.get())
+    {
+        return __LINE__;
+    }
+    probe.failRead = false;
 
     // 保存先の Directory が外部で File に変わった場合も、停止は借用と Context を回収する
     const auto blockedDirectory = temporary.path / "blocked";

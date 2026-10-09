@@ -166,7 +166,8 @@ DX12PipelineManager::DX12PipelineManager(CreateToken) noexcept
 DX12PipelineManager::~DX12PipelineManager() = default;
 
 /// @brief Native Device と DXC の生成基盤が揃った場合だけ Manager を公開する
-Result<std::unique_ptr<DX12PipelineManager>> DX12PipelineManager::create(DX12RenderDevice &a_device)
+Result<std::unique_ptr<DX12PipelineManager>> DX12PipelineManager::create(DX12RenderDevice &a_device,
+                                                                         IFileSystem *a_files)
 {
     using managerResult = Result<std::unique_ptr<DX12PipelineManager>>;
     if (!a_device.device())
@@ -182,7 +183,7 @@ Result<std::unique_ptr<DX12PipelineManager>> DX12PipelineManager::create(DX12Ren
     {
         return managerResult::failure({ErrorCategory::Fatal, "DX12PipelineManager.id_exhausted"});
     }
-    auto compilerResult = DX12ShaderCompiler::create();
+    auto compilerResult = DX12ShaderCompiler::create(a_files);
     if (!compilerResult.has_value())
     {
         return managerResult::failure(*compilerResult.try_error());
