@@ -4,6 +4,7 @@ add_library(Cue.Platform.Windows STATIC
     Private/WindowsPlatform.cpp
     Private/WindowsThreadServices.cpp
     Private/WindowsFileSystem.cpp
+    Private/WindowsDebugLogSink.cpp
 )
 
 target_include_directories(Cue.Platform.Windows PUBLIC
