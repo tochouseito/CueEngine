@@ -24,6 +24,7 @@ struct EditorHostConfig final
     editorUiCallback buildUi;
     StoragePathsConfig storage;
     std::unique_ptr<IFileSystem> fileSystem;
+    HostLoggingConfig logging;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
@@ -46,6 +47,11 @@ class EditorHost final
     ///
     /// 一度だけ呼べる。失敗時は部分資源を回収し、同じ Host の再初期化は拒否する
     [[nodiscard]] Result<void> initialize();
+
+    /// @brief 下位 Host の Logger を構築 Thread で借用する。停止完了で失効する
+    [[nodiscard]] ILogger *logger() const noexcept;
+    /// @brief 下位 Host が生成したログ File の Path を同じ借用期間で返す
+    [[nodiscard]] const Path *log_file_path() const noexcept;
 
     /// @brief Window Message と Frame を進め、Close 要求時は false を返す
     ///

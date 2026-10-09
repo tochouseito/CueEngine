@@ -10,6 +10,7 @@
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
 #include <Runtime/FrameController.h>
+#include <WindowsHost/HostLogging.h>
 #include <WindowsHost/StoragePaths.h>
 
 namespace cue
@@ -57,6 +58,7 @@ struct WindowsHostConfig final
     StoragePathsConfig storage;
     // 未指定なら Windows 実装を生成する。指定された実装も Host が所有する
     std::unique_ptr<IFileSystem> fileSystem;
+    HostLoggingConfig logging;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -84,6 +86,13 @@ class WindowsHost final
     [[nodiscard]] IFileSystem *file_system() const noexcept;
     /// @brief FileSystem と同じ借用期間の保存先を返す
     [[nodiscard]] const StoragePaths *storage_paths() const noexcept;
+
+    /// @brief 初期化 Callback から停止完了まで Logger を非所有で借用する
+    /// 構築 Thread だけで取得し、Worker 等の借用先は shutdown より前に停止する
+    [[nodiscard]] ILogger *logger() const noexcept;
+    /// @brief この起動で生成したログ File の Path を借用する。File 無効時は nullptr
+    /// 構築 Thread のみ。shutdown 完了で失効する
+    [[nodiscard]] const Path *log_file_path() const noexcept;
 
     /// @brief Window Event を処理し、継続中なら true を返す
     ///

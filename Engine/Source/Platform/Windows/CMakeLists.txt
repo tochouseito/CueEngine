@@ -29,9 +29,9 @@ if(MSVC)
     )
 endif()
 
-# Debugger 出力は Debug の実装だけで有効にする
+# 緊急出力は Debug / Development で有効にし、通常の出力は Host の Sink 設定に従う
 target_compile_definitions(Cue.Platform.Windows PRIVATE
-    $<$<CONFIG:Debug>:CUE_DEBUG_OUTPUT=1>
+    $<$<OR:$<CONFIG:Debug>,$<CONFIG:Development>>:CUE_DEBUG_OUTPUT=1>
     $<$<CONFIG:Release>:CUE_SHIPPING=1>
 )
 

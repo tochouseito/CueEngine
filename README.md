@@ -1,5 +1,7 @@
 # CueEngine
 
+ログの Module 構成、保存先、Visual Studio デバッグ出力と停止契約は [Logging](Engine/Documents/Logging.md) を参照する。
+
 新CueEngineのBuild基盤とWindows用の表示・Frame実行基盤。`CueWindowsHost`はWindow、DX12 Backend、FrameGraphとRuntimeの生成、Message処理、描画とPresent、終了を担当する。`CueEditorHost`は同じWindows基盤を利用するEditor用の起動入口で、ImGui Context、Win32入力、UI Frame生成、公式DX12 BackendとImGuiPassによるTest UI表示まで接続している。Runtime Worldは未接続。Build定義はCMakeを正本とする。後半のM00〜M04の記録は各時点の履歴であり、現在の到達範囲はSourceと個別の機能Documentを参照する。
 
 ## 開発環境

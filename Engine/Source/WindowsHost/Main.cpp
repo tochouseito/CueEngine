@@ -18,7 +18,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
         if (!root.has_value())
         {
-            cue::report_error("CueWindowsHost storage", *root.try_error(), cue::DiagnosticSeverity::Fatal);
+            cue::report_log_error("CueWindowsHost storage", *root.try_error(), cue::LogLevel::Fatal);
             return 1;
         }
         config.storage.mode = cue::StorageMode::Development;
@@ -29,12 +29,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         auto initResult = host.initialize();
         if (!initResult.has_value())
         {
+            cue::report_log_error("CueWindowsHost", *initResult.try_error(), cue::LogLevel::Fatal);
             auto stopResult = host.shutdown();
             if (!stopResult.has_value())
             {
-                cue::report_error("CueWindowsHost cleanup", *stopResult.try_error(), cue::DiagnosticSeverity::Error);
+                cue::report_log_error("CueWindowsHost cleanup", *stopResult.try_error(), cue::LogLevel::Error);
             }
-            cue::report_error("CueWindowsHost", *initResult.try_error(), cue::DiagnosticSeverity::Fatal);
             return 1;
         }
 
@@ -44,12 +44,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             auto stepResult = host.step();
             if (!stepResult.has_value())
             {
+                cue::report_log_error("CueWindowsHost", *stepResult.try_error(), cue::LogLevel::Fatal);
                 auto stopResult = host.shutdown();
                 if (!stopResult.has_value())
                 {
-                    cue::report_error("CueWindowsHost cleanup", *stopResult.try_error(), cue::DiagnosticSeverity::Error);
+                    cue::report_log_error("CueWindowsHost cleanup", *stopResult.try_error(), cue::LogLevel::Error);
                 }
-                cue::report_error("CueWindowsHost", *stepResult.try_error(), cue::DiagnosticSeverity::Fatal);
                 return 1;
             }
             if (!*stepResult.try_value())
@@ -62,14 +62,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         auto shutdownResult = host.shutdown();
         if (!shutdownResult.has_value())
         {
-            cue::report_error("CueWindowsHost", *shutdownResult.try_error(), cue::DiagnosticSeverity::Fatal);
+            cue::report_log_error("CueWindowsHost", *shutdownResult.try_error(), cue::LogLevel::Fatal);
             return 1;
         }
         return 0;
     }
     catch (const std::exception&)
     {
-        cue::report_message("CueWindowsHost", "unexpected C++ exception", cue::DiagnosticSeverity::Fatal);
+        cue::report_log("CueWindowsHost", "unexpected C++ exception", cue::LogLevel::Fatal);
         return 2;
     }
 }

@@ -138,7 +138,7 @@ DX12FrameGraphResources::~DX12FrameGraphResources()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("DX12FrameGraphResources.shutdown", *result.try_error(), DiagnosticSeverity::Fatal);
+        report_log_error("DX12FrameGraphResources.shutdown", *result.try_error(), LogLevel::Fatal);
         std::terminate();
     }
 }

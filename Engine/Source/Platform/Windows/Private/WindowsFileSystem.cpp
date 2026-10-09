@@ -127,7 +127,7 @@ class WindowsFile final : public IFile
     {
         if (m_handle != INVALID_HANDLE_VALUE && !CloseHandle(m_handle))
         {
-            report_message("WindowsFile", "CloseHandle failed", DiagnosticSeverity::Error);
+            report_log("WindowsFile", "CloseHandle failed", LogLevel::Error);
         }
     }
     /// @brief DWORD 範囲の部分 Read を行い、EOF は 0 を返す
@@ -578,7 +578,7 @@ class WindowsFileSystem final : public IFileSystem
             {
                 if (!isPublished && !DeleteFileW(path.c_str()))
                 {
-                    report_message("FileSystem.replace_file", "temporary cleanup failed", DiagnosticSeverity::Error);
+                    report_log("FileSystem.replace_file", "temporary cleanup failed", LogLevel::Error);
                 }
             }
         } cleanup{*nativeTemporary.try_value()};

@@ -100,8 +100,8 @@ Result<std::unique_ptr<DX12DescriptorAllocator>> DX12DescriptorAllocator::create
     const HRESULT nameResult = allocator->m_heap->SetName(heap_name(a_type, a_isShaderVisible));
     if (FAILED(nameResult))
     {
-        report_error("DX12DescriptorAllocator", descriptor_error("ID3D12DescriptorHeap.SetName", nameResult),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12DescriptorAllocator", descriptor_error("ID3D12DescriptorHeap.SetName", nameResult),
+                     LogLevel::Warning);
     }
     return AllocatorResult::success(std::move(allocator));
 }

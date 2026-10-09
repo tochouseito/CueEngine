@@ -81,15 +81,15 @@ Result<std::unique_ptr<DX12GpuCommandQueue>> DX12GpuCommandQueue::create(ID3D12D
     const HRESULT queueNameResult = queue->m_queue->SetName(queueName.c_str());
     if (FAILED(queueNameResult))
     {
-        report_error("DX12GpuCommandQueue", queue_error("ID3D12CommandQueue.SetName", queueNameResult),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12GpuCommandQueue", queue_error("ID3D12CommandQueue.SetName", queueNameResult),
+                     LogLevel::Warning);
     }
     const std::wstring fenceName = namePrefix + L" Fence";
     const HRESULT fenceNameResult = queue->m_fence->SetName(fenceName.c_str());
     if (FAILED(fenceNameResult))
     {
-        report_error("DX12GpuCommandQueue", queue_error("ID3D12Fence.SetName", fenceNameResult),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12GpuCommandQueue", queue_error("ID3D12Fence.SetName", fenceNameResult),
+                     LogLevel::Warning);
     }
 
     queue->m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -412,7 +412,7 @@ struct DX12QueuePool::State
             auto result = wait_idle();
             if (!result.has_value())
             {
-                report_error("DX12QueuePool.State", *result.try_error(), DiagnosticSeverity::Error);
+                report_log_error("DX12QueuePool.State", *result.try_error(), LogLevel::Error);
                 for (const auto& queue : queues)
                 {
                     if (queue && queue->has_unconfirmed_work())
@@ -461,7 +461,7 @@ DX12QueuePool::~DX12QueuePool()
     auto result = shutdown();
     if (!result.has_value() && result.try_error()->category != ErrorCategory::InvalidState)
     {
-        report_error("DX12QueuePool.shutdown", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("DX12QueuePool.shutdown", *result.try_error(), LogLevel::Error);
     }
 }
 

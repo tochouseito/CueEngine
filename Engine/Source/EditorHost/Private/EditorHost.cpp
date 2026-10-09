@@ -137,8 +137,20 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
                   { return m_imgui->render_frame(a_frame, a_token, a_record); }},
                  std::move(a_config.storage),
-                 std::move(a_config.fileSystem)})
+                 std::move(a_config.fileSystem),
+                 a_config.logging})
 {
+}
+
+/// @brief 下位の所有 Logger を構築 Thread へ借用する
+ILogger *EditorHost::logger() const noexcept
+{
+    return m_windows.logger();
+}
+
+const Path *EditorHost::log_file_path() const noexcept
+{
+    return m_windows.log_file_path();
 }
 
 /// @brief Editor の表示を抽象 Pass として下位 Host へ渡し、明示された Pass は優先する
@@ -159,7 +171,7 @@ EditorHost::~EditorHost()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("CueEditorHost cleanup", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("CueEditorHost cleanup", *result.try_error(), LogLevel::Error);
     }
 }
 

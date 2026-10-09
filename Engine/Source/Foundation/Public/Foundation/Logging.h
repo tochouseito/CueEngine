@@ -47,6 +47,8 @@ class ILogger
     ILogger &operator=(const ILogger &) = delete;
     /// @brief Record を同期で借用し、出力失敗を返す。部分配送後に失敗する場合がある
     [[nodiscard]] virtual Result<void> write(const LogRecord &a_record) = 0;
+    /// @brief 全出力先の Buffer を Flush し、失敗を呼出側へ返す
+    [[nodiscard]] virtual Result<void> flush() = 0;
     /// @brief 呼出元の位置・時刻・Thread を含む通常ログを作る
     [[nodiscard]] Result<void> log(LogLevel a_level, std::string_view a_source, std::string_view a_message,
                                    std::source_location a_location = std::source_location::current())

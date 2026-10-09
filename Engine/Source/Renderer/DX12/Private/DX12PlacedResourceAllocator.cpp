@@ -429,8 +429,8 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             const HRESULT nameResult = selected->heap->SetName(heapName);
             if (FAILED(nameResult))
             {
-                report_error("DX12PlacedResourceAllocator",
-                             placed_error("ID3D12Heap.SetName", nameResult), DiagnosticSeverity::Warning);
+                report_log_error("DX12PlacedResourceAllocator",
+                             placed_error("ID3D12Heap.SetName", nameResult), LogLevel::Warning);
             }
             isNewPage = true;
         }
@@ -475,8 +475,8 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             const HRESULT nameResult = resource->m_resource->SetName(a_name);
             if (FAILED(nameResult))
             {
-                report_error("DX12PlacedResourceAllocator",
-                             placed_error("ID3D12Resource.SetName", nameResult), DiagnosticSeverity::Warning);
+                report_log_error("DX12PlacedResourceAllocator",
+                             placed_error("ID3D12Resource.SetName", nameResult), LogLevel::Warning);
             }
             resources.push_back(std::move(resource));
         }

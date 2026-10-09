@@ -7,7 +7,13 @@
 #include <mutex>
 #include <optional>
 #include <stop_token>
+#include <string>
 #include <utility>
+#include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12CommandPool.h>
@@ -15,8 +21,11 @@
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
 #include <Foundation/ScopedFlag.h>
+#include <Logging/FileLogSink.h>
+#include <Logging/Logger.h>
 #include <Platform/Diagnostics.h>
 #include <Platform/WindowSystem.h>
+#include <Platform/Windows/WindowsDebugLogSink.h>
 #include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
 #include <RHI/BackendFactory.h>
@@ -24,12 +33,76 @@
 
 namespace cue
 {
+namespace
+{
+/// @brief 起動ごとの新規 File と構成別の DebugSink を、Host の所有 Logger に組み立てる
+Result<std::unique_ptr<Logger>> create_host_logger(IFileSystem &a_files, const StoragePaths &a_paths,
+                                                   const HostLoggingConfig &a_config, Path &a_logFile)
+{
+    using loggerResult = Result<std::unique_ptr<Logger>>;
+    if (a_config.minimumLevel > LogLevel::Fatal ||
+        (a_config.debugOutput != DebugLogOutput::Automatic && a_config.debugOutput != DebugLogOutput::Enabled &&
+         a_config.debugOutput != DebugLogOutput::Disabled))
+    {
+        return loggerResult::failure({ErrorCategory::InvalidArgument, "WindowsHost.logging.config"});
+    }
+    bool isDebugEnabled = a_config.debugOutput == DebugLogOutput::Enabled;
+#if !defined(CUE_SHIPPING)
+    isDebugEnabled = isDebugEnabled || a_config.debugOutput == DebugLogOutput::Automatic;
+#endif
+    std::vector<std::unique_ptr<ILogSink>> sinks;
+    sinks.push_back(create_windows_debug_log_sink(isDebugEnabled));
+    if (a_config.isFileEnabled)
+    {
+        // CreateNew と PID / 時刻 / 連番を合わせ、同時 Process と同じ ms の再起動でも旧ログを保全する
+        static std::atomic<std::uint64_t> sequence = 0;
+        bool wasCreated = false;
+        for (int attempt = 0; attempt < 16; ++attempt)
+        {
+            const auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
+            auto path = a_paths.logs.join("CueEngine-" + std::to_string(timestamp) + "-" +
+                                          std::to_string(GetCurrentProcessId()) + "-" +
+                                          std::to_string(sequence.fetch_add(1)) + ".log");
+            if (!path.has_value())
+            {
+                return loggerResult::failure(*path.try_error());
+            }
+            auto file = FileLogSink::create(a_files, *path.try_value());
+            if (!file.has_value())
+            {
+                const auto &error = *file.try_error();
+                if (error.nativeCode == ERROR_FILE_EXISTS || error.nativeCode == ERROR_ALREADY_EXISTS)
+                {
+                    continue;
+                }
+                return loggerResult::failure(error);
+            }
+            a_logFile = path.take_value();
+            sinks.push_back(file.take_value());
+            wasCreated = true;
+            break;
+        }
+        if (!wasCreated)
+        {
+            return loggerResult::failure({ErrorCategory::PlatformFailure, "WindowsHost.logging.filename"});
+        }
+    }
+    return Logger::create(std::move(sinks), a_config.minimumLevel);
+}
+} // namespace
+
 class WindowsHost::State final
 {
   public:
     // Backend、UI と Worker より長く生存させる
     std::unique_ptr<IFileSystem> files;
     StoragePaths paths;
+    // 逆順破棄でも登録解除が Logger より先、Logger の File 回収が FileSystem より先になる
+    std::unique_ptr<Logger> logger;
+    std::unique_ptr<DiagnosticRegistration> diagnosticRegistration;
+    Path logFile;
     std::unique_ptr<WindowSystem> system;
     std::unique_ptr<Window> window;
     std::unique_ptr<IBackend> backend;
@@ -155,13 +228,23 @@ const StoragePaths *WindowsHost::storage_paths() const noexcept
     return std::this_thread::get_id() == m_ownerId && m_state && m_state->files ? &m_state->paths : nullptr;
 }
 
+ILogger *WindowsHost::logger() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state ? m_state->logger.get() : nullptr;
+}
+
+const Path *WindowsHost::log_file_path() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state && !m_state->logFile.is_empty() ? &m_state->logFile : nullptr;
+}
+
 /// @brief 明示停止がない場合も Window を回収する
 WindowsHost::~WindowsHost()
 {
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("CueWindowsHost cleanup", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("CueWindowsHost cleanup", *result.try_error(), LogLevel::Error);
         // 借用解除が完了していない Window を暗黙破棄すると、上位 Owner の参照が失効する
         // 明示 shutdown は再試行できるが、Destructor では安全な回収を継続できない
         if (m_state && m_state->hasWindowInitializationStarted)
@@ -197,10 +280,11 @@ Result<void> WindowsHost::initialize()
     // 部分初期化の失敗時は元の Error を返し、Cleanup の失敗は別に診断する
     auto rollback = [this](Error a_error)
     {
+        report_log_error("WindowsHost.initialize", a_error, LogLevel::Error);
         auto cleanupResult = shutdown();
         if (!cleanupResult.has_value())
         {
-            report_error("CueWindowsHost cleanup", *cleanupResult.try_error(), DiagnosticSeverity::Error);
+            report_log_error("CueWindowsHost cleanup", *cleanupResult.try_error(), LogLevel::Error);
         }
         return Result<void>::failure(std::move(a_error));
     };
@@ -225,6 +309,19 @@ Result<void> WindowsHost::initialize()
     {
         return rollback(*directories.try_error());
     }
+    auto logger = create_host_logger(*m_state->files, m_state->paths, m_config.logging, m_state->logFile);
+    if (!logger.has_value())
+    {
+        return rollback(*logger.try_error());
+    }
+    m_state->logger = logger.take_value();
+    auto registration = register_diagnostic_logger(*m_state->logger);
+    if (!registration.has_value())
+    {
+        return rollback(*registration.try_error());
+    }
+    m_state->diagnosticRegistration = registration.take_value();
+    report_log("WindowsHost", "initializing");
     auto systemResult = create_windows_window_system();
     if (!systemResult.has_value())
     {
@@ -354,6 +451,7 @@ Result<void> WindowsHost::initialize()
     }
 
     m_lifecycle = Lifecycle::Running;
+    report_log("WindowsHost", "initialized");
     return Result<void>::success();
 }
 
@@ -546,6 +644,7 @@ Result<void> WindowsHost::shutdown()
         {
             // 上位機能が Window / Device の借用をまだ解除できない可能性がある
             // 下位 Owner は保持し、Stopped 状態からの shutdown 再試行を許可する
+            report_log_error("WindowsHost.shutdown", failure ? *failure : *hostResult.try_error(), LogLevel::Error);
             return Result<void>::failure(failure ? *failure : *hostResult.try_error());
         }
         m_state->hasWindowInitializationStarted = false;
@@ -595,6 +694,31 @@ Result<void> WindowsHost::shutdown()
     m_state->window.reset();
     m_state->system.reset();
     m_state->services = {};
+    if (failure)
+    {
+        report_log_error("WindowsHost.shutdown", *failure, LogLevel::Error);
+    }
+    if (m_state->diagnosticRegistration)
+    {
+        report_log("WindowsHost", "stopped");
+    }
+    // 配送中の呼出しを待って借用解除し、Close の緊急診断が自分の File へ再帰しないようにする
+    m_state->diagnosticRegistration.reset();
+    if (m_state->logger)
+    {
+        auto stopped = m_state->logger->shutdown();
+        if (!stopped.has_value())
+        {
+            report_log_error("WindowsHost.logging.shutdown", *stopped.try_error(), LogLevel::Error);
+            if (!failure)
+            {
+                failure = *stopped.try_error();
+            }
+            // File の Close が失敗した場合も所有先を残し、次の shutdown で回収を再試行する
+            return Result<void>::failure(*failure);
+        }
+        m_state->logger.reset();
+    }
     m_state.reset();
     return failure ? Result<void>::failure(*failure) : Result<void>::success();
 }

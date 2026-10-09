@@ -147,7 +147,7 @@ DX12Backend::~DX12Backend()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("DX12Backend.shutdown", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("DX12Backend.shutdown", *result.try_error(), LogLevel::Error);
     }
 }
 
