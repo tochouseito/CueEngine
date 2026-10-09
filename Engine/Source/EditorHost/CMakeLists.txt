@@ -35,3 +35,4 @@ if(MSVC)
 endif()
 
 target_compile_definitions(CueEditorHost PRIVATE $<$<CONFIG:Release>:CUE_SHIPPING=1>)
+target_compile_definitions(CueEditorHost PRIVATE CUE_REPOSITORY_ROOT="${PROJECT_SOURCE_DIR}")

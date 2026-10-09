@@ -7,6 +7,11 @@
 
 #include <RHI/PipelineManager.h>
 
+namespace cue
+{
+class IFileSystem;
+}
+
 namespace cue::dx12
 {
 class DX12RenderDevice;
@@ -25,7 +30,9 @@ class DX12PipelineManager final : public IPipelineManager
     /// @brief create 内部でのみ空の所有状態を構築する
     explicit DX12PipelineManager(CreateToken) noexcept;
     /// @brief Device を保持し、DXC の生成基盤を準備する
-    [[nodiscard]] static Result<std::unique_ptr<DX12PipelineManager>> create(DX12RenderDevice &a_device);
+    /// FileSystem 指定時は Manager の破棄まで借用する。未指定なら Windows 実装を内部所有する
+    [[nodiscard]] static Result<std::unique_ptr<DX12PipelineManager>> create(DX12RenderDevice &a_device,
+                                                                             IFileSystem *a_files = nullptr);
     /// @brief Registry の所有を解放する。記録・提出済み Command の参照は独立して残る
     ~DX12PipelineManager() override;
     /// @brief Registry の複製を禁止する

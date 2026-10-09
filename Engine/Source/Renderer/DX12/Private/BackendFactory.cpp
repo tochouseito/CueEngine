@@ -7,9 +7,9 @@
 namespace cue
 {
 /// @brief 現在の Windows Backend として DX12Backend を生成する
-Result<std::unique_ptr<IBackend>> create_backend()
+Result<std::unique_ptr<IBackend>> create_backend(IFileSystem *a_files)
 {
-    auto backendResult = dx12::DX12Backend::create();
+    auto backendResult = dx12::DX12Backend::create({}, a_files);
     if (!backendResult.has_value())
     {
         return Result<std::unique_ptr<IBackend>>::failure(*backendResult.try_error());

@@ -40,6 +40,7 @@ if(WIN32)
     endif()
 
     target_compile_definitions(CueWindowsHost PRIVATE
+        CUE_REPOSITORY_ROOT="${PROJECT_SOURCE_DIR}"
         $<$<CONFIG:Release>:CUE_SHIPPING=1>
     )
     # Editor の実行入口を追加し、Windows の表示・Frame 基盤を再利用する

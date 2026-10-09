@@ -7,9 +7,6 @@
 #include <condition_variable>
 #include <cstring>
 #include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -26,6 +23,7 @@
 
 #include <FrameGraph/FrameGraph.h>
 #include <Platform/Diagnostics.h>
+#include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
 #include "DX12ImGuiBackend.h"
@@ -96,6 +94,8 @@ struct DrawSnapshot final
 class ImGuiManager::State final
 {
 public:
+    std::unique_ptr<IFileSystem> ownedFiles;
+    IFileSystem *files = nullptr;
     ImGuiContext* context = nullptr;
     Window* window = nullptr;
     WindowsMessageHandlerToken handler;
@@ -162,7 +162,6 @@ ImGuiManager::ImGuiManager(CreateToken) noexcept : m_ownerId(std::this_thread::g
 /// @brief Window を借用して CPU UI 基盤だけを構築する
 Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImGuiManagerConfig a_config)
 {
-    std::lock_guard lock(imgui_context_mutex());
     using ManagerResult = Result<std::unique_ptr<ImGuiManager>>;
     if (!std::isfinite(a_config.fontSize) || a_config.fontSize <= 0.0f || a_config.fontSize > 256.0f ||
         a_config.settingsFile.find('\0') != std::string::npos)
@@ -181,6 +180,42 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
         auto& state = *result->m_state;
         state.window = &a_window;
         state.config = std::move(a_config);
+        state.files = state.config.fileSystem;
+        if (!state.files)
+        {
+            auto files = create_windows_file_system();
+            if (!files.has_value())
+            {
+                return ManagerResult::failure(*files.try_error());
+            }
+            state.ownedFiles = files.take_value();
+            state.files = state.ownedFiles.get();
+        }
+        // Context の排他を取る前に File I/O を完了し、別 Context の描画を待たせない
+        std::vector<std::byte> settings;
+        if (!state.config.settingsFile.empty())
+        {
+            auto path = Path::create(state.config.settingsFile);
+            if (!path.has_value())
+            {
+                return ManagerResult::failure(*path.try_error());
+            }
+            auto exists = state.files->exists(*path.try_value());
+            if (!exists.has_value())
+            {
+                return ManagerResult::failure(*exists.try_error());
+            }
+            if (*exists.try_value())
+            {
+                auto loaded = state.files->read_all(*path.try_value(), 4 * 1024 * 1024);
+                if (!loaded.has_value())
+                {
+                    return ManagerResult::failure(*loaded.try_error());
+                }
+                settings = loaded.take_value();
+            }
+        }
+        std::lock_guard lock(imgui_context_mutex());
 
         // CreateContext が Current を変更する場合も、生成処理の外へ漏らさない
         IMGUI_CHECKVERSION();
@@ -213,20 +248,9 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
         // 初回は Layout が存在しなくてもよい。既存 File の読込み失敗は初期化失敗にする
         if (!state.config.settingsFile.empty())
         {
-            const auto path = std::filesystem::u8path(state.config.settingsFile);
-            if (std::filesystem::exists(path))
+            if (!settings.empty())
             {
-                std::ifstream input(path, std::ios::binary);
-                if (!input)
-                {
-                    return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.load_settings"});
-                }
-                const std::string settings(std::istreambuf_iterator<char>(input), {});
-                if (input.bad())
-                {
-                    return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.load_settings"});
-                }
-                ImGui::LoadIniSettingsFromMemory(settings.data(), settings.size());
+                ImGui::LoadIniSettingsFromMemory(reinterpret_cast<const char *>(settings.data()), settings.size());
             }
         }
 
@@ -264,10 +288,6 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
     catch (const std::bad_alloc&)
     {
         return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.create.allocation"});
-    }
-    catch (const std::filesystem::filesystem_error& error)
-    {
-        return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.settings", error.code().value()});
     }
 }
 
@@ -846,7 +866,11 @@ Result<void> ImGuiManager::save_settings()
     }
     try
     {
-        const auto path = std::filesystem::u8path(m_state->config.settingsFile);
+        auto path = Path::create(m_state->config.settingsFile);
+        if (!path.has_value())
+        {
+            return Result<void>::failure(*path.try_error());
+        }
         std::string settings;
         {
             // ImGui の内部文字列は次の UI 更新で変更されるため、Lock 内で所有値へ複製する
@@ -857,28 +881,20 @@ Result<void> ImGuiManager::save_settings()
         }
         // File I/O 中は Render の公式記録や別 Context の操作を待たせない
         lock.unlock();
-        if (path.has_parent_path())
+        auto created = m_state->files->create_directories(path.try_value()->parent());
+        if (!created.has_value())
         {
-            std::filesystem::create_directories(path.parent_path());
+            return created;
         }
-        auto temporary = path;
-        temporary += L".tmp";
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        output.write(settings.data(), static_cast<std::streamsize>(settings.size()));
-        output.close();
-        if (!output)
+        auto saved = m_state->files->replace_file(*path.try_value(), std::as_bytes(std::span(settings)));
+        if (!saved.has_value())
         {
-            return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.save_settings.write"});
+            return Result<void>::failure(*saved.try_error());
         }
-        std::filesystem::rename(temporary, path);
         lock.lock();
         ScopedContext current(m_state->context);
         ImGui::GetIO().WantSaveIniSettings = false;
         return Result<void>::success();
-    }
-    catch (const std::filesystem::filesystem_error& error)
-    {
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.save_settings", error.code().value()});
     }
     catch (const std::bad_alloc&)
     {

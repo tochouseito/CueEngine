@@ -8,6 +8,10 @@ add_executable(CueFoundationResultTests Foundation/ResultTests.cpp)
 target_link_libraries(CueFoundationResultTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
 
+add_executable(CueFoundationPathTests Foundation/PathTests.cpp)
+target_link_libraries(CueFoundationPathTests PRIVATE Cue.Foundation)
+add_test(NAME Cue.Foundation.Path COMMAND CueFoundationPathTests)
+
 # 計測分布の p95、固定容量、Overflow と入れ子 Guard を確認する
 add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
 target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Foundation)
@@ -38,6 +42,10 @@ target_link_libraries(CueFrameGraphPipelineTests PRIVATE Cue.Renderer.Passes)
 add_test(NAME Cue.Renderer.FrameGraph.Pipelines COMMAND CueFrameGraphPipelineTests)
 
 if(WIN32)
+    add_executable(CueFileSystemTests Platform/FileSystemTests.cpp)
+    target_link_libraries(CueFileSystemTests PRIVATE Cue.Platform.Windows Cue.WindowsHost Cue.Foundation.Windows)
+    add_test(NAME Cue.Platform.Windows.FileSystem COMMAND CueFileSystemTests)
+    set_tests_properties(Cue.Platform.Windows.FileSystem PROPERTIES TIMEOUT 15)
     # 共通 Factory から DX12 Backend を生成し、Device の所有と停止を検証する
     add_executable(CueDX12BackendTests Renderer/DX12BackendTests.cpp)
     target_link_libraries(CueDX12BackendTests PRIVATE Cue.Renderer.DX12)
@@ -58,7 +66,7 @@ if(WIN32)
 
     # 実 DXC と WARP で Pipeline の失敗、Handle と Manager 破棄後の GPU 利用を確認する
     add_executable(CueDX12PipelineManagerTests Renderer/DX12PipelineManagerTests.cpp)
-    target_link_libraries(CueDX12PipelineManagerTests PRIVATE Cue.Renderer.DX12)
+    target_link_libraries(CueDX12PipelineManagerTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows Cue.Foundation.Windows)
     target_compile_definitions(CueDX12PipelineManagerTests PRIVATE
         CUE_TEST_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/Renderer/Shaders/PipelineValidation.hlsl")
     add_test(NAME Cue.Renderer.DX12.PipelineManager COMMAND CueDX12PipelineManagerTests)

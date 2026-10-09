@@ -1,14 +1,17 @@
 #include "DX12ShaderCompiler.h"
 
-#include <filesystem>
+#include <limits>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <Windows.h>
+#include <wrl/implements.h>
 
 #include <Foundation/Windows/UtfConversion.h>
+#include <Platform/Windows/WindowsFileSystem.h>
 
 #include "DX12ShaderConfig.h"
 
@@ -26,15 +29,99 @@ bool is_valid_text(const std::string &a_text)
 {
     return !a_text.empty() && a_text.find('\0') == std::string::npos;
 }
+
+/// @brief DXC の Include 候補を注入された FileSystem から取得する
+class FileIncludeHandler final
+    : public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+                                          IDxcIncludeHandler>
+{
+  public:
+    /// @brief 前回 Compile の File 診断を破棄する
+    void clear_error() noexcept
+    {
+        m_lastError.reset();
+    }
+    /// @brief 同期 Compile の間だけ保持する File 診断を借用する
+    const std::optional<Error> &last_error() const noexcept
+    {
+        return m_lastError;
+    }
+    /// @brief Compiler State の FileSystem と Utils を同期 Compile 中だけ借用する
+    void initialize(IFileSystem &a_files, IDxcUtils &a_utils) noexcept
+    {
+        m_files = &a_files;
+        m_utils = &a_utils;
+    }
+    /// @brief Include 候補の内容を所有 Blob へ複製し、例外を COM 境界から出さない
+    HRESULT STDMETHODCALLTYPE LoadSource(LPCWSTR a_filename, IDxcBlob **a_source) override
+    {
+        if (!a_filename || !a_source)
+        {
+            return E_INVALIDARG;
+        }
+        *a_source = nullptr;
+        try
+        {
+            auto text = utf16_to_utf8(a_filename);
+            if (!text.has_value())
+            {
+                m_lastError = *text.try_error();
+                return E_INVALIDARG;
+            }
+            auto path = Path::create(*text.try_value());
+            if (!path.has_value())
+            {
+                m_lastError = *path.try_error();
+                return E_INVALIDARG;
+            }
+            auto bytes = m_files->read_all(*path.try_value());
+            if (!bytes.has_value())
+            {
+                m_lastError = *bytes.try_error();
+                const auto code = m_lastError->nativeCode;
+                return m_lastError->category == ErrorCategory::PlatformFailure && code > 0 && code <= MAXDWORD
+                           ? HRESULT_FROM_WIN32(static_cast<DWORD>(code))
+                           : E_FAIL;
+            }
+            Microsoft::WRL::ComPtr<IDxcBlobEncoding> blob;
+            const auto &data = *bytes.try_value();
+            const char emptySource = '\0';
+            const auto hr = m_utils->CreateBlob(data.empty() ? static_cast<const void *>(&emptySource) : data.data(),
+                                                static_cast<UINT32>(data.size()), DXC_CP_UTF8, &blob);
+            if (SUCCEEDED(hr))
+            {
+                *a_source = blob.Detach();
+                // 成功候補が見つかった後は Search 中の未存在を最終 Compile Error に混ぜない
+                m_lastError.reset();
+            }
+            return hr;
+        }
+        catch (const std::bad_alloc &)
+        {
+            return E_OUTOFMEMORY;
+        }
+        catch (...)
+        {
+            return E_FAIL;
+        }
+    }
+
+  private:
+    std::optional<Error> m_lastError;
+    IFileSystem *m_files = nullptr;
+    IDxcUtils *m_utils = nullptr;
+};
 } // namespace
 
 struct DX12ShaderCompiler::State final
 {
     HMODULE module = nullptr;
-    std::filesystem::path shaderDirectory;
+    std::unique_ptr<IFileSystem> ownedFiles;
+    IFileSystem *files = nullptr;
+    Path shaderDirectory;
     Microsoft::WRL::ComPtr<IDxcUtils> utils;
     Microsoft::WRL::ComPtr<IDxcCompiler3> compiler;
-    Microsoft::WRL::ComPtr<IDxcIncludeHandler> includes;
+    Microsoft::WRL::ComPtr<FileIncludeHandler> includes;
 
     /// @brief DXC の COM Object を残したまま DLL を解放しない
     ~State()
@@ -55,7 +142,7 @@ DX12ShaderCompiler::DX12ShaderCompiler() noexcept = default;
 DX12ShaderCompiler::~DX12ShaderCompiler() = default;
 
 /// @brief 配置済み Runtime を優先し、開発環境では SDK の DXC を使う
-Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create()
+Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSystem *a_files)
 {
     using compilerResult = Result<std::unique_ptr<DX12ShaderCompiler>>;
     try
@@ -63,21 +150,42 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create()
         auto result = std::make_unique<DX12ShaderCompiler>();
         result->m_state = std::make_unique<State>();
         auto &state = *result->m_state;
-        std::wstring modulePath(32768, L'\0');
-        const DWORD length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
-        if (length == 0 || length >= modulePath.size())
+        if (!a_files)
         {
-            return compilerResult::failure(compiler_error("GetModuleFileNameW", HRESULT_FROM_WIN32(GetLastError())));
+            auto files = create_windows_file_system();
+            if (!files.has_value())
+            {
+                return compilerResult::failure(*files.try_error());
+            }
+            state.ownedFiles = files.take_value();
+            a_files = state.ownedFiles.get();
         }
-        modulePath.resize(length);
-        const auto directory = std::filesystem::path(modulePath).parent_path();
-        auto libraryPath = directory / L"dxcompiler.dll";
-        std::error_code fileError;
-        if (!std::filesystem::exists(libraryPath, fileError))
+        state.files = a_files;
+        auto directory = a_files->executable_directory();
+        if (!directory.has_value())
         {
-            libraryPath = k_dxcLibraryPath;
+            return compilerResult::failure(*directory.try_error());
         }
-        state.module = LoadLibraryExW(libraryPath.c_str(), nullptr,
+        auto library = directory.try_value()->join("dxcompiler.dll");
+        if (!library.has_value())
+        {
+            return compilerResult::failure(*library.try_error());
+        }
+        auto exists = a_files->exists(*library.try_value());
+        if (!exists.has_value())
+        {
+            return compilerResult::failure(*exists.try_error());
+        }
+        auto libraryPath = utf8_to_utf16(library.try_value()->utf8());
+        if (!libraryPath.has_value())
+        {
+            return compilerResult::failure(*libraryPath.try_error());
+        }
+        if (!*exists.try_value())
+        {
+            libraryPath = Result<std::wstring>::success(k_dxcLibraryPath);
+        }
+        state.module = LoadLibraryExW(libraryPath.try_value()->c_str(), nullptr,
                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!state.module)
         {
@@ -94,28 +202,45 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create()
         {
             hr = createInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&state.compiler));
         }
-        if (SUCCEEDED(hr))
-        {
-            hr = state.utils->CreateDefaultIncludeHandler(&state.includes);
-        }
         if (FAILED(hr))
         {
             return compilerResult::failure(compiler_error("DXC.create", hr));
         }
-        state.shaderDirectory = directory / L"EngineResources" / L"Shader";
-        if (!std::filesystem::exists(state.shaderDirectory, fileError))
+        state.includes = Microsoft::WRL::Make<FileIncludeHandler>();
+        if (!state.includes)
         {
-            state.shaderDirectory = k_shaderSourceDirectory;
+            return compilerResult::failure(compiler_error("DXC.IncludeHandler", E_OUTOFMEMORY));
         }
+        state.includes->initialize(*state.files, *state.utils.Get());
+        auto shaderDirectory = directory.try_value()->join("EngineResources/Shader");
+        if (!shaderDirectory.has_value())
+        {
+            return compilerResult::failure(*shaderDirectory.try_error());
+        }
+        auto shaderExists = a_files->exists(*shaderDirectory.try_value());
+        if (!shaderExists.has_value())
+        {
+            return compilerResult::failure(*shaderExists.try_error());
+        }
+        if (!*shaderExists.try_value())
+        {
+            auto sourceDirectory = utf16_to_utf8(k_shaderSourceDirectory);
+            if (!sourceDirectory.has_value())
+            {
+                return compilerResult::failure(*sourceDirectory.try_error());
+            }
+            shaderDirectory = Path::create(*sourceDirectory.try_value());
+            if (!shaderDirectory.has_value())
+            {
+                return compilerResult::failure(*shaderDirectory.try_error());
+            }
+        }
+        state.shaderDirectory = shaderDirectory.take_value();
         return compilerResult::success(std::move(result));
     }
     catch (const std::bad_alloc &)
     {
         return compilerResult::failure({ErrorCategory::PlatformFailure, "DXC.create.allocation"});
-    }
-    catch (const std::filesystem::filesystem_error &)
-    {
-        return compilerResult::failure({ErrorCategory::PlatformFailure, "DXC.create.path"});
     }
 }
 
@@ -160,23 +285,28 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
         {
             return blobResult::failure(*profileResult.try_error());
         }
-        const auto path = m_state->shaderDirectory / std::filesystem::path(pathResult.take_value());
-        Microsoft::WRL::ComPtr<IDxcBlobEncoding> source;
-        HRESULT hr = m_state->utils->LoadFile(path.c_str(), nullptr, &source);
-        if (FAILED(hr))
+        auto path = m_state->shaderDirectory.join(a_desc.filePath);
+        if (!path.has_value())
         {
-            return blobResult::failure(compiler_error("DXC.LoadFile: " + a_desc.filePath, hr));
+            return blobResult::failure(*path.try_error());
         }
-        std::vector<std::wstring> arguments{path.wstring(),
-                                            L"-E",
-                                            entryResult.take_value(),
-                                            L"-T",
-                                            profileResult.take_value(),
-                                            L"-I",
-                                            path.parent_path().wstring(),
-                                            L"-I",
-                                            m_state->shaderDirectory.wstring(),
-                                            L"-Ges"};
+        auto source = m_state->files->read_all(*path.try_value());
+        if (!source.has_value())
+        {
+            return blobResult::failure(*source.try_error());
+        }
+        auto fullPath = utf8_to_utf16(path.try_value()->utf8());
+        auto parentPath = utf8_to_utf16(path.try_value()->parent().utf8());
+        auto shaderPath = utf8_to_utf16(m_state->shaderDirectory.utf8());
+        if (!fullPath.has_value() || !parentPath.has_value() || !shaderPath.has_value())
+        {
+            return blobResult::failure(!fullPath.has_value()     ? *fullPath.try_error()
+                                       : !parentPath.has_value() ? *parentPath.try_error()
+                                                                 : *shaderPath.try_error());
+        }
+        std::vector<std::wstring> arguments{fullPath.take_value(),      L"-E",  entryResult.take_value(), L"-T",
+                                            profileResult.take_value(), L"-I",  parentPath.take_value(),  L"-I",
+                                            shaderPath.take_value(),    L"-Ges"};
         for (const auto &define : a_desc.defines)
         {
             if (!is_valid_text(define))
@@ -200,11 +330,17 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
 #endif
         std::vector<LPCWSTR> pointers;
         for (const auto &argument : arguments)
+        {
             pointers.push_back(argument.c_str());
-        DxcBuffer buffer{source->GetBufferPointer(), source->GetBufferSize(), DXC_CP_UTF8};
+        }
+        const auto &data = *source.try_value();
+        const char emptySource = '\0';
+        DxcBuffer buffer{data.empty() ? static_cast<const void *>(&emptySource) : data.data(), data.size(),
+                         DXC_CP_UTF8};
+        m_state->includes->clear_error();
         Microsoft::WRL::ComPtr<IDxcResult> compiled;
-        hr = m_state->compiler->Compile(&buffer, pointers.data(), static_cast<UINT32>(pointers.size()),
-                                        m_state->includes.Get(), IID_PPV_ARGS(&compiled));
+        HRESULT hr = m_state->compiler->Compile(&buffer, pointers.data(), static_cast<UINT32>(pointers.size()),
+                                                m_state->includes.Get(), IID_PPV_ARGS(&compiled));
         if (FAILED(hr))
         {
             return blobResult::failure(compiler_error("DXC.Compile", hr));
@@ -219,6 +355,11 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
         {
             Microsoft::WRL::ComPtr<IDxcBlobUtf8> diagnostics;
             std::string message = "DXC.Compile: " + a_desc.filePath;
+            if (m_state->includes->last_error())
+            {
+                message += "\nInclude File I/O: " + m_state->includes->last_error()->operation + " (" +
+                           std::to_string(m_state->includes->last_error()->nativeCode) + ")";
+            }
             if (SUCCEEDED(compiled->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&diagnostics), nullptr)) && diagnostics &&
                 diagnostics->GetStringLength() != 0)
             {
@@ -237,10 +378,6 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
     catch (const std::bad_alloc &)
     {
         return blobResult::failure({ErrorCategory::PlatformFailure, "DXC.compile.allocation"});
-    }
-    catch (const std::filesystem::filesystem_error &)
-    {
-        return blobResult::failure({ErrorCategory::InvalidArgument, "DXC.compile.path"});
     }
 }
 } // namespace cue::dx12

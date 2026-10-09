@@ -11,6 +11,9 @@
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 
+#include "../Support/FileSystemProbe.h"
+#include "../Support/TemporaryFiles.h"
+
 namespace
 {
 /// @brief テスト失敗の経路でも Queue の CPU 制御 Gate を解除する
@@ -27,6 +30,79 @@ struct GateRelease final
     }
 };
 
+/// @brief DXC が本体と入れ子 Include を同じ注入 FileSystem から読み、失敗を返すことを確認する
+int test_file_system(cue::dx12::DX12RenderDevice &a_device)
+{
+    cue::tests::TemporaryFiles fixture;
+    if (!fixture.isCreated)
+    {
+        return __LINE__;
+    }
+    auto mainPath = fixture.root.join("資料/Main.hlsl");
+    auto firstPath = fixture.root.join("資料/Sub/First.hlsli");
+    auto secondPath = fixture.root.join("資料/Sub/Second.hlsli");
+    auto emptyPath = fixture.root.join("資料/Sub/Empty.hlsli");
+    if (!mainPath.has_value() || !firstPath.has_value() || !secondPath.has_value() || !emptyPath.has_value())
+    {
+        return __LINE__;
+    }
+    const std::string main = "#include \"Sub/First.hlsli\"\n[numthreads(1,1,1)] void cs_main(uint3 id : "
+                             "SV_DispatchThreadID) { value(id); }\n";
+    const std::string first = "#include \"Empty.hlsli\"\n#include \"Second.hlsli\"\n";
+    const std::string second = "void value(uint3 id) {}\n";
+    if (!fixture.files->write_all(*mainPath.try_value(), std::as_bytes(std::span(main)), true).has_value() ||
+        !fixture.files->write_all(*firstPath.try_value(), std::as_bytes(std::span(first)), true).has_value() ||
+        !fixture.files->write_all(*secondPath.try_value(), std::as_bytes(std::span(second)), true).has_value() ||
+        !fixture.files->write_all(*emptyPath.try_value(), {}, true).has_value())
+    {
+        return __LINE__;
+    }
+    cue::tests::FileSystemProbe probe(*fixture.files);
+    unsigned mainReads = 0;
+    unsigned firstReads = 0;
+    unsigned secondReads = 0;
+    probe.onOpen = [&](const cue::Path &a_path)
+    {
+        mainReads += a_path.filename() == "Main.hlsl";
+        firstReads += a_path.filename() == "First.hlsli";
+        secondReads += a_path.filename() == "Second.hlsli";
+    };
+    auto created = cue::dx12::DX12PipelineManager::create(a_device, &probe);
+    if (!created.has_value())
+    {
+        return __LINE__;
+    }
+    auto manager = created.take_value();
+    cue::ShaderCompileDesc desc{"Include test", mainPath.try_value()->utf8(), "cs_main", cue::ShaderStage::Compute};
+    auto shader = manager->create_shader_blob(desc);
+    if (!shader.has_value() || mainReads == 0 || firstReads == 0 || secondReads == 0)
+    {
+        if (!shader.has_value())
+        {
+            std::fprintf(stderr, "%s\n", shader.try_error()->operation.c_str());
+        }
+        return __LINE__;
+    }
+    probe.failedFilename = "Main.hlsl";
+    auto missingMain = manager->create_shader_blob(desc);
+    if (missingMain.has_value() || missingMain.try_error()->operation != "Probe.open")
+    {
+        return __LINE__;
+    }
+    probe.failedFilename = "Second.hlsli";
+    auto missingInclude = manager->create_shader_blob(desc);
+    if (missingInclude.has_value() || missingInclude.try_error()->operation.find("Probe.open") == std::string::npos)
+    {
+        return __LINE__;
+    }
+    probe.failedFilename.clear();
+    if (!manager->create_shader_blob(desc).has_value())
+    {
+        return __LINE__;
+    }
+    return 0;
+}
+
 /// @brief 無効な Handle と Shader 失敗を検証し、Manager 破棄後に提出済み PSO で GPU 書込みを行う
 int run_tests()
 {
@@ -38,6 +114,10 @@ int run_tests()
         return __LINE__;
     }
     auto device = deviceResult.take_value();
+    if (const auto result = test_file_system(*device))
+    {
+        return result;
+    }
     auto managerResult = DX12PipelineManager::create(*device);
     auto otherResult = DX12PipelineManager::create(*device);
     if (!managerResult.has_value() || !otherResult.has_value())

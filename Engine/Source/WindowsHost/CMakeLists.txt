@@ -1,6 +1,7 @@
 # Host の起動・停止手順を実行 Entry Point から分離する
 add_library(Cue.WindowsHost STATIC
     Private/WindowsHost.cpp
+    Private/StoragePaths.cpp
 )
 
 target_include_directories(Cue.WindowsHost PUBLIC

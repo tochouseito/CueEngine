@@ -8,6 +8,11 @@
 
 #include <RHI/PipelineManager.h>
 
+namespace cue
+{
+class IFileSystem;
+}
+
 namespace cue::dx12
 {
 /// @brief DXC の Module と Compiler を所有し、Blob の所有者より長く維持する
@@ -17,7 +22,8 @@ class DX12ShaderCompiler final
     /// @brief create 内部で空の状態を構築する
     DX12ShaderCompiler() noexcept;
     /// @brief DXC の Module、Utils と Compiler を生成する
-    [[nodiscard]] static Result<std::unique_ptr<DX12ShaderCompiler>> create();
+    /// 指定 FileSystem は Compiler より長く生存させる。未指定なら内部所有する
+    [[nodiscard]] static Result<std::unique_ptr<DX12ShaderCompiler>> create(IFileSystem *a_files);
     /// @brief COM 参照を先に解放してから Module を解放する
     ~DX12ShaderCompiler();
     /// @brief Module の所有を複製しない

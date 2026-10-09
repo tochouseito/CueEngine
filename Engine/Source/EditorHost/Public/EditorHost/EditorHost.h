@@ -22,6 +22,8 @@ struct EditorHostConfig final
     ImGuiManagerConfig imgui;
     // Callback は ImGui Context が Current の Owner Thread 上で実行する。未指定なら Test / TEST と FrameController FPS を表示する
     editorUiCallback buildUi;
+    StoragePathsConfig storage;
+    std::unique_ptr<IFileSystem> fileSystem;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
