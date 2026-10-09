@@ -90,7 +90,7 @@ class DX12ImGuiBackend::State final
     /// @brief void Callback が失敗した状態で公式 CreateSRV を続けない
     [[noreturn]] static void invariant_failure(const char *a_operation) noexcept
     {
-        report_error("ImGui DX12", {ErrorCategory::Fatal, a_operation}, DiagnosticSeverity::Fatal);
+        report_log_error("ImGui DX12", {ErrorCategory::Fatal, a_operation}, LogLevel::Fatal);
         std::terminate();
     }
 
@@ -288,7 +288,7 @@ DX12ImGuiBackend::~DX12ImGuiBackend()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("ImGui DX12 cleanup", *result.try_error(), DiagnosticSeverity::Fatal);
+        report_log_error("ImGui DX12 cleanup", *result.try_error(), LogLevel::Fatal);
         std::terminate();
     }
 }

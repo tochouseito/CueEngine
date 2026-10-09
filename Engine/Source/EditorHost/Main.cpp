@@ -12,12 +12,12 @@ namespace
 /// @brief 実行失敗を保持して停止し、Cleanup の失敗も診断する
 int stop_after_failure(cue::EditorHost &a_host, const cue::Error &a_error)
 {
+    cue::report_log_error("CueEditorHost", a_error, cue::LogLevel::Fatal);
     auto stopResult = a_host.shutdown();
     if (!stopResult.has_value())
     {
-        cue::report_error("CueEditorHost cleanup", *stopResult.try_error(), cue::DiagnosticSeverity::Error);
+        cue::report_log_error("CueEditorHost cleanup", *stopResult.try_error(), cue::LogLevel::Error);
     }
-    cue::report_error("CueEditorHost", a_error, cue::DiagnosticSeverity::Fatal);
     return 1;
 }
 } // namespace
@@ -31,7 +31,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
         if (!root.has_value())
         {
-            cue::report_error("CueEditorHost storage", *root.try_error(), cue::DiagnosticSeverity::Fatal);
+            cue::report_log_error("CueEditorHost storage", *root.try_error(), cue::LogLevel::Fatal);
             return 1;
         }
         // 製品 Host の既定は Product。Repository の Editor 起動は構成に関係なく Development を選ぶ
@@ -61,14 +61,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         auto stopResult = host.shutdown();
         if (!stopResult.has_value())
         {
-            cue::report_error("CueEditorHost", *stopResult.try_error(), cue::DiagnosticSeverity::Fatal);
+            cue::report_log_error("CueEditorHost", *stopResult.try_error(), cue::LogLevel::Fatal);
             return 1;
         }
         return 0;
     }
     catch (const std::exception &)
     {
-        cue::report_message("CueEditorHost", "unexpected C++ exception", cue::DiagnosticSeverity::Fatal);
+        cue::report_log("CueEditorHost", "unexpected C++ exception", cue::LogLevel::Fatal);
         return 2;
     }
 }

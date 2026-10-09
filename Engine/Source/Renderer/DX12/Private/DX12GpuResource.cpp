@@ -42,8 +42,8 @@ void set_resource_name(ID3D12Resource& a_resource, std::wstring_view a_name, con
     const HRESULT result = a_resource.SetName(name.c_str());
     if (FAILED(result))
     {
-        report_error("DX12GpuResource", resource_error("ID3D12Resource.SetName", result),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12GpuResource", resource_error("ID3D12Resource.SetName", result),
+                     LogLevel::Warning);
     }
 }
 } // namespace

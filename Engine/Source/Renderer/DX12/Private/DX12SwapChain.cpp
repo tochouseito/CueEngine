@@ -114,8 +114,8 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
             WKPDID_D3DDebugObjectNameW, static_cast<UINT>(sizeof(k_name)), k_name);
         if (FAILED(nameResult))
         {
-            report_error("DX12SwapChain", swap_chain_error("IDXGISwapChain.SetPrivateData", nameResult),
-                         DiagnosticSeverity::Warning);
+            report_log_error("DX12SwapChain", swap_chain_error("IDXGISwapChain.SetPrivateData", nameResult),
+                         LogLevel::Warning);
         }
 
         // 初回生成と Resize で同じ取得経路を使い、Object 名と RTV の所有を揃える
@@ -138,7 +138,7 @@ DX12SwapChain::~DX12SwapChain()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("DX12SwapChain.shutdown", *result.try_error(), DiagnosticSeverity::Fatal);
+        report_log_error("DX12SwapChain.shutdown", *result.try_error(), LogLevel::Fatal);
         std::terminate();
     }
 }
@@ -254,8 +254,8 @@ Result<void> DX12SwapChain::acquire_buffers()
         const HRESULT nameResult = buffer->SetName(bufferName.c_str());
         if (FAILED(nameResult))
         {
-            report_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", nameResult),
-                         DiagnosticSeverity::Warning);
+            report_log_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", nameResult),
+                         LogLevel::Warning);
         }
         auto viewResult = m_viewManager->create_rtv(*buffer.Get());
         if (!viewResult.has_value())

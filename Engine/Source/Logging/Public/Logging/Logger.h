@@ -29,7 +29,7 @@ class Logger final : public ILogger
     /// @brief Level で選別して配送する。フィルタされた Record は成功する
     [[nodiscard]] Result<void> write(const LogRecord &a_record) override;
     /// @brief 全 Sink を Flush し、最初の失敗を返す
-    [[nodiscard]] Result<void> flush();
+    [[nodiscard]] Result<void> flush() override;
     /// @brief 全 Sink の Flush / Close を試み、以後の書込みを拒否する
     /// Close 失敗は次の shutdown で再試行する。部分配送済み Record の再送は行わない
     [[nodiscard]] Result<void> shutdown();

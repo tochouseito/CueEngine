@@ -208,15 +208,15 @@ Result<std::unique_ptr<DX12GpuCommandContext>> DX12GpuCommandContext::create(ID3
     const HRESULT allocatorNameResult = context->m_allocator->SetName(allocatorName.c_str());
     if (FAILED(allocatorNameResult))
     {
-        report_error("DX12GpuCommandContext", command_error("ID3D12CommandAllocator.SetName", allocatorNameResult),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12GpuCommandContext", command_error("ID3D12CommandAllocator.SetName", allocatorNameResult),
+                     LogLevel::Warning);
     }
     const std::wstring listName = namePrefix + L" List";
     const HRESULT listNameResult = context->m_list->SetName(listName.c_str());
     if (FAILED(listNameResult))
     {
-        report_error("DX12GpuCommandContext", command_error("ID3D12GraphicsCommandList.SetName", listNameResult),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12GpuCommandContext", command_error("ID3D12GraphicsCommandList.SetName", listNameResult),
+                     LogLevel::Warning);
     }
     return ContextResult::success(std::move(context));
 }
@@ -340,8 +340,8 @@ struct DX12CommandPool::State
             auto result = wait_idle();
             if (!result.has_value())
             {
-                report_error("DX12CommandPool.State", *result.try_error(),
-                             hasUnknownSubmission ? DiagnosticSeverity::Fatal : DiagnosticSeverity::Error);
+                report_log_error("DX12CommandPool.State", *result.try_error(),
+                             hasUnknownSubmission ? LogLevel::Fatal : LogLevel::Error);
                 // 完了を証明できない Allocator を破棄する前に停止する
                 if (has_pending_gpu_work())
                 {
@@ -426,7 +426,7 @@ DX12CommandPool::~DX12CommandPool()
     auto result = shutdown();
     if (!result.has_value() && result.try_error()->category != ErrorCategory::InvalidState)
     {
-        report_error("DX12CommandPool.shutdown", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("DX12CommandPool.shutdown", *result.try_error(), LogLevel::Error);
     }
 }
 
@@ -505,7 +505,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                 if (!resetResult.has_value())
                 {
                     // Reset 失敗後も前回の提出完了は確認済みなので、Device が有効なら Slot を再生成する
-                    report_error("DX12CommandPool.acquire", *resetResult.try_error(), DiagnosticSeverity::Error);
+                    report_log_error("DX12CommandPool.acquire", *resetResult.try_error(), LogLevel::Error);
                     shouldRebuild = true;
                 }
             }
@@ -604,8 +604,8 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                                    auto closeResult = returned.context->close();
                                    if (!closeResult.has_value())
                                    {
-                                       report_error("DX12CommandPool.release", *closeResult.try_error(),
-                                                    DiagnosticSeverity::Error);
+                                       report_log_error("DX12CommandPool.release", *closeResult.try_error(),
+                                                    LogLevel::Error);
                                    }
                                }
                                returned.isBorrowed = false;
@@ -679,7 +679,7 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
             auto idleResult = queue->wait_idle();
             if (!idleResult.has_value())
             {
-                report_error("DX12CommandPool.submit", *idleResult.try_error(), DiagnosticSeverity::Fatal);
+                report_log_error("DX12CommandPool.submit", *idleResult.try_error(), LogLevel::Fatal);
                 // Queue の Lease と Allocator が生きている間に停止する
                 std::terminate();
             }

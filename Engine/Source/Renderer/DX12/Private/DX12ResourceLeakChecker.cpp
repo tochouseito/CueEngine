@@ -21,8 +21,8 @@ void DX12ResourceLeakChecker::report_live_objects()
     if (FAILED(interfaceResult))
     {
         // Graphics Tools がない環境でも Backend の停止は成功として扱う
-        report_message("DX12ResourceLeakChecker", "DXGI Debug interface is unavailable; live object report was skipped",
-                       DiagnosticSeverity::Warning);
+        report_log("DX12ResourceLeakChecker", "DXGI Debug interface is unavailable; live object report was skipped",
+                       LogLevel::Warning);
         return;
     }
 
@@ -30,10 +30,10 @@ void DX12ResourceLeakChecker::report_live_objects()
     const HRESULT reportResult = debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
     if (FAILED(reportResult))
     {
-        report_error("DX12ResourceLeakChecker",
+        report_log_error("DX12ResourceLeakChecker",
                      {ErrorCategory::PlatformFailure, "IDXGIDebug.ReportLiveObjects",
                       static_cast<std::int64_t>(reportResult)},
-                     DiagnosticSeverity::Warning);
+                     LogLevel::Warning);
     }
 #endif
 }

@@ -70,7 +70,7 @@ struct DX12GpuResourcePool::State final
                 auto result = use.completion->wait();
                 if (!result.has_value())
                 {
-                    report_error("DX12GpuResourcePool", *result.try_error(), DiagnosticSeverity::Fatal);
+                    report_log_error("DX12GpuResourcePool", *result.try_error(), LogLevel::Fatal);
                     std::terminate();
                 }
             }
@@ -214,7 +214,7 @@ DX12GpuResourcePool::~DX12GpuResourcePool()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("DX12GpuResourcePool.shutdown", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("DX12GpuResourcePool.shutdown", *result.try_error(), LogLevel::Error);
     }
 }
 

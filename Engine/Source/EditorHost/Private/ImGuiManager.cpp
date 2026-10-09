@@ -297,7 +297,7 @@ ImGuiManager::~ImGuiManager()
     auto result = shutdown();
     if (!result.has_value())
     {
-        report_error("ImGuiManager cleanup", *result.try_error(), DiagnosticSeverity::Error);
+        report_log_error("ImGuiManager cleanup", *result.try_error(), LogLevel::Error);
         if (m_state && m_state->context)
         {
             std::terminate();

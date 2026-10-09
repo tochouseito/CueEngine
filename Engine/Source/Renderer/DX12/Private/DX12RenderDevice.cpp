@@ -98,8 +98,8 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
     result = context->m_factory->SetPrivateData(WKPDID_D3DDebugObjectName, sizeof(k_factoryName) - 1, k_factoryName);
     if (FAILED(result))
     {
-        report_error("DX12RenderDevice", gpu_error("IDXGIFactory.SetPrivateData", result),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12RenderDevice", gpu_error("IDXGIFactory.SetPrivateData", result),
+                     LogLevel::Warning);
     }
 
     // Hardware Adapter を高性能順で調べ、Device を作れた候補だけ採用する
@@ -157,14 +157,14 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
                                                 static_cast<UINT>(adapterName.size()), adapterName.data());
     if (FAILED(result))
     {
-        report_error("DX12RenderDevice", gpu_error("IDXGIAdapter.SetPrivateData", result),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12RenderDevice", gpu_error("IDXGIAdapter.SetPrivateData", result),
+                     LogLevel::Warning);
     }
     result = context->m_device->SetName(L"CueEngine DX12 Device");
     if (FAILED(result))
     {
-        report_error("DX12RenderDevice", gpu_error("ID3D12Device.SetName", result),
-                     DiagnosticSeverity::Warning);
+        report_log_error("DX12RenderDevice", gpu_error("ID3D12Device.SetName", result),
+                     LogLevel::Warning);
     }
 
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
