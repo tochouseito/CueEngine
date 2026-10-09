@@ -9,7 +9,8 @@ namespace cue
 {
 /// @brief Platform Serviceを借用し、Frameの実行寿命を所有する
 ///
-/// 構築Threadから初期化、step、停止を行う。借用ServiceとCallbackの捕捉先はshutdown完了まで生存させる
+/// 構築 Thread から初期化、wait_for_frame、step、停止を行う
+/// 借用 Service と Callback の捕捉先は shutdown 完了まで生存させる
 /// WindowやPlatform固有の実装は所有しない。再入は許可しない
 class Runtime final
 {
@@ -29,7 +30,13 @@ public:
     /// 任意の Main Callback は採用 Frame ごとに構築 Thread で Update より先に実行する
     [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main = {});
 
-    /// @brief 次のFrameを進める
+    /// @brief Callback を実行せず開始条件を最大 1 ms の指定時間まで待つ
+    ///
+    /// 構築 Thread 専用で再入不可。false でも Host は Message を処理して再試行する
+    /// true の後に入力を処理して step を呼べる。枠の予約は行わず、失敗後は shutdown を呼ぶ
+    [[nodiscard]] Result<bool> wait_for_frame();
+
+    /// @brief 開始条件を短時間待って次の Frame を進め、未準備なら false を返す
     ///
     /// 実行中に構築Threadから呼ぶ。失敗後はshutdownを呼ぶ
     [[nodiscard]] Result<bool> step();

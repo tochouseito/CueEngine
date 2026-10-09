@@ -17,8 +17,8 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
     std::uint64_t mainFrames = 0;
     cue::Runtime runtime({1, false, 0}, *a_services.clock, *a_services.waiter, *a_services.threadFactory);
     auto beforeInitialize = runtime.is_idle();
-    if (runtime.step().has_value() || runtime.progress().has_value() || beforeInitialize.has_value() ||
-        beforeInitialize.try_error()->category != cue::ErrorCategory::InvalidState)
+    if (runtime.step().has_value() || runtime.wait_for_frame().has_value() || runtime.progress().has_value() ||
+        beforeInitialize.has_value() || beforeInitialize.try_error()->category != cue::ErrorCategory::InvalidState)
     {
         return 1;
     }
@@ -41,9 +41,10 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
         {
             // Main の実行中は Controller を破棄せず、Snapshot の参照だけ許可する
             auto nested = runtime.step();
+            auto nestedWait = runtime.wait_for_frame();
             auto stopped = runtime.shutdown();
             auto progress = runtime.progress();
-            if (nested.has_value() || stopped.has_value() || !progress.has_value() ||
+            if (nested.has_value() || nestedWait.has_value() || stopped.has_value() || !progress.has_value() ||
                 nested.try_error()->category != cue::ErrorCategory::InvalidState ||
                 stopped.try_error()->category != cue::ErrorCategory::InvalidState ||
                 progress.try_value()->submittedFrames != a_frame)
@@ -58,7 +59,9 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
         return 2;
     }
     auto initiallyIdle = runtime.is_idle();
-    if (!initiallyIdle.has_value() || !*initiallyIdle.try_value())
+    auto ready = runtime.wait_for_frame();
+    if (!initiallyIdle.has_value() || !*initiallyIdle.try_value() || !ready.has_value() || !*ready.try_value() ||
+        mainFrames != 0 || updates != 0 || renders != 0)
     {
         return 5;
     }
@@ -71,8 +74,8 @@ int test_windowless_runtime(cue::WindowsThreadServices& a_services)
         return 3;
     }
     // Shutdown は複数回安全で、停止後の操作と再初期化は拒否する
-    if (!runtime.shutdown().has_value() || !runtime.shutdown().has_value() ||
-        runtime.step().has_value() || runtime.initialize({}, {}).has_value())
+    if (!runtime.shutdown().has_value() || !runtime.shutdown().has_value() || runtime.step().has_value() ||
+        runtime.wait_for_frame().has_value() || runtime.initialize({}, {}).has_value())
     {
         return 4;
     }

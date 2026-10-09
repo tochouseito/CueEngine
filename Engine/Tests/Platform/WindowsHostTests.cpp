@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <Passes/PresentToSwapChainPass.h>
+#include <Platform/Windows/WindowsPlatform.h>
 
 namespace
 {
@@ -437,6 +438,107 @@ int test_resize_presentation(bool a_usesWorkers)
     return 0;
 }
 
+/// @brief 低 FPS の待機中も Message を処理し、採用 Main では最新入力を参照する
+int test_input_during_frame_wait(bool a_usesWorkers)
+{
+    constexpr UINT k_inputMessage = WM_APP + 38;
+    HWND handle = nullptr;
+    cue::Window *window = nullptr;
+    cue::WindowsMessageHandlerToken handler;
+    int latestInput = 0;
+    int mainCalls = 0;
+    std::chrono::steady_clock::time_point firstMain;
+    cue::WindowsHostConfig config{{"CueWindowsHost Input Pacing", {160, 120}}, {2, a_usesWorkers, 1}, {}};
+    config.callbacks.initializeWindow = [&](cue::Window &a_window)
+    {
+        window = &a_window;
+        auto native = cue::borrow_windows_window_handle(a_window);
+        if (!native.has_value())
+        {
+            return cue::Result<void>::failure(*native.try_error());
+        }
+        handle = static_cast<HWND>(*native.try_value());
+        auto registered = cue::register_windows_message_handler(a_window,
+                                                                [&](const cue::WindowsMessage &a_message)
+                                                                {
+                                                                    if (a_message.message == k_inputMessage)
+                                                                    {
+                                                                        latestInput =
+                                                                            static_cast<int>(a_message.wParam);
+                                                                        return cue::WindowsMessageResult{true, 0};
+                                                                    }
+                                                                    return cue::WindowsMessageResult{};
+                                                                });
+        if (!registered.has_value())
+        {
+            return cue::Result<void>::failure(*registered.try_error());
+        }
+        handler = registered.take_value();
+        return cue::Result<void>::success();
+    };
+    config.callbacks.shutdownWindow = [&]()
+    {
+        return handler.generation != 0 ? cue::unregister_windows_message_handler(*window, handler)
+                                       : cue::Result<void>::success();
+    };
+    config.callbacks.main = [&](std::uint64_t a_frame, std::stop_token)
+    {
+        ++mainCalls;
+        if (a_frame == 0)
+        {
+            firstMain = std::chrono::steady_clock::now();
+        }
+        else if (a_frame != 1 || latestInput != 2 ||
+                 std::chrono::steady_clock::now() - firstMain < std::chrono::milliseconds(950))
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.host.input_pacing"});
+        }
+        return cue::Result<void>::success();
+    };
+    // Message / Main の順序だけを検証する。GPU 描画と Resize は既存 Test で確認する
+    config.callbacks.recordFrame = [](std::uint64_t, std::stop_token, const cue::FrameCallback &)
+    { return cue::Result<void>::success(); };
+    cue::WindowsHost host(std::move(config));
+    if (!host.initialize().has_value() || !host.step().has_value() || mainCalls != 1 || !handle)
+    {
+        return 1;
+    }
+    if (!PostMessageW(handle, k_inputMessage, 1, 0))
+    {
+        return 2;
+    }
+    auto waiting = host.step();
+    if (!waiting.has_value() || !*waiting.try_value() || latestInput != 1 || mainCalls != 1)
+    {
+        return 3;
+    }
+    if (!PostMessageW(handle, k_inputMessage, 2, 0))
+    {
+        return 4;
+    }
+    const auto deadline = firstMain + std::chrono::seconds(2);
+    while (mainCalls < 2 && std::chrono::steady_clock::now() < deadline)
+    {
+        auto step = host.step();
+        if (!step.has_value() || !*step.try_value())
+        {
+            return 5;
+        }
+    }
+    if (mainCalls != 2 || !PostMessageW(handle, WM_CLOSE, 0, 0))
+    {
+        return 6;
+    }
+    const auto closeStart = std::chrono::steady_clock::now();
+    auto closed = host.step();
+    if (!closed.has_value() || *closed.try_value() || mainCalls != 2 ||
+        std::chrono::steady_clock::now() - closeStart >= std::chrono::milliseconds(250) || !host.shutdown().has_value())
+    {
+        return 7;
+    }
+    return 0;
+}
+
 /// @brief CTest の失敗出力に検査名と戻り値を残し、再現時の分岐を特定する
 [[nodiscard]] int report_failure(const char *a_test, int a_code)
 {
@@ -470,6 +572,10 @@ int main()
     }
     for (const bool usesWorkers : {false, true})
     {
+        if (const int result = test_input_during_frame_wait(usesWorkers); result != 0)
+        {
+            return report_failure(usesWorkers ? "input pacing worker" : "input pacing single", 60 + result);
+        }
         if (const int result = test_resize_presentation(usesWorkers); result != 0)
         {
             return report_failure(usesWorkers ? "resize worker" : "resize single", 50 + result);

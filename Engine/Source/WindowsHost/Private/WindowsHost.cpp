@@ -468,6 +468,17 @@ Result<bool> WindowsHost::step()
     }
 
     ScopedFlag stepping(m_isStepping);
+    // 開始期限 / 空き枠の待機後に入力を取り直し、採取済みの UI を FPS 待機で古くしない
+    bool isFrameReady = false;
+    if (!m_state->isPresentationSuspended.load())
+    {
+        auto ready = m_state->runtime->wait_for_frame();
+        if (!ready.has_value())
+        {
+            return Result<bool>::failure(*ready.try_error());
+        }
+        isFrameReady = *ready.try_value();
+    }
     // Win32 Message を処理し、Queue 上の終了通知も同じ周回で反映する
     auto pumpResult = m_state->system->pump_events();
     if (!pumpResult.has_value())
@@ -526,9 +537,15 @@ Result<bool> WindowsHost::step()
         {
             return Result<bool>::failure(*resizeResult.try_error());
         }
+        // GPU / Resize 待機中の入力も次の Pump で反映してから UI を再開する
+        return Result<bool>::success(true);
     }
 
-    // 終了 Event がない周回だけ次の Frame を進める。枠が満杯なら次の周回で再試行する
+    if (!isFrameReady)
+    {
+        return Result<bool>::success(true);
+    }
+    // 入力処理後は Callback を開始する。開始条件は維持されるが非同期失敗を再確認する
     auto frameResult = m_state->runtime->step();
     if (!frameResult.has_value())
     {

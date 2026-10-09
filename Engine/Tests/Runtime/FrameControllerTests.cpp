@@ -12,6 +12,26 @@
 
 namespace
 {
+/// @brief OS の実行遅延に影響されず、Frame 内の各段階から単調時刻を進める
+class ManualClock final : public cue::Clock
+{
+  public:
+    /// @brief 全 Thread が同じ Test 時刻を観測する
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override
+    {
+        return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(m_ticks.load()));
+    }
+
+    /// @brief Callback または入力待ちの経過時間を明示的に進める
+    void advance(std::chrono::nanoseconds a_duration) noexcept
+    {
+        m_ticks.fetch_add(a_duration.count());
+    }
+
+  private:
+    std::atomic<std::int64_t> m_ticks = 0;
+};
+
 class FailSecondThreadFactory final : public cue::ThreadFactory
 {
 public:
@@ -216,7 +236,116 @@ int test_callback_registration(cue::WindowsThreadServices& a_services)
     return controller.stop().has_value() ? 0 : 6;
 }
 
-/// @brief Render完了間隔に指定FPSの上限が適用されることを確認する
+/// @brief Main / Update の前で開始を制限し、待機後の入力を描画へ渡すことを確認する
+int test_frame_start_order(cue::WindowsThreadServices &a_services)
+{
+    for (const bool usesWorkers : {false, true})
+    {
+        ManualClock clock;
+        int latestInput = 10;
+        std::array<int, 3> inputs{};
+        std::array<std::chrono::steady_clock::time_point, 3> starts{};
+        cue::FrameController controller({2, usesWorkers, 20}, clock, *a_services.waiter, *a_services.threadFactory);
+        auto registered = controller.register_callbacks(
+            [&](std::uint64_t a_frame, std::stop_token)
+            {
+                if (a_frame >= inputs.size() || inputs[a_frame] != latestInput)
+                {
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.pacing.input"});
+                }
+                clock.advance(std::chrono::milliseconds(3));
+                return cue::Result<void>::success();
+            },
+            [&](std::uint64_t, std::stop_token)
+            {
+                clock.advance(std::chrono::milliseconds(4));
+                return cue::Result<void>::success();
+            },
+            [&](std::uint64_t a_frame, std::stop_token)
+            {
+                if (a_frame >= starts.size())
+                {
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.pacing.frame"});
+                }
+                starts[a_frame] = clock.now();
+                inputs[a_frame] = latestInput;
+                clock.advance(std::chrono::milliseconds(2));
+                return cue::Result<void>::success();
+            });
+        if (!registered.has_value() || !controller.start().has_value())
+        {
+            return 1;
+        }
+        // 開始待機だけでは Callback を実行せず、最初の Frame は直ちに許可する
+        auto ready = controller.wait_for_frame();
+        auto first = controller.advance();
+        if (!ready.has_value() || !*ready.try_value() || !first.has_value() || !*first.try_value())
+        {
+            return 2;
+        }
+        auto waitForCompletion = [&](std::uint64_t a_count)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            while (controller.progress().renderedFrames < a_count && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::yield();
+            }
+            return controller.progress().renderedFrames == a_count;
+        };
+        if (!waitForCompletion(1) || clock.now().time_since_epoch() != std::chrono::milliseconds(9))
+        {
+            // Render 後に 50 ms まで待つ実装へ戻った場合、完了を公開できない
+            return 3;
+        }
+        auto blocked = controller.advance();
+        latestInput = 42;
+        auto waiting = controller.wait_for_frame();
+        if (!blocked.has_value() || *blocked.try_value() || !waiting.has_value() || *waiting.try_value() ||
+            controller.progress().submittedFrames != 1 || inputs[1] != 0)
+        {
+            return 4;
+        }
+        clock.advance(std::chrono::milliseconds(40));
+        auto tooEarly = controller.advance();
+        if (!tooEarly.has_value() || *tooEarly.try_value())
+        {
+            return 5;
+        }
+        clock.advance(std::chrono::milliseconds(1));
+        ready = controller.wait_for_frame();
+        // Host の Message Pump に相当する入力更新は開始待機を終えてから行う
+        latestInput = 99;
+        auto second = controller.advance();
+        if (!ready.has_value() || !*ready.try_value() || !second.has_value() || !*second.try_value() ||
+            !waitForCompletion(2) || inputs[1] != 99 || starts[1] - starts[0] != std::chrono::milliseconds(50))
+        {
+            return 6;
+        }
+        const auto timing = controller.timing_info();
+        if (timing.main.lastDuration != std::chrono::milliseconds(2) ||
+            timing.update.lastDuration != std::chrono::milliseconds(3) ||
+            timing.render.lastDuration != std::chrono::milliseconds(4) ||
+            timing.limitWait.lastDuration != std::chrono::milliseconds(41) || timing.limitWait.sampleCount != 2)
+        {
+            return 7;
+        }
+        // 長い停止後も以前の期限へ追いつくための連続投入は行わない
+        clock.advance(std::chrono::seconds(1));
+        auto late = controller.advance();
+        if (!late.has_value() || !*late.try_value() || !waitForCompletion(3))
+        {
+            return 8;
+        }
+        auto burst = controller.advance();
+        if (!burst.has_value() || *burst.try_value() || !controller.stop().has_value())
+        {
+            return 9;
+        }
+    }
+    return 0;
+}
+
+/// @brief 指定 FPS で開始した空 Callback の Frame 間隔と独立した待機計測を確認する
 int test_fps_limit(cue::WindowsThreadServices& a_services)
 {
     // 20 FPS の二つ目の完了までに最低限の間隔が空くことを測る
@@ -229,10 +358,14 @@ int test_fps_limit(cue::WindowsThreadServices& a_services)
         return 1;
     }
     const auto firstCompletion = a_services.clock->now();
-    auto secondStep = controller.step();
-    if (!secondStep.has_value() || !*secondStep.try_value())
+    const auto deadline = firstCompletion + std::chrono::seconds(2);
+    while (controller.progress().renderedFrames < 2 && a_services.clock->now() < deadline)
     {
-        return 2;
+        auto secondStep = controller.step();
+        if (!secondStep.has_value())
+        {
+            return 2;
+        }
     }
     const auto elapsed = a_services.clock->now() - firstCompletion;
     const auto progress = controller.progress();
@@ -253,7 +386,7 @@ int test_fps_limit(cue::WindowsThreadServices& a_services)
     return controller.stop().has_value() ? 0 : 4;
 }
 
-/// @brief Worker経路でもRender完了間隔が上限FPSを下回らないことを確認する
+/// @brief Worker 経路でも空 Callback の開始制限が適用されることを確認する
 int test_worker_fps_limit(cue::WindowsThreadServices& a_services)
 {
     // Worker 経路でも Render 完了間隔を Snapshot から確認する
@@ -281,10 +414,10 @@ int test_worker_fps_limit(cue::WindowsThreadServices& a_services)
     return controller.stop().has_value() ? 0 : 4;
 }
 
-/// @brief FPS上限の待機中も停止要求でWorkerを速やかに回収する
+/// @brief 低 FPS の開始待ちでも Main に短時間で戻り、Worker を速やかに回収する
 int test_stop_during_fps_limit(cue::WindowsThreadServices& a_services)
 {
-    // 1 FPS の待機中に停止を要求し、1秒待ち切らずに join できることを測る
+    // 1 FPS の次回開始を待ち切らず Main に戻り、停止操作を行えることを測る
     std::atomic<int> renderCalls = 0;
     cue::FrameController controller(
         {2, true, 1}, *a_services.clock, *a_services.waiter, *a_services.threadFactory,
@@ -293,16 +426,20 @@ int test_stop_during_fps_limit(cue::WindowsThreadServices& a_services)
             ++renderCalls;
             return cue::Result<void>::success();
         });
-    if (!controller.start().has_value() || !controller.step().has_value() || !controller.step().has_value())
+    if (!controller.start().has_value() || !controller.step().has_value())
     {
         return 1;
     }
     const auto deadline = a_services.clock->now() + std::chrono::seconds(5);
-    while (renderCalls.load() < 2 && a_services.clock->now() < deadline)
+    while (controller.progress().renderedFrames < 1 && a_services.clock->now() < deadline)
     {
         [[maybe_unused]] const auto status = a_services.waiter->sleep_for(std::chrono::milliseconds(1), {});
     }
-    if (renderCalls.load() < 2 || controller.progress().renderedFrames != 1)
+    const auto waitStart = a_services.clock->now();
+    auto pending = controller.step();
+    if (!pending.has_value() || *pending.try_value() || renderCalls.load() != 1 ||
+        controller.progress().renderedFrames != 1 ||
+        a_services.clock->now() - waitStart >= std::chrono::milliseconds(100))
     {
         return 2;
     }
@@ -633,6 +770,10 @@ int run_tests()
         return 1;
     }
     auto services = servicesResult.take_value();
+    if (const int result = test_frame_start_order(services); result != 0)
+    {
+        return 140 + result;
+    }
     if (const int result = test_main_wait_cancellation(services); result != 0)
     {
         return 130 + result;

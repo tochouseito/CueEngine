@@ -10,6 +10,8 @@ M05-01 / [Issue #77](https://github.com/tochouseito/CueEngine/issues/77) の Edi
 
 EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、`useWorkerThreads = true`、上限 60 FPS。UI Context と Window Message は MainThread、Update / Render は Worker で実行する。GPU の非同期実行と CPU Frame の Worker 利用は別の設定であり、単一 CPU Thread でも GPU 完了前に Resource を破棄しない
 
+Frame 開始期限 / 空き枠の短い待機 → 最新 Window Message の処理 → Main の UI 構築 → Update → Render / Present の順に進める。未準備の周回も Message を処理する。FPS 制限は UI 作成前に適用し、Render / Present 後には待機しない。開始頻度と Render 完了間隔の違い、待機の計測契約は [FrameController FPS](FrameControllerFps.md) を参照する
+
 表示 Pass 未指定時は ClearFinalColor / ImGuiPass Graph を使う。ImGui Context と Win32 Backend は Window 生成後、公式 DX12 Backend は SwapChain 生成後に起動する。Editor 内部 Adapter が Manager の公式 GPU 記録を抽象 ImGuiPass に接続する。既定 UI はタイトル Test、本文 TEST の Window 一つ。詳細は [ImGuiPass](ImGuiPass.md) を参照する。Editor Document は未接続
 
 ## UI Frame と入力

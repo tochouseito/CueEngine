@@ -71,7 +71,21 @@ Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render,
     return Result<void>::success();
 }
 
-/// @brief 構築ThreadからFrameControllerの進行を委譲する
+Result<bool> Runtime::wait_for_frame()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<bool>::failure({ErrorCategory::WrongThread, "Runtime.wait_for_frame"});
+    }
+    if (m_lifecycle != Lifecycle::Running || m_isStepping)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "Runtime.wait_for_frame"});
+    }
+    ScopedFlag stepping(m_isStepping);
+    return m_controller->wait_for_frame();
+}
+
+/// @brief 構築 Thread から FrameController の開始待機と進行を委譲する
 Result<bool> Runtime::step()
 {
     // Frame 進行は Controller を作った Thread からだけ受け付ける
