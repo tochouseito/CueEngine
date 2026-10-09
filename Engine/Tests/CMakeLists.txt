@@ -17,6 +17,17 @@ add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
 target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.TimingSamples COMMAND CueFoundationTimingTests)
 
+add_executable(CueLoggingHeaderCompile Logging/PublicHeaderCompile.cpp)
+target_link_libraries(CueLoggingHeaderCompile PRIVATE Cue.Logging)
+add_test(NAME Cue.Logging.PublicHeaders COMMAND CueLoggingHeaderCompile)
+
+if(WIN32)
+    add_executable(CueLoggerTests Logging/LoggerTests.cpp)
+    target_link_libraries(CueLoggerTests PRIVATE Cue.Logging Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Logging.Logger COMMAND CueLoggerTests)
+    set_tests_properties(Cue.Logging.Logger PROPERTIES TIMEOUT 15)
+endif()
+
 add_executable(CuePlatformHeaderCompile Platform/PublicHeaderCompile.cpp)
 target_link_libraries(CuePlatformHeaderCompile PRIVATE Cue.Platform)
 add_test(NAME Cue.Platform.PublicHeaders COMMAND CuePlatformHeaderCompile)
