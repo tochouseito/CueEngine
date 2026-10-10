@@ -262,10 +262,13 @@ Result<void> WindowsHost::initialize()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.initialize"});
     }
+    // WindowsHost は一度だけ初期化する。失敗時も停止済みにする
     if (m_lifecycle != Lifecycle::Uninitialized)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.initialize"});
     }
+
+    // 初期化の途中で失敗した場合も、部分資源を破棄して停止済みにする
     m_lifecycle = Lifecycle::Stopped;
 
     // FrameController の許容先行数と Flip Model の最小 BackBuffer 数を表示前に検証する
@@ -289,8 +292,10 @@ Result<void> WindowsHost::initialize()
         return Result<void>::failure(std::move(a_error));
     };
 
-    // WindowSystem は Window より長く生存させる
+    // 機能をまとめたStateを構築
     m_state = std::make_unique<State>();
+
+    // FileSystemがなければWindowsFileSystemを作る
     auto files = m_config.fileSystem ? Result<std::unique_ptr<IFileSystem>>::success(std::move(m_config.fileSystem))
                                      : create_windows_file_system();
     if (!files.has_value())
