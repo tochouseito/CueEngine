@@ -5,11 +5,13 @@ Issue: [#87](https://github.com/tochouseito/CueEngine/issues/87)
 
 ## 表示と計測点
 
-既定 EditorHost の Test Window に TEST と `FrameController FPS: <数値>` を ImGui Text で表示する。UI は Main Thread で構築し、`WindowsHost::frame_progress()` が返す FrameController の同期済み Snapshot を利用する。独自 `EditorHostConfig::buildUi` を指定した場合は、その Callback が UI を構築する
+既定 EditorHost の Test Window に TEST と `FrameController FPS: <数値> (avg <区間数> intervals)` を ImGui Text で表示する。UI は Main Thread で構築し、UI 開始前に取得した FrameController の同期済み `FrameTimingInfo` を利用する。独自 `EditorHostConfig::buildUi` を指定した場合は、その Callback が UI を構築する
 
-FPS は `FrameProgress::lastFrameInterval` の秒数の逆数。Render Callback（WindowsHost では記録・提出・Present）を終えた二つの完了点の間隔を使う。Render / Present 後には FPS 待機を挟まない。起動直後など二つの完了点が揃わない場合、または間隔が非正の場合は `FrameController FPS: --` と表示し、零除算しない
+FPS は `FrameTimingInfo::frameInterval.averageDuration` の秒数の逆数。Render Callback（WindowsHost では記録・提出・Present）を終えた二つの完了点の間隔を、最大 120 区間で平均する。各区間の FPS を算術平均せず、区間数 / 合計経過時間に相当する完了頻度を使う。Render / Present 後には FPS 待機を挟まない。起動直後など二つの完了点が揃わない場合、または平均間隔が非正の場合は `FrameController FPS: --` と表示し、零除算しない
 
-表示は小数 1 桁の直近 Frame の値であり、平均値や GPU 完了数ではない。ImGui IO.Framerate とモニター Refresh Rate は使わない。GPU 処理は Submit 後も続くため、この値から GPU 負荷を断定しない。最小化中は新規 Frame と UI 構築を停止する。復帰直後の値には休止時間が含まれることがあり、次の Render 完了で通常の間隔へ更新される
+表示は小数 1 桁の平均 FPS であり、GPU 完了数ではない。Sample が 120 区間未満の間は取得済み区間だけを使い、実際の区間数を表示する。ImGui IO.Framerate とモニター Refresh Rate は使わない。GPU 処理は Submit 後も続くため、この値から GPU 負荷を断定しない。最小化中は新規 Frame と UI 構築を停止する。復帰直後の平均には休止時間が含まれ、その Sample が最大 120 区間で置き換わるまで影響が残る
+
+`Frame interval` は同じ Snapshot の Render 完了間隔を平均・p95・最大 ms で表示する。平均 FPS の安定と実際の Frame Pacing の安定を区別し、短時間の遅延を平均表示で隠さない。直近の瞬間値が必要な利用者は `FrameProgress::lastFrameInterval` を参照できる
 
 ## FPS 待機と区間別計測（M06-02 / M06-14）
 
@@ -44,3 +46,18 @@ M06-02 以降の待機改善、構成別検証と比較数値は [M06Performance
 2026-10-09 に `scripts/codex_build.ps1` の既定 Debug Build と全 45 CTest が成功した（39.74 秒）。FrameController Test は単一 Thread / Worker の両方で、Main 前の開始制限、待機後の入力採用、Render 後の待機なし、独立した時間計測、遅延後の連続投入拒否を検証する。WindowsHost Test は 1 FPS でも Message を処理し、最新入力を Main へ渡し、次回期限前に Close を処理することを確認する。既存の Resize / 最小化 / 復帰と ImGui 描画 Test も成功した
 
 Development / Release の Build と、実操作によるドラッグの体感・入力から画面表示までの遅延測定は未実施。先行 Frame 数と GPU / DXGI の待機は今回変更していない
+
+## 2026-10-12 の FPS 表示の揺れの確認
+
+変更前の既定 Editor を診断用 Host から各構成 360 Frame 起動し、最初の 120 Frame を除いた 240 区間を観測した。Windows / MSVC x64、1280×720、Main / UI は構築 Thread、Update / Render は Worker、Frame 枠数 2、上限 60 FPS、VSync / Tearing は無効。独自 UI は注入せず、毎完了 Frame に進行情報と統計を取得した。診断取得の負荷を含む各構成 1 回の観測であり、性能改善率や他環境での範囲を保証する比較ではない
+
+| 構成 | 瞬間 FPS の範囲 | 120 区間の平均 FPS の範囲 | 完了間隔の平均 / p95 / 最大 |
+| --- | --- | --- | --- |
+| Debug | 36.19〜431.67 | 59.62〜60.93 | 16.670 / 18.419 / 27.632 ms |
+| Development | 57.62〜62.71 | 59.97〜60.15 | 16.670 / 16.823 / 17.355 ms |
+
+開始制限が働いていても UI / Render の所要時間や Worker の実行遅延で完了時刻は変動する。Debug では長い Render の次に短い完了間隔も観測した。平均進行頻度は 60 FPS 付近だったが、実際の完了間隔の揺れは残っている。CPU の Render 完了と OS が画面へ表示した時刻は異なり、表示側の Frame Pacing は今回測っていない
+
+主表示を最大 120 区間の平均 FPS へ変更し、同じ Snapshot の `Frame interval` の平均・p95・最大を追加した。制御の変更や Frame Pacing の高速化は行っていない。元の CSV と診断 Source は `out/validation/FpsJitter/` に保存した
+
+`scripts/codex_build.ps1` の Debug Build、Development の CueEditorHost / CueEditorHostTests Build が成功した。Debug の FrameController / EditorHost Lifecycle 2 Test、Development の EditorHost Lifecycle 1 Test が成功した。単一 Thread / Worker の既定 UI 描画と停止を確認した。Release の再 Build、修正後の UI 文字列の目視確認、長時間 / 高負荷 / 入力から表示までの計測は未実施
