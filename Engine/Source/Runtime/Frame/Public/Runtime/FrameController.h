@@ -17,6 +17,21 @@
 
 namespace cue
 {
+/// @brief FPS 期限の追い込み方法を指定する
+enum class FrameWaitMode
+{
+    Sleep,
+    Hybrid,
+};
+
+/// @brief Platform に依存しない Frame 開始の同期方針
+enum class FrameSyncMode
+{
+    FixedPeriod,
+    PresentationReady,
+    DisplayPrediction,
+};
+
 /// @brief Frame の先行数、Worker 利用、開始頻度の上限を指定する
 struct FrameControllerDesc final
 {
@@ -24,6 +39,15 @@ struct FrameControllerDesc final
     bool useWorkerThreads = true;
     /// Main / UI 構築前の Frame 開始頻度の FPS 上限。0 は上限なし
     std::uint32_t maxFps = 60;
+    // 未指定は既存の容量から導出する。0 は同じ Frame の Update / Render を直列化する
+    std::optional<std::uint32_t> maxUpdateLeadFrames;
+    FrameWaitMode waitMode = FrameWaitMode::Hybrid;
+    std::chrono::nanoseconds spinDuration = std::chrono::microseconds(500);
+    FrameSyncMode syncMode = FrameSyncMode::FixedPeriod;
+    std::chrono::nanoseconds predictionSlack = std::chrono::milliseconds(1);
+
+    /// @brief 設定値の変更有無を所有値だけで比較する
+    bool operator==(const FrameControllerDesc &) const = default;
 };
 
 /// @brief Main Threadが進行状況を参照するためのSnapshot

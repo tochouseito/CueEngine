@@ -165,6 +165,10 @@ if(WIN32)
     add_test(NAME Cue.Runtime.Windowless COMMAND CueRuntimeTests)
 
     add_executable(CueWindowsHostTests Platform/WindowsHostTests.cpp)
+    # 設定の要求値と容量の契約を Window 生成前に確認する
+    add_executable(CuePerformanceSettingsTests Platform/PerformanceSettingsTests.cpp)
+    target_link_libraries(CuePerformanceSettingsTests PRIVATE Cue.WindowsHost)
+    add_test(NAME Cue.WindowsHost.PerformanceSettings COMMAND CuePerformanceSettingsTests)
     target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost Cue.Platform.Windows)
     add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
     set_tests_properties(Cue.WindowsHost.Lifecycle PROPERTIES TIMEOUT 10)

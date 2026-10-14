@@ -10,21 +10,14 @@
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
 #include <Runtime/FrameController.h>
+#include <RHI/FrameExecution.h>
+#include <RHI/Presentation.h>
 #include <WindowsHost/HostLogging.h>
 #include <WindowsHost/StoragePaths.h>
 
 namespace cue
 {
 class IBackend;
-
-/// @brief SwapChain 構築時に適用する表示設定
-struct PresentationConfig final
-{
-    std::uint32_t bufferCount = 2;
-    bool isVSyncEnabled = false;
-    bool isTearingAllowed = false;
-    std::array<float, 4> clearColor{0.2f, 0.4f, 0.6f, 1.0f};
-};
 
 /// @brief Host 固有機能の Window 初期化、Main、Update と停止を抽象契約で接続する
 ///
