@@ -1,5 +1,7 @@
 # FrameController FPS 表示（M06-01）
 
+現在の待機制御は [M09 Frame Pacing](M09FramePacing.md) へ移行した。以下の M06 / #114 の待機位置と検証結果は当時の履歴であり、現在は CPU Render 完了を公開してから Render 側で周期の残り時間を待つ。CPU 完了間隔と周期完了間隔は別統計
+
 Milestone: [M06 Performance Tests](https://github.com/tochouseito/CueEngine/milestone/7)
 Issue: [#87](https://github.com/tochouseito/CueEngine/issues/87)
 
