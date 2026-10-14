@@ -283,4 +283,19 @@ DX12SwapChain* DX12Backend::get_swap_chain() noexcept
 {
     return m_swapChain.get();
 }
+
+/// @brief BackBuffer の全借用が終了した境界で生成時 Flags を切り替える
+Result<void> DX12Backend::replace_swap_chain(void *a_windowHandle, const DX12SwapChainConfig &a_config)
+{
+    if (m_swapChain)
+    {
+        auto stopped = m_swapChain->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_swapChain.reset();
+    }
+    return create_swap_chain(a_windowHandle, a_config);
+}
 } // namespace cue::dx12

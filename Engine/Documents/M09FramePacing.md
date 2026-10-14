@@ -40,3 +40,13 @@ Graph はすべての Queue を合流した正常提出 Completion を返す。H
 Waitable SwapChain は最初の Frame を含め記録前に表示枠を取得する。最大表示 Queue 数を DXGI に設定し、GPU 未完了上限や FPS 上限とは分離する。取得した通知は Present まで保持し、最小化などの記録取消で失わない。Resize は生成時の Flags を維持し、停止は Worker join 後に待機 Handle を閉じる
 
 単一 Thread は UI 構築前に表示 / GPU 枠を非待機で確認する。未準備なら Frame ID を増やさず Pump に戻る。Worker 構成では 1 ms ごとに停止 / Resize 要求を確認する
+
+## #120 設定変更
+
+要求は Main / UI から値で受け取り、開発者の公開範囲と再生成 Factory を変更前に検証する。次の Main 境界で新規投入を止め、周期待機だけ取消して CPU Snapshot を排出する。Worker join、GPU 完了、Graph / SwapChain / ImGui 枠変更の順に進み、同じ論理 Frame ID から再開する
+
+ImGui Context と入力 Handler は維持する。GPU Backend の再生成は MainViewport の Platform データも破棄するため、Win32 Backend も再接続する。SwapChain の Graphics Queue は Backend の QueuePool が継続所有する
+
+不正な要求と読込失敗は既存設定を維持する。Native 再構築の途中失敗 / 例外は Result と停止状態へ確定し、shutdown のみ許可する。Factory のない一回限りの表示 Pass は再構築が必要な変更を事前に拒否する
+
+Editor の Test 内「Performance settings」で編集 / Preset / Apply / Apply and save / Load saved を提供する。保存は Schema 付き File を FileSystem.replace_file で置換し、次回起動時にもゲームの Policy を検証する。既定保存先は Product dataRoot/editor/Performance.cfg。Policy 自体は保存値から変更しない

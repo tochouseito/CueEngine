@@ -380,6 +380,72 @@ Result<void> ImGuiManager::enable_frame_transfer(std::uint32_t a_cpuFrameCount)
     return Result<void>::success();
 }
 
+/// @brief Snapshot を完全排出した後、公式 Backend の Ring と CPU 所有枠を変更する
+Result<void> ImGuiManager::reconfigure_renderer(IBackend &a_backend, std::uint32_t a_cpuFrames,
+                                               std::uint32_t a_gpuFrames)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.reconfigure"});
+    }
+    std::lock_guard lock(imgui_context_mutex());
+    auto valid = validate("ImGuiManager.reconfigure");
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    if (!m_state->renderer || m_state->isFrameOpen || m_state->activeSnapshot ||
+        m_state->transfer.pendingFrames || a_cpuFrames == 0 || a_cpuFrames > 8 ||
+        a_gpuFrames == 0 || a_gpuFrames > 8)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.reconfigure.pending"});
+    }
+    try
+    {
+        m_state->snapshots.resize(a_cpuFrames);
+        m_state->cachedSnapshots.resize(a_cpuFrames);
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.reconfigure.allocation"});
+    }
+    if (m_state->renderer->info().frameCount != a_gpuFrames)
+    {
+        auto stopped = m_state->renderer->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_state->renderer.reset();
+        // 公式 DX12 Shutdown は MainViewport の PlatformUserData も破棄する
+        // Context と入力 Handler は維持し、Win32 Backend を再接続して DPI 参照を復元する
+        ScopedContext current(m_state->context);
+        ImGui_ImplWin32_Shutdown();
+        m_state->isWin32Initialized = false;
+        auto handle = borrow_windows_window_handle(*m_state->window);
+        if (!handle.has_value())
+        {
+            return Result<void>::failure(*handle.try_error());
+        }
+        if (!ImGui_ImplWin32_Init(*handle.try_value()))
+        {
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.reconfigure.win32"});
+        }
+        m_state->isWin32Initialized = true;
+        auto created = DX12ImGuiBackend::create(a_backend, *m_state->context, a_gpuFrames,
+                                                m_state->config.rendererDescriptorCapacity);
+        if (!created.has_value())
+        {
+            return Result<void>::failure(*created.try_error());
+        }
+        m_state->renderer = created.take_value();
+    }
+    m_state->frameCount = a_cpuFrames;
+    // Worker 再生成で Thread ID は変わる。公開 / 消費の論理 Frame ID は維持する
+    m_state->transfer.renderThreadId = {};
+    return Result<void>::success();
+}
+
 /// @brief Texture の GPU 更新後に CPU 配列を複製し、原本への可変参照を残さない
 Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token a_token)
 {

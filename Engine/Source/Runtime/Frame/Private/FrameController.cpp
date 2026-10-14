@@ -75,11 +75,14 @@ Result<void> FrameController::start()
     const auto lead = m_desc.useWorkerThreads
                           ? m_desc.maxUpdateLeadFrames.value_or(m_desc.maxFramesInFlight - 1)
                           : 0;
-    m_startPermits = lead + 1;
+    m_startPermits = m_progress.submittedFrames + lead + 1;
+    m_nextUpdateFrame = m_progress.updatedFrames;
+    m_nextRenderFrame = m_progress.renderedFrames;
     m_cycleStarted = m_clock.now();
     m_nextFrameTime = m_clock.now();
     m_limitWaitStarted.reset();
     m_mainStopSource = std::stop_source{};
+    m_cycleStopSource = std::stop_source{};
 
     if (m_desc.useWorkerThreads)
     {
@@ -323,6 +326,7 @@ Result<void> FrameController::stop()
     }
     // stop_callback は同期実行されるため、Controller の共有 Lock 外で通知する
     m_mainStopSource.request_stop();
+    m_cycleStopSource.request_stop();
     {
         std::lock_guard lock(m_mutex);
         m_stopRequested = true;
@@ -516,7 +520,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
         }
         m_waiter.notify_all();
         // FPS 待機は Render 側だけに置き、Main / Update へは許可の通知だけを渡す
-        finish_cycle(completion, m_mainStopSource.get_token());
+        finish_cycle(completion, m_cycleStopSource.get_token());
     }
     return Result<void>::success();
 }
@@ -534,7 +538,58 @@ void FrameController::record_failure(Error a_error)
     }
     // Main が Texture の旧 Snapshot 回収を待っていても Worker 失敗を伝える
     m_mainStopSource.request_stop();
+    m_cycleStopSource.request_stop();
     m_waiter.notify_all();
+}
+
+/// @brief 周期の Sleep / Spin を解除し、残った CPU Callback だけを完了させる
+void FrameController::request_drain()
+{
+    if (std::this_thread::get_id() == m_ownerId)
+    {
+        m_cycleStopSource.request_stop();
+        m_waiter.notify_all();
+    }
+}
+
+/// @brief Idle の確認後だけ停止し、GPU / UI を再構築できる状態にする
+Result<void> FrameController::pause()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.pause"});
+    }
+    auto idle = is_idle();
+    if (!idle.has_value() || !*idle.try_value() || m_isExecutingMain)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.pause"});
+    }
+    return stop();
+}
+
+/// @brief 登録済み Callback と単調 Frame ID を再利用し、古い構成の計測窓を捨てる
+Result<void> FrameController::resume(FrameControllerDesc a_desc)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.resume"});
+    }
+    if (m_isStarted || !m_hasStarted || m_isExecutingMain || m_failure)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.resume"});
+    }
+    m_desc = a_desc;
+    m_hasStarted = false;
+    {
+        std::lock_guard lock(m_mutex);
+        m_mainTimings = {};
+        m_updateTimings = {};
+        m_renderTimings = {};
+        m_limitTimings = {};
+        m_intervalTimings = {};
+        m_cycleTimings = {};
+    }
+    return start();
 }
 
 Result<bool> FrameController::wait_for_frame()

@@ -172,7 +172,7 @@ if(WIN32)
     add_executable(CueWindowsHostTests Platform/WindowsHostTests.cpp)
     # 設定の要求値と容量の契約を Window 生成前に確認する
     add_executable(CuePerformanceSettingsTests Platform/PerformanceSettingsTests.cpp)
-    target_link_libraries(CuePerformanceSettingsTests PRIVATE Cue.WindowsHost)
+    target_link_libraries(CuePerformanceSettingsTests PRIVATE Cue.WindowsHost Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.WindowsHost.PerformanceSettings COMMAND CuePerformanceSettingsTests)
     target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost Cue.Platform.Windows)
     add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
@@ -245,6 +245,12 @@ if(WIN32)
     add_test(NAME Cue.EditorHost.Lifecycle COMMAND CueEditorHostTests)
     set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 30)
 
+    # 実行中の CPU / GPU / 表示枠変更と単調 Frame ID の継続を確認する
+    add_executable(CuePerformanceSettingsIntegrationTests Editor/PerformanceSettingsIntegrationTests.cpp)
+    target_link_libraries(CuePerformanceSettingsIntegrationTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.EditorHost.PerformanceSettings COMMAND CuePerformanceSettingsIntegrationTests)
+    set_tests_properties(Cue.EditorHost.PerformanceSettings PROPERTIES TIMEOUT 30)
+
     # 共通の Process Fixture で Editor の Executable の表示と正常 Close を確認する
     add_dependencies(CueWindowsHostProcessTests CueEditorHost)
     add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain)
@@ -258,6 +264,6 @@ endif()
 if(WIN32)
     cue_copy_shader_runtime(CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests
+        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests
     )
 endif()

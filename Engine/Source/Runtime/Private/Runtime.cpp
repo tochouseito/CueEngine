@@ -7,6 +7,40 @@
 
 namespace cue
 {
+/// @brief UI 内の変更要求でも Callback を取消さず、周期待機だけ解除する
+void Runtime::request_drain()
+{
+    if (std::this_thread::get_id() == m_ownerId && m_controller)
+    {
+        m_controller->request_drain();
+    }
+}
+
+/// @brief GPU の再構成より前に Worker の借用を止める
+Result<void> Runtime::pause()
+{
+    if (std::this_thread::get_id() != m_ownerId || m_isStepping || m_lifecycle != Lifecycle::Running)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.pause"});
+    }
+    return m_controller->pause();
+}
+
+/// @brief 同じ Controller の Callback と Frame ID を継続する
+Result<void> Runtime::resume(FrameControllerDesc a_desc)
+{
+    if (std::this_thread::get_id() != m_ownerId || m_isStepping || m_lifecycle != Lifecycle::Running)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.resume"});
+    }
+    auto result = m_controller->resume(a_desc);
+    if (result.has_value())
+    {
+        m_desc = a_desc;
+    }
+    return result;
+}
+
 /// @brief 借用するPlatform Serviceと構築Threadを記録する
 Runtime::Runtime(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter, ThreadFactory& a_threadFactory)
     : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),

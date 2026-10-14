@@ -50,6 +50,13 @@ public:
     /// @brief Owner Thread から新規投入せず CPU Frame の完了と非同期失敗を確認する
     [[nodiscard]] Result<bool> is_idle() const;
 
+    /// @brief Owner Thread から新規投入を止める前提で周期待機だけを解除する
+    void request_drain();
+    /// @brief CPU 静止状態で Controller を停止し、Frame ID を維持する
+    [[nodiscard]] Result<void> pause();
+    /// @brief pause 後に設定を適用して Worker を再開する
+    [[nodiscard]] Result<void> resume(FrameControllerDesc a_desc);
+
     /// @brief Workerを停止・joinして最初の失敗を返す
     ///
     /// 構築Threadから複数回呼べる。失敗してもWorkerは残さない

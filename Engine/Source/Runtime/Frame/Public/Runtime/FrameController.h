@@ -137,6 +137,15 @@ public:
     /// 複数回呼出可能。失敗後もWorkerは残さない
     [[nodiscard]] Result<void> stop();
 
+    /// @brief 新規投入停止中の CPU Frame を FPS 待機なしで排出する。Owner Thread 専用
+    void request_drain();
+
+    /// @brief CPU 静止状態で Worker を join する。Frame ID と Callback を維持する
+    [[nodiscard]] Result<void> pause();
+
+    /// @brief pause 後に設定を適用し、同じ Frame ID から再開する。失敗時は停止状態
+    [[nodiscard]] Result<void> resume(FrameControllerDesc a_desc);
+
     /// @brief 完了数、直近のFrame番号、実行Thread、処理時間を取得する
     [[nodiscard]] FrameProgress progress() const;
 
@@ -199,5 +208,7 @@ public:
     bool m_isExecutingMain = false;
     // Main の Snapshot / Texture 待機も Worker 失敗時に解除する
     std::stop_source m_mainStopSource;
+    // 排出だけの要求は Callback の停止 Token を取消さない
+    std::stop_source m_cycleStopSource;
 };
 } // namespace cue

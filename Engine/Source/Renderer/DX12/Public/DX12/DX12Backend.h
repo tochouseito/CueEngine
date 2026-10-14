@@ -119,6 +119,9 @@ public:
   /// Window は shutdown 完了まで呼出側が生存させる。失敗時は Backend の既存状態を維持する
   [[nodiscard]] Result<void> create_swap_chain(void *a_windowHandle, const DX12SwapChainConfig &a_config);
 
+  /// @brief Worker / Graph 停止後に表示設定を再生成する。失敗時は SwapChain を使わず停止する
+  [[nodiscard]] Result<void> replace_swap_chain(void *a_windowHandle, const DX12SwapChainConfig &a_config);
+
   /// @brief 稼働中の SwapChain を Backend の停止まで借用させる
   [[nodiscard]] DX12SwapChain *get_swap_chain() noexcept;
 
