@@ -197,6 +197,16 @@ class WindowsHost::State final
                 return Result<void>::failure(*available.try_error());
             if (!*available.try_value())
                 return Result<void>::success();
+            auto ready = swapChain->wait_for_frame(a_stopToken, [&]()
+            { return isRenderStopped.load() || isPresentationSuspended.load(); });
+            if (!ready.has_value())
+            {
+                return Result<void>::failure(*ready.try_error());
+            }
+            if (!*ready.try_value())
+            {
+                return Result<void>::success();
+            }
             auto executed = graph->execute(
                 frameSlot, *execution, [&]()
                 { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
@@ -410,6 +420,8 @@ Result<void> WindowsHost::initialize()
     swapConfig.bufferCount = m_config.presentation.bufferCount;
     swapConfig.isVSyncEnabled = m_config.presentation.isVSyncEnabled;
     swapConfig.isTearingAllowed = m_config.presentation.isTearingAllowed;
+    swapConfig.isWaitableEnabled = m_config.presentation.isWaitableEnabled;
+    swapConfig.maxQueuedFrames = m_config.presentation.maxQueuedFrames;
     auto swapResult = m_state->dx12Backend->create_swap_chain(*handleResult.try_value(), swapConfig);
     if (!swapResult.has_value())
     {
@@ -579,6 +591,27 @@ Result<bool> WindowsHost::step()
     if (!isFrameReady)
     {
         return Result<bool>::success(true);
+    }
+    if (!m_config.frame.useWorkerThreads)
+    {
+        // 単一 Thread は Snapshot を作る前に表示枠を確認し、未準備なら Message Pump に戻る
+        auto ready = m_state->dx12Backend->get_swap_chain()->wait_for_frame({}, {}, true);
+        if (!ready.has_value())
+        {
+            return Result<bool>::failure(*ready.try_error());
+        }
+        bool isGpuBlocked = false;
+        auto gpuReady = m_state->gpuFrames->wait_for_slot([&]() { isGpuBlocked = true; },
+                                                         [&]() { return isGpuBlocked; });
+        if (!gpuReady.has_value())
+        {
+            return Result<bool>::failure(*gpuReady.try_error());
+        }
+        if (!*ready.try_value() || !*gpuReady.try_value())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return Result<bool>::success(true);
+        }
     }
     // 入力処理後は Callback を開始する。開始条件は維持されるが非同期失敗を再確認する
     auto frameResult = m_state->runtime->step();

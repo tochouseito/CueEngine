@@ -73,6 +73,7 @@ int run_tests()
     auto pipelines = pipelinesResult.take_value();
     const cue::dx12::DX12ResourceContext resources{*device, *views, *pipelines};
     for (const bool isVSyncEnabled : {false, true})
+    for (const bool isWaitableEnabled : {false, true})
     {
         auto queueResult = cue::dx12::DX12GpuCommandQueue::create(
             *device->device(), cue::QueueType::Graphics, 0);
@@ -84,7 +85,7 @@ int run_tests()
             delete a_queue;
         });
         const cue::dx12::DX12SwapChainConfig config{
-            320, 240, 2, DXGI_FORMAT_R8G8B8A8_UNORM, isVSyncEnabled, !isVSyncEnabled};
+            320, 240, 2, DXGI_FORMAT_R8G8B8A8_UNORM, isVSyncEnabled, !isVSyncEnabled, isWaitableEnabled, 1};
         auto swapResult =
             cue::dx12::DX12SwapChain::create(resources, std::move(lease), *handleResult.try_value(), config);
         if (!swapResult.has_value())
@@ -92,6 +93,15 @@ int run_tests()
             return 8;
         }
         auto swapChain = swapResult.take_value();
+        std::stop_source stopped;
+        stopped.request_stop();
+        auto canceled = swapChain->wait_for_frame(stopped.get_token());
+        if (!canceled.has_value() || *canceled.try_value() ||
+            swapChain->is_waitable_enabled() != isWaitableEnabled ||
+            !swapChain->wait_for_frame({}).has_value() || !swapChain->wait_for_frame({}).has_value())
+        {
+            return 19;
+        }
         auto *graphicsQueue = swapChain->graphics_queue();
         auto *originalBuffer = swapChain->back_buffer(0);
         const bool isTearingEnabled = swapChain->is_tearing_enabled();
@@ -117,6 +127,11 @@ int run_tests()
             {{480, 270}, {123, 97}, {640, 360}, {64, 64}, {320, 240}}};
         for (const auto size : sizes)
         {
+            auto ready = swapChain->wait_for_frame({});
+            if (!ready.has_value() || !*ready.try_value())
+            {
+                return 20;
+            }
             if (!swapChain->resize(size[0], size[1]).has_value() || swapChain->graphics_queue() != graphicsQueue ||
                 swapChain->is_tearing_enabled() != isTearingEnabled || swapChain->current_index() >= 2)
             {

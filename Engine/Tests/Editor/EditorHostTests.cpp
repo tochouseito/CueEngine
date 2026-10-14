@@ -183,8 +183,19 @@ int test_owner_thread_frames()
     {
         return 2;
     }
-    for (int index = 0; index < 3; ++index)
+    // 単一 Thread も表示 Queue が満杯なら Pump に戻るため、step 回数と Frame 数は一致しない
+    const auto frameDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < frameDeadline)
     {
+        auto current = host.frame_progress();
+        if (!current.has_value())
+        {
+            return 4;
+        }
+        if (current.try_value()->renderedFrames >= 3)
+        {
+            break;
+        }
         auto stepResult = host.step();
         if (!stepResult.has_value() || !*stepResult.try_value())
         {

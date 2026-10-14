@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <stop_token>
 #include <vector>
 
 #include <d3d12.h>
@@ -26,6 +28,8 @@ struct DX12SwapChainConfig final
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
     bool isVSyncEnabled = false;
     bool isTearingAllowed = false;
+    bool isWaitableEnabled = true;
+    std::uint32_t maxQueuedFrames = 1;
 };
 
 /// @brief Window に対応する Back Buffer、RTV、Graphics Queue Lease を一意所有する
@@ -75,6 +79,15 @@ public:
     /// 呼出側は先に GPU 作業を提出し、Back Buffer を PRESENT State に戻す
     [[nodiscard]] Result<void> present();
 
+    /// @brief 描画開始の表示枠を取得する。停止時は false、取得済み枠は Present まで保持する
+    /// Render Thread 専用。呼出終了前に shutdown / resize を実行しない
+    [[nodiscard]] Result<bool> wait_for_frame(std::stop_token a_stopToken,
+                                            const std::function<bool()> &a_shouldCancel = {},
+                                            bool a_isNonBlocking = false);
+
+    /// @brief 実際に作成された表示待機機能の有無を返す
+    [[nodiscard]] bool is_waitable_enabled() const noexcept;
+
     /// @brief GPU 完了後に BackBuffer と RTV を新しい非零寸法で作り直す
     ///
     /// 呼出前に Graph、外部 View と Command の旧 BackBuffer 参照を解除する
@@ -102,5 +115,8 @@ private:
   std::vector<DX12ViewHandle> m_rtvHandles;
   DX12SwapChainConfig m_config;
   bool m_isTearingEnabled = false;
+  // DXGI から受け取った Handle を一意所有する。停止前に利用 Thread を join する
+  HANDLE m_frameLatencyEvent = nullptr;
+  bool m_hasFramePermit = false;
 };
 } // namespace cue::dx12
