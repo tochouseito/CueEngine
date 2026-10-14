@@ -47,6 +47,14 @@ class SharedCommandCompletion final : public ICommandCompletion
     }
 
     /// @brief 元 Token の完了を待ち、未設定なら公開前状態の誤用を返す
+    [[nodiscard]] Result<bool> completion_status() const override
+    {
+        return m_completion
+                   ? m_completion->completion_status()
+                   : Result<bool>::failure({ErrorCategory::InvalidState, "SharedCommandCompletion.status.empty"});
+    }
+
+    /// @brief 元 Token の完了を待ち、未設定なら公開前状態の誤用を返す
     [[nodiscard]] Result<void> wait() override
     {
         return m_completion

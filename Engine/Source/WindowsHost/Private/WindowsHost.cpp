@@ -1,5 +1,6 @@
 #include <WindowsHost/WindowsHost.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -29,6 +30,7 @@
 #include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
 #include <RHI/BackendFactory.h>
+#include <RHI/GpuFrameQueue.h>
 #include <Runtime/Runtime.h>
 #include <WindowsHost/PerformanceSettings.h>
 
@@ -121,6 +123,9 @@ class WindowsHost::State final
     bool hasWindowInitializationStarted = false;
     mutable std::mutex timingMutex;
     TimingSamples presentTimings;
+    std::unique_ptr<GpuFrameQueue> gpuFrames;
+    TimingSamples gpuQueueWaitTimings;
+    std::uint32_t peakGpuFrames = 0;
 
     /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
     void request_resize(WindowSize a_size)
@@ -179,6 +184,19 @@ class WindowsHost::State final
                 return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
             }
             const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
+            const auto waitStarted = std::chrono::steady_clock::now();
+            auto available = gpuFrames->wait_for_slot(
+                [&]()
+                { [[maybe_unused]] auto status = services.waiter->sleep_for(std::chrono::milliseconds(1), a_stopToken); },
+                [&]() { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
+            {
+                std::lock_guard lock(timingMutex);
+                gpuQueueWaitTimings.add(std::chrono::steady_clock::now() - waitStarted);
+            }
+            if (!available.has_value())
+                return Result<void>::failure(*available.try_error());
+            if (!*available.try_value())
+                return Result<void>::success();
             auto executed = graph->execute(
                 frameSlot, *execution, [&]()
                 { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
@@ -187,6 +205,15 @@ class WindowsHost::State final
                 return Result<void>::failure(*executed.try_error());
             }
             wasSubmitted = *executed.try_value();
+            if (wasSubmitted)
+            {
+                // Present が省略されても、提出した GPU Frame の完了点を保持する
+                auto tracked = gpuFrames->submitted(graph->submitted_completion());
+                if (!tracked.has_value())
+                    return tracked;
+                std::lock_guard lock(timingMutex);
+                peakGpuFrames = std::max(peakGpuFrames, gpuFrames->pending());
+            }
             return Result<void>::success();
         };
         auto recorded =
@@ -433,6 +460,7 @@ Result<void> WindowsHost::initialize()
                                                  *m_state->services.threadFactory);
     State *state = m_state.get();
     const auto frameCount = m_config.gpu.resourceFrameCount;
+    m_state->gpuFrames = std::make_unique<GpuFrameQueue>(m_config.gpu.maxFramesInFlight);
     // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
     auto update = m_config.callbacks.update;
     if (!update)
@@ -673,6 +701,8 @@ Result<void> WindowsHost::shutdown()
         }
         m_state->hasWindowInitializationStarted = false;
     }
+    // Graph が GPU 完了を確認した後、Limiter が保持する Fence / Device の参照を解放する
+    m_state->gpuFrames.reset();
     if (m_state->backend)
     {
         auto backendResult = m_state->backend->shutdown();

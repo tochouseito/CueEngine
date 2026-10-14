@@ -30,3 +30,7 @@ FPS 待機は共通の停止 Token で解除する。Main は最大 1 ms の通�
 Host は CPU 容量を ImGui Snapshot に、GPU 容量を Graph と公式 ImGui Backend の Ring に渡す。論理 Frame ID と GPU Context の物理枠番号は同一と仮定しない。CPU Snapshot の Pin は記録後に回収し、GPU VB / IB Ring と Texture Descriptor はそれぞれの最終利用 Fence で保護する
 
 容量は 1〜8 枠を検証し、GPU 未完了上限は GPU 枠容量以下にする。SwapChain は別に 2〜16 枚を検証する
+
+## #118 GPU 未完了上限
+
+Graph はすべての Queue を合流した正常提出 Completion を返す。Host は Present の有無に関係なく固定容量 Queue へ登録する。上限では停止可能な短い通知待機を挟み、非待機 status で Device Lost を確認する。CPU / GPU 枠の再利用待機は引き続き各 Owner が行う

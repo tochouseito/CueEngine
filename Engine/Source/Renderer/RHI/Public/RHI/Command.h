@@ -77,6 +77,12 @@ public:
     /// @brief 対応する GPU 作業が正常に完了したか返す
     [[nodiscard]] virtual bool is_complete() const noexcept = 0;
 
+    /// @brief 未完了と Device Lost を区別する非待機の確認。公開後の Token から呼ぶ
+    [[nodiscard]] virtual Result<bool> completion_status() const
+    {
+        return Result<bool>::success(is_complete());
+    }
+
     /// @brief 対応する GPU 作業の完了または Device Lost を待つ
     [[nodiscard]] virtual Result<void> wait() = 0;
 
