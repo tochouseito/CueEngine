@@ -126,6 +126,7 @@ class WindowsHost::State final
     std::unique_ptr<GpuFrameQueue> gpuFrames;
     TimingSamples gpuQueueWaitTimings;
     std::uint32_t peakGpuFrames = 0;
+    std::uint32_t gpuFrameCount = 2;
 
     /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
     void request_resize(WindowSize a_size)
@@ -364,6 +365,37 @@ Result<void> WindowsHost::initialize()
         return rollback(*registration.try_error());
     }
     m_state->diagnosticRegistration = registration.take_value();
+
+    if (!m_config.performanceSettingsFile.empty())
+    {
+        auto path = m_state->paths.dataRoot.join(m_config.performanceSettingsFile);
+        if (!path.has_value())
+        {
+            return rollback(*path.try_error());
+        }
+        auto exists = m_state->files->exists(*path.try_value());
+        if (!exists.has_value())
+        {
+            return rollback(*exists.try_error());
+        }
+        if (*exists.try_value())
+        {
+            auto loaded = load_performance_settings(*m_state->files, *path.try_value());
+            auto valid = loaded.has_value() ? validate_performance_policy(*loaded.try_value(), m_config.performancePolicy)
+                                            : Result<void>::failure(*loaded.try_error());
+            if (valid.has_value())
+            {
+                m_config.frame = loaded.try_value()->frame;
+                m_config.gpu = loaded.try_value()->gpu;
+                m_config.presentation = loaded.try_value()->presentation;
+            }
+            else
+            {
+                // 壊れた保存値は適用せず、開発者が指定した初期設定を維持する
+                report_log_error("WindowsHost.performance_settings.load", *valid.try_error(), LogLevel::Warning);
+            }
+        }
+    }
     report_log("WindowsHost", "initializing");
     auto systemResult = create_windows_window_system();
     if (!systemResult.has_value())
@@ -449,9 +481,10 @@ Result<void> WindowsHost::initialize()
     graphConfig.frameCount = m_config.gpu.resourceFrameCount;
     graphConfig.clearColor = m_config.presentation.clearColor;
     // Host が選択した抽象 Pass を Graph に移し、DX12 層には Editor の具体型を伝えない
-    graphConfig.configure = std::move(m_config.graph.configure);
+    m_isGraphRebuildable = !m_config.graph.displayPass || static_cast<bool>(m_config.graph.displayPassFactory);
+    graphConfig.configure = m_config.graph.configure;
     graphConfig.displayPass = std::move(m_config.graph.displayPass);
-    graphConfig.displayPassFactory = std::move(m_config.graph.displayPassFactory);
+    graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
     auto graphResult =
         dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
     if (!graphResult.has_value())
@@ -471,7 +504,7 @@ Result<void> WindowsHost::initialize()
     m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
                                                  *m_state->services.threadFactory);
     State *state = m_state.get();
-    const auto frameCount = m_config.gpu.resourceFrameCount;
+    m_state->gpuFrameCount = m_config.gpu.resourceFrameCount;
     m_state->gpuFrames = std::make_unique<GpuFrameQueue>(m_config.gpu.maxFramesInFlight);
     // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
     auto update = m_config.callbacks.update;
@@ -481,9 +514,9 @@ Result<void> WindowsHost::initialize()
     }
     auto runtimeResult = m_state->runtime->initialize(
         std::move(update),
-        [state, frameCount, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex,
+        [state, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex,
                                                                           std::stop_token a_stopToken)
-        { return state->render(a_frameIndex, a_stopToken, frameCount, recordFrame); },
+        { return state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame); },
         m_config.callbacks.main);
     if (!runtimeResult.has_value())
     {
@@ -517,7 +550,7 @@ Result<bool> WindowsHost::step()
     ScopedFlag stepping(m_isStepping);
     // 開始期限 / 空き枠の待機後に入力を取り直し、採取済みの UI を FPS 待機で古くしない
     bool isFrameReady = false;
-    if (!m_state->isPresentationSuspended.load())
+    if (!m_state->isPresentationSuspended.load() && !m_pendingSettings)
     {
         auto ready = m_state->runtime->wait_for_frame();
         if (!ready.has_value())
@@ -561,6 +594,43 @@ Result<bool> WindowsHost::step()
     if (m_state->isCloseRequested || m_state->isDestroyed || *pumpResult.try_value() == PumpStatus::QuitRequested)
     {
         return Result<bool>::success(false);
+    }
+
+    if (m_pendingSettings)
+    {
+        // 排出中も必ず Pump へ戻り、表示待機が Resize / Close で解除できる状態を維持する
+        m_state->isPresentationSuspended.store(true);
+        auto idle = m_state->runtime->is_idle();
+        if (!idle.has_value())
+        {
+            return Result<bool>::failure(*idle.try_error());
+        }
+        if (*idle.try_value() && m_state->requestedSize.width && m_state->requestedSize.height)
+        {
+            auto applied = [&]() -> Result<void>
+            {
+                try
+                {
+                    return apply_pending_settings();
+                }
+                catch (...)
+                {
+                    return Result<void>::failure({ErrorCategory::PlatformFailure,
+                                                   "WindowsHost.performance_settings.exception"});
+                }
+            }();
+            if (!applied.has_value())
+            {
+                // Native 再構築途中の失敗では旧設定を実効値として公開せず、停止だけを許可する
+                m_lifecycle = Lifecycle::Stopped;
+                return Result<bool>::failure(*applied.try_error());
+            }
+        }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return Result<bool>::success(true);
     }
 
     if (m_state->isPresentationSuspended.load())
@@ -607,7 +677,9 @@ Result<bool> WindowsHost::step()
         {
             return Result<bool>::failure(*gpuReady.try_error());
         }
-        if (!*ready.try_value() || !*gpuReady.try_value())
+        // Frame ID の欠番で物理枠が先に再訪されても、Graph の Fence 待機で Main を塞がない
+        // 単一 Thread は全 GPU Frame 完了後に記録する。Worker は指定した上限まで並列提出する
+        if (!*ready.try_value() || !*gpuReady.try_value() || m_state->gpuFrames->pending() != 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             return Result<bool>::success(true);
@@ -620,6 +692,164 @@ Result<bool> WindowsHost::step()
         return Result<bool>::failure(*frameResult.try_error());
     }
     return Result<bool>::success(true);
+}
+
+/// @brief 変更前に入力と再構築能力を検証し、実行中の構成はその場で変更しない
+Result<void> WindowsHost::request_performance_settings(PerformanceSettings a_settings)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.performance_settings"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings"});
+    }
+    auto valid = validate_performance_policy(a_settings, m_config.performancePolicy);
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    const bool rebuildsGraph = a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
+                                a_settings.presentation != m_config.presentation;
+    if (rebuildsGraph && !m_isGraphRebuildable)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings.display_factory"});
+    }
+    if ((a_settings.frame.maxFramesInFlight != m_config.frame.maxFramesInFlight ||
+         a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount) &&
+        m_config.callbacks.initializeRenderer && !m_config.callbacks.reconfigureRenderer)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings.renderer_callback"});
+    }
+    m_pendingSettings = a_settings;
+    m_state->runtime->request_drain();
+    return Result<void>::success();
+}
+
+/// @brief 実体の構築に成功した構成だけを公開する
+Result<PerformanceSettings> WindowsHost::performance_settings() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<PerformanceSettings>::failure({ErrorCategory::WrongThread, "WindowsHost.performance_settings"});
+    }
+    if (m_lifecycle != Lifecycle::Running)
+    {
+        return Result<PerformanceSettings>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings"});
+    }
+    return Result<PerformanceSettings>::success({m_config.frame, m_config.gpu, m_config.presentation});
+}
+
+/// @brief UI が適用完了まで追加の操作を保留できるようにする
+bool WindowsHost::has_pending_performance_settings() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_pendingSettings.has_value();
+}
+
+/// @brief Frame ID を維持したまま Worker、Graph、表示枠、ImGui Ring を順に再構成する
+Result<void> WindowsHost::apply_pending_settings()
+{
+    const auto settings = *m_pendingSettings;
+    const bool rebuildsGraph = settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
+                                settings.presentation != m_config.presentation;
+    auto paused = m_state->runtime->pause();
+    if (!paused.has_value())
+    {
+        return paused;
+    }
+    if (rebuildsGraph)
+    {
+        auto stopped = m_state->graph->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_state->graph.reset();
+        m_state->gpuFrames.reset();
+        auto handle = borrow_windows_window_handle(*m_state->window);
+        if (!handle.has_value())
+        {
+            return Result<void>::failure(*handle.try_error());
+        }
+        dx12::DX12SwapChainConfig swap;
+        swap.width = m_state->requestedSize.width;
+        swap.height = m_state->requestedSize.height;
+        swap.bufferCount = settings.presentation.bufferCount;
+        swap.isVSyncEnabled = settings.presentation.isVSyncEnabled;
+        swap.isTearingAllowed = settings.presentation.isTearingAllowed;
+        swap.isWaitableEnabled = settings.presentation.isWaitableEnabled;
+        swap.maxQueuedFrames = settings.presentation.maxQueuedFrames;
+        auto replaced = m_state->dx12Backend->replace_swap_chain(*handle.try_value(), swap);
+        if (!replaced.has_value())
+        {
+            return replaced;
+        }
+    }
+    if (m_config.callbacks.reconfigureRenderer)
+    {
+        auto configured = m_config.callbacks.reconfigureRenderer(*m_state->backend, settings.frame.maxFramesInFlight,
+                                                                 settings.gpu.resourceFrameCount);
+        if (!configured.has_value())
+        {
+            return configured;
+        }
+    }
+    if (rebuildsGraph)
+    {
+        dx12::DX12MainFrameGraphConfig graphConfig;
+        graphConfig.frameCount = settings.gpu.resourceFrameCount;
+        graphConfig.clearColor = settings.presentation.clearColor;
+        graphConfig.configure = m_config.graph.configure;
+        graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
+        auto graph = dx12::DX12MainFrameGraph::create(*m_state->dx12Backend->get_resource_context(),
+                                                     *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
+        if (!graph.has_value())
+        {
+            return Result<void>::failure(*graph.try_error());
+        }
+        m_state->graph = graph.take_value();
+        m_state->presentationSize = m_state->requestedSize;
+    }
+    // 上限だけ変更する場合も GPU 完了を確認してから古い Completion 所有を捨てる
+    if (!rebuildsGraph && settings.gpu.maxFramesInFlight != m_config.gpu.maxFramesInFlight)
+    {
+        auto *queue = m_state->dx12Backend->get_swap_chain()->graphics_queue();
+        auto completion = queue->signal();
+        if (!completion.has_value())
+        {
+            return Result<void>::failure(*completion.try_error());
+        }
+        auto waited = queue->wait_for_fence(*completion.try_value());
+        if (!waited.has_value())
+        {
+            return waited;
+        }
+        m_state->gpuFrames.reset();
+    }
+    if (!m_state->gpuFrames)
+    {
+        m_state->gpuFrames = std::make_unique<GpuFrameQueue>(settings.gpu.maxFramesInFlight);
+    }
+    m_state->gpuFrameCount = settings.gpu.resourceFrameCount;
+    auto resumed = m_state->runtime->resume(settings.frame);
+    if (!resumed.has_value())
+    {
+        return resumed;
+    }
+    m_config.frame = settings.frame;
+    m_config.gpu = settings.gpu;
+    m_config.presentation = settings.presentation;
+    m_pendingSettings.reset();
+    m_state->request_resize(m_state->requestedSize);
+    {
+        std::lock_guard lock(m_state->timingMutex);
+        m_state->presentTimings = {};
+        m_state->gpuQueueWaitTimings = {};
+        m_state->peakGpuFrames = 0;
+    }
+    report_log("WindowsHost", "performance settings applied");
+    return Result<void>::success();
 }
 
 /// @brief 実行中だけ CPU Frame の進行を構築 Thread に公開する

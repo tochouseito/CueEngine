@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include <Foundation/Result.h>
@@ -13,6 +15,7 @@
 #include <RHI/FrameExecution.h>
 #include <RHI/Presentation.h>
 #include <WindowsHost/HostLogging.h>
+#include <WindowsHost/PerformanceSettings.h>
 #include <WindowsHost/StoragePaths.h>
 
 namespace cue
@@ -38,6 +41,8 @@ struct WindowsHostCallbacks final
     FrameCallback main;
     // Graph の記録・提出・取消だけを囲む。Present は排他 / Snapshot の借用終了後に実行する
     std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> recordFrame;
+    // CPU / GPU を排出した境界でだけ枠数を変更する。Context の所有は上位 Host に残す
+    std::function<Result<void>(IBackend &, std::uint32_t, std::uint32_t)> reconfigureRenderer;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
@@ -54,6 +59,9 @@ struct WindowsHostConfig final
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
     GpuFrameConfig gpu;
+    PerformanceSettingsPolicy performancePolicy;
+    // 空なら読込を行わない。保存 Root 相対の Schema 付き設定を初期化前に適用する
+    std::string performanceSettingsFile;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -105,6 +113,13 @@ class WindowsHost final
     /// @brief Graph 記録・GPU 完了待機・Present と完了済 GPU Pass の統計を返す
     [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
 
+    /// @brief Owner Thread で設定要求を保存する。UI Callback 内でも呼べる。適用は次の静止境界
+    [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
+    /// @brief 最後に適用できた設定の所有値を返す。Owner Thread 専用
+    [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
+    /// @brief 未適用の要求があるか返す。Owner Thread 専用
+    [[nodiscard]] bool has_pending_performance_settings() const noexcept;
+
     /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
     ///
     /// 構築 Thread から複数回呼べる。最初の Error を返す
@@ -126,5 +141,10 @@ class WindowsHost final
     std::unique_ptr<State> m_state;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
     bool m_isStepping = false;
+    std::optional<PerformanceSettings> m_pendingSettings;
+    bool m_isGraphRebuildable = true;
+
+    /// @brief CPU / GPU を静止してから設定を反映する。失敗後は shutdown する
+    [[nodiscard]] Result<void> apply_pending_settings();
 };
 } // namespace cue

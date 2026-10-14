@@ -114,6 +114,11 @@ public:
     /// @brief Renderer の枠数に合わせた Snapshot 転送を初回 UI 構築前に有効にする
     [[nodiscard]] Result<void> enable_frame_transfer(std::uint32_t a_cpuFrameCount = 0);
 
+    /// @brief CPU / GPU 静止後に枠数を変更する。Context と論理 Frame ID を維持する
+    /// Owner Thread 専用。既存 Snapshot は全消費済みとする。失敗時は Host を停止する
+    [[nodiscard]] Result<void> reconfigure_renderer(IBackend &a_backend, std::uint32_t a_cpuFrames,
+                                                    std::uint32_t a_gpuFrames);
+
     /// @brief Owner Thread で閉じた UI Frame を複製し、単調増加する Frame ID で公開する
     ///
     /// Texture 更新は旧 Snapshot の回収まで取消可能に待つ。満杯 / 二重公開は状態を変えず拒否する

@@ -235,15 +235,27 @@ int test_window_lifecycle()
         return 4;
     }
 
-    auto stepResult = host.step();
-    if (!stepResult.has_value() || !*stepResult.try_value())
+    // 表示 / GPU 枠が未準備なら step は Pump へ戻る。Frame 完了数で進行を検証する
+    const auto frameDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < frameDeadline)
     {
-        return 5;
+        auto current = host.frame_progress();
+        if (!current.has_value())
+        {
+            return 8;
+        }
+        if (current.try_value()->renderedFrames >= 2)
+        {
+            break;
+        }
+        auto stepResult = host.step();
+        if (!stepResult.has_value() || !*stepResult.try_value())
+        {
+            return 5;
+        }
     }
-    // 構成した単一 Thread の Frame 進行を Host から確認する
-    auto secondStepResult = host.step();
     auto progressResult = host.frame_progress();
-    if (!secondStepResult.has_value() || !*secondStepResult.try_value() || !progressResult.has_value() ||
+    if (!progressResult.has_value() ||
         progressResult.try_value()->renderedFrames != 2 || mainCalls != 2)
     {
         return 8;

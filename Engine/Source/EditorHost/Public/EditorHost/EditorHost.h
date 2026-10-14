@@ -26,6 +26,9 @@ struct EditorHostConfig final
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
     GpuFrameConfig gpu;
+    PerformanceSettingsPolicy performancePolicy;
+    // 空なら性能設定の保存 / 自動読込を無効にする
+    std::string performanceSettingsFile = "editor/Performance.cfg";
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
@@ -70,6 +73,17 @@ class EditorHost final
     /// @brief UI 構築前に取得した Graph / Present / GPU 計測を返す。Callback 内でも Graph Lock を取得しない
     [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
 
+    /// @brief ゲームの公開範囲を検証して Main 境界での適用を要求する。UI Callback 内も可
+    [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
+    /// @brief 適用済み設定の所有値を返す。Owner Thread 専用
+    [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
+    /// @brief 実行中に適用済みの構成だけを保存する。適用待ちの間は拒否する
+    [[nodiscard]] Result<void> save_performance_settings();
+    /// @brief 保存値を検証して適用要求を出す。読込失敗では実行中の設定を維持する
+    [[nodiscard]] Result<void> load_performance_settings();
+    /// @brief 要求の適用待ちを Owner Thread へ返す
+    [[nodiscard]] bool has_pending_performance_settings() const noexcept;
+
     /// @brief 確定済み UI Frame の描画数と入力 Capture を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiFrameInfo> ui_frame_info() const;
 
@@ -94,6 +108,9 @@ class EditorHost final
     /// @brief 表示 Pass 未指定時に Manager を借用する ImGuiPass を生成する
     [[nodiscard]] MainFrameGraphConfig prepare_graph(MainFrameGraphConfig a_config);
 
+    /// @brief 公開範囲と要求 / 適用状態を既定 UI に表示する
+    [[nodiscard]] Result<void> build_performance_settings_ui();
+
     ImGuiManagerConfig m_imguiConfig;
     editorUiCallback m_buildUi;
     std::thread::id m_ownerId;
@@ -102,6 +119,11 @@ class EditorHost final
     MainFrameGraphPerformance m_graphPerformance;
     FrameTimingInfo m_frameTiming;
     ImGuiTimingInfo m_uiTiming;
+    PerformanceSettingsPolicy m_performancePolicy;
+    std::string m_performanceSettingsFile;
+    std::optional<PerformanceSettings> m_settingsDraft;
+    std::string m_settingsError;
+    bool m_savesAfterApply = false;
     // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
     std::unique_ptr<ImGuiManager> m_imgui;
     WindowsHost m_windows;

@@ -1,5 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
+#include <algorithm>
 #include <chrono>
 #include <new>
 #include <utility>
@@ -114,10 +115,14 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                                  : editorUiCallback{[this]() -> Result<void>
                                                     {
                                                         // UI 開始前に取得した同じ計測 Snapshot で FPS と区間を表示する
-                                                        return build_test_window(m_frameTiming, m_uiTiming,
-                                                                                 m_graphPerformance);
+                                                        auto result = build_test_window(m_frameTiming, m_uiTiming,
+                                                                                        m_graphPerformance);
+                                                        return result.has_value() ? build_performance_settings_ui()
+                                                                                  : std::move(result);
                                                     }}),
       m_ownerId(std::this_thread::get_id()),
+      m_performancePolicy(a_config.performancePolicy),
+      m_performanceSettingsFile(a_config.performanceSettingsFile),
       m_windows({std::move(a_config.window),
                  a_config.frame,
                  a_config.presentation,
@@ -132,11 +137,15 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   },
                   [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); },
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
-                  { return m_imgui->render_frame(a_frame, a_token, a_record); }},
+                  { return m_imgui->render_frame(a_frame, a_token, a_record); },
+                  [this](IBackend &a_backend, std::uint32_t a_cpuFrames, std::uint32_t a_gpuFrames)
+                  { return m_imgui->reconfigure_renderer(a_backend, a_cpuFrames, a_gpuFrames); }},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
                  a_config.logging,
-                 a_config.gpu})
+                 a_config.gpu,
+                 a_config.performancePolicy,
+                 a_config.performanceSettingsFile})
 {
 }
 
@@ -311,6 +320,12 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
     {
         return Result<void>::success();
     }
+    if (m_savesAfterApply && !m_windows.has_pending_performance_settings())
+    {
+        m_savesAfterApply = false;
+        auto saved = save_performance_settings();
+        m_settingsError = saved.has_value() ? std::string{} : saved.try_error()->operation;
+    }
     // Render は Graph Lock から ImGui Context を借りるため、逆順で同時に保持しない
     // 計測 Snapshot を UI 開始前に取得し、Callback 内では所有値だけを表示する
     auto graphPerformance = m_windows.graph_performance();
@@ -342,5 +357,190 @@ Result<void> EditorHost::shutdown_ui()
         m_imgui.reset();
     }
     return result;
+}
+/// @brief 検証済み要求を下位 Host へ渡し、UI 構築中に Worker を停止しない
+Result<void> EditorHost::request_performance_settings(PerformanceSettings a_settings)
+{
+    return m_windows.request_performance_settings(a_settings);
+}
+
+/// @brief 下位 Host の適用済み設定だけを参照する
+Result<PerformanceSettings> EditorHost::performance_settings() const
+{
+    return m_windows.performance_settings();
+}
+
+/// @brief 保存対象と実行構成が食い違わないよう適用待ちの保存を拒否する
+Result<void> EditorHost::save_performance_settings()
+{
+    auto settings = m_windows.performance_settings();
+    if (!settings.has_value())
+    {
+        return Result<void>::failure(*settings.try_error());
+    }
+    if (m_performanceSettingsFile.empty() || m_windows.has_pending_performance_settings())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.performance_settings.save"});
+    }
+    auto path = m_windows.storage_paths()->dataRoot.join(m_performanceSettingsFile);
+    return path.has_value() ? cue::save_performance_settings(*m_windows.file_system(), *path.try_value(),
+                                                             *settings.try_value())
+                            : Result<void>::failure(*path.try_error());
+}
+
+/// @brief 保存値を現在の開発者 Policy に照らしてから境界で適用する
+Result<void> EditorHost::load_performance_settings()
+{
+    auto running = m_windows.performance_settings();
+    if (!running.has_value())
+    {
+        return Result<void>::failure(*running.try_error());
+    }
+    if (m_performanceSettingsFile.empty())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.performance_settings.load"});
+    }
+    auto path = m_windows.storage_paths()->dataRoot.join(m_performanceSettingsFile);
+    if (!path.has_value())
+    {
+        return Result<void>::failure(*path.try_error());
+    }
+    auto loaded = cue::load_performance_settings(*m_windows.file_system(), *path.try_value());
+    if (!loaded.has_value())
+    {
+        return Result<void>::failure(*loaded.try_error());
+    }
+    auto requested = request_performance_settings(*loaded.try_value());
+    if (requested.has_value())
+    {
+        m_settingsDraft = *loaded.try_value();
+    }
+    return requested;
+}
+
+/// @brief 適用途中の重複変更を UI が抑制できるようにする
+bool EditorHost::has_pending_performance_settings() const noexcept
+{
+    return m_windows.has_pending_performance_settings();
+}
+
+/// @brief 性能設定の編集値と実行値を分離し、Apply によって変更境界へ要求する
+Result<void> EditorHost::build_performance_settings_ui()
+{
+    auto applied = m_windows.performance_settings();
+    if (!applied.has_value())
+    {
+        return Result<void>::failure(*applied.try_error());
+    }
+    if (!m_settingsDraft)
+    {
+        m_settingsDraft = *applied.try_value();
+    }
+    ImGui::Begin("Test");
+    if (ImGui::CollapsingHeader("Performance settings"))
+    {
+        auto &settings = *m_settingsDraft;
+        auto &frame = settings.frame;
+        auto &gpu = settings.gpu;
+        auto &present = settings.presentation;
+        const bool isPending = m_windows.has_pending_performance_settings();
+        ImGui::Text("Applied: %u FPS / CPU %u / lead %u / GPU %u / GPU limit %u / display queue %u",
+                    applied.try_value()->frame.maxFps, applied.try_value()->frame.maxFramesInFlight,
+                    update_lead_frames(applied.try_value()->frame), applied.try_value()->gpu.resourceFrameCount,
+                    applied.try_value()->gpu.maxFramesInFlight, applied.try_value()->presentation.maxQueuedFrames);
+        ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
+        ImGui::BeginDisabled(isPending || !m_performancePolicy.usersMayEdit);
+        if (ImGui::Button("Balanced"))
+        {
+            settings = performance_preset(PerformancePreset::Balanced);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Low latency"))
+        {
+            settings = performance_preset(PerformancePreset::LowLatency);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Throughput"))
+        {
+            settings = performance_preset(PerformancePreset::Throughput);
+        }
+        // Policy を越える入力は要求時にも検証する。Widget の値だけを信用しない
+        auto slider = [](const char *a_label, std::uint32_t &a_value, int a_min, int a_max)
+        {
+            int value = static_cast<int>(a_value);
+            if (ImGui::SliderInt(a_label, &value, a_min, a_max))
+            {
+                a_value = static_cast<std::uint32_t>(value);
+            }
+        };
+        slider("FPS limit (0: unlimited)", frame.maxFps, m_performancePolicy.allowsUnlimitedFps ? 0 : 1,
+               static_cast<int>(m_performancePolicy.maxFps));
+        ImGui::Checkbox("Worker threads", &frame.useWorkerThreads);
+        slider("CPU snapshots", frame.maxFramesInFlight, 1, static_cast<int>(m_performancePolicy.maxCpuFrames));
+        auto lead = update_lead_frames(frame);
+        slider("Update lead frames", lead, 0, static_cast<int>(std::min(frame.maxFramesInFlight - 1,
+                                                                      m_performancePolicy.maxUpdateLeadFrames)));
+        frame.maxUpdateLeadFrames = lead;
+        slider("GPU resource frames", gpu.resourceFrameCount, 1, static_cast<int>(m_performancePolicy.maxGpuFrames));
+        slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
+        slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
+        slider("Queued presents", present.maxQueuedFrames, 1, static_cast<int>(m_performancePolicy.maxQueuedFrames));
+        if (ImGui::Checkbox("VSync", &present.isVSyncEnabled) && present.isVSyncEnabled)
+        {
+            present.isTearingAllowed = false;
+        }
+        if (ImGui::Checkbox("Allow tearing", &present.isTearingAllowed) && present.isTearingAllowed)
+        {
+            present.isVSyncEnabled = false;
+        }
+        ImGui::Checkbox("Waitable presentation", &present.isWaitableEnabled);
+        int wait = static_cast<int>(frame.waitMode);
+        if (ImGui::Combo("Wait method", &wait, "Sleep\0Sleep + short spin\0"))
+        {
+            frame.waitMode = static_cast<FrameWaitMode>(wait);
+        }
+        int spin = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.spinDuration).count());
+        if (ImGui::SliderInt("Spin (us)", &spin, 0, 5000))
+        {
+            frame.spinDuration = std::chrono::microseconds(spin);
+        }
+        int sync = static_cast<int>(frame.syncMode);
+        if (ImGui::Combo("Synchronization", &sync, "Fixed period\0Presentation ready\0Display prediction\0"))
+        {
+            frame.syncMode = static_cast<FrameSyncMode>(sync);
+        }
+        int slack = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.predictionSlack).count());
+        if (ImGui::SliderInt("Prediction slack (us)", &slack, 0, 100000))
+        {
+            frame.predictionSlack = std::chrono::microseconds(slack);
+        }
+        if (ImGui::Button("Apply"))
+        {
+            auto requested = request_performance_settings(settings);
+            m_settingsError = requested.has_value() ? std::string{} : requested.try_error()->operation;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(m_performanceSettingsFile.empty());
+        if (ImGui::Button("Apply and save"))
+        {
+            auto requested = request_performance_settings(settings);
+            m_savesAfterApply = requested.has_value();
+            m_settingsError = requested.has_value() ? std::string{} : requested.try_error()->operation;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load saved"))
+        {
+            auto loaded = load_performance_settings();
+            m_settingsError = loaded.has_value() ? std::string{} : loaded.try_error()->operation;
+        }
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        if (!m_settingsError.empty())
+        {
+            ImGui::Text("Settings error: %s", m_settingsError.c_str());
+        }
+    }
+    ImGui::End();
+    return Result<void>::success();
 }
 } // namespace cue
