@@ -43,6 +43,10 @@ struct WindowsHostCallbacks final
     std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> recordFrame;
     // CPU / GPU を排出した境界でだけ枠数を変更する。Context の所有は上位 Host に残す
     std::function<Result<void>(IBackend &, std::uint32_t, std::uint32_t)> reconfigureRenderer;
+    // 固定ゲーム更新。Update Thread から呼ぶ。既存 update は Frame ごとの抽出処理に使う
+    simulationCallback simulationUpdate;
+    // 更新した World の前後状態と補間係数を描画 Snapshot へ複製する
+    frameSnapshotCallback prepareFrame;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
@@ -62,6 +66,7 @@ struct WindowsHostConfig final
     PerformanceSettingsPolicy performancePolicy;
     // 空なら読込を行わない。保存 Root 相対の Schema 付き設定を初期化前に適用する
     std::string performanceSettingsFile;
+    SimulationConfig simulation;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -121,6 +126,10 @@ class WindowsHost final
     [[nodiscard]] Result<PerformanceSettingsStatus> performance_settings_status() const;
     /// @brief 未適用の要求があるか返す。Owner Thread 専用
     [[nodiscard]] bool has_pending_performance_settings() const noexcept;
+    /// @brief 開発者が更新周期を変更する。ユーザーの FPS 設定と独立し、CPU 静止境界で適用する
+    [[nodiscard]] Result<void> request_simulation_config(SimulationConfig a_config);
+    /// @brief Owner Thread へ確定 Frame の更新 / 補間情報を所有値で返す
+    [[nodiscard]] Result<FrameSimulationInfo> frame_simulation_info(std::uint64_t a_frame) const;
 
     /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
     ///
@@ -144,6 +153,7 @@ class WindowsHost final
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
     bool m_isStepping = false;
     std::optional<PerformanceSettings> m_pendingSettings;
+    std::optional<SimulationConfig> m_pendingSimulation;
     bool m_isGraphRebuildable = true;
 
     /// @brief CPU / GPU を静止してから設定を反映する。失敗後は shutdown する

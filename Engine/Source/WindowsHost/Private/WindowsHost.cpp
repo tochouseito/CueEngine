@@ -121,6 +121,7 @@ class WindowsHost::State final
     bool isCloseRequested = false;
     bool isDestroyed = false;
     bool hasWindowInitializationStarted = false;
+    bool isSimulationPaused = false;
     mutable std::mutex timingMutex;
     TimingSamples presentTimings;
     std::unique_ptr<GpuFrameQueue> gpuFrames;
@@ -138,7 +139,7 @@ class WindowsHost::State final
     void request_resize(WindowSize a_size)
     {
         requestedSize = a_size;
-        isPresentationSuspended.store(a_size.width == 0 || a_size.height == 0 ||
+        isPresentationSuspended.store(isSimulationPaused || a_size.width == 0 || a_size.height == 0 ||
                                       a_size.width != presentationSize.width ||
                                       a_size.height != presentationSize.height);
     }
@@ -341,7 +342,9 @@ Result<void> WindowsHost::initialize()
 
     // FrameController の許容先行数と Flip Model の最小 BackBuffer 数を表示前に検証する
     auto settingsResult = validate_performance_settings({m_config.frame, m_config.gpu, m_config.presentation});
-    if (!settingsResult.has_value())
+    auto simulationResult = validate_simulation_config(m_config.simulation);
+    if (!settingsResult.has_value() || !simulationResult.has_value() ||
+        (m_config.simulation.frequencyHz != 0 && !m_config.callbacks.simulationUpdate))
     {
         // Graph 生成前の入力失敗でも Host が受け取った Pass を残さない
         m_config.graph = {};
@@ -531,7 +534,7 @@ Result<void> WindowsHost::initialize()
     m_state->services = servicesResult.take_value();
 
     m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
-                                                 *m_state->services.threadFactory);
+                                                 *m_state->services.threadFactory, m_config.simulation);
     State *state = m_state.get();
     m_state->gpuFrameCount = m_config.gpu.resourceFrameCount;
     m_state->isPredictionEnabled = m_config.presentation.isVSyncEnabled;
@@ -544,8 +547,7 @@ Result<void> WindowsHost::initialize()
     }
     auto runtimeResult = m_state->runtime->initialize(
         std::move(update),
-        [state, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex,
-                                                                          std::stop_token a_stopToken)
+        [state, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
         { return state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame); },
         m_config.callbacks.main,
         {[state](std::stop_token a_token, bool a_isNonBlocking)
@@ -567,7 +569,8 @@ Result<void> WindowsHost::initialize()
              const auto intervals = (now - timing.lastRefresh) / timing.refreshInterval + 1;
              return timing.lastRefresh + timing.refreshInterval * intervals;
          },
-         [state]() { return state->dx12Backend->get_swap_chain()->is_waitable_enabled(); }});
+         [state]() { return state->dx12Backend->get_swap_chain()->is_waitable_enabled(); }},
+        m_config.callbacks.simulationUpdate, m_config.callbacks.prepareFrame);
     if (!runtimeResult.has_value())
     {
         return rollback(*runtimeResult.try_error());
@@ -631,6 +634,10 @@ Result<bool> WindowsHost::step()
         else if (event.type == WindowEventType::Minimized || event.type == WindowEventType::Resized ||
                  event.type == WindowEventType::Restored)
         {
+            if (event.type == WindowEventType::Minimized || event.clientSize.width == 0 || event.clientSize.height == 0)
+            {
+                m_state->isSimulationPaused = true;
+            }
             // 最新寸法にまとめ、既に投入済みの Frame は Snapshot を回収しながら完了させる
             m_state->request_resize(event.clientSize);
         }
@@ -699,11 +706,18 @@ Result<bool> WindowsHost::step()
             return Result<bool>::success(true);
         }
         // CPU 側が静止した後にだけ GPU 完了を待つ。ImGui の Context 排他は保持しない
+        if (m_state->isSimulationPaused)
+        {
+            // 最小化中の時間は更新に足さず、Worker 寿命と Snapshot ID は維持する
+            m_state->runtime->reset_simulation_sample_time();
+            m_state->isSimulationPaused = false;
+        }
         auto resizeResult = m_state->prepare_presentation();
         if (!resizeResult.has_value())
         {
             return Result<bool>::failure(*resizeResult.try_error());
         }
+        m_state->request_resize(m_state->requestedSize);
         // GPU / Resize 待機中の入力も次の Pump で反映してから UI を再開する
         return Result<bool>::success(true);
     }
@@ -811,6 +825,14 @@ Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() con
                                       has_pending_performance_settings()};
     status.effective.frame.maxUpdateLeadFrames = update_lead_frames(status.requested.frame);
     status.effective.frame.syncMode = progress.try_value()->effectiveSyncMode;
+    const auto period = status.requested.frame.maxFps
+                            ? std::chrono::nanoseconds((1'000'000'000ULL + status.requested.frame.maxFps - 1) /
+                                                        status.requested.frame.maxFps)
+                            : std::chrono::nanoseconds::zero();
+    status.effective.frame.spinDuration = status.requested.frame.useWorkerThreads &&
+                                                 status.requested.frame.waitMode == FrameWaitMode::Hybrid
+                                             ? std::min(status.requested.frame.spinDuration, period / 8)
+                                             : std::chrono::nanoseconds::zero();
     status.effective.presentation.isTearingAllowed = m_state->dx12Backend->get_swap_chain()->is_tearing_enabled();
     status.effective.presentation.isWaitableEnabled = m_state->dx12Backend->get_swap_chain()->is_waitable_enabled();
     return Result<PerformanceSettingsStatus>::success(status);
@@ -902,7 +924,7 @@ Result<void> WindowsHost::apply_pending_settings()
     }
     m_state->gpuFrameCount = settings.gpu.resourceFrameCount;
     m_state->isPredictionEnabled = settings.presentation.isVSyncEnabled;
-    auto resumed = m_state->runtime->resume(settings.frame);
+    auto resumed = m_state->runtime->resume(settings.frame, m_pendingSimulation);
     if (!resumed.has_value())
     {
         return resumed;
@@ -910,7 +932,13 @@ Result<void> WindowsHost::apply_pending_settings()
     m_config.frame = settings.frame;
     m_config.gpu = settings.gpu;
     m_config.presentation = settings.presentation;
+    if (m_pendingSimulation)
+    {
+        m_config.simulation = *m_pendingSimulation;
+        m_pendingSimulation.reset();
+    }
     m_pendingSettings.reset();
+    m_state->isSimulationPaused = false;
     m_state->request_resize(m_state->requestedSize);
     {
         std::lock_guard lock(m_state->timingMutex);
@@ -1125,5 +1153,43 @@ Result<void> WindowsHost::shutdown()
     }
     m_state.reset();
     return failure ? Result<void>::failure(*failure) : Result<void>::success();
+}
+/// @brief ゲーム更新の方針は性能設定 Policy / 保存値から独立して変更する
+Result<void> WindowsHost::request_simulation_config(SimulationConfig a_config)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.simulation_config"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.simulation_config"});
+    }
+    auto valid = validate_simulation_config(a_config);
+    if (!valid.has_value() || (a_config.frequencyHz != 0 && !m_config.callbacks.simulationUpdate))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.simulation_config"});
+    }
+    m_pendingSimulation = a_config;
+    if (!m_pendingSettings)
+    {
+        m_pendingSettings = PerformanceSettings{m_config.frame, m_config.gpu, m_config.presentation};
+    }
+    m_state->runtime->request_drain();
+    return Result<void>::success();
+}
+
+/// @brief Render Frame に対応する確定 Tick と補間値を Owner Thread へ返す
+Result<FrameSimulationInfo> WindowsHost::frame_simulation_info(std::uint64_t a_frame) const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameSimulationInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.simulation_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.simulation_info"});
+    }
+    return m_state->runtime->simulation_info(a_frame);
 }
 } // namespace cue

@@ -9,9 +9,15 @@ class Completion final : public cue::ICommandCompletion
     bool isDone = false;
     bool hasFailed = false;
     /// @brief 集約先の Queue 種類を返す
-    cue::QueueType type() const noexcept override { return cue::QueueType::Graphics; }
+    cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
     /// @brief Test の完了状態を返す
-    bool is_complete() const noexcept override { return isDone; }
+    bool is_complete() const noexcept override
+    {
+        return isDone;
+    }
     /// @brief Device Lost を未完了と混同させない
     cue::Result<bool> completion_status() const override
     {
@@ -34,7 +40,13 @@ int main()
     if (!queue.submitted(first).has_value() || queue.pending() != 1)
         return 1;
     bool waited = false;
-    auto available = queue.wait_for_slot([&]() { waited = true; first->isDone = true; }, []() { return false; });
+    auto available = queue.wait_for_slot(
+        [&]()
+        {
+            waited = true;
+            first->isDone = true;
+        },
+        []() { return false; });
     if (!available.has_value() || !*available.try_value() || !waited || queue.pending() != 0)
         return 2;
     auto second = std::make_shared<Completion>();

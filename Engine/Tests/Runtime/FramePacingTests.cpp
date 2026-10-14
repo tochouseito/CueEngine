@@ -25,10 +25,11 @@ int test_plan()
     using namespace std::chrono_literals;
     const auto now = std::chrono::steady_clock::time_point(10ms);
     const auto fixed = now + 5ms;
-    for (const auto prediction : {std::optional<std::chrono::steady_clock::time_point>{},
-                                  std::optional{now}, std::optional{now + 1s}})
+    for (const auto prediction :
+         {std::optional<std::chrono::steady_clock::time_point>{}, std::optional{now}, std::optional{now + 1s}})
     {
-        const auto plan = cue::plan_frame_cycle(cue::FrameSyncMode::DisplayPrediction, fixed, now, prediction, 1ms, true);
+        const auto plan =
+            cue::plan_frame_cycle(cue::FrameSyncMode::DisplayPrediction, fixed, now, prediction, 1ms, true);
         if (plan.effectiveMode != cue::FrameSyncMode::FixedPeriod || plan.deadline != fixed ||
             plan.fallback != cue::FrameSyncFallback::DisplayTimingUnavailable)
         {
@@ -60,14 +61,28 @@ int test_single_notification()
     cue::FrameControllerDesc config{1, false, 0};
     config.syncMode = cue::FrameSyncMode::DisplayPrediction;
     config.predictionSlack = 1ms;
-    cue::FrameController controller(config, clock, *services.waiter, *services.threadFactory,
-        [&](std::uint64_t, std::stop_token) { clock.time += 2ms; return cue::Result<void>::success(); },
-        [&](std::uint64_t, std::stop_token) { clock.time += 3ms; return cue::Result<void>::success(); });
-    if (!controller.register_pacing_source({[&](std::stop_token, bool a_nonBlocking)
+    cue::FrameController controller(
+        config, clock, *services.waiter, *services.threadFactory,
+        [&](std::uint64_t, std::stop_token)
         {
-            return a_nonBlocking ? cue::Result<bool>::success(isPresentationReady)
-                                 : cue::Result<bool>::failure({cue::ErrorCategory::InvalidState, "Test.blocking_main"});
-        }, [&]() { return std::optional{std::chrono::steady_clock::time_point(20ms)}; }}).has_value() ||
+            clock.time += 2ms;
+            return cue::Result<void>::success();
+        },
+        [&](std::uint64_t, std::stop_token)
+        {
+            clock.time += 3ms;
+            return cue::Result<void>::success();
+        });
+    if (!controller
+             .register_pacing_source({[&](std::stop_token, bool a_nonBlocking)
+                                      {
+                                          return a_nonBlocking
+                                                     ? cue::Result<bool>::success(isPresentationReady)
+                                                     : cue::Result<bool>::failure(
+                                                           {cue::ErrorCategory::InvalidState, "Test.blocking_main"});
+                                      },
+                                      [&]() { return std::optional{std::chrono::steady_clock::time_point(20ms)}; }})
+             .has_value() ||
         !controller.start().has_value() || !controller.advance().has_value())
     {
         return 2;
@@ -92,11 +107,44 @@ int test_single_notification()
     }
     return 0;
 }
+/// @brief Message Pump / 表示枠の待ちで採用が遅れても、古い FPS 期限で次 Frame を連続投入しない
+int test_delayed_admission()
+{
+    using namespace std::chrono_literals;
+    auto servicesResult = cue::create_windows_thread_services();
+    if (!servicesResult.has_value())
+    {
+        return 1;
+    }
+    auto services = servicesResult.take_value();
+    ManualClock clock;
+    auto callback = [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); };
+    cue::FrameController controller({1, false, 60}, clock, *services.waiter, *services.threadFactory, callback,
+                                    callback);
+    if (!controller.start().has_value() || !controller.advance().has_value())
+    {
+        return 2;
+    }
+    clock.time = std::chrono::steady_clock::time_point(20ms);
+    auto available = controller.wait_for_frame();
+    clock.time = std::chrono::steady_clock::time_point(80ms);
+    auto delayed = controller.advance();
+    auto next = controller.wait_for_frame();
+    return available.has_value() && *available.try_value() && delayed.has_value() && *delayed.try_value() &&
+                   next.has_value() && !*next.try_value() && controller.stop().has_value()
+               ? 0
+               : 3;
+}
 } // namespace
 
 /// @brief 予測の Fallback と非待機通知の同期契約を確認する
 int main()
 {
     const auto plan = test_plan();
-    return plan ? plan : test_single_notification();
+    if (plan)
+    {
+        return plan;
+    }
+    const auto notification = test_single_notification();
+    return notification ? notification : test_delayed_admission();
 }

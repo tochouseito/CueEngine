@@ -19,7 +19,11 @@ void Runtime::request_drain()
 /// @brief GPU の再構成より前に Worker の借用を止める
 Result<void> Runtime::pause()
 {
-    if (std::this_thread::get_id() != m_ownerId || m_isStepping || m_lifecycle != Lifecycle::Running)
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "Runtime.pause"});
+    }
+    if (m_isStepping || m_lifecycle != Lifecycle::Running)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.pause"});
     }
@@ -27,24 +31,33 @@ Result<void> Runtime::pause()
 }
 
 /// @brief 同じ Controller の Callback と Frame ID を継続する
-Result<void> Runtime::resume(FrameControllerDesc a_desc)
+Result<void> Runtime::resume(FrameControllerDesc a_desc, std::optional<SimulationConfig> a_simulation)
 {
-    if (std::this_thread::get_id() != m_ownerId || m_isStepping || m_lifecycle != Lifecycle::Running)
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "Runtime.resume"});
+    }
+    if (m_isStepping || m_lifecycle != Lifecycle::Running)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.resume"});
     }
-    auto result = m_controller->resume(a_desc);
+    auto result = m_controller->resume(a_desc, a_simulation);
     if (result.has_value())
     {
         m_desc = a_desc;
+        if (a_simulation)
+        {
+            m_simulationConfig = *a_simulation;
+        }
     }
     return result;
 }
 
 /// @brief 借用するPlatform Serviceと構築Threadを記録する
-Runtime::Runtime(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter, ThreadFactory& a_threadFactory)
-    : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
-      m_ownerId(std::this_thread::get_id())
+Runtime::Runtime(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
+                 SimulationConfig a_simulation)
+    : m_desc(a_desc), m_simulationConfig(a_simulation), m_clock(a_clock), m_waiter(a_waiter),
+      m_threadFactory(a_threadFactory), m_ownerId(std::this_thread::get_id())
 {
 }
 
@@ -63,7 +76,8 @@ Runtime::~Runtime()
 
 /// @brief Callback登録とWorker開始をまとめて成功・失敗へ確定する
 Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main,
-                                 FramePacingSource a_pacing)
+                                 FramePacingSource a_pacing, simulationCallback a_simulationUpdate,
+                                 frameSnapshotCallback a_snapshot)
 {
     // 借用 Service と Callback の捕捉先を安全に扱うため、構築 Thread に固定する
     if (std::this_thread::get_id() != m_ownerId)
@@ -83,7 +97,13 @@ Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render,
     }
 
     // Service は借用し、Controller だけを Runtime が所有する
-    m_controller = std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory);
+    m_controller = std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory, m_simulationConfig);
+    auto simulation = m_controller->register_simulation_callbacks(std::move(a_simulationUpdate), std::move(a_snapshot));
+    if (!simulation.has_value())
+    {
+        m_controller.reset();
+        return simulation;
+    }
     auto pacing = m_controller->register_pacing_source(std::move(a_pacing));
     if (!pacing.has_value())
     {
@@ -206,5 +226,20 @@ Result<void> Runtime::shutdown()
     auto stopResult = m_controller->stop();
     m_controller.reset();
     return stopResult;
+}
+/// @brief Callback 内は Controller の所有が join まで保証される。外部 Worker からは参照しない
+Result<FrameSimulationInfo> Runtime::simulation_info(std::uint64_t a_frame) const
+{
+    return m_controller
+               ? m_controller->simulation_info(a_frame)
+               : Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "Runtime.simulation_info"});
+}
+/// @brief CPU 排出後の復帰で、時間の正本を更新 Thread に再設定させる
+void Runtime::reset_simulation_sample_time()
+{
+    if (std::this_thread::get_id() == m_ownerId && m_controller)
+    {
+        m_controller->reset_simulation_sample_time();
+    }
 }
 } // namespace cue

@@ -29,6 +29,9 @@ struct EditorHostConfig final
     PerformanceSettingsPolicy performancePolicy;
     // 空なら性能設定の保存 / 自動読込を無効にする
     std::string performanceSettingsFile = "editor/Performance.cfg";
+    SimulationConfig simulation;
+    simulationCallback simulationUpdate;
+    frameSnapshotCallback prepareFrame;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
@@ -85,6 +88,10 @@ class EditorHost final
     [[nodiscard]] Result<void> load_performance_settings();
     /// @brief 要求の適用待ちを Owner Thread へ返す
     [[nodiscard]] bool has_pending_performance_settings() const noexcept;
+    /// @brief 開発者の固定 / 可変更新方針を安全な Frame 境界で変更する
+    [[nodiscard]] Result<void> request_simulation_config(SimulationConfig a_config);
+    /// @brief Render Frame に対応する確定済み補間情報を Owner Thread へ返す
+    [[nodiscard]] Result<FrameSimulationInfo> frame_simulation_info(std::uint64_t a_frame) const;
 
     /// @brief 確定済み UI Frame の描画数と入力 Capture を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiFrameInfo> ui_frame_info() const;
