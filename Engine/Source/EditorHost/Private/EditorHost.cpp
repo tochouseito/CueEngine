@@ -31,8 +31,7 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
 }
 
 /// @brief Main が取得した計測 Snapshot を既定 Test Window に表示する
-[[nodiscard]] Result<void> build_test_window(const FrameProgress &a_progress, const FrameTimingInfo &a_frameTiming,
-                                             const ImGuiTimingInfo &a_uiTiming,
+[[nodiscard]] Result<void> build_test_window(const FrameTimingInfo &a_frameTiming, const ImGuiTimingInfo &a_uiTiming,
                                              const MainFrameGraphPerformance &a_graphPerformance)
 {
     // 初回の位置と寸法だけ指定し、以後の移動と Layout 保存を妨げない
@@ -41,11 +40,13 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
     if (ImGui::Begin("Test"))
     {
         ImGui::Text("TEST");
-        // Render Callback と FPS 上限待機を含む完了間隔を使い、ImGui の UI 構築頻度と区別する
-        const auto interval = std::chrono::duration<double>(a_progress.lastFrameInterval).count();
-        if (a_progress.renderedFrames >= 2 && interval > 0.0)
+        // 開始制限後も Render 完了時刻は揺れるため、直近の平均間隔から完了頻度を求める
+        // 各 Frame の FPS を平均せず、Sample 数 / 合計経過時間と等価な値を使う
+        const auto &intervals = a_frameTiming.frameInterval;
+        const auto interval = std::chrono::duration<double>(intervals.averageDuration).count();
+        if (intervals.sampleCount != 0 && interval > 0.0)
         {
-            ImGui::Text("FrameController FPS: %.1f", 1.0 / interval);
+            ImGui::Text("FrameController FPS: %.1f (avg %zu intervals)", 1.0 / interval, intervals.sampleCount);
         }
         else
         {
@@ -57,6 +58,8 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         show_timing("Main", a_frameTiming.main);
         show_timing("Update", a_frameTiming.update);
         show_timing("Render", a_frameTiming.render);
+        // 平均 FPS だけでは見えない Frame Pacing の揺れを実際の完了間隔で確認する
+        show_timing("Frame interval", intervals);
         show_timing("FPS wait", a_frameTiming.limitWait);
         show_timing("UI build", a_uiTiming.uiBuild);
         show_timing("Snapshot copy", a_uiTiming.snapshotCopy);
@@ -110,15 +113,9 @@ EditorHost::EditorHost(EditorHostConfig a_config)
       m_buildUi(a_config.buildUi ? std::move(a_config.buildUi)
                                  : editorUiCallback{[this]() -> Result<void>
                                                     {
-                                                        // UI の Owner Thread から同期済み Snapshot を取得し、Worker
-                                                        // の可変状態を直接参照しない
-                                                        auto progress = m_windows.frame_progress();
-                                                        if (!progress.has_value())
-                                                        {
-                                                            return Result<void>::failure(*progress.try_error());
-                                                        }
-                                                        return build_test_window(*progress.try_value(), m_frameTiming,
-                                                                                 m_uiTiming, m_graphPerformance);
+                                                        // UI 開始前に取得した同じ計測 Snapshot で FPS と区間を表示する
+                                                        return build_test_window(m_frameTiming, m_uiTiming,
+                                                                                 m_graphPerformance);
                                                     }}),
       m_ownerId(std::this_thread::get_id()),
       m_windows({std::move(a_config.window),

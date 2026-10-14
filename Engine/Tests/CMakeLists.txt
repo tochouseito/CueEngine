@@ -165,7 +165,7 @@ if(WIN32)
     add_test(NAME Cue.Runtime.Windowless COMMAND CueRuntimeTests)
 
     add_executable(CueWindowsHostTests Platform/WindowsHostTests.cpp)
-    target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost)
+    target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost Cue.Platform.Windows)
     add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
     set_tests_properties(Cue.WindowsHost.Lifecycle PROPERTIES TIMEOUT 10)
 

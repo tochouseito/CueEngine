@@ -27,7 +27,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     try
     {
+        // EditorHost の構成を作成する
         cue::EditorHostConfig config;
+
+        // CueEngine の Repository Root を取得する。EditorHost は構成に関係なく Development モードで起動する
         auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
         if (!root.has_value())
         {
@@ -35,9 +38,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             return 1;
         }
         // 製品 Host の既定は Product。Repository の Editor 起動は構成に関係なく Development を選ぶ
-        config.storage.mode = cue::StorageMode::Development;
-        config.storage.repositoryRoot = root.take_value();
-        config.storage.applicationName = "CueEngineEditor";
+        config.storage.mode = cue::StorageMode::Development; // Editor が生成するファイルの保存先
+        config.storage.repositoryRoot = root.take_value();   // CueEngine の Repository Root
+        config.storage.applicationName = "CueEngineEditor"; // アプリケーション名
+
+        // EditorHost を生成し、Window と Renderer を初期化する
         cue::EditorHost host(std::move(config));
         auto initResult = host.initialize();
         if (!initResult.has_value())

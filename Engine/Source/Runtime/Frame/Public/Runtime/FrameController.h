@@ -17,12 +17,12 @@
 
 namespace cue
 {
-/// @brief Frameの先行数、Worker利用、Render間隔の上限を指定する
+/// @brief Frame の先行数、Worker 利用、開始頻度の上限を指定する
 struct FrameControllerDesc final
 {
     std::uint32_t maxFramesInFlight = 2;
     bool useWorkerThreads = true;
-    /// Render完了間隔のFPS上限。0は上限なし
+    /// Main / UI 構築前の Frame 開始頻度の FPS 上限。0 は上限なし
     std::uint32_t maxFps = 60;
 };
 
@@ -59,7 +59,7 @@ using FrameCallback = std::function<Result<void>(std::uint64_t, std::stop_token)
 /// @brief Main、Update、RenderのFrame順序とWorker寿命を管理する
 ///
 /// Runtimeが一意所有し、借用するClock、Waiter、ThreadFactoryより先に破棄する
-/// start、advance、stop、破棄は構築Threadでのみ行い、再入しない
+/// start、wait_for_frame、advance、step、stop、破棄は構築 Thread でのみ行い、再入しない
 /// progressはThread-safe。WorkerはWindowや可変Worldを直接参照しない
 class FrameController final
 {
@@ -89,12 +89,19 @@ public:
     /// 失敗時に開始済みWorkerを停止・joinし、再試行可能な開始前状態へ戻す
     [[nodiscard]] Result<void> start();
 
-    /// @brief 空きがあればFrameを1件投入し、投入時はtrueを返す
+    /// @brief 開始時刻と空き枠を短時間待ち、Frame を開始可能なら true を返す
     ///
-    /// Worker構成では待機しない。単一Thread構成ではUpdateとRenderを同期実行する
+    /// 構築 Thread 専用。1 回の待機は最大 1 ms の指定時間と OS の実際の遅延まで
+    /// false でも Host は入力処理を続ける。Callback を実行せず、枠や開始時刻を予約しない
+    /// true の後に入力を処理して advance を呼ぶ。Worker の失敗は Result に返す
+    [[nodiscard]] Result<bool> wait_for_frame();
+
+    /// @brief 開始時刻と空き枠が揃えば Frame を 1 件投入し、投入時は true を返す
+    ///
+    /// FPS / 容量待機は行わない。単一 Thread 構成では Update と Render を同期実行する
     [[nodiscard]] Result<bool> advance();
 
-    /// @brief Frameを進め、満杯時はWorkerの進行を短時間待つ
+    /// @brief 開始時刻と空き枠を短時間待って Frame を進め、未準備なら false を返す
     [[nodiscard]] Result<bool> step();
 
     /// @brief 停止を要求してWorkerをjoinし、失敗を呼出側へ返す
@@ -123,9 +130,8 @@ public:
     /// @brief 最初のWorker失敗を保存して他の待機Threadを起こす
     void record_failure(Error a_error);
 
-    /// @brief Render完了の間隔を上限FPSに合わせ、停止時は時刻を返さない
-    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
-    wait_for_render_limit(std::stop_token a_stopToken);
+    /// @brief 開始条件と非同期失敗を確認し、FPS による開始待ちの計測点を保持する
+    [[nodiscard]] Result<bool> frame_ready();
 
     FrameControllerDesc m_desc;
     Clock &m_clock;
@@ -142,11 +148,11 @@ public:
     TimingSamples m_renderTimings;
     TimingSamples m_limitTimings;
     TimingSamples m_intervalTimings;
-    // Render の実行 Thread だけが書き、完了公開時に共有 Snapshot へ移す
-    std::chrono::nanoseconds m_lastLimitWaitDuration{};
     std::uint64_t m_nextUpdateFrame = 0;
     std::uint64_t m_nextRenderFrame = 0;
-    std::chrono::steady_clock::time_point m_nextRenderTime{};
+    // 開始期限と待機計測点は構築 Thread だけが更新する。統計は投入時に共有 Lock 内へ移す
+    std::chrono::steady_clock::time_point m_nextFrameTime{};
+    std::optional<std::chrono::steady_clock::time_point> m_limitWaitStarted;
     std::chrono::steady_clock::time_point m_lastRenderCompletion{};
     std::optional<Error> m_failure;
     std::unique_ptr<Thread> m_updateThread;

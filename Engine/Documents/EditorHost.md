@@ -10,6 +10,8 @@ M05-01 / [Issue #77](https://github.com/tochouseito/CueEngine/issues/77) の Edi
 
 EditorHost の既定設定は `CueEngine Editor` / 1280×720、Frame 枠数 2、`useWorkerThreads = true`、上限 60 FPS。UI Context と Window Message は MainThread、Update / Render は Worker で実行する。GPU の非同期実行と CPU Frame の Worker 利用は別の設定であり、単一 CPU Thread でも GPU 完了前に Resource を破棄しない
 
+Frame 開始期限 / 空き枠の短い待機 → 最新 Window Message の処理 → Main の UI 構築 → Update → Render / Present の順に進める。未準備の周回も Message を処理する。FPS 制限は UI 作成前に適用し、Render / Present 後には待機しない。開始頻度と Render 完了間隔の違い、待機の計測契約は [FrameController FPS](FrameControllerFps.md) を参照する
+
 表示 Pass 未指定時は ClearFinalColor / ImGuiPass Graph を使う。ImGui Context と Win32 Backend は Window 生成後、公式 DX12 Backend は SwapChain 生成後に起動する。Editor 内部 Adapter が Manager の公式 GPU 記録を抽象 ImGuiPass に接続する。既定 UI はタイトル Test、本文 TEST の Window 一つ。詳細は [ImGuiPass](ImGuiPass.md) を参照する。Editor Document は未接続
 
 ## UI Frame と入力
@@ -90,7 +92,7 @@ GPU Resize は #59 で接続した。Window Message を処理しながら新規 
 
 #83 の描画 Snapshot 転送と #84 の構成別検証を追加した。現在の結果と未完了項目は [ImGui Completion Gate](ImGuiCompletionGate.md) を参照する。上記の検証記録は各 Issue 実装時点の履歴とする
 
-既定 Test Window には [FrameController FPS](FrameControllerFps.md) を ImGui Text で表示する。FPS は Render 完了間隔の逆数で、ImGui 自身の UI 更新頻度や GPU 完了数を表さない。
+既定 Test Window には [FrameController FPS](FrameControllerFps.md) を ImGui Text で表示する。FPS は直近最大 120 区間の平均 Render 完了間隔の逆数で、ImGui 自身の UI 更新頻度や GPU 完了数を表さない。`Frame interval` の平均・p95・最大で実際の完了間隔の揺れも確認する。
 
 #100 では CPU の Main / Update / Render / FPS 待機 / UI 構築 / Snapshot Copy / ImGui Context Lock 待機 / ImGui 資源 Fence 待機 / Graph 記録 / Graph 枠 Fence 待機 / Present を平均・p95・最大 ms で表示する。集計期間は直近 120 Sample。GPU 各 Pass は完了済み Frame の Timestamp から得た直近 120 Sample の平均・p95・最大を別表示し、CPU 時間や FPS と混同しない
 
