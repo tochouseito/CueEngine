@@ -5,8 +5,10 @@
 #include <Platform/Clock.h>
 #include <Platform/Thread.h>
 #include <Platform/Waiter.h>
+#include <Runtime/FramePacing.h>
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -22,14 +24,6 @@ enum class FrameWaitMode
 {
     Sleep,
     Hybrid,
-};
-
-/// @brief Platform に依存しない Frame 開始の同期方針
-enum class FrameSyncMode
-{
-    FixedPeriod,
-    PresentationReady,
-    DisplayPrediction,
 };
 
 /// @brief Frame の先行数、Worker 利用、開始頻度の上限を指定する
@@ -69,6 +63,8 @@ struct FrameProgress final
     std::chrono::nanoseconds lastFrameInterval{};
     std::chrono::nanoseconds lastLimitWaitDuration{};
     std::chrono::nanoseconds lastCycleInterval{};
+    FrameSyncMode effectiveSyncMode = FrameSyncMode::FixedPeriod;
+    FrameSyncFallback syncFallback = FrameSyncFallback::None;
 };
 
 /// @brief 経過時間と FPS 待機を分け、直近 120 Frame の分布を公開する
@@ -80,6 +76,10 @@ struct FrameTimingInfo final
     TimingStatistics limitWait;
     TimingStatistics frameInterval;
     TimingStatistics cycleInterval;
+    // Main が入力を採取して Frame を採用した時点から測る。物理入力機器の遅延は含まない
+    TimingStatistics inputToRenderStart;
+    TimingStatistics inputToRenderComplete;
+    TimingStatistics presentationWait;
 };
 
 using FrameCallback = std::function<Result<void>(std::uint64_t, std::stop_token)>;
@@ -111,6 +111,9 @@ public:
     /// 任意の Main は投入枠確保後、Worker へ公開する前に構築 Thread で呼ぶ
     [[nodiscard]] Result<void> register_callbacks(FrameCallback a_update, FrameCallback a_render,
                                                   FrameCallback a_main = {});
+
+    /// @brief Host の表示同期機能を開始前に登録する。借用先は停止完了まで有効にする
+    [[nodiscard]] Result<void> register_pacing_source(FramePacingSource a_source);
 
     /// @brief 設定を検証してWorkerを開始する
     ///
@@ -173,6 +176,9 @@ public:
     /// @brief Render 後に周期の残り時間を待ち、停止していなければ次の投入を許可する
     void finish_cycle(std::chrono::steady_clock::time_point a_renderCompletion, std::stop_token a_stopToken);
 
+    /// @brief 要求された同期方針を表示能力と統計に照らして解決する
+    [[nodiscard]] Result<FramePacingPlan> cycle_plan(std::chrono::steady_clock::time_point a_completion);
+
     FrameControllerDesc m_desc;
     Clock &m_clock;
     Waiter &m_waiter;
@@ -189,6 +195,13 @@ public:
     TimingSamples m_limitTimings;
     TimingSamples m_intervalTimings;
     TimingSamples m_cycleTimings;
+    TimingSamples m_inputToRenderStartTimings;
+    TimingSamples m_inputToRenderCompleteTimings;
+    TimingSamples m_presentationWaitTimings;
+    std::array<std::chrono::steady_clock::time_point, 8> m_frameInputTimes{};
+    FramePacingSource m_pacingSource;
+    FramePacingPlan m_singlePlan;
+    std::optional<std::chrono::steady_clock::time_point> m_singleFpsCompletion;
     std::uint64_t m_nextUpdateFrame = 0;
     std::uint64_t m_nextRenderFrame = 0;
     // Worker の周期開始は Render だけが更新する。投入許可は共有 Lock で公開する

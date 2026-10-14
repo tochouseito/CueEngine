@@ -62,7 +62,8 @@ Runtime::~Runtime()
 }
 
 /// @brief Callback登録とWorker開始をまとめて成功・失敗へ確定する
-Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main)
+Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main,
+                                 FramePacingSource a_pacing)
 {
     // 借用 Service と Callback の捕捉先を安全に扱うため、構築 Thread に固定する
     if (std::this_thread::get_id() != m_ownerId)
@@ -83,6 +84,12 @@ Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render,
 
     // Service は借用し、Controller だけを Runtime が所有する
     m_controller = std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory);
+    auto pacing = m_controller->register_pacing_source(std::move(a_pacing));
+    if (!pacing.has_value())
+    {
+        m_controller.reset();
+        return pacing;
+    }
 
     // 登録失敗時は Controller を破棄して停止済みに戻す
     auto registerResult = m_controller->register_callbacks(std::move(a_update), std::move(a_render), std::move(a_main));

@@ -157,6 +157,12 @@ int run_tests()
         {
             return 10;
         }
+        // 表示統計が未対応でも Present API の計数は独立して取得できる
+        const auto timing = swapChain->timing();
+        if (timing.presentCount < sizes.size() + 1 || timing.lastPresent == std::chrono::steady_clock::time_point{})
+        {
+            return 21;
+        }
         if (swapChain->resize(320, 240).has_value() || swapChain->resize(640, 480).has_value())
         {
             return 18;

@@ -29,5 +29,10 @@ struct PresentationTiming final
     std::chrono::steady_clock::time_point lastDisplay;
     std::chrono::nanoseconds refreshInterval{};
     bool hasDisplayTiming = false;
+    // SyncQPCTime は表示 Frame 自体の時刻ではなく、この Refresh の QPC 標本
+    std::chrono::steady_clock::time_point lastRefresh;
+    bool hasRefreshTiming = false;
+    bool isDisplayTimeEstimated = false;
+    std::uint64_t statisticsEpoch = 0;
 };
 } // namespace cue

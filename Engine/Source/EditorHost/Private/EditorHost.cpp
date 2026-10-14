@@ -62,6 +62,10 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         // 平均 FPS だけでは見えない Frame Pacing の揺れを実際の完了間隔で確認する
         show_timing("Frame interval", intervals);
         show_timing("FPS wait", a_frameTiming.limitWait);
+        show_timing("Post-Present readiness wait", a_frameTiming.presentationWait);
+        show_timing("Cycle interval", a_frameTiming.cycleInterval);
+        show_timing("Input sample -> Render start", a_frameTiming.inputToRenderStart);
+        show_timing("Input sample -> CPU Render complete", a_frameTiming.inputToRenderComplete);
         show_timing("UI build", a_uiTiming.uiBuild);
         show_timing("Snapshot copy", a_uiTiming.snapshotCopy);
         show_timing("ImGui lock wait", a_uiTiming.contextWait);
@@ -69,6 +73,14 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         show_timing("Graph record", a_graphPerformance.record);
         show_timing("Graph frame fence wait", a_graphPerformance.frameWait);
         show_timing("Present", a_graphPerformance.present);
+        show_timing("GPU queue limit wait", a_graphPerformance.gpuQueueWait);
+        show_timing("Pre-record readiness wait", a_graphPerformance.presentationReadyWait);
+        show_timing("Present return interval", a_graphPerformance.presentInterval);
+        show_timing("Display interval (DXGI derived)", a_graphPerformance.displayInterval);
+        ImGui::Text("Unfinished GPU frames: %u / peak %u", a_graphPerformance.unfinishedGpuFrames,
+                    a_graphPerformance.peakUnfinishedGpuFrames);
+        ImGui::Text("DXGI display timing: %s", !a_graphPerformance.presentation.hasDisplayTiming ? "unavailable"
+                    : a_graphPerformance.presentation.isDisplayTimeEstimated ? "estimated from refresh" : "QPC sample");
         ImGui::Text("GPU timings (last 120 completed samples)");
         for (const auto &pass : a_graphPerformance.gpuPasses)
         {
@@ -370,6 +382,12 @@ Result<PerformanceSettings> EditorHost::performance_settings() const
     return m_windows.performance_settings();
 }
 
+/// @brief 保存値と実効同期状態を混同せず、下位 Host の所有 Snapshot を返す
+Result<PerformanceSettingsStatus> EditorHost::performance_settings_status() const
+{
+    return m_windows.performance_settings_status();
+}
+
 /// @brief 保存対象と実行構成が食い違わないよう適用待ちの保存を拒否する
 Result<void> EditorHost::save_performance_settings()
 {
@@ -449,6 +467,25 @@ Result<void> EditorHost::build_performance_settings_ui()
                     update_lead_frames(applied.try_value()->frame), applied.try_value()->gpu.resourceFrameCount,
                     applied.try_value()->gpu.maxFramesInFlight, applied.try_value()->presentation.maxQueuedFrames);
         ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
+        auto status = m_windows.performance_settings_status();
+        if (status.has_value())
+        {
+            constexpr const char *k_modes[] = {"Fixed period", "Presentation ready", "Display prediction"};
+            ImGui::Text("Sync requested: %s / effective: %s",
+                        k_modes[static_cast<int>(status.try_value()->requested.frame.syncMode)],
+                        k_modes[static_cast<int>(status.try_value()->effective.frame.syncMode)]);
+            if (status.try_value()->syncFallback != FrameSyncFallback::None)
+            {
+                ImGui::TextUnformatted(status.try_value()->syncFallback == FrameSyncFallback::DisplayTimingUnavailable
+                                           ? "Fallback: display statistics unavailable, stale, or discontinuous"
+                                           : "Fallback: waitable presentation unavailable");
+            }
+            if (status.try_value()->requested.presentation.isTearingAllowed &&
+                !status.try_value()->effective.presentation.isTearingAllowed)
+            {
+                ImGui::TextUnformatted("Tearing requested but unsupported by DXGI");
+            }
+        }
         ImGui::BeginDisabled(isPending || !m_performancePolicy.usersMayEdit);
         if (ImGui::Button("Balanced"))
         {

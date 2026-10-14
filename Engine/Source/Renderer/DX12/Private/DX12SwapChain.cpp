@@ -70,6 +70,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         result->m_viewManager = &viewManager;
         result->m_queue = std::move(a_queue);
         result->m_config = a_config;
+        result->m_window = static_cast<HWND>(a_windowHandle);
         result->m_isTearingEnabled = isTearingEnabled;
         result->m_backBuffers.reserve(a_config.bufferCount);
         result->m_rtvHandles.reserve(a_config.bufferCount);
@@ -204,6 +205,9 @@ Result<void> DX12SwapChain::present()
     if (SUCCEEDED(result))
     {
         m_hasFramePermit = false;
+        ++m_timing.presentCount;
+        m_timing.lastPresent = std::chrono::steady_clock::now();
+        update_timing();
     }
     return FAILED(result) ? Result<void>::failure(swap_chain_error("IDXGISwapChain.Present", result))
                           : Result<void>::success();
@@ -255,6 +259,94 @@ bool DX12SwapChain::is_waitable_enabled() const noexcept
     return m_frameLatencyEvent != nullptr;
 }
 
+/// @brief 呼出側が共有 Lock を持つ Snapshot へ複製できる値だけ返す
+PresentationTiming DX12SwapChain::timing() const noexcept
+{
+    return m_timing;
+}
+
+/// @brief 二つの Refresh 標本から周期を求め、表示時刻の推定と QPC 標本を区別する
+void DX12SwapChain::update_timing()
+{
+    const auto monitor = MonitorFromWindow(m_window, MONITOR_DEFAULTTONEAREST);
+    if (monitor != m_monitor)
+    {
+        m_monitor = monitor;
+        m_previousStatistics.reset();
+        m_timing.refreshInterval = {};
+        ++m_timing.statisticsEpoch;
+    }
+    m_timing.hasRefreshTiming = false;
+    m_timing.hasDisplayTiming = false;
+    DXGI_FRAME_STATISTICS statistics{};
+    if (FAILED(m_swapChain->GetFrameStatistics(&statistics)) || statistics.SyncQPCTime.QuadPart <= 0)
+    {
+        // Disjoint / 未対応を成功した表示時刻として扱わず、予測器の履歴も捨てる
+        m_previousStatistics.reset();
+        m_timing.refreshInterval = {};
+        ++m_timing.statisticsEpoch;
+        return;
+    }
+    LARGE_INTEGER frequency{}, nowTicks{};
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 || !QueryPerformanceCounter(&nowTicks))
+    {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto age = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<long double>(
+        static_cast<long double>(nowTicks.QuadPart - statistics.SyncQPCTime.QuadPart) / frequency.QuadPart));
+    if (age < std::chrono::nanoseconds::zero() || age > std::chrono::milliseconds(250))
+    {
+        m_previousStatistics.reset();
+        m_timing.refreshInterval = {};
+        return;
+    }
+    if (m_previousStatistics)
+    {
+        const auto &previous = *m_previousStatistics;
+        if (statistics.SyncRefreshCount > previous.SyncRefreshCount &&
+            statistics.SyncQPCTime.QuadPart > previous.SyncQPCTime.QuadPart)
+        {
+            const auto refreshes = statistics.SyncRefreshCount - previous.SyncRefreshCount;
+            const auto interval = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<long double>(static_cast<long double>(statistics.SyncQPCTime.QuadPart -
+                                                                           previous.SyncQPCTime.QuadPart) /
+                                                    frequency.QuadPart / refreshes));
+            if (interval >= std::chrono::milliseconds(2) && interval <= std::chrono::milliseconds(100))
+            {
+                m_timing.refreshInterval = interval;
+            }
+            else
+            {
+                m_timing.refreshInterval = {};
+            }
+        }
+        else if (statistics.SyncRefreshCount < previous.SyncRefreshCount ||
+                 statistics.SyncQPCTime.QuadPart < previous.SyncQPCTime.QuadPart)
+        {
+            m_timing.refreshInterval = {};
+            ++m_timing.statisticsEpoch;
+        }
+    }
+    m_previousStatistics = statistics;
+    m_timing.lastRefresh = now - age;
+    m_timing.hasRefreshTiming = m_timing.refreshInterval > std::chrono::nanoseconds::zero();
+    m_timing.displayedPresentCount = statistics.PresentCount;
+    if (m_timing.hasRefreshTiming && statistics.PresentCount != 0)
+    {
+        const auto refreshOffset = static_cast<std::int64_t>(statistics.PresentRefreshCount) -
+                                   static_cast<std::int64_t>(statistics.SyncRefreshCount);
+        // 同じ VBlank の場合だけ直接標本。同じでない場合は一定 Refresh の推定であることを公開する
+        const auto display = m_timing.lastRefresh + m_timing.refreshInterval * refreshOffset;
+        if (display <= now && now - display <= std::chrono::milliseconds(250))
+        {
+            m_timing.lastDisplay = display;
+            m_timing.hasDisplayTiming = true;
+            m_timing.isDisplayTimeEstimated = refreshOffset != 0;
+        }
+    }
+}
+
 /// @brief Graph が借用を解除した後に、同じ Native SwapChain の表示枠だけを更新する
 Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height)
 {
@@ -297,6 +389,11 @@ Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height
     }
     m_config.width = a_width;
     m_config.height = a_height;
+    m_previousStatistics.reset();
+    m_timing.hasRefreshTiming = false;
+    m_timing.hasDisplayTiming = false;
+    m_timing.refreshInterval = {};
+    ++m_timing.statisticsEpoch;
     try
     {
         return acquire_buffers();

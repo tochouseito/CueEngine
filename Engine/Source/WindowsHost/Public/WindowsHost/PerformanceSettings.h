@@ -32,6 +32,15 @@ struct PerformanceSettingsPolicy final
     bool allowsUnlimitedFps = true;
 };
 
+/// @brief 保存する要求値と Native 能力 / 実効同期による適用値を区別する
+struct PerformanceSettingsStatus final
+{
+    PerformanceSettings requested;
+    PerformanceSettings effective;
+    FrameSyncFallback syncFallback = FrameSyncFallback::None;
+    bool isPending = false;
+};
+
 enum class PerformancePreset
 {
     Balanced,
