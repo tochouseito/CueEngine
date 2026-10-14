@@ -84,6 +84,12 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     [[nodiscard]] Result<bool> execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
                                        std::function<bool()> a_shouldCancel = {});
 
+    /// @brief 直近の正常提出が合流した GPU 完了点を所有参照として返す。execute と同じ直列 Thread で呼ぶ
+    [[nodiscard]] std::shared_ptr<ICommandCompletion> submitted_completion() const noexcept
+    {
+        return m_latestCompletion;
+    }
+
     /// @brief 提出の GPU 完了点を枠へ登録する
     [[nodiscard]] Result<void> mark_submitted(std::uint32_t a_frameIndex,
                                               std::shared_ptr<ICommandCompletion> a_completion) override;
@@ -153,5 +159,6 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     std::array<float, 4> m_clearColor{};
     std::uint32_t m_frameCount = 0;
     bool m_hasOneShotDisplayPass = false;
+    std::shared_ptr<ICommandCompletion> m_latestCompletion;
 };
 } // namespace cue::dx12

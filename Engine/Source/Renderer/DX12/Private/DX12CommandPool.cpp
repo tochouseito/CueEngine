@@ -153,6 +153,16 @@ public:
     }
 
     /// @brief この Token が保持する Fence の完了を待つ
+    [[nodiscard]] Result<bool> completion_status() const override
+    {
+        const auto completed = m_fence->GetCompletedValue();
+        if (completed == (std::numeric_limits<std::uint64_t>::max)())
+            return Result<bool>::failure(command_error("DX12CommandCompletion.status.device",
+                                                        m_device->GetDeviceRemovedReason()));
+        return Result<bool>::success(m_value != 0 && completed >= m_value);
+    }
+
+    /// @brief この Token が保持する Fence の完了を待つ
     [[nodiscard]] Result<void> wait() override
     {
         return wait_for_fence(m_fence.Get(), m_device.Get(), m_value);

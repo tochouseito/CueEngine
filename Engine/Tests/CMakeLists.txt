@@ -45,6 +45,11 @@ add_executable(CueRHIQueueHeaderCompile Renderer/RHIQueueHeaderCompile.cpp)
 target_link_libraries(CueRHIQueueHeaderCompile PRIVATE Cue.Renderer.RHI)
 add_test(NAME Cue.Renderer.RHI.QueueHeader COMMAND CueRHIQueueHeaderCompile)
 
+# GPU への先行数、取消と Device Lost を Native Device なしで確認する
+add_executable(CueGpuFrameQueueTests Renderer/GpuFrameQueueTests.cpp)
+target_link_libraries(CueGpuFrameQueueTests PRIVATE Cue.Renderer.RHI)
+add_test(NAME Cue.Renderer.RHI.GpuFrameQueue COMMAND CueGpuFrameQueueTests)
+
 # Pass の依存関係と論理 Resource 寿命を Backend なしで検証する
 add_executable(CueFrameGraphBuilderTests Renderer/FrameGraphBuilderTests.cpp)
 target_link_libraries(CueFrameGraphBuilderTests PRIVATE Cue.Renderer.FrameGraph)

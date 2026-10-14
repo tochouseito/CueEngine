@@ -398,6 +398,8 @@ Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, IC
 Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
                                          std::function<bool()> a_shouldCancel)
 {
+    // Skip / 失敗時に前回の提出を今回の Frame として扱わせない
+    m_latestCompletion.reset();
     auto &commandPool = a_execution.get_command_pool();
     auto &queuePool = a_execution.get_queue_pool();
     if (!m_graph || !m_graph->plan() || !m_swapChain || !m_swapChain->graphics_queue() ||
@@ -692,6 +694,7 @@ Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
         std::lock_guard lock(m_performanceMutex);
         m_recordTimings.add(m_frameRecordDurations[a_frameIndex]);
     }
+    m_latestCompletion = std::move(a_completion);
     return Result<void>::success();
 }
 
@@ -806,6 +809,8 @@ Result<void> DX12MainFrameGraph::shutdown()
         return result;
     }
     m_frames.reset();
+    // GPU 完了済みの追加共有参照も、Device の Leak 検証より前に回収する
+    m_latestCompletion.reset();
     m_pipelineManager = nullptr;
     m_poolLeases.clear();
     m_poolResourceIndices.clear();
