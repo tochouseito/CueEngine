@@ -37,7 +37,7 @@ struct FrameControllerDesc final
 {
     std::uint32_t maxFramesInFlight = 2;
     bool useWorkerThreads = true;
-    /// Main / UI 構築前の Frame 開始頻度の FPS 上限。0 は上限なし
+    /// Render / Present 後の周期待機に使う FPS 上限。0 は上限なし
     std::uint32_t maxFps = 60;
     // 未指定は既存の容量から導出する。0 は同じ Frame の Update / Render を直列化する
     std::optional<std::uint32_t> maxUpdateLeadFrames;
@@ -56,6 +56,8 @@ struct FrameProgress final
     std::uint64_t submittedFrames = 0;
     std::uint64_t updatedFrames = 0;
     std::uint64_t renderedFrames = 0;
+    // CPU 完了を先に公開し、周期待機が終わった件数を独立して保持する
+    std::uint64_t completedCycles = 0;
     std::uint64_t lastUpdateFrame = 0;
     std::uint64_t lastRenderFrame = 0;
     std::thread::id updateThreadId{};
@@ -66,6 +68,7 @@ struct FrameProgress final
     std::chrono::nanoseconds lastRenderDuration{};
     std::chrono::nanoseconds lastFrameInterval{};
     std::chrono::nanoseconds lastLimitWaitDuration{};
+    std::chrono::nanoseconds lastCycleInterval{};
 };
 
 /// @brief 経過時間と FPS 待機を分け、直近 120 Frame の分布を公開する
@@ -76,6 +79,7 @@ struct FrameTimingInfo final
     TimingStatistics render;
     TimingStatistics limitWait;
     TimingStatistics frameInterval;
+    TimingStatistics cycleInterval;
 };
 
 using FrameCallback = std::function<Result<void>(std::uint64_t, std::stop_token)>;
@@ -157,6 +161,9 @@ public:
     /// @brief 開始条件と非同期失敗を確認し、FPS による開始待ちの計測点を保持する
     [[nodiscard]] Result<bool> frame_ready();
 
+    /// @brief Render 後に周期の残り時間を待ち、停止していなければ次の投入を許可する
+    void finish_cycle(std::chrono::steady_clock::time_point a_renderCompletion, std::stop_token a_stopToken);
+
     FrameControllerDesc m_desc;
     Clock &m_clock;
     Waiter &m_waiter;
@@ -172,9 +179,13 @@ public:
     TimingSamples m_renderTimings;
     TimingSamples m_limitTimings;
     TimingSamples m_intervalTimings;
+    TimingSamples m_cycleTimings;
     std::uint64_t m_nextUpdateFrame = 0;
     std::uint64_t m_nextRenderFrame = 0;
-    // 開始期限と待機計測点は構築 Thread だけが更新する。統計は投入時に共有 Lock 内へ移す
+    // Worker の周期開始は Render だけが更新する。投入許可は共有 Lock で公開する
+    std::uint64_t m_startPermits = 0;
+    std::chrono::steady_clock::time_point m_cycleStarted{};
+    // 単一 Thread は期限だけ保持し、長い Sleep で Message Pump を止めない
     std::chrono::steady_clock::time_point m_nextFrameTime{};
     std::optional<std::chrono::steady_clock::time_point> m_limitWaitStarted;
     std::chrono::steady_clock::time_point m_lastRenderCompletion{};

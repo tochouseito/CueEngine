@@ -449,6 +449,8 @@ int test_input_during_frame_wait(bool a_usesWorkers)
     int mainCalls = 0;
     std::chrono::steady_clock::time_point firstMain;
     cue::WindowsHostConfig config{{"CueWindowsHost Input Pacing", {160, 120}}, {2, a_usesWorkers, 1}, {}};
+    // bootstrap の先行を無効にし、次周期通知後に最新入力を採用する経路を確認する
+    config.frame.maxUpdateLeadFrames = 0;
     config.callbacks.initializeWindow = [&](cue::Window &a_window)
     {
         window = &a_window;

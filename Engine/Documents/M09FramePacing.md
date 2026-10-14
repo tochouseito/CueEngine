@@ -18,3 +18,9 @@ Milestone: https://github.com/tochouseito/CueEngine/milestone/10
 FPS 時間待機は Render Callback / Present 後に集約し、Main は Message Pump を継続する。Update は次周期通知で休む。単一 Thread は Present 後に期限を登録して戻り、Main の Message Pump を長い Sleep で停止させない
 
 この Milestone は完了 Issue を閉じても open のまま維持する
+
+## #116 Present 後待機
+
+Worker は CPU Render 完了を即時公開し、周期待機が終わってから次の投入許可を増やす。起動時だけ先行数 + 1 件を許可し、Render F0 と Update F1 の重なりを作る。未来の Update 完了を Render の必須条件にしないため、Resize の排出でデッドロックしない
+
+FPS 待機は共通の停止 Token で解除する。Main は最大 1 ms の通知待ちで Pump へ戻り、FPS Timer / Spin を行わない。単一 Thread は Present 後に期限だけ保持し、次の step で判定する。CPU 完了間隔と周期完了間隔を別統計にする

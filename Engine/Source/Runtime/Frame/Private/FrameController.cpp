@@ -59,7 +59,10 @@ Result<void> FrameController::start()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.start"});
     }
-    if (!m_update || !m_render || m_desc.maxFramesInFlight == 0 || m_desc.maxFramesInFlight > 2)
+    if (!m_update || !m_render || m_desc.maxFramesInFlight == 0 || m_desc.maxFramesInFlight > 8 ||
+        (m_desc.maxUpdateLeadFrames && *m_desc.maxUpdateLeadFrames >= m_desc.maxFramesInFlight) ||
+        (m_desc.waitMode != FrameWaitMode::Sleep && m_desc.waitMode != FrameWaitMode::Hybrid) ||
+        m_desc.spinDuration < std::chrono::nanoseconds::zero() || m_desc.spinDuration > std::chrono::milliseconds(5))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.start"});
     }
@@ -68,7 +71,12 @@ Result<void> FrameController::start()
         std::lock_guard lock(m_mutex);
         m_stopRequested = false;
     }
-    // 最初の Main / UI は即時実行できるよう現在時刻を基準にする
+    // 起動だけ lead + 1 件を許可し、以後は Render の周期完了ごとに 1 件を許可する
+    const auto lead = m_desc.useWorkerThreads
+                          ? m_desc.maxUpdateLeadFrames.value_or(m_desc.maxFramesInFlight - 1)
+                          : 0;
+    m_startPermits = lead + 1;
+    m_cycleStarted = m_clock.now();
     m_nextFrameTime = m_clock.now();
     m_limitWaitStarted.reset();
     m_mainStopSource = std::stop_source{};
@@ -123,9 +131,6 @@ Result<bool> FrameController::advance()
         return ready;
     }
     const auto frameStart = m_clock.now();
-    const auto limitWait = m_limitWaitStarted ? std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                    std::min(frameStart, m_nextFrameTime) - *m_limitWaitStarted)
-                                              : std::chrono::nanoseconds::zero();
     std::uint64_t frame = 0;
     {
         std::lock_guard lock(m_mutex);
@@ -164,17 +169,9 @@ Result<bool> FrameController::advance()
             return Result<bool>::failure(*m_failure);
         }
         ++m_progress.submittedFrames;
-        m_progress.lastLimitWaitDuration = limitWait;
-        m_limitTimings.add(limitWait);
+        if (frame == 0)
+            m_cycleStarted = frameStart;
     }
-    // 遅れた Frame の取り戻しで UI を連続作成せず、実際の開始時刻から次回を決める
-    if (m_desc.maxFps != 0)
-    {
-        const auto interval = std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps);
-        m_nextFrameTime = frameStart + interval;
-    }
-    m_limitWaitStarted.reset();
-
     if (m_desc.useWorkerThreads)
     {
         // Worker が次の Frame を取得できるよう通知する
@@ -213,7 +210,7 @@ Result<bool> FrameController::advance()
     }
     const auto completion = m_clock.now();
     {
-        // Render / Present の後に FPS 待機を挟まず、実際の完了間隔を記録する
+        // Present の戻りを先に記録し、GPU 完了や周期完了と区別する
         std::lock_guard lock(m_mutex);
         if (m_progress.renderedFrames != 0)
         {
@@ -228,6 +225,12 @@ Result<bool> FrameController::advance()
         m_progress.lastRenderDuration = renderDuration;
         m_renderTimings.add(renderDuration);
     }
+    // Render Worker のない経路は期限を登録して戻り、Main が Pump を継続する
+    const auto interval = m_desc.maxFps
+                              ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
+                              : std::chrono::nanoseconds::zero();
+    m_nextFrameTime = std::max(completion, frameStart + interval);
+    m_limitWaitStarted = completion;
     return Result<bool>::success(true);
 }
 
@@ -254,16 +257,26 @@ Result<bool> FrameController::frame_ready()
             return Result<bool>::failure({ErrorCategory::InvalidState, "FrameController.advance"});
         }
         hasCapacity = m_progress.submittedFrames - m_progress.renderedFrames < m_desc.maxFramesInFlight;
+        if (m_desc.useWorkerThreads)
+            return Result<bool>::success(hasCapacity && m_progress.submittedFrames < m_startPermits);
     }
 
     const auto now = m_clock.now();
-    if (m_desc.maxFps != 0 && now < m_nextFrameTime)
+    if (m_limitWaitStarted && now < m_nextFrameTime)
     {
-        if (!m_limitWaitStarted)
-        {
-            m_limitWaitStarted = now;
-        }
         return Result<bool>::success(false);
+    }
+    if (m_limitWaitStarted)
+    {
+        std::lock_guard lock(m_mutex);
+        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(m_nextFrameTime - *m_limitWaitStarted);
+        m_progress.lastLimitWaitDuration = waited;
+        m_limitTimings.add(waited);
+        m_progress.lastCycleInterval = std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_cycleStarted);
+        m_cycleTimings.add(m_progress.lastCycleInterval);
+        ++m_progress.completedCycles;
+        m_limitWaitStarted.reset();
+        m_cycleStarted = now;
     }
     return Result<bool>::success(hasCapacity);
 }
@@ -358,7 +371,7 @@ FrameProgress FrameController::progress() const
 /// @brief Sample の整列を Worker の Lock 外で行い、統計表示が Frame 完了公開を妨げない
 FrameTimingInfo FrameController::timing_info() const
 {
-    TimingSamples main, update, render, limit, interval;
+    TimingSamples main, update, render, limit, interval, cycle;
     {
         std::lock_guard lock(m_mutex);
         main = m_mainTimings;
@@ -366,8 +379,10 @@ FrameTimingInfo FrameController::timing_info() const
         render = m_renderTimings;
         limit = m_limitTimings;
         interval = m_intervalTimings;
+        cycle = m_cycleTimings;
     }
-    return {main.statistics(), update.statistics(), render.statistics(), limit.statistics(), interval.statistics()};
+    return {main.statistics(), update.statistics(), render.statistics(), limit.statistics(), interval.statistics(),
+            cycle.statistics()};
 }
 
 /// @brief Frame 投入を増やさず、非同期 Callback の完了または最初の失敗を返す
@@ -500,6 +515,8 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             m_renderTimings.add(duration);
         }
         m_waiter.notify_all();
+        // FPS 待機は Render 側だけに置き、Main / Update へは許可の通知だけを渡す
+        finish_cycle(completion, m_mainStopSource.get_token());
     }
     return Result<void>::success();
 }
@@ -529,31 +546,48 @@ Result<bool> FrameController::wait_for_frame()
     {
         return ready;
     }
-    const auto now = m_clock.now();
     const auto token = m_mainStopSource.get_token();
-    if (m_desc.maxFps != 0 && now < m_nextFrameTime)
+    // Main は FPS Timer を持たず、短い通知待ちの後に必ず Message Pump へ戻る
+    [[maybe_unused]] const auto status = m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), token);
+    return frame_ready();
+}
+
+/// @brief Present 後の残り時間を停止可能に待ち、完了と次周期の許可を公開する
+void FrameController::finish_cycle(std::chrono::steady_clock::time_point a_renderCompletion,
+                                   std::stop_token a_stopToken)
+{
+    // CPU 完了の計測点を使い、完了公開後の Thread 実行遅延も待機区間へ含める
+    const auto started = a_renderCompletion;
+    const auto period = m_desc.maxFps
+                            ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
+                            : std::chrono::nanoseconds::zero();
+    const auto deadline = m_cycleStarted + period;
+    const auto spin = m_desc.waitMode == FrameWaitMode::Hybrid ? std::min(m_desc.spinDuration, period / 8)
+                                                             : std::chrono::nanoseconds::zero();
+    while (!a_stopToken.stop_requested() && m_clock.now() < deadline)
     {
-        const auto interval = std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps);
-        const auto spin = std::chrono::nanoseconds(std::clamp<std::int64_t>(interval.count() / 8, 250'000, 1'000'000));
-        const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(m_nextFrameTime - now);
+        const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - m_clock.now());
         if (remaining > spin)
         {
-            // Main の長い Sleep で Message Pump を止めず、高精度 Timer を短い区間ごとに使う
-            [[maybe_unused]] const auto status = m_waiter.sleep_for(
-                std::min(remaining - spin, std::chrono::nanoseconds(std::chrono::milliseconds(1))), token);
+            [[maybe_unused]] const auto status = m_waiter.sleep_for(remaining - spin, a_stopToken);
         }
         else
-        {
-            while (!token.stop_requested() && m_clock.now() < m_nextFrameTime)
-            {
-                m_waiter.relax();
-            }
-        }
+            m_waiter.relax();
     }
-    else
+    const auto completion = m_clock.now();
     {
-        [[maybe_unused]] const auto status = m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), token);
+        std::lock_guard lock(m_mutex);
+        if (m_stopRequested || a_stopToken.stop_requested())
+            return;
+        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(completion - started);
+        m_progress.lastLimitWaitDuration = waited;
+        m_limitTimings.add(waited);
+        m_progress.lastCycleInterval = std::chrono::duration_cast<std::chrono::nanoseconds>(completion - m_cycleStarted);
+        m_cycleTimings.add(m_progress.lastCycleInterval);
+        ++m_progress.completedCycles;
+        ++m_startPermits;
+        m_cycleStarted = completion;
     }
-    return frame_ready();
+    m_waiter.notify_all();
 }
 } // namespace cue
