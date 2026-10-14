@@ -25,17 +25,18 @@ Result<void> invoke_callback(FrameCallback& a_callback, std::uint64_t a_frame, s
 } // namespace
 
 /// @brief 借用Serviceを保持する
-FrameController::FrameController(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter,
-                                 ThreadFactory& a_threadFactory)
+FrameController::FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter,
+                                 ThreadFactory &a_threadFactory, SimulationConfig a_simulation)
     : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
-      m_ownerId(std::this_thread::get_id())
+      m_ownerId(std::this_thread::get_id()), m_simulationConfig(a_simulation), m_simulation(a_simulation)
 {
 }
 
 /// @brief 構築時にCallbackを渡す既存の入口を維持する
-FrameController::FrameController(FrameControllerDesc a_desc, Clock& a_clock, Waiter& a_waiter,
-                                 ThreadFactory& a_threadFactory, FrameCallback a_update, FrameCallback a_render)
-    : FrameController(a_desc, a_clock, a_waiter, a_threadFactory)
+FrameController::FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter,
+                                 ThreadFactory &a_threadFactory, FrameCallback a_update, FrameCallback a_render,
+                                 SimulationConfig a_simulation)
+    : FrameController(a_desc, a_clock, a_waiter, a_threadFactory, a_simulation)
 {
     m_update = std::move(a_update);
     m_render = std::move(a_render);
@@ -58,6 +59,11 @@ Result<void> FrameController::start()
     if (m_isStarted || m_hasStarted)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.start"});
+    }
+    auto simulationValid = validate_simulation_config(m_simulationConfig);
+    if (!simulationValid.has_value() || (m_simulationConfig.frequencyHz != 0 && !m_simulationUpdate))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.simulation_config"});
     }
     if (!m_update || !m_render || m_desc.maxFramesInFlight == 0 || m_desc.maxFramesInFlight > 8 ||
         (m_desc.maxUpdateLeadFrames && *m_desc.maxUpdateLeadFrames >= m_desc.maxFramesInFlight) ||
@@ -83,6 +89,7 @@ Result<void> FrameController::start()
     m_nextUpdateFrame = m_progress.updatedFrames;
     m_nextRenderFrame = m_progress.renderedFrames;
     m_cycleStarted = m_clock.now();
+    m_isFirstFrameOfRun = true;
     m_nextFrameTime = m_clock.now();
     m_limitWaitStarted.reset();
     m_singleFpsCompletion.reset();
@@ -178,8 +185,12 @@ Result<bool> FrameController::advance()
         }
         ++m_progress.submittedFrames;
         m_frameInputTimes[frame % m_frameInputTimes.size()] = frameStart;
-        if (frame == 0)
+        // 再開後の最初も実採用時刻へ合わせる。単一 Thread は表示枠待ちの遅延を旧期限へ押し込まない
+        if (m_isFirstFrameOfRun || !m_desc.useWorkerThreads)
+        {
             m_cycleStarted = frameStart;
+        }
+        m_isFirstFrameOfRun = false;
     }
     if (m_desc.useWorkerThreads)
     {
@@ -190,7 +201,7 @@ Result<bool> FrameController::advance()
 
     // Fallback は同じ Frame の Update 完了後に Render を実行する
     const auto updateStart = m_clock.now();
-    auto updateResult = invoke_callback(m_update, frame, {}, "FrameController.update.exception");
+    auto updateResult = perform_update(frame, {});
     const auto updateDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - updateStart);
     if (!updateResult.has_value())
     {
@@ -225,13 +236,14 @@ Result<bool> FrameController::advance()
     {
         // Present の戻りを先に記録し、GPU 完了や周期完了と区別する
         std::lock_guard lock(m_mutex);
-        if (m_progress.renderedFrames != 0)
+        if (m_hasRenderCompletionSample)
         {
             m_progress.lastFrameInterval =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(completion - m_lastRenderCompletion);
             m_intervalTimings.add(m_progress.lastFrameInterval);
         }
         m_lastRenderCompletion = completion;
+        m_hasRenderCompletionSample = true;
         ++m_progress.renderedFrames;
         m_progress.lastRenderFrame = frame;
         m_progress.renderThreadId = std::this_thread::get_id();
@@ -500,7 +512,7 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
         }
 
         const auto start = m_clock.now();
-        auto result = invoke_callback(m_update, frame, a_stopToken, "FrameController.update.exception");
+        auto result = perform_update(frame, a_stopToken);
         const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - start);
         if (!result.has_value())
         {
@@ -576,13 +588,14 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             {
                 break;
             }
-            if (m_progress.renderedFrames != 0)
+            if (m_hasRenderCompletionSample)
             {
                 m_progress.lastFrameInterval =
                     std::chrono::duration_cast<std::chrono::nanoseconds>(completion - m_lastRenderCompletion);
                 m_intervalTimings.add(m_progress.lastFrameInterval);
             }
             m_lastRenderCompletion = completion;
+            m_hasRenderCompletionSample = true;
             ++m_progress.renderedFrames;
             m_progress.lastRenderFrame = frame;
             m_progress.renderThreadId = std::this_thread::get_id();
@@ -640,7 +653,7 @@ Result<void> FrameController::pause()
 }
 
 /// @brief 登録済み Callback と単調 Frame ID を再利用し、古い構成の計測窓を捨てる
-Result<void> FrameController::resume(FrameControllerDesc a_desc)
+Result<void> FrameController::resume(FrameControllerDesc a_desc, std::optional<SimulationConfig> a_simulation)
 {
     if (std::this_thread::get_id() != m_ownerId)
     {
@@ -649,6 +662,19 @@ Result<void> FrameController::resume(FrameControllerDesc a_desc)
     if (m_isStarted || !m_hasStarted || m_isExecutingMain || m_failure)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.resume"});
+    }
+    if (a_simulation)
+    {
+        auto configured = m_simulation.configure(*a_simulation);
+        if (!configured.has_value())
+        {
+            return configured;
+        }
+        m_simulationConfig = *a_simulation;
+    }
+    else
+    {
+        m_simulation.reset_sample_time();
     }
     m_desc = a_desc;
     m_hasStarted = false;
@@ -659,6 +685,10 @@ Result<void> FrameController::resume(FrameControllerDesc a_desc)
         m_renderTimings = {};
         m_limitTimings = {};
         m_intervalTimings = {};
+        m_hasRenderCompletionSample = false;
+        m_progress.lastFrameInterval = {};
+        m_progress.lastCycleInterval = {};
+        m_progress.lastLimitWaitDuration = {};
         m_cycleTimings = {};
         m_inputToRenderStartTimings = {};
         m_inputToRenderCompleteTimings = {};
@@ -775,6 +805,94 @@ Result<FramePacingPlan> FrameController::cycle_plan(std::chrono::steady_clock::t
     catch (...)
     {
         return Result<FramePacingPlan>::failure({ErrorCategory::PlatformFailure, "FrameController.cycle_plan.exception"});
+    }
+}
+/// @brief 固定更新と描画 Snapshot の Callback を開始前だけ登録する
+Result<void> FrameController::register_simulation_callbacks(simulationCallback a_update,
+                                                            frameSnapshotCallback a_snapshot)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.simulation_callbacks"});
+    }
+    if (m_isStarted || m_hasStarted)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.simulation_callbacks"});
+    }
+    m_simulationUpdate = std::move(a_update);
+    m_snapshotUpdate = std::move(a_snapshot);
+    return Result<void>::success();
+}
+
+/// @brief Update スレッドが可変 World を進めた後にだけ描画用の不変値を抽出する
+Result<void> FrameController::perform_update(std::uint64_t a_frame, std::stop_token a_token)
+{
+    std::chrono::steady_clock::time_point sample;
+    {
+        std::lock_guard lock(m_mutex);
+        sample = m_frameInputTimes[a_frame % m_frameInputTimes.size()];
+    }
+    if (m_resetsSimulationSample.exchange(false))
+    {
+        m_simulation.reset_sample_time();
+    }
+    auto simulation = m_simulation.advance(a_frame, sample, m_simulationUpdate, a_token);
+    if (!simulation.has_value())
+    {
+        return Result<void>::failure(*simulation.try_error());
+    }
+    const auto info = simulation.take_value();
+    if (info.wasCanceled || a_token.stop_requested())
+    {
+        return Result<void>::success();
+    }
+    auto updated = invoke_callback(m_update, a_frame, a_token, "FrameController.update.exception");
+    if (!updated.has_value())
+    {
+        return updated;
+    }
+    if (m_snapshotUpdate)
+    {
+        try
+        {
+            auto prepared = m_snapshotUpdate(info, a_token);
+            if (!prepared.has_value())
+            {
+                return prepared;
+            }
+        }
+        catch (...)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.snapshot.exception"});
+        }
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        m_simulationFrames[a_frame % m_simulationFrames.size()] = info;
+        m_progress.simulationTicks = info.currentTick;
+        m_progress.droppedSimulationTime += info.droppedElapsed;
+    }
+    return Result<void>::success();
+}
+
+/// @brief Frame ID が一致する確定情報だけ返し、未来 Frame の可変状態を参照しない
+Result<FrameSimulationInfo> FrameController::simulation_info(std::uint64_t a_frame) const
+{
+    std::lock_guard lock(m_mutex);
+    const auto &info = m_simulationFrames[a_frame % m_simulationFrames.size()];
+    if (!info || info->frameIndex != a_frame)
+    {
+        return Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "FrameController.simulation_info"});
+    }
+    return Result<FrameSimulationInfo>::success(*info);
+}
+
+/// @brief 更新 Thread 以外から Stepper を直接変更せず、次の Frame に時刻再設定を予約する
+void FrameController::reset_simulation_sample_time()
+{
+    if (std::this_thread::get_id() == m_ownerId)
+    {
+        m_resetsSimulationSample.store(true);
     }
 }
 } // namespace cue

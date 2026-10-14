@@ -132,8 +132,7 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                                                         return result.has_value() ? build_performance_settings_ui()
                                                                                   : std::move(result);
                                                     }}),
-      m_ownerId(std::this_thread::get_id()),
-      m_performancePolicy(a_config.performancePolicy),
+      m_ownerId(std::this_thread::get_id()), m_performancePolicy(a_config.performancePolicy),
       m_performanceSettingsFile(a_config.performanceSettingsFile),
       m_windows({std::move(a_config.window),
                  a_config.frame,
@@ -151,13 +150,16 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
                   { return m_imgui->render_frame(a_frame, a_token, a_record); },
                   [this](IBackend &a_backend, std::uint32_t a_cpuFrames, std::uint32_t a_gpuFrames)
-                  { return m_imgui->reconfigure_renderer(a_backend, a_cpuFrames, a_gpuFrames); }},
+                  { return m_imgui->reconfigure_renderer(a_backend, a_cpuFrames, a_gpuFrames); },
+                  std::move(a_config.simulationUpdate),
+                  std::move(a_config.prepareFrame)},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
                  a_config.logging,
                  a_config.gpu,
                  a_config.performancePolicy,
-                 a_config.performanceSettingsFile})
+                 a_config.performanceSettingsFile,
+                 a_config.simulation})
 {
 }
 
@@ -477,7 +479,7 @@ Result<void> EditorHost::build_performance_settings_ui()
             if (status.try_value()->syncFallback != FrameSyncFallback::None)
             {
                 ImGui::TextUnformatted(status.try_value()->syncFallback == FrameSyncFallback::DisplayTimingUnavailable
-                                           ? "Fallback: display statistics unavailable, stale, or discontinuous"
+                                           ? "Fallback: prediction needs VSync and fresh DXGI statistics"
                                            : "Fallback: waitable presentation unavailable");
             }
             if (status.try_value()->requested.presentation.isTearingAllowed &&
@@ -579,5 +581,16 @@ Result<void> EditorHost::build_performance_settings_ui()
     }
     ImGui::End();
     return Result<void>::success();
+}
+/// @brief ユーザーの FPS / 表示設定と独立した開発者の更新設定を下位 Host へ渡す
+Result<void> EditorHost::request_simulation_config(SimulationConfig a_config)
+{
+    return m_windows.request_simulation_config(a_config);
+}
+
+/// @brief Frame ごとに保存した不変の Tick と補間係数を取得する
+Result<FrameSimulationInfo> EditorHost::frame_simulation_info(std::uint64_t a_frame) const
+{
+    return m_windows.frame_simulation_info(a_frame);
 }
 } // namespace cue

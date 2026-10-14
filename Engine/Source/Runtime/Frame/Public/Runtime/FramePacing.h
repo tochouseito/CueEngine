@@ -48,8 +48,7 @@ struct FramePacingPlan final
 /// @brief 表示統計が利用できないときは固定周期へ戻し、外部の FPS 待機を作らない
 [[nodiscard]] inline FramePacingPlan plan_frame_cycle(
     FrameSyncMode a_requested, std::chrono::steady_clock::time_point a_fixedDeadline,
-    std::chrono::steady_clock::time_point a_now,
-    std::optional<std::chrono::steady_clock::time_point> a_nextDisplay,
+    std::chrono::steady_clock::time_point a_now, std::optional<std::chrono::steady_clock::time_point> a_nextDisplay,
     std::chrono::nanoseconds a_slack, bool a_hasPresentation)
 {
     FramePacingPlan plan{a_fixedDeadline};

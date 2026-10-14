@@ -1,5 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <thread>
@@ -50,8 +51,8 @@ int test_reconfiguration()
     {
         return 1;
     }
-    for (const auto preset : {cue::PerformancePreset::LowLatency, cue::PerformancePreset::Throughput,
-                              cue::PerformancePreset::Balanced})
+    for (const auto preset :
+         {cue::PerformancePreset::LowLatency, cue::PerformancePreset::Throughput, cue::PerformancePreset::Balanced})
     {
         for (const bool usesWorkers : {false, true})
         {
@@ -71,7 +72,8 @@ int test_reconfiguration()
             auto progress = host.frame_progress();
             auto transfer = host.ui_transfer_info();
             if (!applied.has_value() || *applied.try_value() != settings || !progress.has_value() ||
-                !transfer.has_value() || transfer.try_value()->publishedFrames != progress.try_value()->submittedFrames ||
+                !transfer.has_value() ||
+                transfer.try_value()->publishedFrames != progress.try_value()->submittedFrames ||
                 transfer.try_value()->consumedFrames != progress.try_value()->renderedFrames ||
                 transfer.try_value()->pendingFrames > settings.frame.maxFramesInFlight ||
                 (progress.try_value()->renderThreadId != std::this_thread::get_id()) != usesWorkers)
@@ -134,8 +136,8 @@ int test_failed_reconfiguration()
         config.frame = {1, false, 60};
         config.callbacks.initializeRenderer = [](cue::IBackend &, std::uint32_t, std::uint32_t)
         { return cue::Result<void>::success(); };
-        config.callbacks.reconfigureRenderer = [throwsException](cue::IBackend &, std::uint32_t, std::uint32_t)
-            -> cue::Result<void>
+        config.callbacks.reconfigureRenderer = [throwsException](cue::IBackend &, std::uint32_t,
+                                                                 std::uint32_t) -> cue::Result<void>
         {
             if (throwsException)
             {
@@ -158,6 +160,62 @@ int test_failed_reconfiguration()
     }
     return 0;
 }
+
+/// @brief 固定 / 可変更新を Host から切り替え、FPS 設定変更でゲームの Hz を変えない
+int test_simulation_settings()
+{
+    cue::EditorHostConfig config;
+    config.window.clientSize = {320, 240};
+    config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
+    config.frame.maxFps = 120;
+    config.simulation = {60, 4};
+    std::atomic<std::uint64_t> lastTick = 0;
+    config.simulationUpdate = [&](const cue::SimulationStep &a_step, std::stop_token)
+    {
+        lastTick.store(a_step.tick);
+        return cue::Result<void>::success();
+    };
+    config.prepareFrame = [](const cue::FrameSimulationInfo &a_info, std::stop_token)
+    {
+        return a_info.interpolationAlpha >= 0 && a_info.interpolationAlpha <= 1
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.interpolation"});
+    };
+    cue::EditorHost host(std::move(config));
+    if (!host.initialize().has_value() || !advance_until(host, 10, std::chrono::seconds(3)))
+    {
+        return 1;
+    }
+    auto fixedProgress = host.frame_progress();
+    auto fixed = host.frame_simulation_info(fixedProgress.try_value()->lastRenderFrame);
+    if (!fixed.has_value() || !fixed.try_value()->isFixed || lastTick.load() == 0 ||
+        !host.request_simulation_config({0, 4}).has_value() ||
+        !advance_until(host, fixedProgress.try_value()->submittedFrames, std::chrono::seconds(3)))
+    {
+        return 2;
+    }
+    auto variableProgress = host.frame_progress();
+    auto variable = host.frame_simulation_info(variableProgress.try_value()->lastRenderFrame);
+    if (!variable.has_value() || variable.try_value()->isFixed ||
+        variable.try_value()->currentTick <= fixed.try_value()->currentTick ||
+        !host.request_simulation_config({60, 4}).has_value() ||
+        !advance_until(host, variableProgress.try_value()->submittedFrames, std::chrono::seconds(3)))
+    {
+        return 3;
+    }
+    auto settings = host.performance_settings();
+    settings.try_value()->frame.maxFps = 30;
+    auto before = host.frame_progress();
+    if (!host.request_performance_settings(*settings.try_value()).has_value() ||
+        !advance_until(host, before.try_value()->submittedFrames, std::chrono::seconds(3)))
+    {
+        return 4;
+    }
+    auto after = host.frame_progress();
+    auto unchanged = host.frame_simulation_info(after.try_value()->lastRenderFrame);
+    return unchanged.has_value() && unchanged.try_value()->isFixed && host.shutdown().has_value() ? 0 : 5;
+}
 } // namespace
 
 /// @brief 実 ImGui / GPU 上で枠変更と Thread 切替後も単調 Frame ID を維持する
@@ -171,5 +229,9 @@ int main()
     {
         return 10 + saved;
     }
-    return test_failed_reconfiguration();
+    if (const auto failed = test_failed_reconfiguration(); failed != 0)
+    {
+        return 20 + failed;
+    }
+    return test_simulation_settings();
 }

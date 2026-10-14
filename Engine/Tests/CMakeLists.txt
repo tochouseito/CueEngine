@@ -187,6 +187,11 @@ if(WIN32)
     target_link_libraries(CueFramePacingTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
     add_test(NAME Cue.Runtime.FramePacing COMMAND CueFramePacingTests)
 
+    # 固定 Tick と描画 Frame の分離、補間、過負荷上限と周期切替を確認する
+    add_executable(CueSimulationTests Runtime/SimulationTests.cpp)
+    target_link_libraries(CueSimulationTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
+    add_test(NAME Cue.Runtime.Simulation COMMAND CueSimulationTests)
+
     # 計測は手動の明示実行に限定し、CTest の通常 Gate へ長時間の性能比較を混ぜない
     add_executable(CueM09FramePacingProbe Performance/M09FramePacingProbe.cpp)
     target_link_libraries(CueM09FramePacingProbe PRIVATE Cue.EditorHost imgui::imgui)

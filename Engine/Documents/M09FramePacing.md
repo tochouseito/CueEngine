@@ -63,3 +63,17 @@ Main が Frame を採用した時刻を入力採取の代理時刻とし、Rende
 DXGI SyncQPCTime は SyncRefreshCount の Refresh 標本であり、Present Frame の直接の表示時刻と同一視しない。PresentRefreshCount との差を Refresh 周期で補正した場合は推定値と公開する。統計が取れない場合は未計測と表示し、Present の時刻から表示時刻を捏造しない。取得仕様は [DXGI_FRAME_STATISTICS](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_frame_statistics) に従う
 
 CueM09FramePacingProbe は同じ容量 / Test UI / Clear の条件で、VSync ごとに三つの Mode を比較する。180 Frame のうち先頭 60 を Warmup とし、最新 120 標本を CSV へ出す。物理的な入力遅延、VRR / 複数 Monitor、表示の見た目はこの Probe だけでは検証できない
+
+## #122 固定更新と補間
+
+SimulationConfig はゲーム開発者が指定し、ユーザーの性能設定 / Preset / 保存 File と独立させる。frequencyHz = 0 は可変更新、60 は 60 Hz の固定更新。固定更新は simulationUpdate Callback の登録を必須とする。既定は従来の可変更新を維持する
+
+Update Worker は採用 Frame の時刻を使い、0〜maxCatchUpSteps 回の Simulation Tick → 従来の Frame Update → prepareFrame Snapshot 抽出を実行する。固定モードのゲームロジックは simulationUpdate に移し、従来 Update では Frame ごとの処理 / 抽出準備を行う。Tick ID と Render Frame ID を同一視しない
+
+時刻蓄積は Hz × ns の整数位相、1 Tick = 1e9 Units とし、60 Hz 等の丸めを長時間累積させない。過負荷は maxElapsed で Clamp、最大追いつき回数を越えた完全 Tick は捨て、droppedElapsed として公開する。ゲーム時刻は実行できた Tick 分だけ進む。Callback 失敗は停止扱いとし、部分 World を同じ Tick で再実行しない
+
+prepareFrame は previousTick / currentTick と interpolationAlpha を受け、ゲームが保持する前後の状態を CPU Snapshot に複製する。Render は可変 World を直接読まない。FrameController の simulation_info も Frame ID ごとの不変情報を最新 8 Frame まで保持する。Update F1 が進んでも Render F0 の補間係数を書き換えない
+
+初期 World は Tick 0。最初の固定 Frame の更新数は 0 とし、経過した固定時間から Tick を開始する。標準の previous/current 補間は最大 1 Tick 分過去を滑らかに描画するため、遅延を優先するゲームは current 状態を直接使うなど Snapshot の解釈を選ぶ
+
+request_simulation_config は性能設定とは別の開発者 API。CPU 排出 / Worker join 後に周期を変更し、Tick とゲーム時刻を維持する。FPS 変更は固定 Hz を変えない。最小化中は Frame 投入を休止し、全 CPU Frame 排出後の復帰で時刻だけ再設定する。休止時間を大量の固定 Tick に変換しない

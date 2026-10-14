@@ -24,7 +24,7 @@ class GpuFrameQueue final
     /// @brief 完了済み Token を回収し、上限到達時だけ通知可能な待機を呼ぶ
     /// a_wait は短時間で戻り、a_shouldCancel を再確認できるようにする
     [[nodiscard]] Result<bool> wait_for_slot(const std::function<void()> &a_wait,
-                                            const std::function<bool()> &a_shouldCancel)
+                                             const std::function<bool()> &a_shouldCancel)
     {
         if (m_limit == 0 || m_limit > m_entries.size() || !a_wait || !a_shouldCancel)
             return Result<bool>::failure({ErrorCategory::InvalidArgument, "GpuFrameQueue.config"});
