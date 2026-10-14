@@ -28,7 +28,8 @@ public:
     ///
     /// 構築Threadから一度だけ呼ぶ。失敗時は停止済みとなり、再試行には新しいRuntimeを使う
     /// 任意の Main Callback は採用 Frame ごとに構築 Thread で Update より先に実行する
-    [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main = {});
+    [[nodiscard]] Result<void> initialize(FrameCallback a_update, FrameCallback a_render, FrameCallback a_main = {},
+                                          FramePacingSource a_pacing = {});
 
     /// @brief Callback を実行せず開始条件を最大 1 ms の指定時間まで待つ
     ///

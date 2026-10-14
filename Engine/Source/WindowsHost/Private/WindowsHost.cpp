@@ -127,6 +127,12 @@ class WindowsHost::State final
     TimingSamples gpuQueueWaitTimings;
     std::uint32_t peakGpuFrames = 0;
     std::uint32_t gpuFrameCount = 2;
+    std::uint32_t unfinishedGpuFrames = 0;
+    bool isPredictionEnabled = false;
+    TimingSamples presentationReadyWaitTimings;
+    TimingSamples presentIntervalTimings;
+    TimingSamples displayIntervalTimings;
+    PresentationTiming presentationTiming;
 
     /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
     void request_resize(WindowSize a_size)
@@ -193,13 +199,19 @@ class WindowsHost::State final
             {
                 std::lock_guard lock(timingMutex);
                 gpuQueueWaitTimings.add(std::chrono::steady_clock::now() - waitStarted);
+                unfinishedGpuFrames = gpuFrames->pending();
             }
             if (!available.has_value())
                 return Result<void>::failure(*available.try_error());
             if (!*available.try_value())
                 return Result<void>::success();
+            const auto readyStarted = std::chrono::steady_clock::now();
             auto ready = swapChain->wait_for_frame(a_stopToken, [&]()
             { return isRenderStopped.load() || isPresentationSuspended.load(); });
+            {
+                std::lock_guard lock(timingMutex);
+                presentationReadyWaitTimings.add(std::chrono::steady_clock::now() - readyStarted);
+            }
             if (!ready.has_value())
             {
                 return Result<void>::failure(*ready.try_error());
@@ -224,6 +236,7 @@ class WindowsHost::State final
                     return tracked;
                 std::lock_guard lock(timingMutex);
                 peakGpuFrames = std::max(peakGpuFrames, gpuFrames->pending());
+                unfinishedGpuFrames = gpuFrames->pending();
             }
             return Result<void>::success();
         };
@@ -246,6 +259,22 @@ class WindowsHost::State final
         {
             std::lock_guard lock(timingMutex);
             presentTimings.add(duration);
+            if (presented.has_value())
+            {
+                const auto timing = dx12Backend->get_swap_chain()->timing();
+                if (presentationTiming.presentCount)
+                {
+                    presentIntervalTimings.add(timing.lastPresent - presentationTiming.lastPresent);
+                }
+                if (timing.hasDisplayTiming && presentationTiming.hasDisplayTiming &&
+                    timing.statisticsEpoch == presentationTiming.statisticsEpoch &&
+                    timing.displayedPresentCount > presentationTiming.displayedPresentCount &&
+                    timing.lastDisplay > presentationTiming.lastDisplay)
+                {
+                    displayIntervalTimings.add(timing.lastDisplay - presentationTiming.lastDisplay);
+                }
+                presentationTiming = timing;
+            }
         }
         return presented;
     }
@@ -505,6 +534,7 @@ Result<void> WindowsHost::initialize()
                                                  *m_state->services.threadFactory);
     State *state = m_state.get();
     m_state->gpuFrameCount = m_config.gpu.resourceFrameCount;
+    m_state->isPredictionEnabled = m_config.presentation.isVSyncEnabled;
     m_state->gpuFrames = std::make_unique<GpuFrameQueue>(m_config.gpu.maxFramesInFlight);
     // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
     auto update = m_config.callbacks.update;
@@ -517,7 +547,27 @@ Result<void> WindowsHost::initialize()
         [state, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex,
                                                                           std::stop_token a_stopToken)
         { return state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame); },
-        m_config.callbacks.main);
+        m_config.callbacks.main,
+        {[state](std::stop_token a_token, bool a_isNonBlocking)
+         {
+             return state->dx12Backend->get_swap_chain()->wait_for_frame(a_token, [state]()
+             { return state->isRenderStopped.load() || state->isPresentationSuspended.load(); }, a_isNonBlocking);
+         },
+         [state]() -> std::optional<std::chrono::steady_clock::time_point>
+         {
+             std::lock_guard lock(state->timingMutex);
+             const auto &timing = state->presentationTiming;
+             const auto now = std::chrono::steady_clock::now();
+             if (!state->isPredictionEnabled || !timing.hasRefreshTiming ||
+                 timing.refreshInterval <= std::chrono::nanoseconds::zero() || now < timing.lastRefresh ||
+                 now - timing.lastRefresh > std::chrono::milliseconds(250))
+             {
+                 return std::nullopt;
+             }
+             const auto intervals = (now - timing.lastRefresh) / timing.refreshInterval + 1;
+             return timing.lastRefresh + timing.refreshInterval * intervals;
+         },
+         [state]() { return state->dx12Backend->get_swap_chain()->is_waitable_enabled(); }});
     if (!runtimeResult.has_value())
     {
         return rollback(*runtimeResult.try_error());
@@ -747,6 +797,25 @@ bool WindowsHost::has_pending_performance_settings() const noexcept
     return std::this_thread::get_id() == m_ownerId && m_pendingSettings.has_value();
 }
 
+/// @brief Tearing Capability と実際に使用した同期方式を要求値から分離する
+Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() const
+{
+    auto settings = performance_settings();
+    auto progress = frame_progress();
+    if (!settings.has_value() || !progress.has_value())
+    {
+        return Result<PerformanceSettingsStatus>::failure(!settings.has_value() ? *settings.try_error()
+                                                                               : *progress.try_error());
+    }
+    PerformanceSettingsStatus status{*settings.try_value(), *settings.try_value(), progress.try_value()->syncFallback,
+                                      has_pending_performance_settings()};
+    status.effective.frame.maxUpdateLeadFrames = update_lead_frames(status.requested.frame);
+    status.effective.frame.syncMode = progress.try_value()->effectiveSyncMode;
+    status.effective.presentation.isTearingAllowed = m_state->dx12Backend->get_swap_chain()->is_tearing_enabled();
+    status.effective.presentation.isWaitableEnabled = m_state->dx12Backend->get_swap_chain()->is_waitable_enabled();
+    return Result<PerformanceSettingsStatus>::success(status);
+}
+
 /// @brief Frame ID を維持したまま Worker、Graph、表示枠、ImGui Ring を順に再構成する
 Result<void> WindowsHost::apply_pending_settings()
 {
@@ -832,6 +901,7 @@ Result<void> WindowsHost::apply_pending_settings()
         m_state->gpuFrames = std::make_unique<GpuFrameQueue>(settings.gpu.maxFramesInFlight);
     }
     m_state->gpuFrameCount = settings.gpu.resourceFrameCount;
+    m_state->isPredictionEnabled = settings.presentation.isVSyncEnabled;
     auto resumed = m_state->runtime->resume(settings.frame);
     if (!resumed.has_value())
     {
@@ -847,6 +917,11 @@ Result<void> WindowsHost::apply_pending_settings()
         m_state->presentTimings = {};
         m_state->gpuQueueWaitTimings = {};
         m_state->peakGpuFrames = 0;
+        m_state->unfinishedGpuFrames = 0;
+        m_state->presentationReadyWaitTimings = {};
+        m_state->presentIntervalTimings = {};
+        m_state->displayIntervalTimings = {};
+        m_state->presentationTiming = {};
     }
     report_log("WindowsHost", "performance settings applied");
     return Result<void>::success();
@@ -897,11 +972,23 @@ Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
     {
         auto performance = m_state->graph->performance();
         TimingSamples present;
+        TimingSamples gpuQueue, ready, intervals, display;
         {
             std::lock_guard lock(m_state->timingMutex);
             present = m_state->presentTimings;
+            gpuQueue = m_state->gpuQueueWaitTimings;
+            ready = m_state->presentationReadyWaitTimings;
+            intervals = m_state->presentIntervalTimings;
+            display = m_state->displayIntervalTimings;
+            performance.peakUnfinishedGpuFrames = m_state->peakGpuFrames;
+            performance.unfinishedGpuFrames = m_state->unfinishedGpuFrames;
+            performance.presentation = m_state->presentationTiming;
         }
         performance.present = present.statistics();
+        performance.gpuQueueWait = gpuQueue.statistics();
+        performance.presentationReadyWait = ready.statistics();
+        performance.presentInterval = intervals.statistics();
+        performance.displayInterval = display.statistics();
         return Result<MainFrameGraphPerformance>::success(std::move(performance));
     }
     catch (const std::bad_alloc &)

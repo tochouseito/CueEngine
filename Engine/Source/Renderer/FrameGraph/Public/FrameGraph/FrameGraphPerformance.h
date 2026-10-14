@@ -7,6 +7,7 @@
 
 #include <Foundation/TimingSamples.h>
 #include <RHI/Queue.h>
+#include <RHI/Presentation.h>
 
 namespace cue
 {
@@ -28,5 +29,12 @@ struct MainFrameGraphPerformance final
     TimingStatistics present;
     std::vector<GpuPassTiming> gpuPasses;
     std::uint64_t completedGpuFrames = 0;
+    TimingStatistics gpuQueueWait;
+    TimingStatistics presentationReadyWait;
+    TimingStatistics presentInterval;
+    TimingStatistics displayInterval;
+    std::uint32_t peakUnfinishedGpuFrames = 0;
+    std::uint32_t unfinishedGpuFrames = 0;
+    PresentationTiming presentation;
 };
 } // namespace cue

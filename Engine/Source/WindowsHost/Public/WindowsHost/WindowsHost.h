@@ -117,6 +117,8 @@ class WindowsHost final
     [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
     /// @brief 最後に適用できた設定の所有値を返す。Owner Thread 専用
     [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
+    /// @brief 要求値、実効値と表示同期の Fallback 理由を Owner Thread へ返す
+    [[nodiscard]] Result<PerformanceSettingsStatus> performance_settings_status() const;
     /// @brief 未適用の要求があるか返す。Owner Thread 専用
     [[nodiscard]] bool has_pending_performance_settings() const noexcept;
 

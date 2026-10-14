@@ -77,6 +77,8 @@ class EditorHost final
     [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
     /// @brief 適用済み設定の所有値を返す。Owner Thread 専用
     [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
+    /// @brief 要求と Native の実効値、表示統計不足による Fallback を取得する
+    [[nodiscard]] Result<PerformanceSettingsStatus> performance_settings_status() const;
     /// @brief 実行中に適用済みの構成だけを保存する。適用待ちの間は拒否する
     [[nodiscard]] Result<void> save_performance_settings();
     /// @brief 保存値を検証して適用要求を出す。読込失敗では実行中の設定を維持する

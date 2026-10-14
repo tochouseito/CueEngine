@@ -181,6 +181,15 @@ if(WIN32)
     add_executable(CueFrameControllerTests Runtime/FrameControllerTests.cpp)
     target_link_libraries(CueFrameControllerTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
     add_test(NAME Cue.Runtime.FrameController COMMAND CueFrameControllerTests)
+
+    # 表示同期の期限計算、Fallback、単一 Thread の非待機通知を検証する
+    add_executable(CueFramePacingTests Runtime/FramePacingTests.cpp)
+    target_link_libraries(CueFramePacingTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
+    add_test(NAME Cue.Runtime.FramePacing COMMAND CueFramePacingTests)
+
+    # 計測は手動の明示実行に限定し、CTest の通常 Gate へ長時間の性能比較を混ぜない
+    add_executable(CueM09FramePacingProbe Performance/M09FramePacingProbe.cpp)
+    target_link_libraries(CueM09FramePacingProbe PRIVATE Cue.EditorHost imgui::imgui)
     set_tests_properties(Cue.Runtime.FrameController PROPERTIES TIMEOUT 5)
 
     # 時間計測は環境依存のため CTest の速度判定に使わず、手動の比較用 Target とする
@@ -264,6 +273,6 @@ endif()
 if(WIN32)
     cue_copy_shader_runtime(CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests
+        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueM09FramePacingProbe
     )
 endif()

@@ -50,3 +50,16 @@ ImGui Context と入力 Handler は維持する。GPU Backend の再生成は Ma
 不正な要求と読込失敗は既存設定を維持する。Native 再構築の途中失敗 / 例外は Result と停止状態へ確定し、shutdown のみ許可する。Factory のない一回限りの表示 Pass は再構築が必要な変更を事前に拒否する
 
 Editor の Test 内「Performance settings」で編集 / Preset / Apply / Apply and save / Load saved を提供する。保存は Schema 付き File を FileSystem.replace_file で置換し、次回起動時にもゲームの Policy を検証する。既定保存先は Product dataRoot/editor/Performance.cfg。Policy 自体は保存値から変更しない
+
+## #121 同期と計測
+
+- FixedPeriod: Render / Present 後に Controller が FPS 上限の残り時間だけ待つ
+- PresentationReady: 同じ FPS 上限に加え、次周期の通知前に DXGI の表示準備を待つ。次の記録では取得済み Permit を再利用する
+- DisplayPrediction: VSync と有効な DXGI Refresh 統計がある場合、次 Refresh 位相 - 指定 Slack を次の開始候補にする。FPS 上限の期限より早くは開始しない。表示に間に合う GPU 処理時間の予測器ではなく、Slack は必要な処理余裕を開発者が設定する
+- 表示待機未対応、統計未対応 / 250 ms より古い / 不連続 / Monitor 変更は FixedPeriod に戻す。要求 / 実効 Mode と理由は UI / API で取得する
+
+Main が Frame を採用した時刻を入力採取の代理時刻とし、Render 開始 / CPU 完了までの経過時間を保持する。物理入力イベントの発生からの遅延ではない。CPU Render 完了、周期完了、FPS 時間待機、表示準備待機、GPU 上限待機、Graph 記録、Present API 戻り間隔、完了 GPU Pass 時間を別に表示する。GPU 未完了数は Render の提出時点の Snapshot
+
+DXGI SyncQPCTime は SyncRefreshCount の Refresh 標本であり、Present Frame の直接の表示時刻と同一視しない。PresentRefreshCount との差を Refresh 周期で補正した場合は推定値と公開する。統計が取れない場合は未計測と表示し、Present の時刻から表示時刻を捏造しない。取得仕様は [DXGI_FRAME_STATISTICS](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_frame_statistics) に従う
+
+CueM09FramePacingProbe は同じ容量 / Test UI / Clear の条件で、VSync ごとに三つの Mode を比較する。180 Frame のうち先頭 60 を Warmup とし、最新 120 標本を CSV へ出す。物理的な入力遅延、VRR / 複数 Monitor、表示の見た目はこの Probe だけでは検証できない

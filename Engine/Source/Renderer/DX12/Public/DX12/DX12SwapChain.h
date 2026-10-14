@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include <DX12/DX12ViewManager.h>
 #include <Foundation/Result.h>
 #include <RHI/Queue.h>
+#include <RHI/Presentation.h>
 
 namespace cue::dx12
 {
@@ -88,6 +90,9 @@ public:
     /// @brief 実際に作成された表示待機機能の有無を返す
     [[nodiscard]] bool is_waitable_enabled() const noexcept;
 
+    /// @brief Render Thread で Present API と DXGI 統計の所有値を取得する
+    [[nodiscard]] PresentationTiming timing() const noexcept;
+
     /// @brief GPU 完了後に BackBuffer と RTV を新しい非零寸法で作り直す
     ///
     /// 呼出前に Graph、外部 View と Command の旧 BackBuffer 参照を解除する
@@ -108,6 +113,9 @@ private:
   /// @brief GPU 完了後に RTV を返却し、成功した枠の参照から解除する
   [[nodiscard]] Result<void> release_buffers();
 
+  /// @brief 不連続と Monitor 変更で予測履歴を無効化し、取得できた DXGI 統計だけ保持する
+  void update_timing();
+
   DX12ViewManager *m_viewManager = nullptr;
   queueLease m_queue;
   Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
@@ -118,5 +126,9 @@ private:
   // DXGI から受け取った Handle を一意所有する。停止前に利用 Thread を join する
   HANDLE m_frameLatencyEvent = nullptr;
   bool m_hasFramePermit = false;
+  PresentationTiming m_timing;
+  std::optional<DXGI_FRAME_STATISTICS> m_previousStatistics;
+  HWND m_window = nullptr;
+  HMONITOR m_monitor = nullptr;
 };
 } // namespace cue::dx12

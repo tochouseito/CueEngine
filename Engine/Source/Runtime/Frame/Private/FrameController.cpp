@@ -62,7 +62,11 @@ Result<void> FrameController::start()
     if (!m_update || !m_render || m_desc.maxFramesInFlight == 0 || m_desc.maxFramesInFlight > 8 ||
         (m_desc.maxUpdateLeadFrames && *m_desc.maxUpdateLeadFrames >= m_desc.maxFramesInFlight) ||
         (m_desc.waitMode != FrameWaitMode::Sleep && m_desc.waitMode != FrameWaitMode::Hybrid) ||
-        m_desc.spinDuration < std::chrono::nanoseconds::zero() || m_desc.spinDuration > std::chrono::milliseconds(5))
+        m_desc.spinDuration < std::chrono::nanoseconds::zero() || m_desc.spinDuration > std::chrono::milliseconds(5) ||
+        m_desc.predictionSlack < std::chrono::nanoseconds::zero() ||
+        m_desc.predictionSlack > std::chrono::milliseconds(100) ||
+        (m_desc.syncMode != FrameSyncMode::FixedPeriod && m_desc.syncMode != FrameSyncMode::PresentationReady &&
+         m_desc.syncMode != FrameSyncMode::DisplayPrediction))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.start"});
     }
@@ -81,6 +85,7 @@ Result<void> FrameController::start()
     m_cycleStarted = m_clock.now();
     m_nextFrameTime = m_clock.now();
     m_limitWaitStarted.reset();
+    m_singleFpsCompletion.reset();
     m_mainStopSource = std::stop_source{};
     m_cycleStopSource = std::stop_source{};
 
@@ -172,6 +177,7 @@ Result<bool> FrameController::advance()
             return Result<bool>::failure(*m_failure);
         }
         ++m_progress.submittedFrames;
+        m_frameInputTimes[frame % m_frameInputTimes.size()] = frameStart;
         if (frame == 0)
             m_cycleStarted = frameStart;
     }
@@ -203,6 +209,10 @@ Result<bool> FrameController::advance()
     }
 
     const auto renderStart = m_clock.now();
+    {
+        std::lock_guard lock(m_mutex);
+        m_inputToRenderStartTimings.add(renderStart - frameStart);
+    }
     auto renderResult = invoke_callback(m_render, frame, {}, "FrameController.render.exception");
     const auto renderDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - renderStart);
     if (!renderResult.has_value())
@@ -227,13 +237,19 @@ Result<bool> FrameController::advance()
         m_progress.renderThreadId = std::this_thread::get_id();
         m_progress.lastRenderDuration = renderDuration;
         m_renderTimings.add(renderDuration);
+        m_inputToRenderCompleteTimings.add(completion - frameStart);
     }
     // Render Worker のない経路は期限を登録して戻り、Main が Pump を継続する
-    const auto interval = m_desc.maxFps
-                              ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
-                              : std::chrono::nanoseconds::zero();
-    m_nextFrameTime = std::max(completion, frameStart + interval);
+    auto plan = cycle_plan(completion);
+    if (!plan.has_value())
+    {
+        record_failure(*plan.try_error());
+        return Result<bool>::failure(*plan.try_error());
+    }
+    m_singlePlan = *plan.try_value();
+    m_nextFrameTime = std::max(completion, m_singlePlan.deadline);
     m_limitWaitStarted = completion;
+    m_singleFpsCompletion.reset();
     return Result<bool>::success(true);
 }
 
@@ -271,17 +287,63 @@ Result<bool> FrameController::frame_ready()
     }
     if (m_limitWaitStarted)
     {
+        if (!m_singleFpsCompletion)
+        {
+            m_singleFpsCompletion = now;
+        }
+        if (m_singlePlan.waitsForPresentation && !m_cycleStopSource.stop_requested())
+        {
+            Result<bool> ready = Result<bool>::success(false);
+            try
+            {
+                ready = m_pacingSource.waitForPresentation(m_mainStopSource.get_token(), true);
+            }
+            catch (...)
+            {
+                ready = Result<bool>::failure({ErrorCategory::PlatformFailure, "FrameController.presentation.exception"});
+            }
+            if (!ready.has_value())
+            {
+                record_failure(*ready.try_error());
+                return ready;
+            }
+            if (!*ready.try_value())
+            {
+                return Result<bool>::success(false);
+            }
+        }
         std::lock_guard lock(m_mutex);
-        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(m_nextFrameTime - *m_limitWaitStarted);
+        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(*m_singleFpsCompletion -
+                                                                               *m_limitWaitStarted);
         m_progress.lastLimitWaitDuration = waited;
         m_limitTimings.add(waited);
+        m_presentationWaitTimings.add(m_singlePlan.waitsForPresentation ? now - *m_singleFpsCompletion
+                                                                       : std::chrono::steady_clock::duration::zero());
         m_progress.lastCycleInterval = std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_cycleStarted);
         m_cycleTimings.add(m_progress.lastCycleInterval);
         ++m_progress.completedCycles;
+        m_progress.effectiveSyncMode = m_singlePlan.effectiveMode;
+        m_progress.syncFallback = m_singlePlan.fallback;
         m_limitWaitStarted.reset();
+        m_singleFpsCompletion.reset();
         m_cycleStarted = now;
     }
     return Result<bool>::success(hasCapacity);
+}
+
+/// @brief Native 同期 Callback の借用契約を実行開始前に固定する
+Result<void> FrameController::register_pacing_source(FramePacingSource a_source)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "FrameController.pacing_source"});
+    }
+    if (m_hasStarted || m_isStarted)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "FrameController.pacing_source"});
+    }
+    m_pacingSource = std::move(a_source);
+    return Result<void>::success();
 }
 
 /// @brief HostのCallbackを開始前に一度だけ登録する
@@ -375,7 +437,7 @@ FrameProgress FrameController::progress() const
 /// @brief Sample の整列を Worker の Lock 外で行い、統計表示が Frame 完了公開を妨げない
 FrameTimingInfo FrameController::timing_info() const
 {
-    TimingSamples main, update, render, limit, interval, cycle;
+    TimingSamples main, update, render, limit, interval, cycle, inputStart, inputComplete, presentation;
     {
         std::lock_guard lock(m_mutex);
         main = m_mainTimings;
@@ -384,9 +446,12 @@ FrameTimingInfo FrameController::timing_info() const
         limit = m_limitTimings;
         interval = m_intervalTimings;
         cycle = m_cycleTimings;
+        inputStart = m_inputToRenderStartTimings;
+        inputComplete = m_inputToRenderCompleteTimings;
+        presentation = m_presentationWaitTimings;
     }
     return {main.statistics(), update.statistics(), render.statistics(), limit.statistics(), interval.statistics(),
-            cycle.statistics()};
+            cycle.statistics(), inputStart.statistics(), inputComplete.statistics(), presentation.statistics()};
 }
 
 /// @brief Frame 投入を増やさず、非同期 Callback の完了または最初の失敗を返す
@@ -469,6 +534,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
         // Update 完了済みの Frame だけを順番に取得する
         const auto generation = m_waiter.generation();
         std::uint64_t frame = 0;
+        std::chrono::steady_clock::time_point inputSample;
         bool hasFrame = false;
         {
             std::lock_guard lock(m_mutex);
@@ -479,6 +545,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             if (m_nextRenderFrame < m_progress.updatedFrames)
             {
                 frame = m_nextRenderFrame++;
+                inputSample = m_frameInputTimes[frame % m_frameInputTimes.size()];
                 hasFrame = true;
             }
         }
@@ -490,6 +557,10 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
         }
 
         const auto start = m_clock.now();
+        {
+            std::lock_guard lock(m_mutex);
+            m_inputToRenderStartTimings.add(start - inputSample);
+        }
         auto result = invoke_callback(m_render, frame, a_stopToken, "FrameController.render.exception");
         const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - start);
         if (!result.has_value())
@@ -517,6 +588,7 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             m_progress.renderThreadId = std::this_thread::get_id();
             m_progress.lastRenderDuration = duration;
             m_renderTimings.add(duration);
+            m_inputToRenderCompleteTimings.add(completion - inputSample);
         }
         m_waiter.notify_all();
         // FPS 待機は Render 側だけに置き、Main / Update へは許可の通知だけを渡す
@@ -588,6 +660,9 @@ Result<void> FrameController::resume(FrameControllerDesc a_desc)
         m_limitTimings = {};
         m_intervalTimings = {};
         m_cycleTimings = {};
+        m_inputToRenderStartTimings = {};
+        m_inputToRenderCompleteTimings = {};
+        m_presentationWaitTimings = {};
     }
     return start();
 }
@@ -616,7 +691,14 @@ void FrameController::finish_cycle(std::chrono::steady_clock::time_point a_rende
     const auto period = m_desc.maxFps
                             ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
                             : std::chrono::nanoseconds::zero();
-    const auto deadline = m_cycleStarted + period;
+    auto planned = cycle_plan(a_renderCompletion);
+    if (!planned.has_value())
+    {
+        record_failure(*planned.try_error());
+        return;
+    }
+    auto plan = *planned.try_value();
+    const auto deadline = plan.deadline;
     const auto spin = m_desc.waitMode == FrameWaitMode::Hybrid ? std::min(m_desc.spinDuration, period / 8)
                                                              : std::chrono::nanoseconds::zero();
     while (!a_stopToken.stop_requested() && m_clock.now() < deadline)
@@ -629,20 +711,70 @@ void FrameController::finish_cycle(std::chrono::steady_clock::time_point a_rende
         else
             m_waiter.relax();
     }
+    const auto fpsCompletion = m_clock.now();
+    if (plan.waitsForPresentation && !a_stopToken.stop_requested())
+    {
+        Result<bool> ready = Result<bool>::success(false);
+        try
+        {
+            ready = m_pacingSource.waitForPresentation(a_stopToken, false);
+        }
+        catch (...)
+        {
+            ready = Result<bool>::failure({ErrorCategory::PlatformFailure, "FrameController.presentation.exception"});
+        }
+        if (!ready.has_value())
+        {
+            record_failure(*ready.try_error());
+            return;
+        }
+        if (!*ready.try_value())
+        {
+            // Resize の取消では周期の許可を失わず、復帰後の Frame 投入を可能にする
+            plan.effectiveMode = FrameSyncMode::FixedPeriod;
+            plan.fallback = FrameSyncFallback::PresentationUnavailable;
+        }
+    }
     const auto completion = m_clock.now();
     {
         std::lock_guard lock(m_mutex);
         if (m_stopRequested || a_stopToken.stop_requested())
             return;
-        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(completion - started);
+        const auto waited = std::chrono::duration_cast<std::chrono::nanoseconds>(fpsCompletion - started);
         m_progress.lastLimitWaitDuration = waited;
         m_limitTimings.add(waited);
+        m_presentationWaitTimings.add(completion - fpsCompletion);
         m_progress.lastCycleInterval = std::chrono::duration_cast<std::chrono::nanoseconds>(completion - m_cycleStarted);
         m_cycleTimings.add(m_progress.lastCycleInterval);
         ++m_progress.completedCycles;
+        m_progress.effectiveSyncMode = plan.effectiveMode;
+        m_progress.syncFallback = plan.fallback;
         ++m_startPermits;
         m_cycleStarted = completion;
     }
     m_waiter.notify_all();
+}
+
+/// @brief FPS 期限は Controller が決め、Host は表示候補時刻と準備通知だけを返す
+Result<FramePacingPlan> FrameController::cycle_plan(std::chrono::steady_clock::time_point a_completion)
+{
+    try
+    {
+        const auto period = m_desc.maxFps
+                                ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
+                                : std::chrono::nanoseconds::zero();
+        auto nextDisplay = m_desc.syncMode == FrameSyncMode::DisplayPrediction && m_pacingSource.nextDisplayTime
+                               ? m_pacingSource.nextDisplayTime()
+                               : std::nullopt;
+        return Result<FramePacingPlan>::success(plan_frame_cycle(m_desc.syncMode, m_cycleStarted + period,
+                                                                  a_completion, nextDisplay, m_desc.predictionSlack,
+                                                                  m_pacingSource.waitForPresentation &&
+                                                                  (!m_pacingSource.isPresentationAvailable ||
+                                                                   m_pacingSource.isPresentationAvailable())));
+    }
+    catch (...)
+    {
+        return Result<FramePacingPlan>::failure({ErrorCategory::PlatformFailure, "FrameController.cycle_plan.exception"});
+    }
 }
 } // namespace cue
