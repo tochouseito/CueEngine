@@ -34,3 +34,9 @@ Host は CPU 容量を ImGui Snapshot に、GPU 容量を Graph と公式 ImGui 
 ## #118 GPU 未完了上限
 
 Graph はすべての Queue を合流した正常提出 Completion を返す。Host は Present の有無に関係なく固定容量 Queue へ登録する。上限では停止可能な短い通知待機を挟み、非待機 status で Device Lost を確認する。CPU / GPU 枠の再利用待機は引き続き各 Owner が行う
+
+## #119 表示 Queue
+
+Waitable SwapChain は最初の Frame を含め記録前に表示枠を取得する。最大表示 Queue 数を DXGI に設定し、GPU 未完了上限や FPS 上限とは分離する。取得した通知は Present まで保持し、最小化などの記録取消で失わない。Resize は生成時の Flags を維持し、停止は Worker join 後に待機 Handle を閉じる
+
+単一 Thread は UI 構築前に表示 / GPU 枠を非待機で確認する。未準備なら Frame ID を増やさず Pump に戻る。Worker 構成では 1 ms ごとに停止 / Resize 要求を確認する

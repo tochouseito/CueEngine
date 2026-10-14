@@ -48,6 +48,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         a_config.height == 0 ||                               // SwapChain の高さがあるか
         a_config.bufferCount < 2 ||                           // SwapChain の Back Buffer が 2 以上か
         a_config.bufferCount > DXGI_MAX_SWAP_CHAIN_BUFFERS || // SwapChain の Back Buffer が上限以下か
+        a_config.maxQueuedFrames == 0 || a_config.maxQueuedFrames > 16 ||
         (a_config.format != DXGI_FORMAT_R8G8B8A8_UNORM &&
          a_config.format != DXGI_FORMAT_B8G8R8A8_UNORM) || // SwapChain のフォーマットが有効か
         viewManager.device() != device.device())           // View の生成基盤が同じか
@@ -86,6 +87,10 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;    // Flip Model で Back Buffer を破棄する
         desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;       // Back Buffer の Alpha は未対応
         desc.Flags = isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0; // Tearing を許可するか
+        if (a_config.isWaitableEnabled)
+        {
+            desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        }
 
         // SwapChain を生成する
         Microsoft::WRL::ComPtr<IDXGISwapChain1> created;
@@ -99,6 +104,20 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         if (FAILED(queryResult))
         {
             return SwapResult::failure(swap_chain_error("IDXGISwapChain.QueryInterface", queryResult));
+        }
+
+        if (a_config.isWaitableEnabled)
+        {
+            const HRESULT latencyResult = result->m_swapChain->SetMaximumFrameLatency(a_config.maxQueuedFrames);
+            if (FAILED(latencyResult))
+            {
+                return SwapResult::failure(swap_chain_error("IDXGISwapChain.SetMaximumFrameLatency", latencyResult));
+            }
+            result->m_frameLatencyEvent = result->m_swapChain->GetFrameLatencyWaitableObject();
+            if (!result->m_frameLatencyEvent)
+            {
+                return SwapResult::failure({ErrorCategory::PlatformFailure, "IDXGISwapChain.GetFrameLatencyWaitableObject"});
+            }
         }
 
         // Alt+Enter でフルスクリーン切替を無効化する
@@ -182,8 +201,58 @@ Result<void> DX12SwapChain::present()
     const UINT syncInterval = m_config.isVSyncEnabled ? 1u : 0u;
     const UINT flags = !m_config.isVSyncEnabled && m_isTearingEnabled ? DXGI_PRESENT_ALLOW_TEARING : 0u;
     const HRESULT result = m_swapChain->Present(syncInterval, flags);
+    if (SUCCEEDED(result))
+    {
+        m_hasFramePermit = false;
+    }
     return FAILED(result) ? Result<void>::failure(swap_chain_error("IDXGISwapChain.Present", result))
                           : Result<void>::success();
+}
+
+/// @brief 最初の Frame も表示枠を取得し、Message Pump を所有する Main を待機させない
+Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
+                                         const std::function<bool()> &a_shouldCancel, bool a_isNonBlocking)
+{
+    if (!m_swapChain)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "DX12SwapChain.wait_for_frame"});
+    }
+    while (!a_stopToken.stop_requested() && !(a_shouldCancel && a_shouldCancel()))
+    {
+        if (!m_frameLatencyEvent || m_hasFramePermit)
+        {
+            return Result<bool>::success(true);
+        }
+        const DWORD status = WaitForSingleObject(m_frameLatencyEvent, a_isNonBlocking ? 0 : 1);
+        if (status == WAIT_OBJECT_0)
+        {
+            // 最小化などで Present を省略しても、消費した通知を次回へ持ち越す
+            m_hasFramePermit = true;
+            return Result<bool>::success(true);
+        }
+        if (status != WAIT_TIMEOUT)
+        {
+            return Result<bool>::failure({ErrorCategory::PlatformFailure, "DX12SwapChain.wait_for_frame.event",
+                                          static_cast<std::int64_t>(GetLastError())});
+        }
+        auto *queue = dynamic_cast<DX12GpuCommandQueue *>(m_queue.get());
+        const HRESULT removed = queue->device()->GetDeviceRemovedReason();
+        if (FAILED(removed))
+        {
+            return Result<bool>::failure(swap_chain_error("DX12SwapChain.wait_for_frame.device", removed));
+        }
+        if (a_isNonBlocking)
+        {
+            return Result<bool>::success(false);
+        }
+    }
+    return Result<bool>::success(false);
+}
+
+/// @brief 設定値ではなく所有する DXGI 待機 Handle の有無を返す
+bool DX12SwapChain::is_waitable_enabled() const noexcept
+{
+    return m_frameLatencyEvent != nullptr;
 }
 
 /// @brief Graph が借用を解除した後に、同じ Native SwapChain の表示枠だけを更新する
@@ -217,7 +286,8 @@ Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height
         return releaseResult;
     }
     // Flip Model の枠数と Format、生成時の Tearing Flag を維持する
-    const UINT flags = m_isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    const UINT flags = (m_isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u) |
+                       (m_frameLatencyEvent ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0u);
     const HRESULT resizeResult =
         m_swapChain->ResizeBuffers(m_config.bufferCount, a_width, a_height, m_config.format, flags);
     if (FAILED(resizeResult))
@@ -318,6 +388,12 @@ Result<void> DX12SwapChain::shutdown()
         return releaseResult;
     }
     m_swapChain.Reset();
+    if (m_frameLatencyEvent)
+    {
+        CloseHandle(m_frameLatencyEvent);
+        m_frameLatencyEvent = nullptr;
+    }
+    m_hasFramePermit = false;
     m_queue.reset();
     m_viewManager = nullptr;
     return Result<void>::success();
