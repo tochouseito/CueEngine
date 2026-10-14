@@ -125,17 +125,18 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                  {[this](Window &a_window) { return initialize_ui(a_window); },
                   {},
                   [this]() { return shutdown_ui(); },
-                  [this](IBackend &a_backend, std::uint32_t a_frames)
+                  [this](IBackend &a_backend, std::uint32_t a_cpuFrames, std::uint32_t a_gpuFrames)
                   {
-                      auto result = m_imgui->initialize_renderer(a_backend, a_frames);
-                      return result.has_value() ? m_imgui->enable_frame_transfer() : std::move(result);
+                      auto result = m_imgui->initialize_renderer(a_backend, a_gpuFrames);
+                      return result.has_value() ? m_imgui->enable_frame_transfer(a_cpuFrames) : std::move(result);
                   },
                   [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); },
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
                   { return m_imgui->render_frame(a_frame, a_token, a_record); }},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
-                 a_config.logging})
+                 a_config.logging,
+                 a_config.gpu})
 {
 }
 

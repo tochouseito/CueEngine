@@ -69,7 +69,7 @@ class DX12ImGuiBackend::State final
     ImGuiRendererInfo info;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
     bool isInitialized = false;
-    std::array<std::uint64_t, 2> ringFences{};
+    std::vector<std::uint64_t> ringFences;
     std::optional<std::size_t> recordedRing;
     std::uint64_t ringCalls = 0;
     TimingSamples gpuWaitTimes;
@@ -198,7 +198,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
                                                                    std::uint32_t a_frameCount, std::uint32_t a_capacity)
 {
     using BackendResult = Result<std::unique_ptr<DX12ImGuiBackend>>;
-    if (a_frameCount == 0 || a_frameCount > 2 || a_capacity == 0)
+    if (a_frameCount == 0 || a_frameCount > 8 || a_capacity == 0)
     {
         return BackendResult::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.config"});
     }
@@ -230,6 +230,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         state.device = device->device();
         state.queue = queue;
         state.info.frameCount = a_frameCount;
+        state.ringFences.resize(a_frameCount, 0);
         state.info.descriptorCapacity = a_capacity;
         state.descriptors.resize(a_capacity);
         auto heap = dx12::DX12DescriptorAllocator::create(*state.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,

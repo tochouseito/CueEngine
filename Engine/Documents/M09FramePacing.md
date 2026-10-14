@@ -24,3 +24,9 @@ FPS 時間待機は Render Callback / Present 後に集約し、Main は Message
 Worker は CPU Render 完了を即時公開し、周期待機が終わってから次の投入許可を増やす。起動時だけ先行数 + 1 件を許可し、Render F0 と Update F1 の重なりを作る。未来の Update 完了を Render の必須条件にしないため、Resize の排出でデッドロックしない
 
 FPS 待機は共通の停止 Token で解除する。Main は最大 1 ms の通知待ちで Pump へ戻り、FPS Timer / Spin を行わない。単一 Thread は Present 後に期限だけ保持し、次の step で判定する。CPU 完了間隔と周期完了間隔を別統計にする
+
+## #117 CPU / GPU 枠
+
+Host は CPU 容量を ImGui Snapshot に、GPU 容量を Graph と公式 ImGui Backend の Ring に渡す。論理 Frame ID と GPU Context の物理枠番号は同一と仮定しない。CPU Snapshot の Pin は記録後に回収し、GPU VB / IB Ring と Texture Descriptor はそれぞれの最終利用 Fence で保護する
+
+容量は 1〜8 枠を検証し、GPU 未完了上限は GPU 枠容量以下にする。SwapChain は別に 2〜16 枚を検証する

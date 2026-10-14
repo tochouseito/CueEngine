@@ -304,7 +304,7 @@ int run_case(std::uint32_t a_capacity, cue::dx12::AdapterSelection a_selection)
         return 5;
     }
     if (manager->initialize_renderer(*backend, 0).has_value() ||
-        manager->initialize_renderer(*backend, 3).has_value() ||
+        manager->initialize_renderer(*backend, 9).has_value() ||
         !manager->initialize_renderer(*backend, frameCount).has_value() ||
         manager->initialize_renderer(*backend, frameCount).has_value())
     {

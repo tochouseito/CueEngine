@@ -30,6 +30,7 @@
 #include <Platform/Windows/WindowsPlatform.h>
 #include <RHI/BackendFactory.h>
 #include <Runtime/Runtime.h>
+#include <WindowsHost/PerformanceSettings.h>
 
 namespace cue
 {
@@ -272,8 +273,8 @@ Result<void> WindowsHost::initialize()
     m_lifecycle = Lifecycle::Stopped;
 
     // FrameController の許容先行数と Flip Model の最小 BackBuffer 数を表示前に検証する
-    if (m_config.frame.maxFramesInFlight == 0 || m_config.frame.maxFramesInFlight > 2 ||
-        m_config.presentation.bufferCount < 2)
+    auto settingsResult = validate_performance_settings({m_config.frame, m_config.gpu, m_config.presentation});
+    if (!settingsResult.has_value())
     {
         // Graph 生成前の入力失敗でも Host が受け取った Pass を残さない
         m_config.graph = {};
@@ -391,7 +392,8 @@ Result<void> WindowsHost::initialize()
     if (m_config.callbacks.initializeRenderer)
     {
         m_state->hasWindowInitializationStarted = true;
-        auto hostResult = m_config.callbacks.initializeRenderer(*m_state->backend, m_config.frame.maxFramesInFlight);
+        auto hostResult = m_config.callbacks.initializeRenderer(*m_state->backend, m_config.frame.maxFramesInFlight,
+                                                                m_config.gpu.resourceFrameCount);
         if (!hostResult.has_value())
         {
             return rollback(*hostResult.try_error());
@@ -405,7 +407,7 @@ Result<void> WindowsHost::initialize()
 
     // FrameGraph の構築は Backend と SwapChain が生存する間だけ有効で、Runtime より長く保持する
     dx12::DX12MainFrameGraphConfig graphConfig;
-    graphConfig.frameCount = m_config.frame.maxFramesInFlight;
+    graphConfig.frameCount = m_config.gpu.resourceFrameCount;
     graphConfig.clearColor = m_config.presentation.clearColor;
     // Host が選択した抽象 Pass を Graph に移し、DX12 層には Editor の具体型を伝えない
     graphConfig.configure = std::move(m_config.graph.configure);
@@ -430,7 +432,7 @@ Result<void> WindowsHost::initialize()
     m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
                                                  *m_state->services.threadFactory);
     State *state = m_state.get();
-    const auto frameCount = m_config.frame.maxFramesInFlight;
+    const auto frameCount = m_config.gpu.resourceFrameCount;
     // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
     auto update = m_config.callbacks.update;
     if (!update)

@@ -112,7 +112,7 @@ public:
     [[nodiscard]] Result<void> initialize_renderer(IBackend &a_backend, std::uint32_t a_frameCount);
 
     /// @brief Renderer の枠数に合わせた Snapshot 転送を初回 UI 構築前に有効にする
-    [[nodiscard]] Result<void> enable_frame_transfer();
+    [[nodiscard]] Result<void> enable_frame_transfer(std::uint32_t a_cpuFrameCount = 0);
 
     /// @brief Owner Thread で閉じた UI Frame を複製し、単調増加する Frame ID で公開する
     ///

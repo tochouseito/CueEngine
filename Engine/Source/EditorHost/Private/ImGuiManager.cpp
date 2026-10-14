@@ -112,9 +112,9 @@ public:
     bool isCpuAtlasBuilt = false;
     std::unique_lock<std::recursive_mutex> frameLock;
     std::condition_variable_any released;
-    std::array<std::unique_ptr<DrawSnapshot>, 2> snapshots;
+    std::vector<std::unique_ptr<DrawSnapshot>> snapshots;
     // Render が返した枠は配列の容量を保持し、次の CPU 複製で再利用する
-    std::array<std::unique_ptr<DrawSnapshot>, 2> cachedSnapshots;
+    std::vector<std::unique_ptr<DrawSnapshot>> cachedSnapshots;
     ImGuiTransferInfo transfer;
     DrawSnapshot *activeSnapshot = nullptr;
     std::uint64_t lastPublishedUi = 0;
@@ -347,7 +347,7 @@ Result<void> ImGuiManager::initialize_renderer(IBackend &a_backend, std::uint32_
 }
 
 /// @brief Renderer 接続後にだけ固定数の転送枠を使用可能にする
-Result<void> ImGuiManager::enable_frame_transfer()
+Result<void> ImGuiManager::enable_frame_transfer(std::uint32_t a_cpuFrameCount)
 {
     if (std::this_thread::get_id() != m_ownerId)
     {
@@ -363,7 +363,20 @@ Result<void> ImGuiManager::enable_frame_transfer()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.enable_frame_transfer"});
     }
-    m_state->frameCount = m_state->renderer->info().frameCount;
+    const auto frameCount = a_cpuFrameCount ? a_cpuFrameCount : m_state->renderer->info().frameCount;
+    if (frameCount > 8)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiManager.cpu_capacity"});
+    try
+    {
+        // GPU Ring の容量を流用せず、CPU Snapshot の所有枠を確保する
+        m_state->snapshots.resize(frameCount);
+        m_state->cachedSnapshots.resize(frameCount);
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.cpu_allocation"});
+    }
+    m_state->frameCount = frameCount;
     return Result<void>::success();
 }
 
@@ -637,7 +650,8 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
     if (m_state && m_state->activeSnapshot && m_state->transfer.renderThreadId == std::this_thread::get_id())
     {
         auto &snapshot = *m_state->activeSnapshot;
-        if (snapshot.wasRecorded || a_context.frame_index() != snapshot.frame % m_state->frameCount)
+        // Snapshot は論理 Frame ID、Context は GPU 枠の番号であり一致を要求しない
+        if (snapshot.wasRecorded)
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.record.duplicate"});
         }

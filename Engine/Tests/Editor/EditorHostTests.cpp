@@ -356,6 +356,9 @@ int test_default_ui_display(bool a_usesWorkers, std::uint32_t a_frameCount)
     config.frame.maxFps = 0;
     config.frame.useWorkerThreads = a_usesWorkers;
     config.frame.maxFramesInFlight = a_frameCount;
+    // CPU / GPU の枠番号が一致しない構成でも Snapshot を正しく消費する
+    config.gpu.resourceFrameCount = a_frameCount == 1 ? 3 : (a_frameCount == 3 ? 1 : 2);
+    config.gpu.maxFramesInFlight = config.gpu.resourceFrameCount;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value())
     {
@@ -498,7 +501,7 @@ int test_resize_ui_display(bool a_usesWorkers)
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
 int main()
 {
-    for (const auto frames : {1u, 2u})
+    for (const auto frames : {1u, 2u, 3u})
     {
         for (const bool usesWorkers : {false, true})
         {

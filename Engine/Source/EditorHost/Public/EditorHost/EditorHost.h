@@ -25,6 +25,7 @@ struct EditorHostConfig final
     StoragePathsConfig storage;
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
+    GpuFrameConfig gpu;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
