@@ -31,7 +31,8 @@ struct WindowsHostCallbacks final
     // 失敗時は下位 Owner を保持し、次の shutdown で再試行する
     std::function<Result<void>()> shutdownWindow;
     // SwapChain 生成後、Graph 構築前に呼ぶ。具体 Backend 型は上位の実装側で解釈する
-    std::function<Result<void>(IBackend &, std::uint32_t)> initializeRenderer;
+    // CPU Snapshot 容量と GPU 描画枠容量を別々に渡す
+    std::function<Result<void>(IBackend &, std::uint32_t, std::uint32_t)> initializeRenderer;
     // Message Pump 後、採用 Frame の Update より先に構築 Thread で呼ぶ
     // ImGui 等の具体型は捕捉先に閉じ、失敗時は Frame の投入を止める
     FrameCallback main;
@@ -52,6 +53,7 @@ struct WindowsHostConfig final
     // 未指定なら Windows 実装を生成する。指定された実装も Host が所有する
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
+    GpuFrameConfig gpu;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
