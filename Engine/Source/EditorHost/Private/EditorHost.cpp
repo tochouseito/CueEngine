@@ -54,6 +54,16 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
             // 二つの Render 完了点が揃うまでは FPS を計算せず、起動直後の零除算を避ける
             ImGui::Text("FrameController FPS: --");
         }
+        // 平均 FPS と同じ Render 完了間隔の最新 Sample から、瞬間的な揺れを表示する
+        const auto lastInterval = std::chrono::duration<double>(intervals.lastDuration).count();
+        if (intervals.sampleCount != 0 && lastInterval > 0.0)
+        {
+            ImGui::Text("FrameController FPS (instant): %.1f", 1.0 / lastInterval);
+        }
+        else
+        {
+            ImGui::Text("FrameController FPS (instant): --");
+        }
         // GPU 時間と混同しないよう CPU の経過時間であることと集計枠数を表示する
         ImGui::Text("CPU timings (last 120 samples)");
         show_timing("Main", a_frameTiming.main);
