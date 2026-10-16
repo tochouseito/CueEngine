@@ -61,6 +61,9 @@ public:
     /// @brief 現世代の Resource を競合しない Access で借りる
     [[nodiscard]] Result<gpuResourceLease> acquire(GpuResourceHandle a_handle, GpuResourceAccess a_access) override;
 
+    /// @brief 世代と競合する GPU 完了点を非待機で検証する。取得まで Pool 操作を直列化する
+    [[nodiscard]] Result<bool> can_acquire(GpuResourceHandle a_handle, GpuResourceAccess a_access) const override;
+
     /// @brief active CPU Lease は拒否し、競合する GPU 利用の完了後に世代を再検証して借用する
     [[nodiscard]] Result<gpuResourceLease> acquire_wait(GpuResourceHandle a_handle,
                                                        GpuResourceAccess a_access) override;

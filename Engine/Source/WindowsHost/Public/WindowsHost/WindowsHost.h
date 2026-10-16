@@ -47,6 +47,8 @@ struct WindowsHostCallbacks final
     simulationCallback simulationUpdate;
     // 更新した World の前後状態と補間係数を描画 Snapshot へ複製する
     frameSnapshotCallback prepareFrame;
+    // 単一 Thread の UI 構築前に上位 Renderer の GPU Ring を非待機で確認する
+    std::function<Result<bool>()> isRendererReady;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定

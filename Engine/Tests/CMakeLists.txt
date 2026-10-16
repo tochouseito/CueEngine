@@ -174,7 +174,7 @@ if(WIN32)
     add_executable(CuePerformanceSettingsTests Platform/PerformanceSettingsTests.cpp)
     target_link_libraries(CuePerformanceSettingsTests PRIVATE Cue.WindowsHost Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.WindowsHost.PerformanceSettings COMMAND CuePerformanceSettingsTests)
-    target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost Cue.Platform.Windows)
+    target_link_libraries(CueWindowsHostTests PRIVATE Cue.WindowsHost Cue.Platform.Windows Cue.Renderer.DX12)
     add_test(NAME Cue.WindowsHost.Lifecycle COMMAND CueWindowsHostTests)
     set_tests_properties(Cue.WindowsHost.Lifecycle PROPERTIES TIMEOUT 10)
 

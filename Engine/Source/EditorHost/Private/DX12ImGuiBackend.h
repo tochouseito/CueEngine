@@ -38,6 +38,8 @@ class DX12ImGuiBackend final
     /// @brief 同期 Graph Callback の提出済 Fence を VB/IB Ring と Texture の最終利用へ接続する
     /// 失敗 Callback でも呼ぶ。Queue の致命的な提出失敗では Resource を保全して失敗する
     [[nodiscard]] Result<void> finish_submission();
+    /// @brief 次の公式 VB / IB Ring だけを非待機で確認する。Context Lock 内で操作を直列化する
+    [[nodiscard]] Result<bool> is_frame_ready() const;
     /// @brief 所有 Heap と公式 Backend の描画枠の概要を返す
     [[nodiscard]] ImGuiRendererInfo info() const noexcept;
     /// @brief 新しい Fence の完了後に公式 Backend と専用 Heap を解放する

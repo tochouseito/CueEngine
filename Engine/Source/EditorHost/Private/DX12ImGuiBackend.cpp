@@ -439,6 +439,23 @@ Result<void> DX12ImGuiBackend::finish_submission()
     return Result<void>::success();
 }
 
+/// @brief 描画呼出し順の次の Ring が安全に再利用できるか確認する
+Result<bool> DX12ImGuiBackend::is_frame_ready() const
+{
+    if (!m_state || !m_state->isInitialized || m_state->recordedRing)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "ImGuiDX12.is_frame_ready"});
+    }
+    const auto &state = *m_state;
+    const auto removed = state.device->GetDeviceRemovedReason();
+    if (FAILED(removed) || state.queue->is_poisoned())
+    {
+        return Result<bool>::failure({ErrorCategory::Fatal, "ImGuiDX12.is_frame_ready.device", removed});
+    }
+    const auto fence = state.ringFences[state.ringCalls % state.info.frameCount];
+    return Result<bool>::success(fence == 0 || state.queue->is_fence_complete(fence));
+}
+
 /// @brief GPU 完了と旧 Snapshot の参照を確認して公式 Texture 更新を完了する
 Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
 {

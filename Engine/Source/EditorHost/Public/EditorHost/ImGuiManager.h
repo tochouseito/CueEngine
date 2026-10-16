@@ -145,6 +145,8 @@ public:
 
     /// @brief GPU Backend の描画枠と Descriptor の所有数を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiRendererInfo> renderer_info() const;
+    /// @brief Owner Thread で次の GPU Ring の完了だけ確認する。未準備なら UI 構築せず Pump へ戻る
+    [[nodiscard]] Result<bool> is_renderer_ready() const;
 
     /// @brief Win32 入力を取り込み UI Frame を開始し、この Context を Current にする
     ///

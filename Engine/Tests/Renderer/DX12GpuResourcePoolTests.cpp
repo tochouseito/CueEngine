@@ -86,6 +86,11 @@ bool verify_wait_acquire(cue::dx12::DX12GpuResourcePool &a_pool)
             return false;
         }
         const auto handle = handleResult.take_value();
+        auto initial = a_pool.can_acquire(handle, cue::GpuResourceAccess::Write);
+        if (!initial.has_value() || !*initial.try_value())
+        {
+            return false;
+        }
         auto leaseResult = a_pool.acquire(handle, cue::GpuResourceAccess::Read);
         if (!leaseResult.has_value())
         {
@@ -93,12 +98,24 @@ bool verify_wait_acquire(cue::dx12::DX12GpuResourcePool &a_pool)
         }
         auto lease = leaseResult.take_value();
         auto pending = std::make_shared<WaitCompletion>();
+        auto active = a_pool.can_acquire(handle, cue::GpuResourceAccess::Write);
+        if (!active.has_value() || *active.try_value() || pending->waitCount != 0)
+        {
+            return false;
+        }
         if (!lease->mark_submitted(pending).has_value() ||
             a_pool.acquire_wait(handle, cue::GpuResourceAccess::Write).has_value() || pending->waitCount != 0)
         {
             return false;
         }
         lease.reset();
+        auto readable = a_pool.can_acquire(handle, cue::GpuResourceAccess::Read);
+        auto writable = a_pool.can_acquire(handle, cue::GpuResourceAccess::Write);
+        if (!readable.has_value() || !*readable.try_value() || !writable.has_value() || *writable.try_value() ||
+            pending->waitCount != 0)
+        {
+            return false;
+        }
         if (a_pool.acquire(handle, cue::GpuResourceAccess::Write).has_value() || pending->waitCount != 0)
         {
             return false;
@@ -109,6 +126,11 @@ bool verify_wait_acquire(cue::dx12::DX12GpuResourcePool &a_pool)
             return false;
         }
         next.take_value().reset();
+        auto ready = a_pool.can_acquire(handle, cue::GpuResourceAccess::Write);
+        if (!ready.has_value() || !*ready.try_value())
+        {
+            return false;
+        }
         if (!a_pool.retire(handle).has_value() ||
             a_pool.acquire_wait(handle, cue::GpuResourceAccess::Write).has_value())
         {

@@ -17,6 +17,38 @@
 
 namespace
 {
+/// @brief 非待機の状態照会と明示待機を区別する Completion
+class ControlledCompletion final : public cue::ICommandCompletion
+{
+  public:
+    /// @brief 検証対象の Queue 種類を返す
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+    /// @brief 検証側で切り替えた完了状態を返す
+    [[nodiscard]] bool is_complete() const noexcept override
+    {
+        return isDone;
+    }
+    /// @brief 未完了と致命的失敗を待機せず区別する
+    [[nodiscard]] cue::Result<bool> completion_status() const override
+    {
+        return hasFailed ? cue::Result<bool>::failure({cue::ErrorCategory::Fatal, "Test.completion"})
+                         : cue::Result<bool>::success(isDone);
+    }
+    /// @brief 明示待機を数え、安全な Test 終了も可能にする
+    [[nodiscard]] cue::Result<void> wait() override
+    {
+        ++waits;
+        isDone = true;
+        return cue::Result<void>::success();
+    }
+    bool isDone = false;
+    bool hasFailed = false;
+    int waits = 0;
+};
+
 /// @brief Native Texture の全体を単一 State へ遷移させる
 void transition(ID3D12GraphicsCommandList& a_list, ID3D12Resource& a_resource,
                 D3D12_RESOURCE_STATES a_before, D3D12_RESOURCE_STATES a_after)
@@ -213,6 +245,31 @@ int run_tests()
     }
     auto frames = framesResult.take_value();
     auto* first = frames->resource(0, color);
+    auto pending = std::make_shared<ControlledCompletion>();
+    if (!frames->mark_submitted(0, pending).has_value())
+    {
+        return 91;
+    }
+    auto blocked = frames->is_frame_ready(0);
+    auto other = frames->is_frame_ready(1);
+    if (!blocked.has_value() || *blocked.try_value() || !other.has_value() || !*other.try_value() ||
+        frames->is_frame_ready(2).has_value() || pending->waits != 0)
+    {
+        return 92;
+    }
+    pending->hasFailed = true;
+    if (frames->is_frame_ready(0).has_value() || pending->waits != 0)
+    {
+        return 93;
+    }
+    pending->hasFailed = false;
+    pending->isDone = true;
+    auto completed = frames->is_frame_ready(0);
+    if (!completed.has_value() || !*completed.try_value() || pending->waits != 0 ||
+        !frames->begin_frame(0).has_value() || pending->waits != 1)
+    {
+        return 94;
+    }
     auto* second = frames->resource(1, color);
     if (frames->frame_count() != 2 || !first || !second ||
         first->resource() == second->resource() ||

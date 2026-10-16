@@ -402,6 +402,35 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle
     }
 }
 
+/// @brief Lease を取得せず CPU 競合と提出済み GPU 参照の完了状態を調べる
+Result<bool> DX12GpuResourcePool::can_acquire(GpuResourceHandle a_handle, GpuResourceAccess a_access) const
+{
+    if (a_access != GpuResourceAccess::Read && a_access != GpuResourceAccess::Write)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidArgument, "DX12GpuResourcePool.can_acquire.access"});
+    }
+    std::lock_guard lock(m_state->mutex);
+    if (m_state->isClosed || !m_state->is_current_locked(a_handle))
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "DX12GpuResourcePool.can_acquire.handle"});
+    }
+    const auto &slot = m_state->slots[a_handle.index];
+    bool isAvailable = !slot.hasActiveWriter && (a_access != GpuResourceAccess::Write || slot.activeReaders == 0);
+    for (const auto &use : slot.pending)
+    {
+        auto status = use.completion->completion_status();
+        if (!status.has_value())
+        {
+            return Result<bool>::failure(*status.try_error());
+        }
+        if (!*status.try_value() && (a_access == GpuResourceAccess::Write || use.access == GpuResourceAccess::Write))
+        {
+            isAvailable = false;
+        }
+    }
+    return Result<bool>::success(isAvailable);
+}
+
 /// @brief GPU 完了待機を Pool Mutex の外で行い、待機後の世代・停止・CPU 競合を再検証する
 Result<gpuResourceLease> DX12GpuResourcePool::acquire_wait(GpuResourceHandle a_handle, GpuResourceAccess a_access)
 {

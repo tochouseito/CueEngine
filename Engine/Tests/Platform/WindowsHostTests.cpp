@@ -12,6 +12,10 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <DX12/DX12Backend.h>
+#include <DX12/DX12QueuePool.h>
+#include <DX12/DX12RenderDevice.h>
+#include <DX12/DX12SwapChain.h>
 #include <Passes/PresentToSwapChainPass.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
@@ -553,6 +557,88 @@ int test_input_during_frame_wait(bool a_usesWorkers)
     return 0;
 }
 
+/// @brief GPU を明示的に停止し、単一 Thread でも二枠を投入してから Pump へ戻ることを確認する
+int test_single_gpu_overlap()
+{
+    cue::WindowsHostConfig config{{"GPU overlap", {320, 240}}, {2, false, 0}, {3, false, false}};
+    config.presentation.isWaitableEnabled = false;
+    config.gpu = {2, 2};
+    Microsoft::WRL::ComPtr<ID3D12Fence> gate;
+    ID3D12CommandQueue *queue = nullptr;
+    bool rendererReady = false;
+    int mainCalls = 0;
+    config.callbacks.isRendererReady = [&] { return cue::Result<bool>::success(rendererReady); };
+    config.callbacks.main = [&](std::uint64_t, std::stop_token)
+    {
+        ++mainCalls;
+        return cue::Result<void>::success();
+    };
+    config.callbacks.initializeRenderer = [&](cue::IBackend &a_backend, std::uint32_t, std::uint32_t)
+    {
+        auto *backend = dynamic_cast<cue::dx12::DX12Backend *>(&a_backend);
+        if (!backend || FAILED(backend->get_resource_context()->device.device()->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                                                                             IID_PPV_ARGS(&gate))))
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "Test.gate"});
+        }
+        auto *graphics = dynamic_cast<cue::dx12::DX12GpuCommandQueue *>(backend->get_swap_chain()->graphics_queue());
+        queue = graphics ? graphics->command_queue() : nullptr;
+        return queue ? cue::Result<void>::success()
+                     : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.queue"});
+    };
+    cue::WindowsHost host(std::move(config));
+    if (!host.initialize().has_value() || !host.step().has_value() || mainCalls != 0 ||
+        FAILED(queue->Wait(gate.Get(), 1)))
+    {
+        return 1;
+    }
+    // 失敗経路でも Queue を必ず解放し、Host の停止を有限時間で完了させる
+    std::jthread release(
+        [&](std::stop_token a_stop)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!a_stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            static_cast<void>(gate->Signal(1));
+        });
+    rendererReady = true;
+    for (int index = 0; index < 2; ++index)
+    {
+        if (!host.step().has_value())
+        {
+            return 2;
+        }
+    }
+    auto progress = host.frame_progress();
+    auto stats = host.graph_performance();
+    if (!progress.has_value() || progress.try_value()->submittedFrames != 2 || mainCalls != 2 || !stats.has_value() ||
+        stats.try_value()->peakUnfinishedGpuFrames != 2 || gate->GetCompletedValue() != 0)
+    {
+        return 3;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    if (!host.step().has_value() || mainCalls != 2 ||
+        std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(250))
+    {
+        return 4;
+    }
+    release.request_stop();
+    release.join();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (mainCalls < 3 && std::chrono::steady_clock::now() < deadline)
+    {
+        if (!host.step().has_value())
+        {
+            return 5;
+        }
+    }
+    // Test 所有の Device 参照も Leak 検証より前に解放する
+    gate.Reset();
+    return mainCalls == 3 && host.shutdown().has_value() ? 0 : 6;
+}
+
 /// @brief CTest の失敗出力に検査名と戻り値を残し、再現時の分岐を特定する
 [[nodiscard]] int report_failure(const char *a_test, int a_code)
 {
@@ -564,6 +650,10 @@ int test_input_during_frame_wait(bool a_usesWorkers)
 /// @brief 実 Window 上で WindowsHost の生成と停止を検証する
 int main()
 {
+    if (const int result = test_single_gpu_overlap(); result != 0)
+    {
+        return report_failure("single GPU overlap", 70 + result);
+    }
     if (const int result = test_failed_initialization(); result != 0)
     {
         return report_failure("initialization", 10 + result);

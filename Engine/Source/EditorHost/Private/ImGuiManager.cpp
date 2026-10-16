@@ -617,6 +617,20 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     }
 }
 
+/// @brief Owner Thread の UI 構築前に、次の GPU Ring の再利用可否を照会する
+Result<bool> ImGuiManager::is_renderer_ready() const
+{
+    std::lock_guard lock(imgui_context_mutex());
+    auto valid = validate("ImGuiManager.is_renderer_ready");
+    if (!valid.has_value() || !m_state->renderer)
+    {
+        return Result<bool>::failure(valid.has_value()
+                                         ? Error{ErrorCategory::InvalidState, "ImGuiManager.is_renderer_ready.renderer"}
+                                         : *valid.try_error());
+    }
+    return m_state->renderer->is_frame_ready();
+}
+
 /// @brief Snapshot の借用だけを排他し、通常 Graph 記録中に Main の Context 操作を止めない
 Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
 {
