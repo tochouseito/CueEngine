@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <string_view>
 #include <thread>
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -85,8 +86,9 @@
 }
 
 /// @brief 同じ Callback 条件で三つの Controller 構成を二回ずつ比較する
-int main()
+int main(int a_count, char **a_arguments)
 {
+    const bool isPacingOnly = a_count == 2 && std::string_view(a_arguments[1]) == "--fps-only";
     std::puts("repeat,workers,slots,max_fps,callback_sleep_ms,frames,wall_s,average_fps,cpu_s,one_core_cpu_pct,step_"
               "calls,full_calls,last_interval_ms");
     for (unsigned repeat = 1; repeat <= 2; ++repeat)
@@ -97,6 +99,10 @@ int main()
             const unsigned slots = mode == 2 ? 2 : 1;
             for (unsigned scenario = 0; scenario < 3; ++scenario)
             {
+                if (isPacingOnly && scenario != 0)
+                {
+                    continue;
+                }
                 const unsigned fps = scenario == 0 ? 60 : 0;
                 const unsigned sleepMs = scenario == 2 ? 16 : 0;
                 const unsigned frames = scenario == 0 ? 120 : scenario == 1 ? 10000 : 60;

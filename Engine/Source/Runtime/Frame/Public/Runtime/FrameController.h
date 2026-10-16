@@ -8,6 +8,7 @@
 #include <Runtime/FramePacing.h>
 #include <Runtime/Simulation.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -45,6 +46,17 @@ struct FrameControllerDesc final
     /// @brief 設定値の変更有無を所有値だけで比較する
     bool operator==(const FrameControllerDesc &) const = default;
 };
+
+/// @brief 実行 Thread に依存せず、期限の追い込みに使用する実効 Spin 時間を返す
+[[nodiscard]] inline std::chrono::nanoseconds effective_spin_duration(const FrameControllerDesc &a_desc) noexcept
+{
+    if (a_desc.maxFps == 0 || a_desc.waitMode != FrameWaitMode::Hybrid)
+    {
+        return std::chrono::nanoseconds::zero();
+    }
+    const auto period = std::chrono::nanoseconds((1'000'000'000ULL + a_desc.maxFps - 1) / a_desc.maxFps);
+    return (std::min)(a_desc.spinDuration, period / 8);
+}
 
 /// @brief Main Threadが進行状況を参照するためのSnapshot
 struct FrameProgress final
@@ -193,6 +205,9 @@ private:
 
   /// @brief Render 後に周期の残り時間を待ち、停止していなければ次の投入を許可する
   void finish_cycle(std::chrono::steady_clock::time_point a_renderCompletion, std::stop_token a_stopToken);
+
+  /// @brief 共通の待機方針で期限へ近づけ、Main は最大 1 ms の区間で Pump へ戻す
+  void wait_for_deadline(std::chrono::steady_clock::time_point a_deadline, std::stop_token a_token, bool a_isMain);
 
   /// @brief 要求された同期方針を表示能力と統計に照らして解決する
   [[nodiscard]] Result<FramePacingPlan> cycle_plan(std::chrono::steady_clock::time_point a_completion);

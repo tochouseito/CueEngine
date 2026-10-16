@@ -23,7 +23,7 @@ FPS 時間待機は Render Callback / Present 後に集約し、Main は Message
 
 Worker は CPU Render 完了を即時公開し、周期待機が終わってから次の投入許可を増やす。起動時だけ先行数 + 1 件を許可し、Render F0 と Update F1 の重なりを作る。未来の Update 完了を Render の必須条件にしないため、Resize の排出でデッドロックしない
 
-FPS 待機は共通の停止 Token で解除する。Main は最大 1 ms の通知待ちで Pump へ戻り、FPS Timer / Spin を行わない。単一 Thread は Present 後に期限だけ保持し、次の step で判定する。CPU 完了間隔と周期完了間隔を別統計にする
+FPS 待機は共通の停止 Token で解除する。単一 Thread は Present 後に期限だけ保持し、次の step で判定する。M10 #132 で Main の待機も Sleep / Hybrid 設定を使う高精度 Timer と短い Spin へ統一した。最大 1 ms の区間で Pump へ戻る。CPU 完了間隔と周期完了間隔を別統計にする。修正の詳細は [M10](M10PerformanceSettings.md) を参照する
 
 ## #117 CPU / GPU 枠
 

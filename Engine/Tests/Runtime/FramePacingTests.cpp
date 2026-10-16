@@ -19,6 +19,109 @@ class ManualClock final : public cue::Clock
     std::chrono::steady_clock::time_point time{};
 };
 
+/// @brief Main の待機要求を記録し、実時間に依存せず期限の計算を検証する
+class RecordingWaiter final : public cue::Waiter
+{
+  public:
+    /// @brief Controller より長く生存する Test 時計を借用する
+    explicit RecordingWaiter(ManualClock &a_clock) : m_clock(a_clock)
+    {
+    }
+    /// @brief 単一 Thread の通知世代を返す
+    std::uint64_t generation() const noexcept override
+    {
+        return m_generation;
+    }
+    /// @brief 停止通知を受け付ける
+    void notify_all() noexcept override
+    {
+        ++m_generation;
+    }
+    /// @brief FPS 待機が従来の通知 Timeout へ戻った場合を検出する
+    cue::WaitStatus wait_for_change(std::uint64_t, std::chrono::nanoseconds a_duration,
+                                    std::stop_token a_token) noexcept override
+    {
+        ++notificationWaits;
+        return sleep_for(a_duration, a_token);
+    }
+    /// @brief 指定時間だけ時計を進め、Main を塞ぐ長い要求も記録する
+    cue::WaitStatus sleep_for(std::chrono::nanoseconds a_duration, std::stop_token a_token) noexcept override
+    {
+        if (a_token.stop_requested())
+        {
+            return cue::WaitStatus::Stopped;
+        }
+        ++sleeps;
+        longestSleep = (std::max)(longestSleep, a_duration);
+        m_clock.time += a_duration;
+        return cue::WaitStatus::TimedOut;
+    }
+    /// @brief Spin の一回を短い時間として進める
+    void relax() noexcept override
+    {
+        ++spins;
+        m_clock.time += std::chrono::microseconds(10);
+    }
+    unsigned sleeps = 0;
+    unsigned spins = 0;
+    unsigned notificationWaits = 0;
+    std::chrono::nanoseconds longestSleep{};
+
+  private:
+    ManualClock &m_clock;
+    std::uint64_t m_generation = 0;
+};
+
+/// @brief Single でも Sleep / Hybrid の設定を使用し、期限より前に次 Frame を許可しない
+int test_single_wait_policy()
+{
+    using namespace std::chrono_literals;
+    auto servicesResult = cue::create_windows_thread_services();
+    if (!servicesResult.has_value())
+    {
+        return 1;
+    }
+    auto services = servicesResult.take_value();
+    for (const auto mode : {cue::FrameWaitMode::Sleep, cue::FrameWaitMode::Hybrid})
+    {
+        ManualClock clock;
+        RecordingWaiter waiter(clock);
+        cue::FrameControllerDesc config{1, false, 100};
+        config.waitMode = mode;
+        config.spinDuration = 500us;
+        auto success = [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); };
+        cue::FrameController controller(config, clock, waiter, *services.threadFactory, success, success);
+        if (!controller.start().has_value() || !controller.advance().has_value())
+        {
+            return 2;
+        }
+        bool isReady = false;
+        for (int attempt = 0; attempt < 30 && !isReady; ++attempt)
+        {
+            auto ready = controller.wait_for_frame();
+            if (!ready.has_value() || (*ready.try_value() && clock.time.time_since_epoch() < 10ms))
+            {
+                return 3;
+            }
+            isReady = *ready.try_value();
+        }
+        if (!isReady || clock.time.time_since_epoch() != 10ms || waiter.sleeps == 0 || waiter.longestSleep > 1ms ||
+            waiter.notificationWaits != 0 || ((waiter.spins != 0) != (mode == cue::FrameWaitMode::Hybrid)) ||
+            !controller.stop().has_value())
+        {
+            return 4;
+        }
+    }
+    cue::FrameControllerDesc config{1, false, 1000};
+    config.spinDuration = 5ms;
+    if (cue::effective_spin_duration(config) != 125us)
+    {
+        return 5;
+    }
+    config.maxFps = 0;
+    return cue::effective_spin_duration(config) == 0ns ? 0 : 6;
+}
+
 /// @brief 予測時刻なし / 古い時刻 / 過大な時刻では固定周期へ戻る
 int test_plan()
 {
@@ -140,6 +243,10 @@ int test_delayed_admission()
 /// @brief 予測の Fallback と非待機通知の同期契約を確認する
 int main()
 {
+    if (const auto policy = test_single_wait_policy(); policy != 0)
+    {
+        return 10 + policy;
+    }
     const auto plan = test_plan();
     if (plan)
     {
