@@ -27,3 +27,11 @@ RecordingWaiter による決定的な Test で、単一 Thread の Sleep / Hybri
 Pool の非待機照会は Lease の予約ではない。確認から取得まで所有側で直列化する。独自 Pool は `can_acquire` を実装する。未対応なら明示的な失敗を返し、Main に隠れた GPU 待機を持ち込まない。Worker 経路の安全な完了待機は維持する
 
 制御可能な Completion で物理枠別の照会、エラー伝播、照会時の待機ゼロを検証する。Pool の Read / Write 競合と待機ゼロを検証する。実 Host Test では Queue を Fence で止め、単一 Thread で二 Frame を未完了のまま提出できること、三 Frame 目が UI を作らず速やかに戻ること、解放後に再開することを確認する
+
+Debug Build と DX12 / WindowsHost / Editor の関連 CTest 28 件が成功した
+
+## #134 表示 Queue の実効値
+
+保存用の `PerformanceSettings` と観測用の `EffectivePerformanceSettings` を分ける。`effective.presentation.maxQueuedFrames` は optional とし、Waitable OFF 時は未適用の `nullopt` を返す。要求値の保存形式と数値は保持する。SwapChain は `SetMaximumFrameLatency` の成功後、Waitable Handle を所有する間だけ適用済み上限を公開する
+
+UI は Queued presents を Waitable OFF 中に編集不可とし、要求値と未適用の理由を表示する。これは OS / DXGI 自身の Queue 既定値がゼロになる意味ではない。設定保存の往復、状態解決、Native SwapChain の ON/OFF、実 Editor の再設定後の状態を Test する

@@ -9,6 +9,26 @@
 
 namespace cue
 {
+/// @brief 未適用の表示 Queue 上限を設定値で埋めず、Native の成功結果を反映する
+PerformanceSettingsStatus resolve_performance_status(const PerformanceSettings &a_requested,
+                                                     const FrameProgress &a_progress, bool a_isTearingEnabled,
+                                                     std::optional<std::uint32_t> a_queuedFrameLimit, bool a_isPending)
+{
+    PerformanceSettingsStatus status;
+    status.requested = a_requested;
+    status.effective.frame = a_requested.frame;
+    status.effective.frame.maxUpdateLeadFrames = update_lead_frames(a_requested.frame);
+    status.effective.frame.syncMode = a_progress.effectiveSyncMode;
+    status.effective.frame.spinDuration = effective_spin_duration(a_requested.frame);
+    status.effective.gpu = a_requested.gpu;
+    const auto &present = a_requested.presentation;
+    status.effective.presentation = {present.bufferCount, present.isVSyncEnabled,         a_isTearingEnabled,
+                                     present.clearColor,  a_queuedFrameLimit.has_value(), a_queuedFrameLimit};
+    status.syncFallback = a_progress.syncFallback;
+    status.isPending = a_isPending;
+    return status;
+}
+
 /// @brief ゲーム固有の最大値と編集許可を共通検証へ重ねる
 Result<void> validate_performance_policy(const PerformanceSettings &a_settings,
                                          const PerformanceSettingsPolicy &a_policy)

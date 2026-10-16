@@ -69,10 +69,15 @@ int test_reconfiguration()
                 return 2;
             }
             auto applied = host.performance_settings();
+            auto status = host.performance_settings_status();
             auto progress = host.frame_progress();
             auto transfer = host.ui_transfer_info();
-            if (!applied.has_value() || *applied.try_value() != settings || !progress.has_value() ||
-                !transfer.has_value() ||
+            if (!applied.has_value() || *applied.try_value() != settings || !status.has_value() ||
+                status.try_value()->requested != settings ||
+                status.try_value()->effective.presentation.maxQueuedFrames !=
+                    (settings.presentation.isWaitableEnabled ? std::optional(settings.presentation.maxQueuedFrames)
+                                                             : std::nullopt) ||
+                !progress.has_value() || !transfer.has_value() ||
                 transfer.try_value()->publishedFrames != progress.try_value()->submittedFrames ||
                 transfer.try_value()->consumedFrames != progress.try_value()->renderedFrames ||
                 transfer.try_value()->pendingFrames > settings.frame.maxFramesInFlight ||

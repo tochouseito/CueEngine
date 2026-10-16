@@ -96,8 +96,8 @@ int run_tests()
         std::stop_source stopped;
         stopped.request_stop();
         auto canceled = swapChain->wait_for_frame(stopped.get_token());
-        if (!canceled.has_value() || *canceled.try_value() ||
-            swapChain->is_waitable_enabled() != isWaitableEnabled ||
+        if (!canceled.has_value() || *canceled.try_value() || swapChain->is_waitable_enabled() != isWaitableEnabled ||
+            swapChain->queued_frame_limit() != (isWaitableEnabled ? std::optional(1u) : std::nullopt) ||
             !swapChain->wait_for_frame({}).has_value() || !swapChain->wait_for_frame({}).has_value())
         {
             return 19;
