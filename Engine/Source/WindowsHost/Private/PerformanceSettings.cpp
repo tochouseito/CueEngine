@@ -20,6 +20,9 @@ PerformanceSettingsStatus resolve_performance_status(const PerformanceSettings &
     status.effective.frame.maxUpdateLeadFrames = update_lead_frames(a_requested.frame);
     status.effective.frame.syncMode = a_progress.effectiveSyncMode;
     status.effective.frame.spinDuration = effective_spin_duration(a_requested.frame);
+    status.effective.frame.predictionSlack = a_progress.effectiveSyncMode == FrameSyncMode::DisplayPrediction
+                                                 ? a_requested.frame.predictionSlack
+                                                 : std::chrono::nanoseconds::zero();
     status.effective.gpu = a_requested.gpu;
     const auto &present = a_requested.presentation;
     status.effective.presentation = {present.bufferCount, present.isVSyncEnabled,         a_isTearingEnabled,

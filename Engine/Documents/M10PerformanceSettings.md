@@ -43,3 +43,35 @@ Debug Build と関連 CTest 4 件が成功した
 UI は `requested_update_lead_frames` で Worker 設定と独立した要求値を表示する。OFF 中は先行数 Control を無効化し、実効値が 0 で要求は保持されることを表示する。Widget が編集された場合だけ値を書き戻し、未指定の自動値を UI の表示だけで明示値へ変換しない
 
 CPU 容量の縮小時は明示した先行数を容量 - 1 へ収める。自動指定の `nullopt` は維持する。純粋な編集 Model の Test で ON → OFF → ON、OFF 中の保存・読込、明示 / 自動指定、容量の縮小・拡張、不正容量の拒否を確認する
+
+Debug Build と関連 CTest 4 件が成功した
+
+## #136 条件付き Control と実効表示
+
+UI は編集 Model の判定で次の Control を無効化し、理由を表示する。無効化だけでは保存要求を書き換えない
+
+| Control | 編集条件 |
+| --- | --- |
+| CPU snapshots / Update lead | Worker ON |
+| Wait method | FPS 上限あり |
+| Spin | FPS 上限あり、Hybrid |
+| Queued presents | Waitable ON |
+| Prediction slack | Display prediction、Waitable、VSync |
+
+CPU snapshots は OFF 中も容量自体は確保されるが、CPU 処理は直列で Update 先行は 0。GPU の物理枠・未完了上限は Worker OFF でも独立して働く。GPU 容量縮小時は未完了上限も収める。容量を再拡張しても明示上限を自動増加しない
+
+現在の要求と実効 Update 先行数、Spin、Prediction slack、表示 Queue 上限を別々に表示する。実効 Spin は周期の 1/8 まで。予測が Fallback している間の実効 slack は 0。編集中の予測設定に必要な機能が揃っていれば slack を編集できるが、実行時の統計が古ければ Fallback 理由を表示する
+
+編集 Model Test は Worker ON/OFF、FPS 無制限、Sleep/Hybrid、各同期方式、VSync / Waitable の欠落、高 FPS の Spin 制限を代表例で検証する。保存往復、Native API、実 Host の枠切替・Resize・最小化・Close と合わせて確認する。手動のマウス操作や入力から表示までの遅延の実測は今回の自動検証に含めない
+
+## 統合時の検証
+
+2026-10-16、Windows / x64。各構成は `scripts/codex_build.ps1` と対応する CTest Preset で確認した
+
+| 構成 | Build | 全 CTest |
+| --- | --- | --- |
+| Debug | 成功 | 51 / 51 成功 |
+| Development | 成功 | 51 / 51 成功 |
+| Release | 成功 | 51 / 51 成功 |
+
+実行ログはローカルの `out/validation/M10/` に保存する。Issue ごとに Branch / PR を分け、統合先は `develop`

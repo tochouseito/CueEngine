@@ -476,13 +476,26 @@ Result<void> EditorHost::build_performance_settings_ui()
         auto &gpu = settings.gpu;
         auto &present = settings.presentation;
         const bool isPending = m_windows.has_pending_performance_settings();
-        ImGui::Text("Requested: %u FPS / CPU %u / lead %u / GPU %u / GPU limit %u", applied.try_value()->frame.maxFps,
-                    applied.try_value()->frame.maxFramesInFlight, update_lead_frames(applied.try_value()->frame),
-                    applied.try_value()->gpu.resourceFrameCount, applied.try_value()->gpu.maxFramesInFlight);
+        ImGui::Text("Active request: %u FPS / workers %s", applied.try_value()->frame.maxFps,
+                    applied.try_value()->frame.useWorkerThreads ? "ON" : "OFF");
+        ImGui::Text("CPU snapshots: %u / GPU resources: %u / unfinished GPU limit: %u",
+                    applied.try_value()->frame.maxFramesInFlight, applied.try_value()->gpu.resourceFrameCount,
+                    applied.try_value()->gpu.maxFramesInFlight);
         ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
         auto status = m_windows.performance_settings_status();
         if (status.has_value())
         {
+            const auto &requested = status.try_value()->requested.frame;
+            const auto &effective = status.try_value()->effective.frame;
+            ImGui::Text("Update lead requested: %u (%s) / effective: %u", requested_update_lead_frames(requested),
+                        requested.maxUpdateLeadFrames ? "explicit" : "automatic",
+                        effective.maxUpdateLeadFrames.value_or(0));
+            ImGui::Text("Spin requested: %.3f us / effective: %.3f us",
+                        std::chrono::duration<double, std::micro>(requested.spinDuration).count(),
+                        std::chrono::duration<double, std::micro>(effective.spinDuration).count());
+            ImGui::Text("Prediction slack requested: %.3f us / effective: %.3f us",
+                        std::chrono::duration<double, std::micro>(requested.predictionSlack).count(),
+                        std::chrono::duration<double, std::micro>(effective.predictionSlack).count());
             const auto &queued = status.try_value()->effective.presentation.maxQueuedFrames;
             if (queued)
             {
@@ -539,6 +552,7 @@ Result<void> EditorHost::build_performance_settings_ui()
         slider("FPS limit (0: unlimited)", frame.maxFps, m_performancePolicy.allowsUnlimitedFps ? 0 : 1,
                static_cast<int>(m_performancePolicy.maxFps));
         ImGui::Checkbox("Worker threads", &frame.useWorkerThreads);
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditCpuCapacity);
         auto cpuCapacity = frame.maxFramesInFlight;
         if (slider("CPU snapshots", cpuCapacity, 1, static_cast<int>(m_performancePolicy.maxCpuFrames)))
         {
@@ -548,8 +562,9 @@ Result<void> EditorHost::build_performance_settings_ui()
                 m_settingsError = edited.try_error()->operation;
             }
         }
+        ImGui::EndDisabled();
         auto lead = requested_update_lead_frames(frame);
-        ImGui::BeginDisabled(!frame.useWorkerThreads);
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditUpdateLead);
         if (slider("Update lead frames", lead, 0,
                    static_cast<int>(std::min(frame.maxFramesInFlight - 1, m_performancePolicy.maxUpdateLeadFrames))))
         {
@@ -558,17 +573,27 @@ Result<void> EditorHost::build_performance_settings_ui()
         ImGui::EndDisabled();
         if (!frame.useWorkerThreads)
         {
-            ImGui::TextUnformatted("Update lead is 0 in single-thread mode; the request is retained");
+            ImGui::TextWrapped("CPU execution is serial and Update lead is 0 with workers OFF; capacities and lead "
+                               "requests are retained");
         }
-        slider("GPU resource frames", gpu.resourceFrameCount, 1, static_cast<int>(m_performancePolicy.maxGpuFrames));
+        auto gpuCapacity = gpu.resourceFrameCount;
+        if (slider("GPU resource frames", gpuCapacity, 1, static_cast<int>(m_performancePolicy.maxGpuFrames)))
+        {
+            auto edited = set_gpu_frame_capacity(settings, gpuCapacity);
+            if (!edited.has_value())
+            {
+                m_settingsError = edited.try_error()->operation;
+            }
+        }
         slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
         slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
-        ImGui::BeginDisabled(!present.isWaitableEnabled);
+        ImGui::Checkbox("Waitable presentation", &present.isWaitableEnabled);
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditQueuedPresents);
         slider("Queued presents", present.maxQueuedFrames, 1, static_cast<int>(m_performancePolicy.maxQueuedFrames));
         ImGui::EndDisabled();
         if (!present.isWaitableEnabled)
         {
-            ImGui::TextUnformatted("Queued presents requires Waitable presentation; the request is retained");
+            ImGui::TextWrapped("Queued presents requires Waitable presentation; the request is retained");
         }
         if (ImGui::Checkbox("VSync", &present.isVSyncEnabled) && present.isVSyncEnabled)
         {
@@ -578,26 +603,48 @@ Result<void> EditorHost::build_performance_settings_ui()
         {
             present.isVSyncEnabled = false;
         }
-        ImGui::Checkbox("Waitable presentation", &present.isWaitableEnabled);
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditWaitMode);
         int wait = static_cast<int>(frame.waitMode);
         if (ImGui::Combo("Wait method", &wait, "Sleep\0Sleep + short spin\0"))
         {
             frame.waitMode = static_cast<FrameWaitMode>(wait);
         }
+        ImGui::EndDisabled();
+        if (frame.maxFps == 0)
+        {
+            ImGui::TextWrapped("FPS wait method is inactive with an unlimited FPS request");
+        }
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditSpin);
         int spin = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.spinDuration).count());
         if (ImGui::SliderInt("Spin (us)", &spin, 0, 5000))
         {
             frame.spinDuration = std::chrono::microseconds(spin);
+        }
+        ImGui::EndDisabled();
+        if (!performance_settings_controls(settings).canEditSpin)
+        {
+            ImGui::TextWrapped("Spin requires an FPS limit and Sleep + short spin; the request is retained");
+        }
+        else
+        {
+            ImGui::TextWrapped("Spin is capped at 1/8 of the FPS period in both thread modes");
         }
         int sync = static_cast<int>(frame.syncMode);
         if (ImGui::Combo("Synchronization", &sync, "Fixed period\0Presentation ready\0Display prediction\0"))
         {
             frame.syncMode = static_cast<FrameSyncMode>(sync);
         }
+        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditPredictionSlack);
         int slack = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.predictionSlack).count());
         if (ImGui::SliderInt("Prediction slack (us)", &slack, 0, 100000))
         {
             frame.predictionSlack = std::chrono::microseconds(slack);
+        }
+        ImGui::EndDisabled();
+        if (!performance_settings_controls(settings).canEditPredictionSlack)
+        {
+            ImGui::TextWrapped(
+                "Prediction slack requires Display prediction, Waitable and VSync; the request is retained");
         }
         if (ImGui::Button("Apply"))
         {
