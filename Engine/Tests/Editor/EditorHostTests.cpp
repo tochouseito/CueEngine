@@ -135,6 +135,7 @@ int test_failed_initialization()
     cue::EditorHostConfig config;
     config.window.title.clear();
     config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
     config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed);
     cue::EditorHost host(std::move(config));
     auto result = host.initialize();
@@ -163,8 +164,9 @@ int test_owner_thread_frames()
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.frame.maxFps = 0;
-    config.frame.useWorkerThreads = false;
+    config.gpu = {1, 1};
     config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
     config.buildUi = [&]()
     {
         ++uiFrames;
@@ -276,10 +278,11 @@ int test_failed_display()
         cue::EditorHostConfig config;
         config.window.clientSize = {320, 240};
         config.imgui.settingsFile.clear();
+        config.performanceSettingsFile.clear();
         config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed, true);
         if (failsConfig)
         {
-            config.frame.maxFramesInFlight = 0;
+            config.gpu.resourceFrameCount = 0;
         }
         cue::EditorHost host(std::move(config));
         auto result = host.initialize();
@@ -300,7 +303,8 @@ int test_invalid_ui_config()
     {
         cue::EditorHostConfig config;
         config.imgui.settingsFile.clear();
-        config.frame.useWorkerThreads = kind == 1;
+        config.performanceSettingsFile.clear();
+        config.gpu = kind == 1 ? cue::GpuFrameConfig{2, 2} : cue::GpuFrameConfig{1, 1};
         if (kind == 1)
         {
             config.imgui.fontSize = -1.0f;
@@ -332,6 +336,7 @@ int test_failed_ui_callback()
     bool rejectedReentry = false;
     cue::EditorHostConfig config;
     config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
     config.frame.maxFps = 0;
     config.buildUi = [&]()
     {
@@ -359,17 +364,18 @@ int test_failed_ui_callback()
     return 0;
 }
 /// @brief 既定 UI と既定 ImGuiPass の組合せで CPU 構築から GPU 提出まで進む
-int test_default_ui_display(bool a_usesWorkers, std::uint32_t a_frameCount)
+int test_default_ui_display(std::uint32_t a_frameCount)
 {
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
     config.frame.maxFps = 0;
-    config.frame.useWorkerThreads = a_usesWorkers;
-    config.frame.maxFramesInFlight = a_frameCount;
-    // CPU / GPU の枠番号が一致しない構成でも Snapshot を正しく消費する
-    config.gpu.resourceFrameCount = a_frameCount == 1 ? 3 : (a_frameCount == 3 ? 1 : 2);
-    config.gpu.maxFramesInFlight = config.gpu.resourceFrameCount;
+    config.gpu = {a_frameCount, a_frameCount};
+    // 旧 CPU 指定を上書きし、GPU 資源枠数から Worker と先行数を導出する
+    config.frame.useWorkerThreads = a_frameCount == 1;
+    config.frame.maxFramesInFlight = a_frameCount == 1 ? 3 : 1;
+    const bool usesWorkers = a_frameCount > 1;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value())
     {
@@ -398,9 +404,9 @@ int test_default_ui_display(bool a_usesWorkers, std::uint32_t a_frameCount)
     auto transfer = host.ui_transfer_info();
     if (!ui.has_value() || ui.try_value()->frames < 120 || ui.try_value()->vertexCount == 0 ||
         ui.try_value()->indexCount == 0 || !progress.has_value() || progress.try_value()->renderedFrames < 120 ||
-        (progress.try_value()->renderThreadId != std::this_thread::get_id()) != a_usesWorkers ||
-        !transfer.has_value() || transfer.try_value()->pendingFrames > a_frameCount ||
-        transfer.try_value()->consumedFrames < 120 || !host.shutdown().has_value())
+        (progress.try_value()->renderThreadId != std::this_thread::get_id()) != usesWorkers || !transfer.has_value() ||
+        transfer.try_value()->pendingFrames > a_frameCount || transfer.try_value()->consumedFrames < 120 ||
+        !host.shutdown().has_value())
     {
         return 3;
     }
@@ -416,7 +422,9 @@ int test_resize_ui_display(bool a_usesWorkers)
     config.frame.maxFps = 0;
     config.frame.useWorkerThreads = a_usesWorkers;
     config.frame.maxFramesInFlight = a_usesWorkers ? 2 : 1;
+    config.gpu = a_usesWorkers ? cue::GpuFrameConfig{2, 2} : cue::GpuFrameConfig{1, 1};
     config.imgui.settingsFile.clear();
+    config.performanceSettingsFile.clear();
     const auto frameCount = config.frame.maxFramesInFlight;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value() || !wait_for_editor_progress(host, 0, 0, 0, 0, frameCount, a_usesWorkers))
@@ -514,12 +522,9 @@ int main()
 {
     for (const auto frames : {1u, 2u, 3u})
     {
-        for (const bool usesWorkers : {false, true})
+        if (const int result = test_default_ui_display(frames); result != 0)
         {
-            if (const int result = test_default_ui_display(usesWorkers, frames); result != 0)
-            {
-                return 60 + result;
-            }
+            return 60 + result;
         }
     }
     for (const bool usesWorkers : {false, true})
