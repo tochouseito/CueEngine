@@ -2,6 +2,8 @@
 
 Milestone: [M10](https://github.com/tochouseito/CueEngine/milestone/11)
 
+後続の #142 で設定 UI と保存形式を[Frame バッファリング設定](FrameBufferingSettings.md)へ統一した。以下は M10 完了時点の修正記録
+
 | Issue | 修正対象 |
 | --- | --- |
 | [#132](https://github.com/tochouseito/CueEngine/issues/132) | Worker OFF の FPS 待機方式と Spin |

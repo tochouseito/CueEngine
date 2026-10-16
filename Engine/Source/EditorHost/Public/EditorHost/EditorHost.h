@@ -14,7 +14,7 @@ namespace cue
 struct EditorHostConfig final
 {
     WindowDescriptor window{"CueEngine Editor", {1280, 720}};
-    // UI 構築は MainThread、Update / Render は Worker で並列に進める
+    // FPS / 待機 / 同期を指定する。CPU 枠、Worker と先行数は gpu.resourceFrameCount から導出する
     FrameControllerDesc frame{2, true, 60};
     PresentationConfig presentation;
     // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す

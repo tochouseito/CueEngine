@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 
 #include <Foundation/Result.h>
@@ -12,6 +13,7 @@
 namespace cue
 {
 /// @brief Host が各所有者へ適用する性能設定の所有値
+/// 利用者のバッファリング数は gpu.resourceFrameCount。CPU 容量・Worker・先行数はそこから導出する
 struct PerformanceSettings final
 {
     FrameControllerDesc frame;
@@ -76,6 +78,14 @@ enum class PerformancePreset
     LowLatency,
     Throughput,
 };
+
+/// @brief バッファリング数から Runtime の CPU 容量・Worker・先行数を導出する。純粋関数
+/// 不正な容量は保持して後続の設定検証で拒否する。FPS / 同期設定は維持する
+[[nodiscard]] FrameControllerDesc frame_config_for_buffering(FrameControllerDesc a_frame,
+                                                             std::uint32_t a_frameCount) noexcept;
+
+/// @brief CPU / GPU の枠を一括編集し、GPU 未完了上限を収める。1〜8 以外は変更せず失敗する
+[[nodiscard]] Result<void> set_frame_buffering(PerformanceSettings &a_settings, std::uint32_t a_frameCount);
 
 /// @brief 開発者が制限した公開範囲を設定要求へ適用する
 [[nodiscard]] Result<void> validate_performance_policy(const PerformanceSettings &a_settings,

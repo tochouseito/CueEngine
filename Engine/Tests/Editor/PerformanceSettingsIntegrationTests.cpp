@@ -38,7 +38,7 @@ bool advance_until(cue::EditorHost &a_host, std::uint64_t a_after, std::chrono::
     return false;
 }
 
-/// @brief 高負荷や長い FPS 待機中も設定を排出し、CPU / GPU / 表示容量を独立して切り替える
+/// @brief 長い FPS 待機中も共通の枠数と Worker を切り替え、表示待機は独立して扱う
 int test_reconfiguration()
 {
     cue::EditorHostConfig config;
@@ -54,15 +54,20 @@ int test_reconfiguration()
     for (const auto preset :
          {cue::PerformancePreset::LowLatency, cue::PerformancePreset::Throughput, cue::PerformancePreset::Balanced})
     {
-        for (const bool usesWorkers : {false, true})
+        for (const bool isWaitableEnabled : {false, true})
         {
             auto settings = cue::performance_preset(preset);
-            settings.frame.useWorkerThreads = usesWorkers;
+            const bool usesWorkers = settings.gpu.resourceFrameCount > 1;
             settings.frame.maxFps = 0;
-            settings.presentation.isWaitableEnabled = usesWorkers;
+            settings.presentation.isWaitableEnabled = isWaitableEnabled;
             settings.presentation.isTearingAllowed = true;
+            auto request = settings;
+            // 旧 API の独立指定が残っても、要求の受付時に共通枠数へ揃える
+            request.frame.useWorkerThreads = !usesWorkers;
+            request.frame.maxFramesInFlight = usesWorkers ? 1 : 3;
+            request.frame.maxUpdateLeadFrames = 0;
             auto before = host.frame_progress();
-            if (!before.has_value() || !host.request_performance_settings(settings).has_value() ||
+            if (!before.has_value() || !host.request_performance_settings(request).has_value() ||
                 !host.has_pending_performance_settings() ||
                 !advance_until(host, before.try_value()->submittedFrames, std::chrono::seconds(3)))
             {
@@ -74,6 +79,9 @@ int test_reconfiguration()
             auto transfer = host.ui_transfer_info();
             if (!applied.has_value() || *applied.try_value() != settings || !status.has_value() ||
                 status.try_value()->requested != settings ||
+                status.try_value()->effective.frame.maxFramesInFlight != settings.gpu.resourceFrameCount ||
+                status.try_value()->effective.frame.maxUpdateLeadFrames != settings.gpu.resourceFrameCount - 1 ||
+                status.try_value()->effective.frame.useWorkerThreads != usesWorkers ||
                 status.try_value()->effective.presentation.maxQueuedFrames !=
                     (settings.presentation.isWaitableEnabled ? std::optional(settings.presentation.maxQueuedFrames)
                                                              : std::nullopt) ||

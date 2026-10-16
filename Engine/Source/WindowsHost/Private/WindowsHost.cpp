@@ -796,6 +796,7 @@ Result<void> WindowsHost::request_performance_settings(PerformanceSettings a_set
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings"});
     }
+    a_settings.frame = frame_config_for_buffering(a_settings.frame, a_settings.gpu.resourceFrameCount);
     auto valid = validate_performance_policy(a_settings, m_config.performancePolicy);
     if (!valid.has_value())
     {

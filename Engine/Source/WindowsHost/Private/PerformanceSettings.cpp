@@ -1,5 +1,6 @@
 #include <WindowsHost/PerformanceSettings.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <locale>
@@ -9,6 +10,28 @@
 
 namespace cue
 {
+/// @brief 利用者設定の独立した CPU / Worker / 先行数を共通の枠数から置き換える
+FrameControllerDesc frame_config_for_buffering(FrameControllerDesc a_frame, std::uint32_t a_frameCount) noexcept
+{
+    a_frame.maxFramesInFlight = a_frameCount;
+    a_frame.useWorkerThreads = a_frameCount > 1;
+    a_frame.maxUpdateLeadFrames = a_frameCount > 0 ? a_frameCount - 1 : 0;
+    return a_frame;
+}
+
+/// @brief 枠数を一度の編集で揃え、容量を再拡張しても明示的な GPU 上限は増やさない
+Result<void> set_frame_buffering(PerformanceSettings &a_settings, std::uint32_t a_frameCount)
+{
+    if (a_frameCount == 0 || a_frameCount > 8)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "PerformanceSettings.buffering"});
+    }
+    a_settings.frame = frame_config_for_buffering(a_settings.frame, a_frameCount);
+    a_settings.gpu.resourceFrameCount = a_frameCount;
+    a_settings.gpu.maxFramesInFlight = (std::min)(a_settings.gpu.maxFramesInFlight, a_frameCount);
+    return Result<void>::success();
+}
+
 /// @brief 未適用の表示 Queue 上限を設定値で埋めず、Native の成功結果を反映する
 PerformanceSettingsStatus resolve_performance_status(const PerformanceSettings &a_requested,
                                                      const FrameProgress &a_progress, bool a_isTearingEnabled,
@@ -36,18 +59,20 @@ PerformanceSettingsStatus resolve_performance_status(const PerformanceSettings &
 Result<void> validate_performance_policy(const PerformanceSettings &a_settings,
                                          const PerformanceSettingsPolicy &a_policy)
 {
-    auto valid = validate_performance_settings(a_settings);
+    auto settings = a_settings;
+    settings.frame = frame_config_for_buffering(settings.frame, settings.gpu.resourceFrameCount);
+    auto valid = validate_performance_settings(settings);
     if (!valid.has_value())
     {
         return valid;
     }
-    if (!a_policy.usersMayEdit || a_settings.frame.maxFps > a_policy.maxFps ||
-        (!a_policy.allowsUnlimitedFps && a_settings.frame.maxFps == 0) ||
-        a_settings.frame.maxFramesInFlight > a_policy.maxCpuFrames ||
-        a_settings.gpu.resourceFrameCount > a_policy.maxGpuFrames ||
-        update_lead_frames(a_settings.frame) > a_policy.maxUpdateLeadFrames ||
-        a_settings.presentation.bufferCount > a_policy.maxSwapChainBuffers ||
-        a_settings.presentation.maxQueuedFrames > a_policy.maxQueuedFrames)
+    if (!a_policy.usersMayEdit || settings.frame.maxFps > a_policy.maxFps ||
+        (!a_policy.allowsUnlimitedFps && settings.frame.maxFps == 0) ||
+        settings.frame.maxFramesInFlight > a_policy.maxCpuFrames ||
+        settings.gpu.resourceFrameCount > a_policy.maxGpuFrames ||
+        update_lead_frames(settings.frame) > a_policy.maxUpdateLeadFrames ||
+        settings.presentation.bufferCount > a_policy.maxSwapChainBuffers ||
+        settings.presentation.maxQueuedFrames > a_policy.maxQueuedFrames)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "PerformanceSettings.policy"});
     }
@@ -60,18 +85,15 @@ PerformanceSettings performance_preset(PerformancePreset a_preset)
     PerformanceSettings settings;
     if (a_preset == PerformancePreset::LowLatency)
     {
-        settings.frame.maxFramesInFlight = 1;
-        settings.frame.maxUpdateLeadFrames = 0;
-        settings.gpu.maxFramesInFlight = 1;
+        settings.gpu = {1, 1};
     }
     else if (a_preset == PerformancePreset::Throughput)
     {
-        settings.frame.maxFramesInFlight = 3;
-        settings.frame.maxUpdateLeadFrames = 2;
         settings.gpu = {3, 3};
         settings.presentation.bufferCount = 3;
         settings.presentation.maxQueuedFrames = 2;
     }
+    settings.frame = frame_config_for_buffering(settings.frame, settings.gpu.resourceFrameCount);
     return settings;
 }
 
@@ -79,7 +101,9 @@ PerformanceSettings performance_preset(PerformancePreset a_preset)
 Result<void> save_performance_settings(IFileSystem &a_files, const Path &a_path,
                                        const PerformanceSettings &a_settings)
 {
-    auto valid = validate_performance_settings(a_settings);
+    auto settings = a_settings;
+    settings.frame = frame_config_for_buffering(settings.frame, settings.gpu.resourceFrameCount);
+    auto valid = validate_performance_settings(settings);
     if (!valid.has_value())
     {
         return valid;
@@ -88,17 +112,17 @@ Result<void> save_performance_settings(IFileSystem &a_files, const Path &a_path,
     {
         std::ostringstream stream;
         stream.imbue(std::locale::classic());
-        const auto &frame = a_settings.frame;
-        const auto &gpu = a_settings.gpu;
-        const auto &present = a_settings.presentation;
-        stream << "CuePerformance 1\n" << frame.maxFramesInFlight << ' ' << frame.useWorkerThreads << ' '
-               << frame.maxFps << ' ' << frame.maxUpdateLeadFrames.has_value() << ' '
-               << frame.maxUpdateLeadFrames.value_or(0) << ' ' << static_cast<int>(frame.waitMode) << ' '
+        const auto &frame = settings.frame;
+        const auto &gpu = settings.gpu;
+        const auto &present = settings.presentation;
+        stream << "CuePerformance 2\n"
+               << gpu.resourceFrameCount << ' ' << frame.maxFps << ' ' << static_cast<int>(frame.waitMode) << ' '
                << frame.spinDuration.count() << ' ' << static_cast<int>(frame.syncMode) << ' '
                << frame.predictionSlack.count() << '\n'
-               << gpu.resourceFrameCount << ' ' << gpu.maxFramesInFlight << '\n'
+               << gpu.maxFramesInFlight << '\n'
                << present.bufferCount << ' ' << present.isVSyncEnabled << ' ' << present.isTearingAllowed << ' '
-               << present.isWaitableEnabled << ' ' << present.maxQueuedFrames << '\n' << std::setprecision(9);
+               << present.isWaitableEnabled << ' ' << present.maxQueuedFrames << '\n'
+               << std::setprecision(9);
         for (const float color : present.clearColor)
         {
             stream << color << ' ';
@@ -142,15 +166,28 @@ Result<PerformanceSettings> load_performance_settings(IFileSystem &a_files, cons
         std::uint32_t lead = 0;
         int wait = 0, sync = 0;
         std::int64_t spin = 0, slack = 0;
-        stream >> schema >> version >> frame.maxFramesInFlight >> frame.useWorkerThreads >> frame.maxFps >> hasLead
-               >> lead >> wait >> spin >> sync >> slack >> gpu.resourceFrameCount >> gpu.maxFramesInFlight
-               >> present.bufferCount >> present.isVSyncEnabled >> present.isTearingAllowed
-               >> present.isWaitableEnabled >> present.maxQueuedFrames;
+        stream >> schema >> version;
+        if (!stream || schema != "CuePerformance" || (version != 1 && version != 2))
+        {
+            return Result<PerformanceSettings>::failure({ErrorCategory::InvalidArgument, "PerformanceSettings.schema"});
+        }
+        if (version == 1)
+        {
+            stream >> frame.maxFramesInFlight >> frame.useWorkerThreads >> frame.maxFps >> hasLead >> lead >> wait >>
+                spin >> sync >> slack >> gpu.resourceFrameCount >> gpu.maxFramesInFlight;
+            frame.maxUpdateLeadFrames = hasLead ? std::optional<std::uint32_t>(lead) : std::nullopt;
+        }
+        else
+        {
+            stream >> gpu.resourceFrameCount >> frame.maxFps >> wait >> spin >> sync >> slack >> gpu.maxFramesInFlight;
+        }
+        stream >> present.bufferCount >> present.isVSyncEnabled >> present.isTearingAllowed >>
+            present.isWaitableEnabled >> present.maxQueuedFrames;
         for (auto &color : present.clearColor)
         {
             stream >> color;
         }
-        if (!stream || schema != "CuePerformance" || version != 1 || wait < 0 || wait > 1 || sync < 0 || sync > 2)
+        if (!stream || wait < 0 || wait > 1 || sync < 0 || sync > 2)
         {
             return Result<PerformanceSettings>::failure({ErrorCategory::InvalidArgument, "PerformanceSettings.schema"});
         }
@@ -159,11 +196,20 @@ Result<PerformanceSettings> load_performance_settings(IFileSystem &a_files, cons
         {
             return Result<PerformanceSettings>::failure({ErrorCategory::InvalidArgument, "PerformanceSettings.trailing"});
         }
-        frame.maxUpdateLeadFrames = hasLead ? std::optional<std::uint32_t>(lead) : std::nullopt;
         frame.waitMode = static_cast<FrameWaitMode>(wait);
         frame.syncMode = static_cast<FrameSyncMode>(sync);
         frame.spinDuration = std::chrono::nanoseconds(spin);
         frame.predictionSlack = std::chrono::nanoseconds(slack);
+        // 旧形式は入力自体の不正を先に検出し、その後で GPU 資源枠数を共通設定へ移行する
+        if (version == 1)
+        {
+            auto legacyValid = validate_performance_settings(settings);
+            if (!legacyValid.has_value())
+            {
+                return Result<PerformanceSettings>::failure(*legacyValid.try_error());
+            }
+        }
+        frame = frame_config_for_buffering(frame, gpu.resourceFrameCount);
         auto valid = validate_performance_settings(settings);
         return valid.has_value() ? Result<PerformanceSettings>::success(settings)
                                  : Result<PerformanceSettings>::failure(*valid.try_error());

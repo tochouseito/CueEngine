@@ -146,7 +146,7 @@ EditorHost::EditorHost(EditorHostConfig a_config)
       m_ownerId(std::this_thread::get_id()), m_performancePolicy(a_config.performancePolicy),
       m_performanceSettingsFile(a_config.performanceSettingsFile),
       m_windows({std::move(a_config.window),
-                 a_config.frame,
+                 frame_config_for_buffering(a_config.frame, a_config.gpu.resourceFrameCount),
                  a_config.presentation,
                  prepare_graph(std::move(a_config.graph)),
                  {[this](Window &a_window) { return initialize_ui(a_window); },
@@ -476,19 +476,20 @@ Result<void> EditorHost::build_performance_settings_ui()
         auto &gpu = settings.gpu;
         auto &present = settings.presentation;
         const bool isPending = m_windows.has_pending_performance_settings();
-        ImGui::Text("Active request: %u FPS / workers %s", applied.try_value()->frame.maxFps,
-                    applied.try_value()->frame.useWorkerThreads ? "ON" : "OFF");
-        ImGui::Text("CPU snapshots: %u / GPU resources: %u / unfinished GPU limit: %u",
-                    applied.try_value()->frame.maxFramesInFlight, applied.try_value()->gpu.resourceFrameCount,
-                    applied.try_value()->gpu.maxFramesInFlight);
+        ImGui::Text("Active request: %u FPS / buffering %u", applied.try_value()->frame.maxFps,
+                    applied.try_value()->gpu.resourceFrameCount);
+        ImGui::Text("Derived: workers %s / CPU slots %u / update lead %u",
+                    applied.try_value()->frame.useWorkerThreads ? "ON" : "OFF",
+                    applied.try_value()->frame.maxFramesInFlight, update_lead_frames(applied.try_value()->frame));
+        ImGui::Text("Unfinished GPU limit: %u", applied.try_value()->gpu.maxFramesInFlight);
         ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
         auto status = m_windows.performance_settings_status();
         if (status.has_value())
         {
             const auto &requested = status.try_value()->requested.frame;
             const auto &effective = status.try_value()->effective.frame;
-            ImGui::Text("Update lead requested: %u (%s) / effective: %u", requested_update_lead_frames(requested),
-                        requested.maxUpdateLeadFrames ? "explicit" : "automatic",
+            ImGui::Text("Effective: workers %s / CPU slots %u / update lead %u",
+                        effective.useWorkerThreads ? "ON" : "OFF", effective.maxFramesInFlight,
                         effective.maxUpdateLeadFrames.value_or(0));
             ImGui::Text("Spin requested: %.3f us / effective: %.3f us",
                         std::chrono::duration<double, std::micro>(requested.spinDuration).count(),
@@ -551,40 +552,26 @@ Result<void> EditorHost::build_performance_settings_ui()
         };
         slider("FPS limit (0: unlimited)", frame.maxFps, m_performancePolicy.allowsUnlimitedFps ? 0 : 1,
                static_cast<int>(m_performancePolicy.maxFps));
-        ImGui::Checkbox("Worker threads", &frame.useWorkerThreads);
-        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditCpuCapacity);
-        auto cpuCapacity = frame.maxFramesInFlight;
-        if (slider("CPU snapshots", cpuCapacity, 1, static_cast<int>(m_performancePolicy.maxCpuFrames)))
+        // 一つの枠数から CPU / GPU 容量、Worker と先行数を同時に更新する
+        const auto maxBuffering = (std::min)({8u, m_performancePolicy.maxCpuFrames, m_performancePolicy.maxGpuFrames,
+                                              (std::min)(m_performancePolicy.maxUpdateLeadFrames, 7u) + 1});
+        auto buffering = gpu.resourceFrameCount;
+        ImGui::BeginDisabled(maxBuffering == 0);
+        if (slider("Buffering (frames)", buffering, 1, static_cast<int>((std::max)(maxBuffering, 1u))))
         {
-            auto edited = set_cpu_frame_capacity(settings, cpuCapacity);
+            auto edited = set_frame_buffering(settings, buffering);
             if (!edited.has_value())
             {
                 m_settingsError = edited.try_error()->operation;
             }
         }
         ImGui::EndDisabled();
-        auto lead = requested_update_lead_frames(frame);
-        ImGui::BeginDisabled(!performance_settings_controls(settings).canEditUpdateLead);
-        if (slider("Update lead frames", lead, 0,
-                   static_cast<int>(std::min(frame.maxFramesInFlight - 1, m_performancePolicy.maxUpdateLeadFrames))))
-        {
-            frame.maxUpdateLeadFrames = lead;
-        }
-        ImGui::EndDisabled();
-        if (!frame.useWorkerThreads)
-        {
-            ImGui::TextWrapped("CPU execution is serial and Update lead is 0 with workers OFF; capacities and lead "
-                               "requests are retained");
-        }
-        auto gpuCapacity = gpu.resourceFrameCount;
-        if (slider("GPU resource frames", gpuCapacity, 1, static_cast<int>(m_performancePolicy.maxGpuFrames)))
-        {
-            auto edited = set_gpu_frame_capacity(settings, gpuCapacity);
-            if (!edited.has_value())
-            {
-                m_settingsError = edited.try_error()->operation;
-            }
-        }
+        ImGui::Text("%s buffering: workers %s / CPU slots %u / update lead %u",
+                    buffering == 1   ? "Single"
+                    : buffering == 2 ? "Double"
+                    : buffering == 3 ? "Triple"
+                                     : "Multi-frame",
+                    frame.useWorkerThreads ? "ON" : "OFF", frame.maxFramesInFlight, update_lead_frames(frame));
         slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
         slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
         ImGui::Checkbox("Waitable presentation", &present.isWaitableEnabled);
