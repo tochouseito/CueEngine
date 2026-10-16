@@ -259,6 +259,11 @@ if(WIN32)
     add_test(NAME Cue.EditorHost.Lifecycle COMMAND CueEditorHostTests)
     set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 30)
 
+    # 条件付きの編集値保持と容量変更時の依存値補正を GPU なしで検証する
+    add_executable(CuePerformanceSettingsEditingTests Editor/PerformanceSettingsEditingTests.cpp)
+    target_link_libraries(CuePerformanceSettingsEditingTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.PerformanceSettingsEditing COMMAND CuePerformanceSettingsEditingTests)
+
     # 実行中の CPU / GPU / 表示枠変更と単調 Frame ID の継続を確認する
     add_executable(CuePerformanceSettingsIntegrationTests Editor/PerformanceSettingsIntegrationTests.cpp)
     target_link_libraries(CuePerformanceSettingsIntegrationTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows)

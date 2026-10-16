@@ -8,6 +8,7 @@
 #include <imgui.h>
 
 #include <EditorHost/ImGuiPass.h>
+#include <EditorHost/PerformanceSettingsEditing.h>
 #include <Foundation/ScopedFlag.h>
 #include <Platform/Diagnostics.h>
 
@@ -531,16 +532,34 @@ Result<void> EditorHost::build_performance_settings_ui()
             if (ImGui::SliderInt(a_label, &value, a_min, a_max))
             {
                 a_value = static_cast<std::uint32_t>(value);
+                return true;
             }
+            return false;
         };
         slider("FPS limit (0: unlimited)", frame.maxFps, m_performancePolicy.allowsUnlimitedFps ? 0 : 1,
                static_cast<int>(m_performancePolicy.maxFps));
         ImGui::Checkbox("Worker threads", &frame.useWorkerThreads);
-        slider("CPU snapshots", frame.maxFramesInFlight, 1, static_cast<int>(m_performancePolicy.maxCpuFrames));
-        auto lead = update_lead_frames(frame);
-        slider("Update lead frames", lead, 0, static_cast<int>(std::min(frame.maxFramesInFlight - 1,
-                                                                      m_performancePolicy.maxUpdateLeadFrames)));
-        frame.maxUpdateLeadFrames = lead;
+        auto cpuCapacity = frame.maxFramesInFlight;
+        if (slider("CPU snapshots", cpuCapacity, 1, static_cast<int>(m_performancePolicy.maxCpuFrames)))
+        {
+            auto edited = set_cpu_frame_capacity(settings, cpuCapacity);
+            if (!edited.has_value())
+            {
+                m_settingsError = edited.try_error()->operation;
+            }
+        }
+        auto lead = requested_update_lead_frames(frame);
+        ImGui::BeginDisabled(!frame.useWorkerThreads);
+        if (slider("Update lead frames", lead, 0,
+                   static_cast<int>(std::min(frame.maxFramesInFlight - 1, m_performancePolicy.maxUpdateLeadFrames))))
+        {
+            frame.maxUpdateLeadFrames = lead;
+        }
+        ImGui::EndDisabled();
+        if (!frame.useWorkerThreads)
+        {
+            ImGui::TextUnformatted("Update lead is 0 in single-thread mode; the request is retained");
+        }
         slider("GPU resource frames", gpu.resourceFrameCount, 1, static_cast<int>(m_performancePolicy.maxGpuFrames));
         slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
         slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
