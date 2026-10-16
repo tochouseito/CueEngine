@@ -8,6 +8,26 @@
 /// @brief 容量、先行数、表示同期の不正な組合せを変更前に拒否する
 int main()
 {
+    for (const bool usesWorkers : {false, true})
+    {
+        cue::PerformanceSettings requested;
+        requested.frame.useWorkerThreads = usesWorkers;
+        requested.frame.maxUpdateLeadFrames = 1;
+        requested.presentation.maxQueuedFrames = 3;
+        cue::FrameProgress progress;
+        progress.syncFallback = cue::FrameSyncFallback::PresentationUnavailable;
+        const auto inactive = cue::resolve_performance_status(requested, progress, false, std::nullopt, true);
+        const auto active = cue::resolve_performance_status(requested, progress, true, 3);
+        if (inactive.requested != requested || active.requested != requested ||
+            inactive.effective.presentation.maxQueuedFrames || inactive.effective.presentation.isWaitableEnabled ||
+            !inactive.isPending || inactive.syncFallback != progress.syncFallback ||
+            inactive.effective.frame.maxUpdateLeadFrames != (usesWorkers ? 1u : 0u) ||
+            active.effective.presentation.maxQueuedFrames != 3 || !active.effective.presentation.isWaitableEnabled ||
+            !active.effective.presentation.isTearingAllowed || active.isPending)
+        {
+            return 16;
+        }
+    }
     cue::PerformanceSettings settings;
     if (!cue::validate_performance_settings(settings).has_value() || cue::update_lead_frames(settings.frame) != 1)
         return 1;
@@ -50,6 +70,8 @@ int main()
                               cue::PerformancePreset::Throughput})
     {
         settings = cue::performance_preset(preset);
+        settings.presentation.isWaitableEnabled = false;
+        settings.presentation.maxQueuedFrames = 3;
         settings.frame.spinDuration = std::chrono::nanoseconds(234567);
         if (!cue::save_performance_settings(*temporary.files, path, settings).has_value())
             return 11;

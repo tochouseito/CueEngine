@@ -848,14 +848,10 @@ Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() con
         return Result<PerformanceSettingsStatus>::failure(!settings.has_value() ? *settings.try_error()
                                                                                : *progress.try_error());
     }
-    PerformanceSettingsStatus status{*settings.try_value(), *settings.try_value(), progress.try_value()->syncFallback,
-                                      has_pending_performance_settings()};
-    status.effective.frame.maxUpdateLeadFrames = update_lead_frames(status.requested.frame);
-    status.effective.frame.syncMode = progress.try_value()->effectiveSyncMode;
-    status.effective.frame.spinDuration = effective_spin_duration(status.requested.frame);
-    status.effective.presentation.isTearingAllowed = m_state->dx12Backend->get_swap_chain()->is_tearing_enabled();
-    status.effective.presentation.isWaitableEnabled = m_state->dx12Backend->get_swap_chain()->is_waitable_enabled();
-    return Result<PerformanceSettingsStatus>::success(status);
+    const auto *swapChain = m_state->dx12Backend->get_swap_chain();
+    return Result<PerformanceSettingsStatus>::success(
+        resolve_performance_status(*settings.try_value(), *progress.try_value(), swapChain->is_tearing_enabled(),
+                                   swapChain->queued_frame_limit(), has_pending_performance_settings()));
 }
 
 /// @brief Frame ID を維持したまま Worker、Graph、表示枠、ImGui Ring を順に再構成する

@@ -90,6 +90,9 @@ public:
     /// @brief 実際に作成された表示待機機能の有無を返す
     [[nodiscard]] bool is_waitable_enabled() const noexcept;
 
+    /// @brief SetMaximumFrameLatency が成功した上限を返す。Waitable 無効 / 停止後は未適用
+    [[nodiscard]] std::optional<std::uint32_t> queued_frame_limit() const noexcept;
+
     /// @brief Render Thread で Present API と DXGI 統計の所有値を取得する
     [[nodiscard]] PresentationTiming timing() const noexcept;
 

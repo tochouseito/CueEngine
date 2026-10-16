@@ -475,14 +475,24 @@ Result<void> EditorHost::build_performance_settings_ui()
         auto &gpu = settings.gpu;
         auto &present = settings.presentation;
         const bool isPending = m_windows.has_pending_performance_settings();
-        ImGui::Text("Applied: %u FPS / CPU %u / lead %u / GPU %u / GPU limit %u / display queue %u",
-                    applied.try_value()->frame.maxFps, applied.try_value()->frame.maxFramesInFlight,
-                    update_lead_frames(applied.try_value()->frame), applied.try_value()->gpu.resourceFrameCount,
-                    applied.try_value()->gpu.maxFramesInFlight, applied.try_value()->presentation.maxQueuedFrames);
+        ImGui::Text("Requested: %u FPS / CPU %u / lead %u / GPU %u / GPU limit %u", applied.try_value()->frame.maxFps,
+                    applied.try_value()->frame.maxFramesInFlight, update_lead_frames(applied.try_value()->frame),
+                    applied.try_value()->gpu.resourceFrameCount, applied.try_value()->gpu.maxFramesInFlight);
         ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
         auto status = m_windows.performance_settings_status();
         if (status.has_value())
         {
+            const auto &queued = status.try_value()->effective.presentation.maxQueuedFrames;
+            if (queued)
+            {
+                ImGui::Text("Display queue requested: %u / effective: %u",
+                            status.try_value()->requested.presentation.maxQueuedFrames, *queued);
+            }
+            else
+            {
+                ImGui::Text("Display queue requested: %u / effective: inactive (Waitable OFF)",
+                            status.try_value()->requested.presentation.maxQueuedFrames);
+            }
             constexpr const char *k_modes[] = {"Fixed period", "Presentation ready", "Display prediction"};
             ImGui::Text("Sync requested: %s / effective: %s",
                         k_modes[static_cast<int>(status.try_value()->requested.frame.syncMode)],
@@ -534,7 +544,13 @@ Result<void> EditorHost::build_performance_settings_ui()
         slider("GPU resource frames", gpu.resourceFrameCount, 1, static_cast<int>(m_performancePolicy.maxGpuFrames));
         slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
         slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
+        ImGui::BeginDisabled(!present.isWaitableEnabled);
         slider("Queued presents", present.maxQueuedFrames, 1, static_cast<int>(m_performancePolicy.maxQueuedFrames));
+        ImGui::EndDisabled();
+        if (!present.isWaitableEnabled)
+        {
+            ImGui::TextUnformatted("Queued presents requires Waitable presentation; the request is retained");
+        }
         if (ImGui::Checkbox("VSync", &present.isVSyncEnabled) && present.isVSyncEnabled)
         {
             present.isTearingAllowed = false;

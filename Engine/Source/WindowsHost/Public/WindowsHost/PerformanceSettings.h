@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <optional>
+
 #include <Foundation/Result.h>
 #include <Platform/FileSystem.h>
 #include <RHI/FrameExecution.h>
@@ -32,14 +35,40 @@ struct PerformanceSettingsPolicy final
     bool allowsUnlimitedFps = true;
 };
 
+/// @brief 表示設定の実効値。Waitable 無効時の Queue 上限は未適用として返す
+struct EffectivePresentationSettings final
+{
+    std::uint32_t bufferCount = 2;
+    bool isVSyncEnabled = false;
+    bool isTearingAllowed = false;
+    std::array<float, 4> clearColor{};
+    bool isWaitableEnabled = false;
+    std::optional<std::uint32_t> maxQueuedFrames;
+};
+
+/// @brief 保存要求とは独立した、現在適用される設定の観測値
+struct EffectivePerformanceSettings final
+{
+    FrameControllerDesc frame;
+    GpuFrameConfig gpu;
+    EffectivePresentationSettings presentation;
+};
+
 /// @brief 保存する要求値と Native 能力 / 実効同期による適用値を区別する
 struct PerformanceSettingsStatus final
 {
     PerformanceSettings requested;
-    PerformanceSettings effective;
+    EffectivePerformanceSettings effective;
     FrameSyncFallback syncFallback = FrameSyncFallback::None;
     bool isPending = false;
 };
+
+/// @brief Native の適用結果と Runtime の同期結果から状態表示を作る。要求値は変更しない
+[[nodiscard]] PerformanceSettingsStatus resolve_performance_status(const PerformanceSettings &a_requested,
+                                                                   const FrameProgress &a_progress,
+                                                                   bool a_isTearingEnabled,
+                                                                   std::optional<std::uint32_t> a_queuedFrameLimit,
+                                                                   bool a_isPending = false);
 
 enum class PerformancePreset
 {

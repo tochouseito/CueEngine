@@ -259,6 +259,12 @@ bool DX12SwapChain::is_waitable_enabled() const noexcept
     return m_frameLatencyEvent != nullptr;
 }
 
+/// @brief Waitable SwapChain に設定済みの上限だけを公開する
+std::optional<std::uint32_t> DX12SwapChain::queued_frame_limit() const noexcept
+{
+    return is_waitable_enabled() ? std::optional(m_config.maxQueuedFrames) : std::nullopt;
+}
+
 /// @brief 呼出側が共有 Lock を持つ Snapshot へ複製できる値だけ返す
 PresentationTiming DX12SwapChain::timing() const noexcept
 {
