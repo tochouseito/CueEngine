@@ -62,6 +62,9 @@ class DX12FrameGraphFrames final
     /// @brief 次の記録前に同じ枠の前回 GPU 作業を待つ
     [[nodiscard]] Result<void> begin_frame(std::uint32_t a_frameIndex);
 
+    /// @brief 再利用する枠の完了だけを非待機で確認する。begin_frame と同じ Thread で直列化する
+    [[nodiscard]] Result<bool> is_frame_ready(std::uint32_t a_frameIndex) const;
+
     /// @brief Queue ごとの Timestamp 対応を返す。Copy は Device capability に従う
     [[nodiscard]] bool timestamp_supported(QueueType a_type) const noexcept;
 

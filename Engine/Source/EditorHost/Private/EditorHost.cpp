@@ -162,7 +162,8 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   [this](IBackend &a_backend, std::uint32_t a_cpuFrames, std::uint32_t a_gpuFrames)
                   { return m_imgui->reconfigure_renderer(a_backend, a_cpuFrames, a_gpuFrames); },
                   std::move(a_config.simulationUpdate),
-                  std::move(a_config.prepareFrame)},
+                  std::move(a_config.prepareFrame),
+                  [this]() { return m_imgui->is_renderer_ready(); }},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
                  a_config.logging,

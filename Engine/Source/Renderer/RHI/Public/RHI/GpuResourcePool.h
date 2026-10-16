@@ -108,6 +108,13 @@ public:
     [[nodiscard]] virtual Result<gpuResourceLease> acquire(GpuResourceHandle a_handle,
                                                             GpuResourceAccess a_access) = 0;
 
+    /// @brief CPU / GPU の競合を待たずに確認する。予約は行わず、取得までの操作を呼出側が直列化する
+    /// 未対応 Pool は失敗を返し、Main が知らない GPU 待機へ進むことを防ぐ
+    [[nodiscard]] virtual Result<bool> can_acquire(GpuResourceHandle, GpuResourceAccess) const
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "GpuResourcePool.can_acquire.unsupported"});
+    }
+
     /// @brief GPU 利用との競合だけを完了待機し、Default の更新と Upload の CPU 上書きを安全にする
     ///
     /// CPU の active Lease 競合は待たずに拒否する。待機中の退役・停止・世代変更は再検証する

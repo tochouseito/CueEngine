@@ -741,11 +741,38 @@ Result<bool> WindowsHost::step()
         {
             return Result<bool>::failure(*gpuReady.try_error());
         }
-        // Frame ID の欠番で物理枠が先に再訪されても、Graph の Fence 待機で Main を塞がない
-        // 単一 Thread は全 GPU Frame 完了後に記録する。Worker は指定した上限まで並列提出する
-        if (!*ready.try_value() || !*gpuReady.try_value() || m_state->gpuFrames->pending() != 0)
+        auto progress = m_state->runtime->progress();
+        if (!progress.has_value())
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return Result<bool>::failure(*progress.try_error());
+        }
+        const auto slot = static_cast<std::uint32_t>(progress.try_value()->submittedFrames % m_state->gpuFrameCount);
+        auto frameReady = m_state->graph->is_frame_ready(slot);
+        if (!frameReady.has_value())
+        {
+            return Result<bool>::failure(*frameReady.try_error());
+        }
+        Result<bool> rendererReady = Result<bool>::success(true);
+        if (m_config.callbacks.isRendererReady)
+        {
+            try
+            {
+                rendererReady = m_config.callbacks.isRendererReady();
+            }
+            catch (...)
+            {
+                rendererReady =
+                    Result<bool>::failure({ErrorCategory::PlatformFailure, "WindowsHost.renderer_ready.exception"});
+            }
+        }
+        if (!rendererReady.has_value())
+        {
+            return Result<bool>::failure(*rendererReady.try_error());
+        }
+        // GPU 上限の空きと今回再利用する枠だけを確認し、無関係な未完了 Frame は待たない
+        if (!*ready.try_value() || !*gpuReady.try_value() || !*frameReady.try_value() || !*rendererReady.try_value())
+        {
+            [[maybe_unused]] const auto status = m_state->services.waiter->sleep_for(std::chrono::milliseconds(1), {});
             return Result<bool>::success(true);
         }
     }

@@ -257,6 +257,17 @@ DX12FrameGraphFrames::~DX12FrameGraphFrames()
 }
 
 /// @brief 同一枠の前回提出が完了してから記録を許可する
+Result<bool> DX12FrameGraphFrames::is_frame_ready(std::uint32_t a_frameIndex) const
+{
+    if (m_isClosed || a_frameIndex >= m_frames.size())
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.is_frame_ready"});
+    }
+    const auto &completion = m_frames[a_frameIndex].completion;
+    return completion ? completion->completion_status() : Result<bool>::success(true);
+}
+
+/// @brief 前回提出を待って Timestamp と物理枠を再利用する
 Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
 {
     if (m_isClosed || a_frameIndex >= m_frames.size())

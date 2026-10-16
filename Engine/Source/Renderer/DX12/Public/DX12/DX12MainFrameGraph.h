@@ -84,6 +84,9 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     [[nodiscard]] Result<bool> execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
                                        std::function<bool()> a_shouldCancel = {});
 
+    /// @brief 物理枠と常駐 Pool 資源の競合を非待機で検証する。execute まで操作を直列化する
+    [[nodiscard]] Result<bool> is_frame_ready(std::uint32_t a_frameIndex) const;
+
     /// @brief 直近の正常提出が合流した GPU 完了点を所有参照として返す。execute と同じ直列 Thread で呼ぶ
     [[nodiscard]] std::shared_ptr<ICommandCompletion> submitted_completion() const noexcept
     {

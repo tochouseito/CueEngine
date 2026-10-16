@@ -19,3 +19,11 @@ Milestone: [M10](https://github.com/tochouseito/CueEngine/milestone/11)
 RecordingWaiter による決定的な Test で、単一 Thread の Sleep / Hybrid 選択、期限前の投入拒否、1 ms 以下の待機要求、Spin 上限を検証する。FrameControllerTimingProbe の `--fps-only` は GPU / Window を含めず Worker ON/OFF を同じ 60 FPS 設定で比較する。実入力から画面までの遅延や全環境の 60 FPS 達成を保証する測定ではない
 
 2026-10-16、Debug / x64、空 Callback / 60 FPS / 120 Frame を 2 回測定した。単一 Thread は変更前 32.54〜32.55 FPS、変更後 60.44〜60.46 FPS。変更後の Worker は 60.40〜60.48 FPS。最初の Frame が即時なので壁時計平均は 60 を少し超える。単一 Thread の直近間隔は 16.669 / 16.699 ms。Debug Build と Runtime / WindowsHost / EditorHost の関連 CTest 12 件が成功した
+
+## #133 GPU の先行と枠再利用
+
+単一 Thread の投入前確認から全 GPU 完了待機を取り除く。GPU 未完了上限に空きがあり、次に使う FrameGraph の物理枠、共有 Pool 資源、ImGui の GPU Ring が安全な場合に次の Frame を作る。未準備なら UI / Frame ID を進めず、短い高精度待機後に Message Pump へ戻る。CPU Snapshot 数、GPU 物理枠数、GPU 未完了上限、SwapChain Buffer 数は独立して扱う
+
+Pool の非待機照会は Lease の予約ではない。確認から取得まで所有側で直列化する。独自 Pool は `can_acquire` を実装する。未対応なら明示的な失敗を返し、Main に隠れた GPU 待機を持ち込まない。Worker 経路の安全な完了待機は維持する
+
+制御可能な Completion で物理枠別の照会、エラー伝播、照会時の待機ゼロを検証する。Pool の Read / Write 競合と待機ゼロを検証する。実 Host Test では Queue を Fence で止め、単一 Thread で二 Frame を未完了のまま提出できること、三 Frame 目が UI を作らず速やかに戻ること、解放後に再開することを確認する

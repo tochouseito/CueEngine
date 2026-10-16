@@ -157,6 +157,32 @@ Result<void> DX12MainFrameGraph::record(std::uint32_t a_frameIndex, DX12GpuComma
     return recordResult;
 }
 
+/// @brief 物理枠と共有 Pool 資源の競合を待機せず確認する
+Result<bool> DX12MainFrameGraph::is_frame_ready(std::uint32_t a_frameIndex) const
+{
+    if (!m_frames || !m_graph || !m_graph->plan())
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.is_frame_ready"});
+    }
+    auto ready = m_frames->is_frame_ready(a_frameIndex);
+    if (!ready.has_value() || !*ready.try_value())
+    {
+        return ready;
+    }
+    for (const auto index : m_poolResourceIndices)
+    {
+        const auto &resource = m_graph->plan()->resources()[index];
+        auto available = resource.pool->can_acquire(
+            resource.poolHandle, resource.isWritten || resource.needsExclusiveStateAccess ? GpuResourceAccess::Write
+                                                                                          : GpuResourceAccess::Read);
+        if (!available.has_value() || !*available.try_value())
+        {
+            return available;
+        }
+    }
+    return Result<bool>::success(true);
+}
+
 /// @brief 複数 Queue へ分ける前に枠の物理 Resource を一度だけ借用する
 Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
 {
