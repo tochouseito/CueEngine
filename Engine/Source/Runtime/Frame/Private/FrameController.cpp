@@ -707,9 +707,51 @@ Result<bool> FrameController::wait_for_frame()
         return ready;
     }
     const auto token = m_mainStopSource.get_token();
-    // Main は FPS Timer を持たず、短い通知待ちの後に必ず Message Pump へ戻る
-    [[maybe_unused]] const auto status = m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), token);
+    if (!m_desc.useWorkerThreads)
+    {
+        if (m_limitWaitStarted && m_clock.now() < m_nextFrameTime)
+        {
+            wait_for_deadline(m_nextFrameTime, token, true);
+        }
+        else
+        {
+            // 表示通知などの再確認も粗い Condition Variable の Timeout へ依存させない
+            [[maybe_unused]] const auto status = m_waiter.sleep_for(std::chrono::milliseconds(1), token);
+        }
+    }
+    else
+    {
+        [[maybe_unused]] const auto status = m_waiter.wait_for_change(generation, std::chrono::milliseconds(1), token);
+    }
     return frame_ready();
+}
+
+void FrameController::wait_for_deadline(std::chrono::steady_clock::time_point a_deadline, std::stop_token a_token,
+                                        bool a_isMain)
+{
+    const auto now = m_clock.now();
+    if (a_token.stop_requested() || now >= a_deadline)
+    {
+        return;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(a_deadline - now);
+    const auto spin = effective_spin_duration(m_desc);
+    if (remaining > spin)
+    {
+        const auto duration = a_isMain
+                                  ? (std::min)(remaining - spin, std::chrono::nanoseconds(std::chrono::milliseconds(1)))
+                                  : remaining - spin;
+        [[maybe_unused]] const auto status = m_waiter.sleep_for(duration, a_token);
+    }
+    else
+    {
+        // 大きい Spin 設定でも Main の入力処理を長時間止めない
+        const auto until = a_isMain ? (std::min)(a_deadline, now + std::chrono::milliseconds(1)) : a_deadline;
+        while (!a_token.stop_requested() && m_clock.now() < until)
+        {
+            m_waiter.relax();
+        }
+    }
 }
 
 /// @brief Present 後の残り時間を停止可能に待ち、完了と次周期の許可を公開する
@@ -718,9 +760,6 @@ void FrameController::finish_cycle(std::chrono::steady_clock::time_point a_rende
 {
     // CPU 完了の計測点を使い、完了公開後の Thread 実行遅延も待機区間へ含める
     const auto started = a_renderCompletion;
-    const auto period = m_desc.maxFps
-                            ? std::chrono::nanoseconds((1'000'000'000ULL + m_desc.maxFps - 1) / m_desc.maxFps)
-                            : std::chrono::nanoseconds::zero();
     auto planned = cycle_plan(a_renderCompletion);
     if (!planned.has_value())
     {
@@ -729,17 +768,9 @@ void FrameController::finish_cycle(std::chrono::steady_clock::time_point a_rende
     }
     auto plan = *planned.try_value();
     const auto deadline = plan.deadline;
-    const auto spin = m_desc.waitMode == FrameWaitMode::Hybrid ? std::min(m_desc.spinDuration, period / 8)
-                                                             : std::chrono::nanoseconds::zero();
     while (!a_stopToken.stop_requested() && m_clock.now() < deadline)
     {
-        const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - m_clock.now());
-        if (remaining > spin)
-        {
-            [[maybe_unused]] const auto status = m_waiter.sleep_for(remaining - spin, a_stopToken);
-        }
-        else
-            m_waiter.relax();
+        wait_for_deadline(deadline, a_stopToken, false);
     }
     const auto fpsCompletion = m_clock.now();
     if (plan.waitsForPresentation && !a_stopToken.stop_requested())

@@ -825,14 +825,7 @@ Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() con
                                       has_pending_performance_settings()};
     status.effective.frame.maxUpdateLeadFrames = update_lead_frames(status.requested.frame);
     status.effective.frame.syncMode = progress.try_value()->effectiveSyncMode;
-    const auto period = status.requested.frame.maxFps
-                            ? std::chrono::nanoseconds((1'000'000'000ULL + status.requested.frame.maxFps - 1) /
-                                                        status.requested.frame.maxFps)
-                            : std::chrono::nanoseconds::zero();
-    status.effective.frame.spinDuration = status.requested.frame.useWorkerThreads &&
-                                                 status.requested.frame.waitMode == FrameWaitMode::Hybrid
-                                             ? std::min(status.requested.frame.spinDuration, period / 8)
-                                             : std::chrono::nanoseconds::zero();
+    status.effective.frame.spinDuration = effective_spin_duration(status.requested.frame);
     status.effective.presentation.isTearingAllowed = m_state->dx12Backend->get_swap_chain()->is_tearing_enabled();
     status.effective.presentation.isWaitableEnabled = m_state->dx12Backend->get_swap_chain()->is_waitable_enabled();
     return Result<PerformanceSettingsStatus>::success(status);
