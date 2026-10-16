@@ -35,3 +35,11 @@ Debug Build と DX12 / WindowsHost / Editor の関連 CTest 28 件が成功し�
 保存用の `PerformanceSettings` と観測用の `EffectivePerformanceSettings` を分ける。`effective.presentation.maxQueuedFrames` は optional とし、Waitable OFF 時は未適用の `nullopt` を返す。要求値の保存形式と数値は保持する。SwapChain は `SetMaximumFrameLatency` の成功後、Waitable Handle を所有する間だけ適用済み上限を公開する
 
 UI は Queued presents を Waitable OFF 中に編集不可とし、要求値と未適用の理由を表示する。これは OS / DXGI 自身の Queue 既定値がゼロになる意味ではない。設定保存の往復、状態解決、Native SwapChain の ON/OFF、実 Editor の再設定後の状態を Test する
+
+Debug Build と関連 CTest 4 件が成功した
+
+## #135 Update 先行数の編集
+
+UI は `requested_update_lead_frames` で Worker 設定と独立した要求値を表示する。OFF 中は先行数 Control を無効化し、実効値が 0 で要求は保持されることを表示する。Widget が編集された場合だけ値を書き戻し、未指定の自動値を UI の表示だけで明示値へ変換しない
+
+CPU 容量の縮小時は明示した先行数を容量 - 1 へ収める。自動指定の `nullopt` は維持する。純粋な編集 Model の Test で ON → OFF → ON、OFF 中の保存・読込、明示 / 自動指定、容量の縮小・拡張、不正容量の拒否を確認する

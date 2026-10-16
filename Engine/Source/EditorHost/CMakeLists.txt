@@ -5,6 +5,7 @@ find_package(imgui CONFIG REQUIRED GLOBAL)
 
 add_library(Cue.EditorHost STATIC
     Public/EditorHost/ImGuiPass.h
+    Public/EditorHost/PerformanceSettingsEditing.h
     Private/EditorHost.cpp
     Private/ImGuiManager.cpp
     Private/DX12ImGuiBackend.cpp
