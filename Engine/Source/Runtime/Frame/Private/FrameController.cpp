@@ -1,5 +1,7 @@
 #include <Runtime/FrameController.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <algorithm>
 #include <chrono>
 #include <exception>
@@ -152,14 +154,17 @@ Result<bool> FrameController::advance()
         frame = m_progress.submittedFrames;
     }
 
+    TimingTraceFrame traceFrame(frame);
     // Main の準備が完了するまで投入数を公開せず、Worker に未完成の Frame を渡さない
     // Callback は共有 Lock 外で呼び、進行状態の参照を妨げない。再入による投入・停止は許可しない
     if (m_main)
     {
         m_isExecutingMain = true;
         const auto mainStart = m_clock.now();
+        TimingTraceScope traceMain("Frame.Main");
         auto mainResult =
             invoke_callback(m_main, frame, m_mainStopSource.get_token(), "FrameController.main.exception");
+        traceMain.finish();
         m_isExecutingMain = false;
         const auto mainDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - mainStart);
         {
@@ -201,7 +206,9 @@ Result<bool> FrameController::advance()
 
     // Fallback は同じ Frame の Update 完了後に Render を実行する
     const auto updateStart = m_clock.now();
+    TimingTraceScope traceUpdate("Frame.Update");
     auto updateResult = perform_update(frame, {});
+    traceUpdate.finish();
     const auto updateDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - updateStart);
     if (!updateResult.has_value())
     {
@@ -224,7 +231,9 @@ Result<bool> FrameController::advance()
         std::lock_guard lock(m_mutex);
         m_inputToRenderStartTimings.add(renderStart - frameStart);
     }
+    TimingTraceScope traceRender("Frame.Render");
     auto renderResult = invoke_callback(m_render, frame, {}, "FrameController.render.exception");
+    traceRender.finish();
     const auto renderDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - renderStart);
     if (!renderResult.has_value())
     {
@@ -446,24 +455,19 @@ FrameProgress FrameController::progress() const
     return m_progress;
 }
 
-/// @brief Sample の整列を Worker の Lock 外で行い、統計表示が Frame 完了公開を妨げない
+/// @brief 更新時に正確な分布を維持し、共有 Lock 内では固定サイズの結果だけを複写する
 FrameTimingInfo FrameController::timing_info() const
 {
-    TimingSamples main, update, render, limit, interval, cycle, inputStart, inputComplete, presentation;
-    {
-        std::lock_guard lock(m_mutex);
-        main = m_mainTimings;
-        update = m_updateTimings;
-        render = m_renderTimings;
-        limit = m_limitTimings;
-        interval = m_intervalTimings;
-        cycle = m_cycleTimings;
-        inputStart = m_inputToRenderStartTimings;
-        inputComplete = m_inputToRenderCompleteTimings;
-        presentation = m_presentationWaitTimings;
-    }
-    return {main.statistics(), update.statistics(), render.statistics(), limit.statistics(), interval.statistics(),
-            cycle.statistics(), inputStart.statistics(), inputComplete.statistics(), presentation.statistics()};
+    std::lock_guard lock(m_mutex);
+    return {m_mainTimings.statistics(),
+            m_updateTimings.statistics(),
+            m_renderTimings.statistics(),
+            m_limitTimings.statistics(),
+            m_intervalTimings.statistics(),
+            m_cycleTimings.statistics(),
+            m_inputToRenderStartTimings.statistics(),
+            m_inputToRenderCompleteTimings.statistics(),
+            m_presentationWaitTimings.statistics()};
 }
 
 /// @brief Frame 投入を増やさず、非同期 Callback の完了または最初の失敗を返す
@@ -512,7 +516,10 @@ Result<void> FrameController::update_loop(std::stop_token a_stopToken)
         }
 
         const auto start = m_clock.now();
+        TimingTraceFrame traceFrame(frame);
+        TimingTraceScope traceUpdate("Frame.Update");
         auto result = perform_update(frame, a_stopToken);
+        traceUpdate.finish();
         const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - start);
         if (!result.has_value())
         {
@@ -568,12 +575,15 @@ Result<void> FrameController::render_loop(std::stop_token a_stopToken)
             continue;
         }
 
+        TimingTraceFrame traceFrame(frame);
         const auto start = m_clock.now();
         {
             std::lock_guard lock(m_mutex);
             m_inputToRenderStartTimings.add(start - inputSample);
         }
+        TimingTraceScope traceRender("Frame.Render");
         auto result = invoke_callback(m_render, frame, a_stopToken, "FrameController.render.exception");
+        traceRender.finish();
         const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(m_clock.now() - start);
         if (!result.has_value())
         {

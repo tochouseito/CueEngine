@@ -91,7 +91,39 @@ int main()
         return 12;
     }
 
+    // 別 Fence で GPU を止め、未完了 Timeout と完了通知を実 Native Event で確認する
+    auto *eventQueue = dynamic_cast<cue::dx12::DX12GpuCommandQueue *>(graphics.get());
+    Microsoft::WRL::ComPtr<ID3D12Fence> gate;
+    if (!eventQueue || FAILED(device->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate))) ||
+        FAILED(eventQueue->command_queue()->Wait(gate.Get(), 1)))
+    {
+        return 40;
+    }
+    auto blockedFence = graphics->signal();
+    auto blocked = blockedFence.has_value()
+                       ? eventQueue->wait_for_fence_for(*blockedFence.try_value(), std::chrono::milliseconds(0))
+                       : cue::Result<bool>::failure(*blockedFence.try_error());
+    // 検証失敗でも Gate を解除してから return し、Test 自身が GPU 停止を残さない
+    std::jthread opener(
+        [gate]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            [[maybe_unused]] const auto opened = gate->Signal(1);
+        });
+    if (!blockedFence.has_value() || !blocked.has_value() || *blocked.try_value() ||
+        !graphics->wait_for_fence(*blockedFence.try_value()).has_value())
+    {
+        return 41;
+    }
+    auto completed = eventQueue->wait_for_fence_for(*blockedFence.try_value(), std::chrono::milliseconds(0));
+    if (!completed.has_value() || !*completed.try_value() ||
+        eventQueue->wait_for_fence_for(graphics->latest_fence_value() + 1, std::chrono::milliseconds(0)).has_value())
+    {
+        return 42;
+    }
+
     // 複数 Thread から Signal しても Fence 値を重複させない
+    const auto firstConcurrentValue = graphics->latest_fence_value() + 1;
     std::array<std::array<std::uint64_t, 8>, 4> signaledValues{};
     std::array<std::jthread, 4> workers{};
     std::atomic<bool> hasSignalFailure = false;
@@ -121,7 +153,8 @@ int main()
                   orderedValues.begin() + index * signaledValues[index].size());
     }
     std::sort(orderedValues.begin(), orderedValues.end());
-    if (hasSignalFailure.load() || orderedValues.front() != 1 || orderedValues.back() != orderedValues.size())
+    if (hasSignalFailure.load() || orderedValues.front() != firstConcurrentValue ||
+        orderedValues.back() != firstConcurrentValue + orderedValues.size() - 1)
     {
         return 27;
     }

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -72,6 +73,11 @@ public:
     /// @brief 指定 Fence の完了または Device Lost を待つ
     [[nodiscard]] Result<void> wait_for_fence(std::uint64_t a_fenceValue) override;
 
+    /// @brief Fence 完了通知を有限時間待つ。Main は Message 到達でも false を返して Pump へ戻れる
+    /// Event は Queue が GPU 停止まで保持する。Timeout 後も同じ Fence の登録を再利用する
+    [[nodiscard]] Result<bool> wait_for_fence_for(std::uint64_t a_fenceValue, std::chrono::milliseconds a_timeout,
+                                                  bool a_wakesForMessages = false);
+
     /// @brief 指定 Fence が正常に完了したか返す
     [[nodiscard]] bool is_fence_complete(std::uint64_t a_fenceValue) const noexcept override;
 
@@ -101,6 +107,7 @@ private:
     std::atomic<std::uint64_t> m_fenceValue = 0;
     mutable std::mutex m_mutex;
     std::mutex m_waitMutex;
+    std::uint64_t m_registeredFence = 0;
     bool m_isPoisoned = false;
     bool m_hasUnknownSubmission = false;
     bool m_hasUnfencedWait = false;

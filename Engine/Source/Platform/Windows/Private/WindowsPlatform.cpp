@@ -221,6 +221,13 @@ public:
         return true;
     }
 
+    /// @brief UI 構築前に入力の全観測値を Frame へ移し、Window 側を次の入力受付へ戻す
+    void take_input_events(std::vector<InputEventTiming> &a_events) noexcept override
+    {
+        a_events.clear();
+        a_events.swap(m_inputEvents);
+    }
+
     /// @brief Window MessageをEventとLifecycle状態へ変換する
     static LRESULT CALLBACK window_proc(HWND a_handle, UINT a_message, WPARAM a_wParam, LPARAM a_lParam) noexcept
     {
@@ -244,6 +251,29 @@ public:
             return DefWindowProcW(a_handle, a_message, a_wParam, a_lParam);
         }
 
+        // UI Handler より前に時刻を採る。OS が統合した移動や物理 Device の遅延は含まない
+        InputEventTiming inputTiming;
+        if ((a_message >= WM_KEYFIRST && a_message <= WM_KEYLAST) ||
+            (a_message >= WM_MOUSEFIRST && a_message <= WM_MOUSELAST))
+        {
+            try
+            {
+                if (window->m_inputSequence == (std::numeric_limits<std::uint64_t>::max)())
+                {
+                    window->m_system.report_event_failure();
+                }
+                else
+                {
+                    inputTiming = {++window->m_inputSequence, std::chrono::steady_clock::now()};
+                    window->m_inputEvents.push_back(inputTiming);
+                }
+            }
+            catch (...)
+            {
+                // 計測標本の欠落を成功として続けず、Pump の失敗で公開する
+                window->m_system.report_event_failure();
+            }
+        }
         // UI に入力を観測させるが、必須の Lifecycle 処理を消費させない
         // SetCapture 等による再入中も Handler の差し替えと解除を拒否する
         WindowsMessageResult handled;
@@ -252,7 +282,7 @@ public:
             ++window->m_handlerDepth;
             try
             {
-                handled = window->m_handler({a_handle, a_message, a_wParam, a_lParam});
+                handled = window->m_handler({a_handle, a_message, a_wParam, a_lParam, inputTiming});
             }
             catch (...)
             {
@@ -344,6 +374,8 @@ private:
     WindowSize m_clientSize{};
     WindowState m_state = WindowState::Created;
     std::deque<WindowEvent> m_events;
+    std::vector<InputEventTiming> m_inputEvents;
+    std::uint64_t m_inputSequence = 0;
     windowsMessageHandler m_handler;
     std::uint64_t m_handlerGeneration = 0;
     std::uint32_t m_handlerDepth = 0;

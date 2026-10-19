@@ -36,5 +36,11 @@ struct MainFrameGraphPerformance final
     std::uint32_t peakUnfinishedGpuFrames = 0;
     std::uint32_t unfinishedGpuFrames = 0;
     PresentationTiming presentation;
+    TimingStatistics presentApi;
+    TimingStatistics presentationStatistics;
+    TimingStatistics admissionWait;
+    TimingStatistics mainGpuWait;
+    TimingStatistics mainPresentationWait;
+    TimingStatistics mainResourceWait;
 };
 } // namespace cue

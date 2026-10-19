@@ -1,5 +1,7 @@
 #include <DX12/DX12SwapChain.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <exception>
 #include <memory>
 #include <new>
@@ -201,22 +203,30 @@ Result<void> DX12SwapChain::present()
     }
     const UINT syncInterval = m_config.isVSyncEnabled ? 1u : 0u;
     const UINT flags = !m_config.isVSyncEnabled && m_isTearingEnabled ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    const auto started = std::chrono::steady_clock::now();
+    TimingTraceScope tracePresent("DXGI.Present");
     const HRESULT result = m_swapChain->Present(syncInterval, flags);
+    tracePresent.finish();
+    const auto returned = std::chrono::steady_clock::now();
     if (SUCCEEDED(result))
     {
         m_hasFramePermit = false;
         ++m_timing.presentCount;
-        m_timing.lastPresent = std::chrono::steady_clock::now();
+        m_timing.lastPresent = returned;
+        m_timing.presentStarted = started;
+        m_timing.presentReturned = returned;
         update_timing();
+        m_timing.statisticsDuration = std::chrono::steady_clock::now() - returned;
     }
     return FAILED(result) ? Result<void>::failure(swap_chain_error("IDXGISwapChain.Present", result))
                           : Result<void>::success();
 }
 
 /// @brief 最初の Frame も表示枠を取得し、Message Pump を所有する Main を待機させない
-Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
-                                         const std::function<bool()> &a_shouldCancel, bool a_isNonBlocking)
+Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken, const std::function<bool()> &a_shouldCancel,
+                                           bool a_isNonBlocking, bool a_wakesForMessages)
 {
+    TimingTraceScope traceScope("DXGI.Ready");
     if (!m_swapChain)
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "DX12SwapChain.wait_for_frame"});
@@ -227,12 +237,21 @@ Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
         {
             return Result<bool>::success(true);
         }
-        const DWORD status = WaitForSingleObject(m_frameLatencyEvent, a_isNonBlocking ? 0 : 1);
+        const HANDLE event = m_frameLatencyEvent;
+        TimingTraceScope traceEvent("DXGI.Event", a_isNonBlocking ? 0 : 1);
+        const DWORD status = a_wakesForMessages ? MsgWaitForMultipleObjectsEx(1, &event, a_isNonBlocking ? 0 : 1,
+                                                                              QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+                                                : WaitForSingleObject(event, a_isNonBlocking ? 0 : 1);
+        traceEvent.finish(status);
         if (status == WAIT_OBJECT_0)
         {
             // 最小化などで Present を省略しても、消費した通知を次回へ持ち越す
             m_hasFramePermit = true;
             return Result<bool>::success(true);
+        }
+        if (a_wakesForMessages && status == WAIT_OBJECT_0 + 1)
+        {
+            return Result<bool>::success(false);
         }
         if (status != WAIT_TIMEOUT)
         {
@@ -245,7 +264,7 @@ Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
         {
             return Result<bool>::failure(swap_chain_error("DX12SwapChain.wait_for_frame.device", removed));
         }
-        if (a_isNonBlocking)
+        if (a_isNonBlocking || a_wakesForMessages)
         {
             return Result<bool>::success(false);
         }
@@ -274,6 +293,7 @@ PresentationTiming DX12SwapChain::timing() const noexcept
 /// @brief 二つの Refresh 標本から周期を求め、表示時刻の推定と QPC 標本を区別する
 void DX12SwapChain::update_timing()
 {
+    TimingTraceScope traceScope("DXGI.Statistics");
     const auto monitor = MonitorFromWindow(m_window, MONITOR_DEFAULTTONEAREST);
     if (monitor != m_monitor)
     {

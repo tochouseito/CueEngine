@@ -19,6 +19,8 @@ struct WindowsMessage final
     std::uint32_t message = 0;
     std::uintptr_t wParam = 0;
     std::intptr_t lParam = 0;
+    // 入力 Message だけが非零 ID を持つ。Handler を呼ぶ前に採取する
+    InputEventTiming inputTiming;
 };
 
 /// @brief 通常 Message の標準処理を省略するかと返却値を指定する

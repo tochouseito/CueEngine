@@ -71,6 +71,8 @@ class EditorHost final
     [[nodiscard]] Result<FrameProgress> frame_progress() const;
     /// @brief Main / Update / Render / FPS 待機の直近 120 回の CPU 集計を返す
     [[nodiscard]] Result<FrameTimingInfo> frame_timing_info() const;
+    /// @brief Window 入力到達から実際に UI へ反映した Frame の Present / CPU 完了までを返す
+    [[nodiscard]] Result<InputLatencyInfo> input_latency_info() const;
     /// @brief UI 構築・Snapshot Copy・Context Lock 待機の CPU 集計を返す
     [[nodiscard]] Result<ImGuiTimingInfo> ui_timing_info() const;
     /// @brief UI 構築前に取得した Graph / Present / GPU 計測を返す。Callback 内でも Graph Lock を取得しない
@@ -127,12 +129,17 @@ class EditorHost final
     // Graph Lock と ImGui Context Lock の取得順を逆転させず、Main の UI 構築前に更新する
     MainFrameGraphPerformance m_graphPerformance;
     FrameTimingInfo m_frameTiming;
+    InputLatencyInfo m_inputLatency;
     ImGuiTimingInfo m_uiTiming;
     PerformanceSettingsPolicy m_performancePolicy;
     std::string m_performanceSettingsFile;
     std::optional<PerformanceSettings> m_settingsDraft;
     std::string m_settingsError;
     bool m_savesAfterApply = false;
+    // Render の記録 Scope と Present 後の入力計測だけが同じ Thread で読み書きする
+    // Worker の再構築は Join 後に行い、Main の ImGui Context Lock を再取得しない
+    std::uint64_t m_inputRenderFrame = 0;
+    bool m_wasInputRendered = false;
     // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
     std::unique_ptr<ImGuiManager> m_imgui;
     WindowsHost m_windows;

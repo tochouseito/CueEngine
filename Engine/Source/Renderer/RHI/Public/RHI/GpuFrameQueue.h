@@ -75,6 +75,12 @@ class GpuFrameQueue final
         return m_count;
     }
 
+    /// @brief 最古の未回収提出点を次の Queue 操作まで借用する。Render 操作の直列化が必要
+    [[nodiscard]] const ICommandCompletion *oldest_completion() const noexcept
+    {
+        return m_count ? m_entries[0].get() : nullptr;
+    }
+
   private:
     std::array<std::shared_ptr<ICommandCompletion>, 8> m_entries;
     std::uint32_t m_limit;

@@ -1,5 +1,7 @@
 #include <EditorHost/ImGuiManager.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -123,6 +125,9 @@ public:
     TimingSamples snapshotCopyTimes;
     TimingSamples contextWaitTimes;
     std::chrono::steady_clock::time_point frameStarted;
+    // 一つの Native Message が生成した最後の ImGui Event が処理された Frame に帰属させる
+    std::vector<std::pair<ImU32, InputEventTiming>> pendingInput;
+    std::vector<InputEventTiming> frameInput;
 
     /// @brief 他の枠から借用中の Texture は残し、最後の CPU 参照だけ Queue Pin を解除する
     void release_snapshot(std::size_t a_slot)
@@ -215,7 +220,9 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
                 settings = loaded.take_value();
             }
         }
+        TimingTraceScope traceLock("ImGui.Lock");
         std::lock_guard lock(imgui_context_mutex());
+        traceLock.finish();
 
         // CreateContext が Current を変更する場合も、生成処理の外へ漏らさない
         IMGUI_CHECKVERSION();
@@ -260,15 +267,23 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window& a_window, ImG
             a_window,
             [borrowed](const WindowsMessage &a_message)
             {
+                TimingTraceScope traceLock("ImGui.Lock");
                 std::lock_guard lock(imgui_context_mutex());
+                traceLock.finish();
                 if (!borrowed->isWin32Initialized)
                 {
                     return WindowsMessageResult{};
                 }
                 // 他の Context が Current の場合も、この Window の Context へ入力を配送する
                 ScopedContext active(borrowed->context);
+                const auto nextInput = borrowed->context->InputEventsNextEventId;
                 const auto value = ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(a_message.window),
                                                                 a_message.message, a_message.wParam, a_message.lParam);
+                if (a_message.inputTiming.eventId != 0 && borrowed->context->InputEventsNextEventId != nextInput)
+                {
+                    borrowed->pendingInput.emplace_back(borrowed->context->InputEventsNextEventId - 1,
+                                                        a_message.inputTiming);
+                }
                 // Capture Flag は上位の Gameplay 入力に使う。Win32 の必須処理は Platform が維持する
                 return WindowsMessageResult{value != 0, static_cast<std::intptr_t>(value)};
             });
@@ -326,7 +341,9 @@ Result<void> ImGuiManager::initialize_renderer(IBackend &a_backend, std::uint32_
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.initialize_renderer"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.initialize_renderer");
     if (!valid.has_value())
     {
@@ -353,7 +370,9 @@ Result<void> ImGuiManager::enable_frame_transfer(std::uint32_t a_cpuFrameCount)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.enable_frame_transfer"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.enable_frame_transfer");
     if (!valid.has_value())
     {
@@ -388,7 +407,9 @@ Result<void> ImGuiManager::reconfigure_renderer(IBackend &a_backend, std::uint32
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.reconfigure"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.reconfigure");
     if (!valid.has_value())
     {
@@ -449,12 +470,15 @@ Result<void> ImGuiManager::reconfigure_renderer(IBackend &a_backend, std::uint32
 /// @brief Texture の GPU 更新後に CPU 配列を複製し、原本への可変参照を残さない
 Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token a_token)
 {
+    TimingTraceScope traceScope("ImGui.Snapshot");
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.publish_frame"});
     }
     const auto lockStarted = std::chrono::steady_clock::now();
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.publish_frame");
     if (!valid.has_value())
     {
@@ -620,7 +644,9 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
 /// @brief Owner Thread の UI 構築前に、次の GPU Ring の再利用可否を照会する
 Result<bool> ImGuiManager::is_renderer_ready() const
 {
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.is_renderer_ready");
     if (!valid.has_value() || !m_state->renderer)
     {
@@ -632,10 +658,18 @@ Result<bool> ImGuiManager::is_renderer_ready() const
 }
 
 /// @brief Snapshot の借用だけを排他し、通常 Graph 記録中に Main の Context 操作を止めない
-Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
+Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record,
+                                        bool *a_wasRecorded)
 {
+    TimingTraceScope traceScope("ImGui.RenderScope");
+    if (a_wasRecorded)
+    {
+        *a_wasRecorded = false;
+    }
     const auto lockStarted = std::chrono::steady_clock::now();
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     if (!m_state || !m_state->isReady || !m_state->frameCount || m_state->activeSnapshot || !a_record)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.render_frame"});
@@ -668,13 +702,19 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     {
         result = Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.render.callback"});
     }
+    TimingTraceScope traceReacquire("ImGui.Reacquire");
     lock.lock();
+    traceReacquire.finish();
     auto finished = state.renderer->finish_submission();
     if (result.has_value() && !finished.has_value())
     {
         result = std::move(finished);
     }
     state.transfer.discardedFrames += state.activeSnapshot->wasRecorded ? 0 : 1;
+    if (a_wasRecorded)
+    {
+        *a_wasRecorded = result.has_value() && state.activeSnapshot->wasRecorded;
+    }
     g_recordingManager = previous;
     state.activeSnapshot = nullptr;
     state.release_snapshot(slot);
@@ -685,11 +725,14 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
 /// @brief 可変な計測配列を公開せず、Owner へ同じ時点の集計を返す
 Result<ImGuiTimingInfo> ImGuiManager::timing_info() const
 {
+    TimingTraceScope traceScope("ImGui.Statistics");
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<ImGuiTimingInfo>::failure({ErrorCategory::WrongThread, "ImGuiManager.timing_info"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.timing_info");
     if (!valid.has_value())
     {
@@ -708,7 +751,9 @@ Result<ImGuiTransferInfo> ImGuiManager::transfer_info() const
     {
         return Result<ImGuiTransferInfo>::failure({ErrorCategory::WrongThread, "ImGuiManager.transfer_info"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.transfer_info");
     return valid.has_value() ? Result<ImGuiTransferInfo>::success(m_state->transfer)
                              : Result<ImGuiTransferInfo>::failure(*valid.try_error());
@@ -717,12 +762,15 @@ Result<ImGuiTransferInfo> ImGuiManager::transfer_info() const
 /// @brief Owner の直接記録または有効な Render Scope 内から、一度だけ描画を記録する
 Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
 {
+    TimingTraceScope traceScope("ImGui.Record");
     if (std::this_thread::get_id() != m_ownerId && g_recordingManager != this)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.record_draw_data"});
     }
     const auto lockStarted = std::chrono::steady_clock::now();
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     if (m_state)
     {
         m_state->contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
@@ -770,7 +818,9 @@ Result<ImGuiRendererInfo> ImGuiManager::renderer_info() const
     {
         return Result<ImGuiRendererInfo>::failure({ErrorCategory::WrongThread, "ImGuiManager.renderer_info"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.renderer_info");
     if (!valid.has_value())
     {
@@ -784,12 +834,15 @@ Result<ImGuiRendererInfo> ImGuiManager::renderer_info() const
 /// @brief Message Pump 後の採用 Frame で Platform 入力を取り込み、UI の構築を開始する
 Result<void> ImGuiManager::begin_frame()
 {
+    TimingTraceScope traceScope("ImGui.Begin");
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.begin_frame"});
     }
     const auto lockStarted = std::chrono::steady_clock::now();
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.begin_frame");
     if (!valid.has_value())
     {
@@ -823,8 +876,47 @@ Result<void> ImGuiManager::begin_frame()
         }
         m_state->isCpuAtlasBuilt = true;
     }
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    {
+        TimingTraceScope tracePlatform("ImGui.PlatformNewFrame");
+        ImGui_ImplWin32_NewFrame();
+    }
+    try
+    {
+        m_state->frameInput.reserve(m_state->pendingInput.size());
+    }
+    catch (const std::bad_alloc &)
+    {
+        ImGui::SetCurrentContext(m_state->previousFrameContext);
+        m_state->previousFrameContext = nullptr;
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.input.allocation"});
+    }
+    {
+        TimingTraceScope traceNewFrame("ImGui.NewFrame");
+        ImGui::NewFrame();
+    }
+    m_state->frameInput.clear();
+    for (auto input = m_state->pendingInput.begin(); input != m_state->pendingInput.end();)
+    {
+        const auto contains = [id = input->first](const auto &a_events)
+        {
+            return std::any_of(a_events.begin(), a_events.end(),
+                               [id](const auto &a_event) { return a_event.EventId == id; });
+        };
+        if (contains(m_state->context->InputEventsTrail))
+        {
+            m_state->frameInput.push_back(input->second);
+            input = m_state->pendingInput.erase(input);
+        }
+        else if (!contains(m_state->context->InputEventsQueue))
+        {
+            // Focus 変更等で公式 Core が破棄した入力を、別の Frame へ誤って付け替えない
+            input = m_state->pendingInput.erase(input);
+        }
+        else
+        {
+            ++input;
+        }
+    }
     // 固定 Version が提供する回復 API で Callback 前の Begin / Style / Table Stack を保存する
     ImGui::ErrorRecoveryStoreState(&m_state->recovery);
     m_state->isFrameOpen = true;
@@ -833,14 +925,41 @@ Result<void> ImGuiManager::begin_frame()
     return Result<void>::success();
 }
 
+/// @brief NewFrame の処理済み入力を移し、配列容量は次の Frame に使う
+Result<void> ImGuiManager::take_input_events(std::vector<InputEventTiming> &a_events)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.take_input_events"});
+    }
+    TimingTraceScope traceLock("ImGui.Lock");
+    std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
+    auto valid = validate("ImGuiManager.take_input_events");
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    if (m_state->isFrameOpen || m_state->isBuilding)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.take_input_events.frame"});
+    }
+    a_events.clear();
+    a_events.swap(m_state->frameInput);
+    return Result<void>::success();
+}
+
 /// @brief Renderer に依存せず Draw Data を確定し、呼出元の Context を復元する
 Result<void> ImGuiManager::end_frame()
 {
+    TimingTraceScope traceScope("ImGui.End");
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.end_frame"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.end_frame");
     if (!valid.has_value())
     {
@@ -850,7 +969,9 @@ Result<void> ImGuiManager::end_frame()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.end_frame"});
     }
+    TimingTraceScope traceCpuRender("ImGui.CpuRender");
     ImGui::Render();
+    traceCpuRender.finish();
     const auto* draw = ImGui::GetDrawData();
     const auto& io = ImGui::GetIO();
     ++m_state->info.frames;
@@ -872,6 +993,7 @@ Result<void> ImGuiManager::end_frame()
 /// @brief UI Callback をこの Context の開いた Frame に限定して実行する
 Result<void> ImGuiManager::build_frame(const editorUiCallback& a_buildUi)
 {
+    TimingTraceScope traceScope("ImGui.Build");
     auto started = begin_frame();
     if (!started.has_value())
     {
@@ -883,6 +1005,7 @@ Result<void> ImGuiManager::build_frame(const editorUiCallback& a_buildUi)
     {
         if (a_buildUi)
         {
+            TimingTraceScope traceCallback("ImGui.Callback");
             result = a_buildUi();
         }
     }
@@ -931,7 +1054,9 @@ Result<ImGuiFrameInfo> ImGuiManager::frame_info() const
     {
         return Result<ImGuiFrameInfo>::failure({ErrorCategory::WrongThread, "ImGuiManager.frame_info"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::lock_guard lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.frame_info");
     return valid.has_value() ? Result<ImGuiFrameInfo>::success(m_state->info)
                              : Result<ImGuiFrameInfo>::failure(*valid.try_error());
@@ -944,7 +1069,9 @@ Result<void> ImGuiManager::save_settings()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.save_settings"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     auto valid = validate("ImGuiManager.save_settings");
     if (!valid.has_value())
     {
@@ -1003,7 +1130,9 @@ Result<void> ImGuiManager::shutdown()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.shutdown"});
     }
+    TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
+    traceLock.finish();
     if (!m_state || !m_state->context)
     {
         return Result<void>::success();

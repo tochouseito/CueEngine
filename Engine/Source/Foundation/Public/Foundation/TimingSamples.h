@@ -27,9 +27,26 @@ class TimingSamples final
     void add(std::chrono::nanoseconds a_duration) noexcept
     {
         m_last = (std::max)(a_duration, std::chrono::nanoseconds::zero());
+        if (m_count == m_samples.size())
+        {
+            const auto old = m_samples[m_next];
+            const auto found = std::lower_bound(m_ordered.begin(), m_ordered.end(), old);
+            std::move(found + 1, m_ordered.end(), found);
+            m_sumQuotient -= old.count() / 120;
+            m_sumRemainder -= old.count() % 120;
+        }
+        else
+        {
+            ++m_count;
+        }
+        const auto end = m_ordered.begin() + m_count - 1;
+        const auto position = std::lower_bound(m_ordered.begin(), end, m_last);
+        std::move_backward(position, end, end + 1);
+        *position = m_last;
+        m_sumQuotient += m_last.count() / 120;
+        m_sumRemainder += m_last.count() % 120;
         m_samples[m_next] = m_last;
         m_next = (m_next + 1) % m_samples.size();
-        m_count = (std::min)(m_count + 1, m_samples.size());
     }
 
     /// @brief 集計済みでない固定容量の有効 Sample 数を返す
@@ -38,7 +55,7 @@ class TimingSamples final
         return m_count;
     }
 
-    /// @brief Sample のコピーを整列し、平均・nearest-rank p95・最大を返す
+    /// @brief 全標本から正確に維持した平均・nearest-rank p95・最大を定数時間で返す
     [[nodiscard]] TimingStatistics statistics() const noexcept
     {
         TimingStatistics result{};
@@ -48,25 +65,20 @@ class TimingSamples final
         {
             return result;
         }
-        auto ordered = m_samples;
-        // 商と余りを別に足し、長い休止時間でも総和の Overflow と浮動小数の丸めを避ける
-        std::chrono::nanoseconds::rep quotient = 0;
-        std::chrono::nanoseconds::rep remainder = 0;
-        for (std::size_t index = 0; index < m_count; ++index)
-        {
-            quotient += ordered[index].count() / static_cast<std::chrono::nanoseconds::rep>(m_count);
-            remainder += ordered[index].count() % static_cast<std::chrono::nanoseconds::rep>(m_count);
-        }
-        std::sort(ordered.begin(), ordered.begin() + m_count);
-        result.averageDuration =
-            std::chrono::nanoseconds(quotient + remainder / static_cast<std::chrono::nanoseconds::rep>(m_count));
-        result.p95Duration = ordered[(95 * m_count + 99) / 100 - 1];
-        result.maxDuration = ordered[m_count - 1];
+        // 総和を 120 の商と余りで保持し、Warmup 中も 64 bit を溢れさせず整数平均を復元する
+        const auto count = static_cast<std::chrono::nanoseconds::rep>(m_count);
+        result.averageDuration = std::chrono::nanoseconds((m_sumQuotient / count) * 120 +
+                                                          ((m_sumQuotient % count) * 120 + m_sumRemainder) / count);
+        result.p95Duration = m_ordered[(95 * m_count + 99) / 100 - 1];
+        result.maxDuration = m_ordered[m_count - 1];
         return result;
     }
 
   private:
     std::array<std::chrono::nanoseconds, 120> m_samples{};
+    std::array<std::chrono::nanoseconds, 120> m_ordered{};
+    std::chrono::nanoseconds::rep m_sumQuotient = 0;
+    std::chrono::nanoseconds::rep m_sumRemainder = 0;
     std::size_t m_next = 0;
     std::size_t m_count = 0;
     std::chrono::nanoseconds m_last{};

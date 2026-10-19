@@ -7,14 +7,16 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <Foundation/Result.h>
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
-#include <Runtime/FrameController.h>
 #include <RHI/FrameExecution.h>
 #include <RHI/Presentation.h>
+#include <Runtime/FrameController.h>
 #include <WindowsHost/HostLogging.h>
+#include <WindowsHost/InputLatency.h>
 #include <WindowsHost/PerformanceSettings.h>
 #include <WindowsHost/StoragePaths.h>
 
@@ -49,6 +51,10 @@ struct WindowsHostCallbacks final
     frameSnapshotCallback prepareFrame;
     // 単一 Thread の UI 構築前に上位 Renderer の GPU Ring を非待機で確認する
     std::function<Result<bool>()> isRendererReady;
+    // Main 完了後、実際に反映した入力を移す。未指定なら到達件数だけ記録し、反映標本は作らない
+    std::function<Result<void>(std::vector<InputEventTiming> &)> captureInput;
+    // Render Callback 復帰後、その入力 Snapshot が描画されたか返す。未指定なら Host の描画を採用する
+    std::function<Result<bool>(std::uint64_t)> isInputRendered;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定
@@ -108,6 +114,9 @@ class WindowsHost final
     ///
     /// 構築 Thread から呼ぶ。失敗時も shutdown を呼ぶ
     [[nodiscard]] Result<bool> step();
+
+    /// @brief 入力到達から対応 Frame の Present / CPU 完了までの統計を返す。Owner Thread 専用
+    [[nodiscard]] Result<InputLatencyInfo> input_latency_info() const;
 
     /// @brief 実行中の CPU Frame 進行状態を構築 Thread へ返す
     ///

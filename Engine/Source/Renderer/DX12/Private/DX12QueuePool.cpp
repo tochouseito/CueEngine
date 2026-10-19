@@ -1,5 +1,7 @@
 #include <DX12/DX12QueuePool.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <exception>
 #include <limits>
 #include <optional>
@@ -35,6 +37,35 @@ Error queue_error(const char* a_operation, HRESULT a_result)
 {
     return {ErrorCategory::PlatformFailure, a_operation, static_cast<std::int64_t>(a_result)};
 }
+
+#if defined(CUE_ENABLE_TIMING_TRACE)
+/// @brief Native Clock の生値と取得区間を残す。失敗も標本として保持し、通常の提出結果を変えない
+void trace_calibration(ID3D12CommandQueue &a_queue, std::uint64_t a_identity, QueueType a_type, std::uint64_t a_fence,
+                       const char *a_phase) noexcept
+{
+    if (auto *sink = timing_trace_gpu_sink())
+    {
+        TimingTraceGpuRecord record;
+        record.name = a_phase;
+        record.frame = timing_trace_frame();
+        record.queue = a_identity;
+        record.queueType = static_cast<std::uint32_t>(a_type);
+        record.detail = a_fence;
+        LARGE_INTEGER before{}, after{};
+        QueryPerformanceCounter(&before);
+        record.status = a_queue.GetClockCalibration(&record.beginTick, &record.cpuTick);
+        QueryPerformanceCounter(&after);
+        record.qpcBefore = before.QuadPart;
+        record.qpcAfter = after.QuadPart;
+        const auto frequencyResult = a_queue.GetTimestampFrequency(&record.frequency);
+        if (SUCCEEDED(record.status) && FAILED(frequencyResult))
+        {
+            record.status = frequencyResult;
+        }
+        sink->recordGpu(sink->context, record);
+    }
+}
+#endif
 } // namespace
 
 /// @brief create の内部でだけ Queue を持たない中間状態を作る
@@ -211,9 +242,33 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* c
     {
         *a_mayHaveExecuted = true;
     }
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    trace_calibration(*m_queue.Get(), identity(), m_type, m_fenceValue.load() + 1, "BeforeSubmit");
+    LARGE_INTEGER submitBegin{}, submitEnd{};
+    QueryPerformanceCounter(&submitBegin);
+#endif
     m_queue->ExecuteCommandLists(static_cast<UINT>(a_lists.size()), a_lists.data());
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    QueryPerformanceCounter(&submitEnd);
+#endif
     // Signal 失敗時も作業自体は投入済みなので、呼出側は Resource を保持して停止する
     auto signalResult = signal_locked();
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    if (auto *sink = timing_trace_gpu_sink())
+    {
+        TimingTraceGpuRecord record;
+        record.kind = 1;
+        record.name = "ExecuteCommandLists";
+        record.frame = timing_trace_frame();
+        record.queue = identity();
+        record.queueType = static_cast<std::uint32_t>(m_type);
+        record.detail = signalResult.has_value() ? *signalResult.try_value() : 0;
+        record.qpcBefore = submitBegin.QuadPart;
+        record.qpcAfter = submitEnd.QuadPart;
+        record.status = signalResult.has_value() ? 0 : -1;
+        sink->recordGpu(sink->context, record);
+    }
+#endif
     if (!signalResult.has_value())
     {
         m_isPoisoned = true;
@@ -247,44 +302,87 @@ Result<std::uint64_t> DX12GpuCommandQueue::signal_locked()
 /// @brief 未発行値への無限待機を拒否してから完了通知を待つ
 Result<void> DX12GpuCommandQueue::wait_for_fence(std::uint64_t a_fenceValue)
 {
+    while (true)
+    {
+        auto result = wait_for_fence_for(a_fenceValue, std::chrono::milliseconds(100));
+        if (!result.has_value())
+        {
+            return Result<void>::failure(*result.try_error());
+        }
+        if (*result.try_value())
+        {
+#if defined(CUE_ENABLE_TIMING_TRACE)
+            trace_calibration(*m_queue.Get(), identity(), m_type, a_fenceValue, "AfterFenceComplete");
+#endif
+            return Result<void>::success();
+        }
+    }
+}
+
+/// @brief GPU 完了で即時起床し、Timeout / Message は未完了として呼出側の取消判定へ戻す
+Result<bool> DX12GpuCommandQueue::wait_for_fence_for(std::uint64_t a_fenceValue, std::chrono::milliseconds a_timeout,
+                                                     bool a_wakesForMessages)
+{
+    TimingTraceScope traceScope("Fence.Wait");
+    if (a_timeout.count() < 0 || a_timeout.count() >= INFINITE)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.wait_for_fence.timeout"});
+    }
     if (a_fenceValue > m_fenceValue.load())
     {
-        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.wait_for_fence.value"});
+        return Result<bool>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.wait_for_fence.value"});
     }
     if (a_fenceValue == 0)
     {
-        return Result<void>::success();
+        return Result<bool>::success(true);
     }
     // 一つの自動 Reset Event を複数の CPU 待機者に同時登録しない
     std::lock_guard waitLock(m_waitMutex);
     const std::uint64_t completed = m_fence->GetCompletedValue();
     if (completed == (std::numeric_limits<std::uint64_t>::max)())
     {
-        return Result<void>::failure(queue_error("ID3D12Device.GetDeviceRemovedReason",
-                                                  m_device->GetDeviceRemovedReason()));
+        return Result<bool>::failure(
+            queue_error("ID3D12Device.GetDeviceRemovedReason", m_device->GetDeviceRemovedReason()));
     }
     if (completed >= a_fenceValue)
     {
-        return Result<void>::success();
+        return Result<bool>::success(true);
     }
 
-    const HRESULT result = m_fence->SetEventOnCompletion(a_fenceValue, m_fenceEvent);
-    if (FAILED(result))
+    if (m_registeredFence != a_fenceValue)
     {
-        return Result<void>::failure(queue_error("ID3D12Fence.SetEventOnCompletion", result));
+        const HRESULT result = m_fence->SetEventOnCompletion(a_fenceValue, m_fenceEvent);
+        if (FAILED(result))
+        {
+            return Result<bool>::failure(queue_error("ID3D12Fence.SetEventOnCompletion", result));
+        }
+        m_registeredFence = a_fenceValue;
     }
-    const DWORD waitResult = WaitForSingleObject(m_fenceEvent, INFINITE);
-    if (waitResult != WAIT_OBJECT_0)
+    TimingTraceScope traceEvent(a_timeout.count() == 1 ? "Fence.Event1ms" : "Fence.Event", a_fenceValue);
+    const HANDLE event = m_fenceEvent;
+    const DWORD waitResult = a_wakesForMessages
+                                 ? MsgWaitForMultipleObjectsEx(1, &event, static_cast<DWORD>(a_timeout.count()),
+                                                               QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+                                 : WaitForSingleObject(event, static_cast<DWORD>(a_timeout.count()));
+    traceEvent.finish(waitResult);
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    if (waitResult == WAIT_OBJECT_0)
     {
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "WaitForSingleObject",
+        trace_calibration(*m_queue.Get(), identity(), m_type, a_fenceValue, "AfterFenceWait");
+    }
+#endif
+    if (waitResult != WAIT_OBJECT_0 && waitResult != WAIT_TIMEOUT &&
+        !(a_wakesForMessages && waitResult == WAIT_OBJECT_0 + 1))
+    {
+        return Result<bool>::failure({ErrorCategory::PlatformFailure, "DX12GpuCommandQueue.wait_for_fence.event",
                                       static_cast<std::int64_t>(GetLastError())});
     }
     if (m_fence->GetCompletedValue() == (std::numeric_limits<std::uint64_t>::max)())
     {
-        return Result<void>::failure(queue_error("ID3D12Device.GetDeviceRemovedReason",
-                                                  m_device->GetDeviceRemovedReason()));
+        return Result<bool>::failure(
+            queue_error("ID3D12Device.GetDeviceRemovedReason", m_device->GetDeviceRemovedReason()));
     }
-    return Result<void>::success();
+    return Result<bool>::success(is_fence_complete(a_fenceValue));
 }
 
 /// @brief Device Lost の Sentinel を完了値として扱わない

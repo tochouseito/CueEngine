@@ -77,6 +77,9 @@ int test_reconfiguration()
             auto status = host.performance_settings_status();
             auto progress = host.frame_progress();
             auto transfer = host.ui_transfer_info();
+            auto afterTransfer = host.frame_progress();
+            // UI 消費は Render Callback 内、CPU 完了数は Callback 復帰後に公開される
+            // 別々の Snapshot に同時点の一致を要求せず、取得前後の単調範囲と保存則を確認する
             if (!applied.has_value() || *applied.try_value() != settings || !status.has_value() ||
                 status.try_value()->requested != settings ||
                 status.try_value()->effective.frame.maxFramesInFlight != settings.gpu.resourceFrameCount ||
@@ -85,12 +88,27 @@ int test_reconfiguration()
                 status.try_value()->effective.presentation.maxQueuedFrames !=
                     (settings.presentation.isWaitableEnabled ? std::optional(settings.presentation.maxQueuedFrames)
                                                              : std::nullopt) ||
-                !progress.has_value() || !transfer.has_value() ||
+                !progress.has_value() || !transfer.has_value() || !afterTransfer.has_value() ||
                 transfer.try_value()->publishedFrames != progress.try_value()->submittedFrames ||
-                transfer.try_value()->consumedFrames != progress.try_value()->renderedFrames ||
+                transfer.try_value()->consumedFrames < progress.try_value()->renderedFrames ||
+                transfer.try_value()->consumedFrames > afterTransfer.try_value()->renderedFrames + 1 ||
+                transfer.try_value()->publishedFrames !=
+                    transfer.try_value()->consumedFrames + transfer.try_value()->pendingFrames ||
                 transfer.try_value()->pendingFrames > settings.frame.maxFramesInFlight ||
                 (progress.try_value()->renderThreadId != std::this_thread::get_id()) != usesWorkers)
             {
+                if (progress.has_value() && transfer.has_value())
+                {
+                    std::fprintf(stderr,
+                                 "reconfiguration buffers=%u waitable=%d submitted=%llu rendered=%llu "
+                                 "published=%llu consumed=%llu pending=%u\n",
+                                 settings.gpu.resourceFrameCount, isWaitableEnabled,
+                                 static_cast<unsigned long long>(progress.try_value()->submittedFrames),
+                                 static_cast<unsigned long long>(progress.try_value()->renderedFrames),
+                                 static_cast<unsigned long long>(transfer.try_value()->publishedFrames),
+                                 static_cast<unsigned long long>(transfer.try_value()->consumedFrames),
+                                 transfer.try_value()->pendingFrames);
+                }
                 return 3;
             }
         }
@@ -246,5 +264,6 @@ int main()
     {
         return 20 + failed;
     }
-    return test_simulation_settings();
+    const auto simulation = test_simulation_settings();
+    return simulation == 0 ? 0 : 30 + simulation;
 }

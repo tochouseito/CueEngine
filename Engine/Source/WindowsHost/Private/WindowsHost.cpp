@@ -1,5 +1,7 @@
 #include <WindowsHost/WindowsHost.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -19,6 +21,7 @@
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12MainFrameGraph.h>
+#include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
 #include <Foundation/ScopedFlag.h>
@@ -134,6 +137,52 @@ class WindowsHost::State final
     TimingSamples presentIntervalTimings;
     TimingSamples displayIntervalTimings;
     PresentationTiming presentationTiming;
+    TimingSamples presentApiTimings;
+    TimingSamples presentationStatisticsTimings;
+    TimingSamples admissionWaitTimings;
+    TimingSamples mainGpuWaitTimings;
+    TimingSamples mainPresentationWaitTimings;
+    TimingSamples mainResourceWaitTimings;
+    InputLatencySamples inputLatency;
+    struct FrameInput final
+    {
+        std::vector<InputEventTiming> events;
+        std::chrono::steady_clock::time_point captured;
+        bool wasPresented = false;
+        PresentationTiming presentation;
+    };
+    // CPU Frame の投入・完了が同じ Slot への Main 書込みと Render 読取りを同期する
+    std::array<FrameInput, 8> frameInputs;
+
+    /// @brief 単一 Thread の開始可否確認を全回記録し、待たなかった理由には 0 を加える
+    struct AdmissionSample final
+    {
+        State &state;
+        std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        std::chrono::nanoseconds gpu{}, presentation{}, resources{};
+        /// @brief Pump に戻る早期 return でも未計測の待機を残さない
+        ~AdmissionSample()
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            std::lock_guard lock(state.timingMutex);
+            state.admissionWaitTimings.add(elapsed);
+            state.mainGpuWaitTimings.add(gpu);
+            state.mainPresentationWaitTimings.add(presentation);
+            state.mainResourceWaitTimings.add(resources);
+        }
+    };
+
+    /// @brief 最古の Frame を覆う Graphics Fence の通知を待つ。Main は Message でも復帰する
+    [[nodiscard]] Result<bool> wait_for_gpu(bool a_isMain)
+    {
+        const auto *completion = gpuFrames->oldest_completion();
+        auto *queue = dynamic_cast<dx12::DX12GpuCommandQueue *>(dx12Backend->get_swap_chain()->graphics_queue());
+        if (!queue || !completion || completion->queue_identity() != queue->identity())
+        {
+            return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.gpu_wait.completion"});
+        }
+        return queue->wait_for_fence_for(completion->fence_value(), std::chrono::milliseconds(1), a_isMain);
+    }
 
     /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
     void request_resize(WindowSize a_size)
@@ -193,14 +242,29 @@ class WindowsHost::State final
             }
             const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
             const auto waitStarted = std::chrono::steady_clock::now();
+            std::optional<Error> waitFailure;
             auto available = gpuFrames->wait_for_slot(
                 [&]()
-                { [[maybe_unused]] auto status = services.waiter->sleep_for(std::chrono::milliseconds(1), a_stopToken); },
-                [&]() { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
+                {
+                    auto waited = wait_for_gpu(false);
+                    if (!waited.has_value())
+                    {
+                        waitFailure = *waited.try_error();
+                    }
+                },
+                [&]()
+                {
+                    return waitFailure.has_value() || a_stopToken.stop_requested() || isRenderStopped.load() ||
+                           isPresentationSuspended.load();
+                });
             {
                 std::lock_guard lock(timingMutex);
                 gpuQueueWaitTimings.add(std::chrono::steady_clock::now() - waitStarted);
                 unfinishedGpuFrames = gpuFrames->pending();
+            }
+            if (waitFailure)
+            {
+                return Result<void>::failure(*waitFailure);
             }
             if (!available.has_value())
                 return Result<void>::failure(*available.try_error());
@@ -263,6 +327,11 @@ class WindowsHost::State final
             if (presented.has_value())
             {
                 const auto timing = dx12Backend->get_swap_chain()->timing();
+                presentApiTimings.add(timing.presentReturned - timing.presentStarted);
+                presentationStatisticsTimings.add(timing.statisticsDuration);
+                auto &input = frameInputs[a_frameIndex % frameInputs.size()];
+                input.wasPresented = true;
+                input.presentation = timing;
                 if (presentationTiming.presentCount)
                 {
                     presentIntervalTimings.add(timing.lastPresent - presentationTiming.lastPresent);
@@ -547,13 +616,78 @@ Result<void> WindowsHost::initialize()
     }
     auto runtimeResult = m_state->runtime->initialize(
         std::move(update),
-        [state, recordFrame = m_config.callbacks.recordFrame](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
-        { return state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame); },
-        m_config.callbacks.main,
+        [state, recordFrame = m_config.callbacks.recordFrame,
+         inputRendered = m_config.callbacks.isInputRendered](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
+        {
+            const auto started = std::chrono::steady_clock::now();
+            auto result = state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame);
+            bool wasInputRendered = true;
+            if (result.has_value() && inputRendered)
+            {
+                auto rendered = inputRendered(a_frameIndex);
+                if (!rendered.has_value())
+                {
+                    result = Result<void>::failure(*rendered.try_error());
+                }
+                else
+                {
+                    wasInputRendered = *rendered.try_value();
+                }
+            }
+            const auto completed = std::chrono::steady_clock::now();
+            auto &input = state->frameInputs[a_frameIndex % state->frameInputs.size()];
+            std::lock_guard lock(state->timingMutex);
+            if (result.has_value() && input.wasPresented && wasInputRendered)
+            {
+                state->inputLatency.presented(input.events, a_frameIndex, input.presentation.presentCount,
+                                              input.captured, started, input.presentation.presentStarted,
+                                              input.presentation.presentReturned, completed);
+            }
+            else
+            {
+                state->inputLatency.skipped(input.events.size());
+            }
+            input.events.clear();
+            return result;
+        },
+        [state, main = m_config.callbacks.main,
+         capture = m_config.callbacks.captureInput](std::uint64_t a_frame, std::stop_token a_token) -> Result<void>
+        {
+            auto &input = state->frameInputs[a_frame % state->frameInputs.size()];
+            input.wasPresented = false;
+            state->window->take_input_events(input.events);
+            const auto observed = input.events.size();
+            if (main)
+            {
+                auto result = main(a_frame, a_token);
+                if (!result.has_value())
+                {
+                    return result;
+                }
+            }
+            if (capture)
+            {
+                auto result = capture(input.events);
+                if (!result.has_value())
+                {
+                    return result;
+                }
+            }
+            else
+            {
+                // Consumer からの確認なしに、Window へ到達しただけの入力を描画済みと扱わない
+                input.events.clear();
+            }
+            input.captured = std::chrono::steady_clock::now();
+            std::lock_guard lock(state->timingMutex);
+            state->inputLatency.assigned(observed, input.events.size());
+            return Result<void>::success();
+        },
         {[state](std::stop_token a_token, bool a_isNonBlocking)
          {
-             return state->dx12Backend->get_swap_chain()->wait_for_frame(a_token, [state]()
-             { return state->isRenderStopped.load() || state->isPresentationSuspended.load(); }, a_isNonBlocking);
+             return state->dx12Backend->get_swap_chain()->wait_for_frame(
+                 a_token, [state]() { return state->isRenderStopped.load() || state->isPresentationSuspended.load(); },
+                 a_isNonBlocking);
          },
          [state]() -> std::optional<std::chrono::steady_clock::time_point>
          {
@@ -591,6 +725,7 @@ Result<void> WindowsHost::initialize()
 /// @brief Windows Event を消費して Window の終了要求を返す
 Result<bool> WindowsHost::step()
 {
+    TimingTraceScope traceScope("Host.Step");
     if (std::this_thread::get_id() != m_ownerId)
     {
         return Result<bool>::failure({ErrorCategory::WrongThread, "WindowsHost.step"});
@@ -605,6 +740,7 @@ Result<bool> WindowsHost::step()
     bool isFrameReady = false;
     if (!m_state->isPresentationSuspended.load() && !m_pendingSettings)
     {
+        TimingTraceScope tracePermit("Host.FramePermit");
         auto ready = m_state->runtime->wait_for_frame();
         if (!ready.has_value())
         {
@@ -613,7 +749,9 @@ Result<bool> WindowsHost::step()
         isFrameReady = *ready.try_value();
     }
     // Win32 Message を処理し、Queue 上の終了通知も同じ周回で反映する
+    TimingTraceScope tracePump("Host.Pump");
     auto pumpResult = m_state->system->pump_events();
+    tracePump.finish();
     if (!pumpResult.has_value())
     {
         return Result<bool>::failure(*pumpResult.try_error());
@@ -728,6 +866,7 @@ Result<bool> WindowsHost::step()
     }
     if (!m_config.frame.useWorkerThreads)
     {
+        State::AdmissionSample admission{*m_state};
         // 単一 Thread は Snapshot を作る前に表示枠を確認し、未準備なら Message Pump に戻る
         auto ready = m_state->dx12Backend->get_swap_chain()->wait_for_frame({}, {}, true);
         if (!ready.has_value())
@@ -772,7 +911,45 @@ Result<bool> WindowsHost::step()
         // GPU 上限の空きと今回再利用する枠だけを確認し、無関係な未完了 Frame は待たない
         if (!*ready.try_value() || !*gpuReady.try_value() || !*frameReady.try_value() || !*rendererReady.try_value())
         {
-            [[maybe_unused]] const auto status = m_state->services.waiter->sleep_for(std::chrono::milliseconds(1), {});
+            const auto waitStarted = std::chrono::steady_clock::now();
+            if (!*gpuReady.try_value())
+            {
+                auto waited = m_state->wait_for_gpu(true);
+                admission.gpu = std::chrono::steady_clock::now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else if (!*ready.try_value())
+            {
+                auto waited = m_state->dx12Backend->get_swap_chain()->wait_for_frame({}, {}, false, true);
+                admission.presentation = std::chrono::steady_clock::now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else if (m_state->gpuFrames->oldest_completion())
+            {
+                auto waited = m_state->wait_for_gpu(true);
+                admission.resources = std::chrono::steady_clock::now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else
+            {
+                // 外部 Pool 等の未準備でも Message に即応し、次の確認まで長い Sleep を行わない
+                const auto waited = MsgWaitForMultipleObjectsEx(0, nullptr, 1, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                admission.resources = std::chrono::steady_clock::now() - waitStarted;
+                if (waited == WAIT_FAILED)
+                {
+                    return Result<bool>::failure({ErrorCategory::PlatformFailure, "WindowsHost.resource_wait.event",
+                                                  static_cast<std::int64_t>(GetLastError())});
+                }
+            }
             return Result<bool>::success(true);
         }
     }
@@ -1000,6 +1177,21 @@ Result<FrameTimingInfo> WindowsHost::frame_timing_info() const
     return m_state->runtime->timing_info();
 }
 
+/// @brief Owner に入力イベントと反映済み CPU Frame の計測 Snapshot を返す
+Result<InputLatencyInfo> WindowsHost::input_latency_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<InputLatencyInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.input_latency_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state)
+    {
+        return Result<InputLatencyInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.input_latency_info"});
+    }
+    std::lock_guard lock(m_state->timingMutex);
+    return Result<InputLatencyInfo>::success(m_state->inputLatency.info());
+}
+
 /// @brief GPU 完了済み計測値と Present の CPU 経過時間を所有 Snapshot にまとめる
 Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
 {
@@ -1028,6 +1220,12 @@ Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
             performance.peakUnfinishedGpuFrames = m_state->peakGpuFrames;
             performance.unfinishedGpuFrames = m_state->unfinishedGpuFrames;
             performance.presentation = m_state->presentationTiming;
+            performance.presentApi = m_state->presentApiTimings.statistics();
+            performance.presentationStatistics = m_state->presentationStatisticsTimings.statistics();
+            performance.admissionWait = m_state->admissionWaitTimings.statistics();
+            performance.mainGpuWait = m_state->mainGpuWaitTimings.statistics();
+            performance.mainPresentationWait = m_state->mainPresentationWaitTimings.statistics();
+            performance.mainResourceWait = m_state->mainResourceWaitTimings.statistics();
         }
         performance.present = present.statistics();
         performance.gpuQueueWait = gpuQueue.statistics();
@@ -1119,7 +1317,9 @@ Result<void> WindowsHost::shutdown()
         }
         if (destroyResult.has_value() && m_state->system)
         {
+            TimingTraceScope tracePump("Host.Pump");
             auto pumpResult = m_state->system->pump_events();
+            tracePump.finish();
             if (!pumpResult.has_value() && !failure)
             {
                 failure = *pumpResult.try_error();

@@ -174,7 +174,7 @@ public:
   /// @brief 完了数、直近のFrame番号、実行Thread、処理時間を取得する
   [[nodiscard]] FrameProgress progress() const;
 
-  /// @brief 固定容量の Sample を同期してコピーし、集計を共有 Lock 外で行う
+  /// @brief 追加時に維持した正確な統計だけを共有 Lock 内で複写する
   [[nodiscard]] FrameTimingInfo timing_info() const;
 
   /// @brief 成功した Update が確定した Frame の補間情報を返す。Thread-safe、最新 8 Frame のみ保持

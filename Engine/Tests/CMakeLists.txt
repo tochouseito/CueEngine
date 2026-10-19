@@ -4,6 +4,15 @@ if(MSVC)
 endif()
 
 # Foundation と公開 Header は Platform 実装なしで単独検証する
+find_package(Threads REQUIRED)
+add_executable(CueTimingTraceTests Foundation/TimingTraceTests.cpp)
+target_link_libraries(CueTimingTraceTests PRIVATE Cue.Foundation Threads::Threads)
+add_test(NAME Cue.Foundation.TimingTrace COMMAND CueTimingTraceTests)
+
+add_executable(CueSpikeTriggerTests Performance/SpikeTriggerTests.cpp)
+target_link_libraries(CueSpikeTriggerTests PRIVATE Cue.Foundation Threads::Threads)
+add_test(NAME Cue.Performance.SpikeTrigger COMMAND CueSpikeTriggerTests)
+
 add_executable(CueFoundationResultTests Foundation/ResultTests.cpp)
 target_link_libraries(CueFoundationResultTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
@@ -22,6 +31,11 @@ target_link_libraries(CueLoggingHeaderCompile PRIVATE Cue.Logging)
 add_test(NAME Cue.Logging.PublicHeaders COMMAND CueLoggingHeaderCompile)
 
 if(WIN32)
+    add_executable(CueInputLatencyTests Editor/InputLatencyTests.cpp)
+    target_link_libraries(CueInputLatencyTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows imgui::imgui)
+    add_test(NAME Cue.Editor.InputLatency COMMAND CueInputLatencyTests)
+    set_tests_properties(Cue.Editor.InputLatency PROPERTIES TIMEOUT 45)
+
     add_executable(CueLoggerTests Logging/LoggerTests.cpp)
     target_link_libraries(CueLoggerTests PRIVATE Cue.Logging Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Logging.Logger COMMAND CueLoggerTests)
@@ -195,6 +209,14 @@ if(WIN32)
     # 計測は手動の明示実行に限定し、CTest の通常 Gate へ長時間の性能比較を混ぜない
     add_executable(CueM09FramePacingProbe Performance/M09FramePacingProbe.cpp)
     target_link_libraries(CueM09FramePacingProbe PRIVATE Cue.EditorHost imgui::imgui)
+
+    # Trace は手動調査だけで使い、通常の CTest に長時間の性能条件を追加しない
+    add_executable(CueSpikeTimingProbe Performance/SpikeTimingProbe.cpp)
+    target_link_libraries(CueSpikeTimingProbe PRIVATE Cue.EditorHost imgui::imgui user32 advapi32)
+
+    # ETL の QPC 時刻と対象 Thread の Scheduling を手動解析向けに取り出す
+    add_executable(CueSpikeEtwExport Performance/SpikeEtwExport.cpp)
+    target_link_libraries(CueSpikeEtwExport PRIVATE Cue.Foundation advapi32 tdh)
     set_tests_properties(Cue.Runtime.FrameController PROPERTIES TIMEOUT 5)
 
     # 時間計測は環境依存のため CTest の速度判定に使わず、手動の比較用 Target とする
@@ -283,6 +305,6 @@ endif()
 if(WIN32)
     cue_copy_shader_runtime(CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueM09FramePacingProbe
+        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueM09FramePacingProbe CueInputLatencyTests CueSpikeTimingProbe
     )
 endif()

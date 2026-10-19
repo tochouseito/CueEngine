@@ -20,11 +20,47 @@
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
 #include <DX12/DX12ViewManager.h>
+#include <Foundation/TimingTrace.h>
 #include <Passes/PresentToSwapChainPass.h>
 #include <Platform/Windows/WindowsPlatform.h>
 
 namespace
 {
+/// @brief Slot 再利用と Shutdown で回収した標本が提出元 Frame と Queue を保持するか確認する
+struct GpuTraceVerifier final
+{
+    std::array<cue::TimingTraceGpuRecord, 196> samples{};
+    std::size_t count = 0;
+    cue::TimingTraceSink sink{this, nullptr, nullptr, record};
+
+    /// @brief GPU 記録だけを借用し、CPU Scope の時刻取得は追加しない
+    GpuTraceVerifier()
+    {
+        cue::set_timing_trace_sink(&sink);
+    }
+
+    /// @brief Graph より長く生存し、失敗 Return でも借用を解除する
+    ~GpuTraceVerifier()
+    {
+        cue::set_timing_trace_sink(nullptr);
+    }
+
+    /// @brief 一つの制御 Thread で完了 Pass の値だけを固定配列に保存する
+    static void record(void *a_context, const cue::TimingTraceGpuRecord &a_record) noexcept
+    {
+        auto &owner = *static_cast<GpuTraceVerifier *>(a_context);
+        if (a_record.kind == 2)
+        {
+            if (owner.count < owner.samples.size())
+            {
+                owner.samples[owner.count] = a_record;
+                owner.samples[owner.count].name = "";
+            }
+            ++owner.count;
+        }
+    }
+};
+
 /// @brief 追加 Pass が Graph の Resource 宣言と記録契約を通ることを確認する
 class TestPass final : public cue::FrameGraphPass
 {
@@ -745,6 +781,7 @@ int run_tests()
                      static_cast<long long>(stressResult.try_error()->nativeCode));
         return 60;
     }
+    GpuTraceVerifier gpuTrace;
     auto stress = stressResult.take_value();
     auto computeQueueResult = queuePool->acquire(cue::QueueType::Compute);
     if (!computeQueueResult.has_value())
@@ -754,6 +791,7 @@ int run_tests()
     computeQueue.reset();
     for (int frame = 0; frame < 2; ++frame)
     {
+        cue::TimingTraceFrame logicalFrame(100 + frame);
         auto executed = stress->execute(0, {*commandPool, *queuePool});
         if (!executed.has_value() || !*executed.try_value())
             return 62;
@@ -771,6 +809,21 @@ int run_tests()
         !measured.gpuPasses[1].isAvailable || measured.gpuPasses[1].queue != cue::QueueType::Compute ||
         !stress->shutdown().has_value())
         return 65;
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    if (gpuTrace.count != 196)
+    {
+        return 66;
+    }
+    for (std::size_t index = 0; index < gpuTrace.count; ++index)
+    {
+        const auto &sample = gpuTrace.samples[index];
+        if (sample.frame != (index < 98 ? 100u : 101u) || sample.queue == 0 || sample.frequency == 0 ||
+            sample.endTick < sample.beginTick || sample.status != 0)
+        {
+            return 67;
+        }
+    }
+#endif
     verifyCommand.reset();
     if (!extended->shutdown().has_value() || !commandPool->shutdown().has_value() ||
         !queuePool->shutdown().has_value() || !pool->retire(poolBuffer).has_value() || !pool->shutdown().has_value() ||

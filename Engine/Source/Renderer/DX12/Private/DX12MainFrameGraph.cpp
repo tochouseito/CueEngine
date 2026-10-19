@@ -1,5 +1,7 @@
 #include <DX12/DX12MainFrameGraph.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -186,6 +188,7 @@ Result<bool> DX12MainFrameGraph::is_frame_ready(std::uint32_t a_frameIndex) cons
 /// @brief 複数 Queue へ分ける前に枠の物理 Resource を一度だけ借用する
 Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
 {
+    TimingTraceScope traceScope("Graph.Prepare");
     if (!m_graph || !m_graph->plan() || !m_frames || !m_swapChain || a_frameIndex >= m_frames->frame_count() ||
         m_isPrepared[a_frameIndex] || !m_poolLeases[a_frameIndex].empty())
     {
@@ -197,7 +200,9 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.prepare_frame.resources"});
     }
     const auto waitStart = std::chrono::steady_clock::now();
+    TimingTraceScope traceReuse("Graph.FrameReuse");
     auto beginResult = m_frames->begin_frame(a_frameIndex);
+    traceReuse.finish();
     {
         std::lock_guard lock(m_performanceMutex);
         m_frameWaitTimings.add(std::chrono::steady_clock::now() - waitStart);
@@ -278,6 +283,7 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
 Result<void> DX12MainFrameGraph::record_range(std::uint32_t a_frameIndex, DX12GpuCommandContext &a_context,
                                               std::size_t a_firstPass, std::size_t a_passCount, bool a_includeFinal)
 {
+    TimingTraceScope traceRecord("Graph.Record");
     if (!m_graph || !m_graph->plan() || !m_frames || a_frameIndex >= m_isPrepared.size() ||
         !m_isPrepared[a_frameIndex] || a_context.state() != CommandState::Recording ||
         a_firstPass > m_graph->plan()->passes().size() || a_passCount > m_graph->plan()->passes().size() - a_firstPass)
@@ -410,7 +416,8 @@ Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, IC
     auto frequency = m_swapChain->graphics_queue()->get_timestamp_frequency();
     if (!frequency.has_value())
         return Result<bool>::failure(*frequency.try_error());
-    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *frequency.try_value());
+    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *frequency.try_value(),
+                                      m_swapChain->graphics_queue()->identity());
     auto result =
         m_graph->execute(a_frameIndex, a_commandPool, *m_swapChain->graphics_queue(), *this, std::move(a_shouldCancel));
     if (!result.has_value())
@@ -424,6 +431,7 @@ Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, IC
 Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
                                          std::function<bool()> a_shouldCancel)
 {
+    TimingTraceScope traceScope("Graph.Execute");
     // Skip / 失敗時に前回の提出を今回の Frame として扱わせない
     m_latestCompletion.reset();
     auto &commandPool = a_execution.get_command_pool();
@@ -489,7 +497,8 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     auto graphicsFrequency = graphicsQueue->get_timestamp_frequency();
     if (!graphicsFrequency.has_value())
         return fail(*graphicsFrequency.try_error());
-    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *graphicsFrequency.try_value());
+    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *graphicsFrequency.try_value(),
+                                      graphicsQueue->identity());
     std::uint64_t initialFence = 0;
     if (!m_graph->plan()->initial_barriers().empty())
     {
@@ -554,7 +563,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
             auto frequency = queue->get_timestamp_frequency();
             if (!frequency.has_value())
                 return fail(*frequency.try_error());
-            m_frames->set_timestamp_frequency(a_frameIndex, type, *frequency.try_value());
+            m_frames->set_timestamp_frequency(a_frameIndex, type, *frequency.try_value(), queue->identity());
         }
         if (initialFence != 0 && queue != graphicsQueue)
         {

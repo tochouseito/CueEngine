@@ -1,5 +1,7 @@
 #include <EditorHost/EditorHost.h>
 
+#include <Foundation/TimingTrace.h>
+
 #include <algorithm>
 #include <chrono>
 #include <new>
@@ -21,10 +23,11 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
 {
     if (a_statistics.sampleCount)
     {
-        ImGui::Text("%s: avg %.3f / p95 %.3f / max %.3f ms", a_name,
+        ImGui::Text("%s: avg %.3f / p95 %.3f / max %.3f ms (%zu samples)", a_name,
                     std::chrono::duration<double, std::milli>(a_statistics.averageDuration).count(),
                     std::chrono::duration<double, std::milli>(a_statistics.p95Duration).count(),
-                    std::chrono::duration<double, std::milli>(a_statistics.maxDuration).count());
+                    std::chrono::duration<double, std::milli>(a_statistics.maxDuration).count(),
+                    a_statistics.sampleCount);
     }
     else
     {
@@ -34,7 +37,8 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
 
 /// @brief Main が取得した計測 Snapshot を既定 Test Window に表示する
 [[nodiscard]] Result<void> build_test_window(const FrameTimingInfo &a_frameTiming, const ImGuiTimingInfo &a_uiTiming,
-                                             const MainFrameGraphPerformance &a_graphPerformance)
+                                             const MainFrameGraphPerformance &a_graphPerformance,
+                                             const InputLatencyInfo &a_inputLatency)
 {
     // 初回の位置と寸法だけ指定し、以後の移動と Layout 保存を妨げない
     ImGui::SetNextWindowPos({32.0f, 32.0f}, ImGuiCond_FirstUseEver);
@@ -75,15 +79,38 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         show_timing("FPS wait", a_frameTiming.limitWait);
         show_timing("Post-Present readiness wait", a_frameTiming.presentationWait);
         show_timing("Cycle interval", a_frameTiming.cycleInterval);
-        show_timing("Input sample -> Render start", a_frameTiming.inputToRenderStart);
-        show_timing("Input sample -> CPU Render complete", a_frameTiming.inputToRenderComplete);
+        show_timing("Frame adopted -> Render start", a_frameTiming.inputToRenderStart);
+        show_timing("Frame adopted -> CPU Render complete", a_frameTiming.inputToRenderComplete);
+        ImGui::TextUnformatted("Input event latency (last 120 reflected events, CPU only)");
+        ImGui::TextUnformatted("Origin: Window message dispatch; Present return is not screen display");
+        show_timing("Input -> Frame capture", a_inputLatency.toFrameCapture);
+        show_timing("Input -> Render start", a_inputLatency.toRenderStart);
+        show_timing("Input -> Present call", a_inputLatency.toPresentStart);
+        show_timing("Input -> Present return", a_inputLatency.toPresentReturn);
+        show_timing("Input -> CPU Render complete", a_inputLatency.toCpuComplete);
+        ImGui::Text("Input observed / reflected / presented: %llu / %llu / %llu",
+                    static_cast<unsigned long long>(a_inputLatency.observedEvents),
+                    static_cast<unsigned long long>(a_inputLatency.assignedEvents),
+                    static_cast<unsigned long long>(a_inputLatency.presentedEvents));
+        ImGui::Text("Input skipped / invalid: %llu / %llu; last event / frame / present: %llu / %llu / %llu",
+                    static_cast<unsigned long long>(a_inputLatency.skippedEvents),
+                    static_cast<unsigned long long>(a_inputLatency.invalidEvents),
+                    static_cast<unsigned long long>(a_inputLatency.lastEventId),
+                    static_cast<unsigned long long>(a_inputLatency.lastFrame),
+                    static_cast<unsigned long long>(a_inputLatency.lastPresent));
         show_timing("UI build", a_uiTiming.uiBuild);
         show_timing("Snapshot copy", a_uiTiming.snapshotCopy);
         show_timing("ImGui lock wait", a_uiTiming.contextWait);
         show_timing("ImGui GPU fence wait", a_uiTiming.gpuWait);
         show_timing("Graph record", a_graphPerformance.record);
         show_timing("Graph frame fence wait", a_graphPerformance.frameWait);
-        show_timing("Present", a_graphPerformance.present);
+        show_timing("Present total", a_graphPerformance.present);
+        show_timing("Present API", a_graphPerformance.presentApi);
+        show_timing("Presentation statistics", a_graphPerformance.presentationStatistics);
+        show_timing("Main admission wait (per check)", a_graphPerformance.admissionWait);
+        show_timing("Main GPU wait (per check)", a_graphPerformance.mainGpuWait);
+        show_timing("Main DXGI wait (per check)", a_graphPerformance.mainPresentationWait);
+        show_timing("Main resource wait (per check)", a_graphPerformance.mainResourceWait);
         show_timing("GPU queue limit wait", a_graphPerformance.gpuQueueWait);
         show_timing("Pre-record readiness wait", a_graphPerformance.presentationReadyWait);
         show_timing("Present return interval", a_graphPerformance.presentInterval);
@@ -138,8 +165,9 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                                  : editorUiCallback{[this]() -> Result<void>
                                                     {
                                                         // UI 開始前に取得した同じ計測 Snapshot で FPS と区間を表示する
-                                                        auto result = build_test_window(m_frameTiming, m_uiTiming,
-                                                                                        m_graphPerformance);
+                                                        auto result =
+                                                            build_test_window(m_frameTiming, m_uiTiming,
+                                                                              m_graphPerformance, m_inputLatency);
                                                         return result.has_value() ? build_performance_settings_ui()
                                                                                   : std::move(result);
                                                     }}),
@@ -159,12 +187,23 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                   },
                   [this](std::uint64_t a_frame, std::stop_token a_token) { return build_ui(a_frame, a_token); },
                   [this](std::uint64_t a_frame, std::stop_token a_token, const FrameCallback &a_record)
-                  { return m_imgui->render_frame(a_frame, a_token, a_record); },
+                  {
+                      auto result = m_imgui->render_frame(a_frame, a_token, a_record, &m_wasInputRendered);
+                      m_inputRenderFrame = a_frame;
+                      return result;
+                  },
                   [this](IBackend &a_backend, std::uint32_t a_cpuFrames, std::uint32_t a_gpuFrames)
                   { return m_imgui->reconfigure_renderer(a_backend, a_cpuFrames, a_gpuFrames); },
                   std::move(a_config.simulationUpdate),
                   std::move(a_config.prepareFrame),
-                  [this]() { return m_imgui->is_renderer_ready(); }},
+                  [this]() { return m_imgui->is_renderer_ready(); },
+                  [this](std::vector<InputEventTiming> &a_events) { return m_imgui->take_input_events(a_events); },
+                  [this](std::uint64_t a_frame) -> Result<bool>
+                  {
+                      return a_frame == m_inputRenderFrame
+                                 ? Result<bool>::success(m_wasInputRendered)
+                                 : Result<bool>::failure({ErrorCategory::InvalidState, "EditorHost.input_frame"});
+                  }},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
                  a_config.logging,
@@ -311,6 +350,12 @@ Result<void> EditorHost::shutdown()
     return m_windows.shutdown();
 }
 
+/// @brief 下位 Host が追跡した入力到達と UI Frame の対応を所有値で返す
+Result<InputLatencyInfo> EditorHost::input_latency_info() const
+{
+    return m_windows.input_latency_info();
+}
+
 /// @brief Window の生成 Thread に UI の Owner を固定する
 Result<void> EditorHost::initialize_ui(Window &a_window)
 {
@@ -342,6 +387,7 @@ Result<void> EditorHost::initialize_ui(Window &a_window)
 /// @brief Message Pump 後に採用された Frame だけ UI を構築して CPU 描画 Data を確定する
 Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopToken)
 {
+    TimingTraceScope traceScope("Editor.Build");
     if (a_stopToken.stop_requested())
     {
         return Result<void>::success();
@@ -354,9 +400,16 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
     }
     // Render は Graph Lock から ImGui Context を借りるため、逆順で同時に保持しない
     // 計測 Snapshot を UI 開始前に取得し、Callback 内では所有値だけを表示する
+    TimingTraceScope traceStatistics("Editor.Statistics");
     auto graphPerformance = m_windows.graph_performance();
     auto frameTiming = m_windows.frame_timing_info();
     auto uiTiming = m_imgui->timing_info();
+    auto inputLatency = m_windows.input_latency_info();
+    if (!inputLatency.has_value())
+    {
+        return Result<void>::failure(*inputLatency.try_error());
+    }
+    m_inputLatency = inputLatency.take_value();
     if (!graphPerformance.has_value() || !frameTiming.has_value() || !uiTiming.has_value())
     {
         return Result<void>::failure(!graphPerformance.has_value() ? *graphPerformance.try_error()
@@ -366,6 +419,7 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
     m_graphPerformance = graphPerformance.take_value();
     m_frameTiming = frameTiming.take_value();
     m_uiTiming = uiTiming.take_value();
+    traceStatistics.finish();
     auto built = m_imgui->build_frame(m_buildUi);
     return built.has_value() ? m_imgui->publish_frame(a_frame, a_stopToken) : std::move(built);
 }

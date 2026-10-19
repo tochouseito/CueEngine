@@ -12,6 +12,7 @@
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
+#include <Foundation/TimingTrace.h>
 #include <Platform/Diagnostics.h>
 
 namespace cue::dx12
@@ -322,6 +323,26 @@ Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
                     else
                         timing.isAvailable = false;
                 }
+#if defined(CUE_ENABLE_TIMING_TRACE)
+                if (frame.recordedPasses[index])
+                {
+                    if (auto *sink = timing_trace_gpu_sink())
+                    {
+                        TimingTraceGpuRecord sample;
+                        sample.kind = 2;
+                        sample.name = timing.name.c_str();
+                        sample.frame = frame.logicalFrame;
+                        sample.queue = frame.queueIdentities[type];
+                        sample.queueType = static_cast<std::uint32_t>(type);
+                        sample.detail = index;
+                        sample.beginTick = ticks[index * 2];
+                        sample.endTick = ticks[index * 2 + 1];
+                        sample.frequency = frequency;
+                        sample.status = timing.isAvailable ? 0 : -1;
+                        sink->recordGpu(sink->context, sample);
+                    }
+                }
+#endif
             }
             for (std::size_t index = 0; index < frame.timings.size(); ++index)
             {
@@ -361,11 +382,18 @@ bool DX12FrameGraphFrames::timestamp_supported(QueueType a_type) const noexcept
 
 /// @brief 当該 Queue の周波数を Tick の経過時間変換に使う
 void DX12FrameGraphFrames::set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type,
-                                                   std::uint64_t a_frequency) noexcept
+                                                   std::uint64_t a_frequency, std::uint64_t a_queueIdentity) noexcept
 {
     const auto type = static_cast<std::size_t>(a_type);
     if (a_frameIndex < m_frames.size() && type < 3)
+    {
         m_frames[a_frameIndex].frequencies[type] = a_frequency;
+#if defined(CUE_ENABLE_TIMING_TRACE)
+        m_frames[a_frameIndex].queueIdentities[type] = a_queueIdentity;
+#else
+        (void)a_queueIdentity;
+#endif
+    }
 }
 
 /// @brief Pass Payload の開始時刻を記録する
@@ -528,6 +556,9 @@ Result<void> DX12FrameGraphFrames::mark_submitted(std::uint32_t a_frameIndex,
         return markResult;
     }
     frame.completion = std::move(a_completion);
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    frame.logicalFrame = timing_trace_frame();
+#endif
     return Result<void>::success();
 }
 
@@ -607,6 +638,20 @@ Result<void> DX12FrameGraphFrames::shutdown()
     {
         return Result<void>::success();
     }
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    // 最後の枠も完了後に回収し、終了直前の GPU 標本を取りこぼさない
+    if (timing_trace_gpu_sink())
+    {
+        for (std::uint32_t index = 0; index < m_frames.size(); ++index)
+        {
+            auto result = begin_frame(index);
+            if (!result.has_value())
+            {
+                return result;
+            }
+        }
+    }
+#endif
     for (auto &frame : m_frames)
     {
         if (frame.graph)

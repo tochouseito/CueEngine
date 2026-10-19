@@ -84,8 +84,8 @@ public:
     /// @brief 描画開始の表示枠を取得する。停止時は false、取得済み枠は Present まで保持する
     /// Render Thread 専用。呼出終了前に shutdown / resize を実行しない
     [[nodiscard]] Result<bool> wait_for_frame(std::stop_token a_stopToken,
-                                            const std::function<bool()> &a_shouldCancel = {},
-                                            bool a_isNonBlocking = false);
+                                              const std::function<bool()> &a_shouldCancel = {},
+                                              bool a_isNonBlocking = false, bool a_wakesForMessages = false);
 
     /// @brief 実際に作成された表示待機機能の有無を返す
     [[nodiscard]] bool is_waitable_enabled() const noexcept;

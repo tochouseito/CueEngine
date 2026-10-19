@@ -69,7 +69,8 @@ class DX12FrameGraphFrames final
     [[nodiscard]] bool timestamp_supported(QueueType a_type) const noexcept;
 
     /// @brief 今回の記録 Queue の Timestamp 周波数を描画枠に保存する
-    void set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type, std::uint64_t a_frequency) noexcept;
+    void set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type, std::uint64_t a_frequency,
+                                 std::uint64_t a_queueIdentity = 0) noexcept;
 
     /// @brief Pass 本体の前後で Query を記録する。未対応 Queue では計測しない
     void begin_pass(std::uint32_t a_frameIndex, std::size_t a_passIndex, ID3D12GraphicsCommandList &a_list) noexcept;
@@ -138,6 +139,10 @@ class DX12FrameGraphFrames final
         std::array<Microsoft::WRL::ComPtr<ID3D12QueryHeap>, 3> queries;
         std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 3> timestampReadbacks;
         std::array<std::uint64_t, 3> frequencies{};
+#if defined(CUE_ENABLE_TIMING_TRACE)
+        std::array<std::uint64_t, 3> queueIdentities{};
+        std::uint64_t logicalFrame = 0;
+#endif
         std::vector<bool> recordedPasses;
         std::vector<GpuPassTiming> timings;
         bool hasGpuSample = false;

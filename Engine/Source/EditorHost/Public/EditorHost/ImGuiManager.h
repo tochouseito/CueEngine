@@ -6,6 +6,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <Foundation/Result.h>
 #include <Foundation/TimingSamples.h>
@@ -127,8 +128,9 @@ public:
     /// @brief 固定 RenderThread で Graph の記録・提出を囲み、成功・取消・失敗でも Snapshot を回収する
     ///
     /// a_record は同期呼出し限定。Present は戻った後に行う。同一 Thread の構成も利用できる
+    /// a_wasRecorded は呼出中だけ借用する。成功時に実記録の有無を返し、失敗時は false を残す
     [[nodiscard]] Result<void> render_frame(std::uint64_t a_frame, std::stop_token a_token,
-                                            const FrameCallback &a_record);
+                                            const FrameCallback &a_record, bool *a_wasRecorded = nullptr);
 
     /// @brief Owner Thread へ転送状態を返す
     [[nodiscard]] Result<ImGuiTransferInfo> transfer_info() const;
@@ -165,6 +167,10 @@ public:
     ///
     /// Capture は Gameplay 側へ渡す入力の抑制に使い、Window Lifecycle は抑制しない
     [[nodiscard]] Result<ImGuiFrameInfo> frame_info() const;
+
+    /// @brief 最後の NewFrame が実際に処理した入力だけを Frame へ移す。Owner Thread 専用
+    /// UI 構築成功後に一度呼ぶ。転送時は publish 成功後に使い、持越し入力は次の Frame へ残す
+    [[nodiscard]] Result<void> take_input_events(std::vector<InputEventTiming> &a_events);
 
     /// @brief Layout を指定先へ保存する。空の保存先は成功として何もしない
     [[nodiscard]] Result<void> save_settings();

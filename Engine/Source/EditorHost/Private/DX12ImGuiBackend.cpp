@@ -1,5 +1,7 @@
 #include "DX12ImGuiBackend.h"
 
+#include <Foundation/TimingTrace.h>
+
 #include "ImGuiSynchronization.h"
 
 #include <algorithm>
@@ -77,6 +79,7 @@ class DX12ImGuiBackend::State final
     /// @brief 再利用する資源の完了済 Fence は待たず、必要な CPU 待機の経過時間だけを記録する
     [[nodiscard]] Result<void> wait_for_usage(std::uint64_t a_fence)
     {
+        TimingTraceScope traceUsage("ImGui.GpuUsage", a_fence);
         if (!a_fence || queue->is_fence_complete(a_fence))
         {
             return Result<void>::success();
@@ -309,6 +312,7 @@ Result<void> DX12ImGuiBackend::new_frame()
 /// @brief Texture 更新と公式 Native 記録を Graph の Graphics Command へ接続する
 Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_context)
 {
+    TimingTraceScope traceScope("ImGui.GpuRecord");
     auto *context = dynamic_cast<dx12::DX12FrameGraphContext *>(&a_context);
     if (!m_state || !m_state->isInitialized || !context || !a_draw.Valid ||
         a_context.frame_index() >= m_state->info.frameCount ||
@@ -459,6 +463,7 @@ Result<bool> DX12ImGuiBackend::is_frame_ready() const
 /// @brief GPU 完了と旧 Snapshot の参照を確認して公式 Texture 更新を完了する
 Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
 {
+    TimingTraceScope traceScope("ImGui.TexturePrepare");
     if (!m_state || !m_state->isInitialized || !a_draw.Valid)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiDX12.prepare"});

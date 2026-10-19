@@ -34,5 +34,9 @@ struct PresentationTiming final
     bool hasRefreshTiming = false;
     bool isDisplayTimeEstimated = false;
     std::uint64_t statisticsEpoch = 0;
+    // 最後に成功した Native Present の呼出前後。表示や GPU 完了の時刻ではない
+    std::chrono::steady_clock::time_point presentStarted;
+    std::chrono::steady_clock::time_point presentReturned;
+    std::chrono::nanoseconds statisticsDuration{};
 };
 } // namespace cue
