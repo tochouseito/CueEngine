@@ -1,5 +1,29 @@
 # M06-15 / Issue #144 作業・性能調査の統合記録
 
+> 別会話での再開用: [2026-10-23 引き継ぎ書](CueEngine-Handoff-2026-10-23.md)に、最新の比較結果・提出範囲・未解決の原因・Build / 再計測手順・ローカル証跡をまとめた。
+
+> 2026-10-23 の比較実測: [Intel 描画・表示と RTX 描画の比較](M06-15-Intel-Presentation-Comparison.md)を実施した。Double・Waitable ON・通常 UI の各 20 秒 3 回合算は Intel 約 1,439 FPS、RTX 約 1,174 FPS。Intel の GPU 最終 Timestamp → IndependentFlip は平均約 0.093 ms へ短縮したが、GPU 開始前と描画時間は増えた。2,000 FPS は未達。Intel の CPU Marker ETW 欠落と、全件 CSV / 欠落のない Kernel・GPU Session による照合を区別して報告している。
+
+> 2026-10-23 の Adapter 調査: [描画 Adapter と表示経路](M06-15-Adapter-And-Presentation-Path.md)で、Graph の NVIDIA Command 提出と Intel の IndependentFlip Context を同じ ETW 内で確認した。正式な Stack なし記録は約 1,233 FPS、計測 24,669 Frame を全件対応し、最後の GPU Pass から IndependentFlip Event まで平均約 0.877 ms。GPU 間の経路は確認できたが、この全時間を純粋なコピー時間とは見なさない。Intel 描画との比較が次の候補で、選択機能の実装や性能改善はまだ行っていない。
+
+> 2026-10-22 の実測: [Double Buffering 基準測定](M06-15-DoubleBuffering-Baseline.md)を、1280 × 720・前面維持・Waitable ON・通常 UI・ETW なしで実施した。同じ Trace 対応 Binary の詳細記録なし三回合算は約 1,200 FPS、CSV ありは約 1,183 FPS。全回の前面・Size Gate に成功したが実行間変動が大きい。CSV 三回の表示待機以外の Render は平均約 0.28～0.29 ms と近く、表示受付待ちは約 0.40～0.85 ms と変動した。2,000 FPS は未達、改善の実装は今回行っていない。
+
+> 2026-10-22 の目標更新: **Double Buffering、Development、通常 UI、Waitable ON で平均 2,000 FPS** を目指す。[改善候補と予算の調査](M06-15-Goal2000-DoubleBuffering.md)で、保存済み記録の表示受付待ち、Adapter 選択、FrameGraph / RHI の CPU 処理、通知と ImGui 統計の意味を確認した。表示経路を最優先の比較対象とし、達成・改善量はまだ未検証。
+
+> 2026-10-21 の追加解析: [表示準備待ちと ETW Stack 展開のページ読み込み](M06-15-Presentation-Stackwalk-Fault.md)で、切替以外の Frame 27222 の約 9.4 ms 待ちに、Present 処理 Thread の ETW Stackwalk 中の Hard Fault / I/O 待ち 8.76 ms が含まれることを確認した。この一件には計測自身の影響があり、通常実行時の性能値と分ける。Stack 収集なしの比較による影響量は未測定。
+
+> 2026-10-21 の再計測: [Signal 内の待機と GPU Device 排他](M06-15-Signal-Wait-Confirmation.md)で、同じ 960 × 720 の二条件の品質 Gate に成功。切替直後の八件中七件は Signal、残る一件は Present 内部の Signal 提出経路で Device アクセス排他を待ち、ProcessStatusChange からの解放で Ready になる Stack を確認した。切替以外の表示準備待ちは別に残る。
+
+> 2026-10-20 の追加解析: [GPU Context 優先度更新と Signal 付近の待機](M06-15-Gpu-Priority-And-Signal.md)で、四回の Resource 待機の通知元 System Thread に GPU 優先度更新 → NVIDIA Kernel Driver の Stack を確認した。その時点では Signal API 内かは未確定で、API と Mutex / 提出後登録を分ける計測を追加した。前面操作が必要な再計測はまだ行っていなかった。
+
+> 最新の追試: [通常アプリへの切替](M06-15-Normal-App-Focus.md)でも DWM → Intel Compiler の経路を観測した。ただし今回は Engine の長い待機と重ならず、切替直後には別に Command List 提出後の CPU Resource 待機があった。前面操作を伴う正式比較は未完了で、試行結果として扱う。
+
+> 最新の続報: [DWM の CPU Sampling Stack 調査](M06-15-Dwm-Cpu-Stacks.md)で、切替直後の約 20.75 ms の待機に重なる DWM の CreatePixelShader / DrawIndexed から Intel Shader Compiler へ入る Stack を確認した。Compiler 内部の理由や過去の全スパイクの原因は未確定。
+
+> 前回の続報: [PresentHistory と DWM の CPU 描画区間](M06-15-Dwm-Present-History.md)で、表示方式が同じまま DWM メイン Thread の長い描画処理が重なることを確認した。その時点では全てのスパイクの根本原因を確定したものではない。
+
+> 続報: [前面切替を制御した同時調査](M06-15-Controlled-Focus-Comparison.md)で、有効な三回の比較と切替直後の約 31.4 ms を記録した。安定した非前面状態だけによる大きな悪化や、以前の提出後約 30 ms は今回再現していない。以下は `6effec9` で提出した時点の統合記録。
+
 - 更新日: 2026-10-19
 - Issue: [#144](https://github.com/tochouseito/CueEngine/issues/144)
 - 作業 Branch: `m06/issue144/gpu-waits-and-telemetry`

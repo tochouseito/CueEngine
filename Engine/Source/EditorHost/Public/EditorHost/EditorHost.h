@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stop_token>
 #include <thread>
@@ -32,6 +33,8 @@ struct EditorHostConfig final
     SimulationConfig simulation;
     simulationCallback simulationUpdate;
     frameSnapshotCallback prepareFrame;
+    // Adapter 比較などで Backend の生成だけを差し替える。所有権と FileSystem の借用は WindowsHost と同じ
+    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *)> createBackend;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する

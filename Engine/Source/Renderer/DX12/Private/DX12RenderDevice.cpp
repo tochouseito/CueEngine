@@ -102,13 +102,16 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
                      LogLevel::Warning);
     }
 
-    // Hardware Adapter を高性能順で調べ、Device を作れた候補だけ採用する
-    if (a_selection == AdapterSelection::HardwarePreferred)
+    // 指定した優先順で調べ、Device を作れた Hardware だけ採用する
+    if (a_selection != AdapterSelection::Warp)
     {
+        const auto preference = a_selection == AdapterSelection::HardwareMinimumPower
+                                    ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
+                                    : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
         for (UINT index = 0;; ++index)
         {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
-            result = context->m_factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+            result = context->m_factory->EnumAdapterByGpuPreference(index, preference,
                                                                       IID_PPV_ARGS(&candidate));
             if (result == DXGI_ERROR_NOT_FOUND)
             {
@@ -135,6 +138,10 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
 
     if (!context->m_adapter)
     {
+        if (a_selection == AdapterSelection::HardwareMinimumPower)
+        {
+            return DeviceResult::failure(gpu_error("DX12RenderDevice.minimum_power_hardware", DXGI_ERROR_NOT_FOUND));
+        }
         // Hardware が利用できない環境だけ WARP を試す
         result = context->m_factory->EnumWarpAdapter(IID_PPV_ARGS(&context->m_adapter));
         if (FAILED(result))

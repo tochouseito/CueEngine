@@ -55,6 +55,9 @@ struct WindowsHostCallbacks final
     std::function<Result<void>(std::vector<InputEventTiming> &)> captureInput;
     // Render Callback 復帰後、その入力 Snapshot が描画されたか返す。未指定なら Host の描画を採用する
     std::function<Result<bool>(std::uint64_t)> isInputRendered;
+    // 初期化 Thread で一度だけ呼び、Backend の一意所有権を Host へ渡す
+    // FileSystem は Host が所有し Backend の停止まで借用可能。未指定なら既定 Factory を使う
+    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *)> createBackend;
 };
 
 /// @brief 将来の設定 File 読込から Host へ渡す起動設定

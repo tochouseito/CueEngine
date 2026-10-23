@@ -159,6 +159,8 @@ def analyze(path):
                 "Frame.Render", "Frame.Main", "Fence.Event1ms", "Fence.Event",
                 "DXGI.Event", "DXGI.Present", "ImGui.Lock", "ImGui.PlatformNewFrame",
                 "Graph.Record", "Graph.Execute",
+                "Queue.Submit", "Queue.SubmitLock", "Queue.Signal",
+                "CommandPool.Submit", "CommandPool.SubmitLock", "Graph.MarkSubmitted",
             }:
                 continue
             sync = min(syncs, key=lambda value: abs(value["steady_ns"] - event["begin_ns"]))

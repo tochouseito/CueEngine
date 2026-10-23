@@ -203,7 +203,8 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                       return a_frame == m_inputRenderFrame
                                  ? Result<bool>::success(m_wasInputRendered)
                                  : Result<bool>::failure({ErrorCategory::InvalidState, "EditorHost.input_frame"});
-                  }},
+                  },
+                  std::move(a_config.createBackend)},
                  std::move(a_config.storage),
                  std::move(a_config.fileSystem),
                  a_config.logging,

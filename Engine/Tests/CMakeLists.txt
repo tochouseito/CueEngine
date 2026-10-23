@@ -212,7 +212,7 @@ if(WIN32)
 
     # Trace は手動調査だけで使い、通常の CTest に長時間の性能条件を追加しない
     add_executable(CueSpikeTimingProbe Performance/SpikeTimingProbe.cpp)
-    target_link_libraries(CueSpikeTimingProbe PRIVATE Cue.EditorHost imgui::imgui user32 advapi32)
+    target_link_libraries(CueSpikeTimingProbe PRIVATE Cue.EditorHost Cue.Renderer.DX12 imgui::imgui user32 advapi32)
 
     # ETL の QPC 時刻と対象 Thread の Scheduling を手動解析向けに取り出す
     add_executable(CueSpikeEtwExport Performance/SpikeEtwExport.cpp)

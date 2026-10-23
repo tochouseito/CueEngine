@@ -197,9 +197,9 @@ Result<std::uint64_t> DX12GpuCommandQueue::signal()
 }
 
 /// @brief Command 投入と Fence 発行の間に別の投入を割り込ませない
-Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* const> a_lists,
-                                                 bool* a_mayHaveExecuted)
+Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *const> a_lists, bool *a_mayHaveExecuted)
 {
+    TimingTraceScope traceSubmit("Queue.Submit");
     if (a_mayHaveExecuted)
     {
         *a_mayHaveExecuted = false;
@@ -227,7 +227,9 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList* c
         }
     }
 
+    TimingTraceScope traceLock("Queue.SubmitLock");
     std::lock_guard lock(m_mutex);
+    traceLock.finish();
     if (m_isPoisoned)
     {
         return Result<std::uint64_t>::failure({ErrorCategory::Fatal, "DX12GpuCommandQueue.submit.poisoned"});
@@ -289,7 +291,10 @@ Result<std::uint64_t> DX12GpuCommandQueue::signal_locked()
         return Result<std::uint64_t>::failure({ErrorCategory::InvalidState, "DX12GpuCommandQueue.signal.overflow"});
     }
     const std::uint64_t nextValue = currentValue + 1;
+    // ExecuteCommandLists の提出時間と、Fence 発行 API 内で待った時間を分離する
+    TimingTraceScope traceSignal("Queue.Signal", nextValue);
     const HRESULT result = m_queue->Signal(m_fence.Get(), nextValue);
+    traceSignal.finish(static_cast<std::uint32_t>(result));
     if (FAILED(result))
     {
         return Result<std::uint64_t>::failure(queue_error("ID3D12CommandQueue.Signal", result));

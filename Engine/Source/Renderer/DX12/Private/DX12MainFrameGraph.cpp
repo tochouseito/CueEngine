@@ -695,6 +695,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
 Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
                                                 std::shared_ptr<ICommandCompletion> a_completion)
 {
+    TimingTraceScope traceSubmitted("Graph.MarkSubmitted");
     if (!m_frames || a_frameIndex >= m_poolLeases.size() || !a_completion)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.mark_submitted"});

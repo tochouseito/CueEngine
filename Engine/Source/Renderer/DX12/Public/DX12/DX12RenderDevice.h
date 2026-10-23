@@ -16,6 +16,8 @@ enum class AdapterSelection
 {
     HardwarePreferred,
     Warp,
+    // 省電力順の Hardware だけを試し、WARP へは Fallback しない
+    HardwareMinimumPower,
 };
 
 /// @brief DXGI Factory、Adapter、D3D12 Device を一意所有する
@@ -35,6 +37,7 @@ public:
     /// @brief Hardware を高性能順で選び、対応 Device がなければ WARP を試す
     ///
     /// Warp 指定時は Hardware を試さず WARP を選ぶ
+    /// HardwareMinimumPower 指定時は省電力順で Hardware を選び、未対応なら失敗する
     /// 失敗時は部分生成した COM Resource を公開せず、HRESULT を Error に保持する
     [[nodiscard]] static Result<std::unique_ptr<DX12RenderDevice>> create(
         AdapterSelection a_selection = AdapterSelection::HardwarePreferred);

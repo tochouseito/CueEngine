@@ -1,3 +1,4 @@
+#include "FocusExperiment.h"
 #include "SpikeTrigger.h"
 
 #include <EditorHost/EditorHost.h>
@@ -20,6 +21,8 @@
 #include <TraceLoggingProvider.h>
 #include <imgui.h>
 
+#include <DX12/DX12Backend.h>
+#include <DX12/DX12RenderDevice.h>
 #include <Foundation/TimingTrace.h>
 
 namespace
@@ -172,7 +175,7 @@ class Recorder final
         std::atomic_flag writing = ATOMIC_FLAG_INIT;
         std::size_t sequence = 0;
     };
-    std::vector<GpuRecord> gpuRecords{262144};
+    std::vector<GpuRecord> gpuRecords{524288};
     std::atomic<std::size_t> gpuCount{0};
     std::atomic<std::size_t> gpuDropped{0};
 
@@ -421,6 +424,7 @@ BOOL CALLBACK foreground_window(HWND a_window, LPARAM a_context)
 /// @brief Host Step 境界の状態を保持する。前面化の成否を推定せず、変化だけ Trace に残す
 struct WindowObservation final
 {
+    LONG expectedWidth = 1280;
     HWND window = nullptr;
     std::size_t checks = 0;
     std::size_t mismatches = 0;
@@ -435,7 +439,7 @@ struct WindowObservation final
         const bool hasClient = GetClientRect(window, &client) != 0;
         const std::uint64_t state = (GetForegroundWindow() == window ? 1u : 0u) | (IsWindowVisible(window) ? 2u : 0u) |
                                     (IsIconic(window) ? 4u : 0u) |
-                                    (hasClient && client.right == 1280 && client.bottom == 720 ? 8u : 0u);
+                                    (hasClient && client.right == expectedWidth && client.bottom == 720 ? 8u : 0u);
         if (checks == 0)
         {
             initial = state;
@@ -455,14 +459,22 @@ struct WindowObservation final
 /// @brief 保存設定に触れず実 Window の全区間を採取する手動調査 Target
 int main(int a_argc, char **a_argv)
 {
+    if (a_argc == 6 && std::strcmp(a_argv[1], "--focus-companion") == 0)
+    {
+        return cue::test::run_focus_companion(
+            reinterpret_cast<HWND>(static_cast<std::uintptr_t>(std::strtoull(a_argv[2], nullptr, 10))),
+            std::atoi(a_argv[3]), std::atoi(a_argv[4]),
+            reinterpret_cast<HWND>(static_cast<std::uintptr_t>(std::strtoull(a_argv[5], nullptr, 10))));
+    }
 #if !defined(CUE_ENABLE_TIMING_TRACE)
     std::fprintf(stderr, "Configure with -DCUE_ENABLE_TIMING_TRACE=ON\n");
     return 1;
 #endif
-    if (a_argc < 8 || a_argc > 14)
+    if (a_argc < 8 || a_argc > 18)
     {
         std::fprintf(stderr, "buffers waitable queued ui seconds prefix traceEnabled "
-                             "[emitEtw [requireForeground [deferEtw [triggered [renderMs [gpuMs]]]]]]\n");
+                             "[emitEtw [requireForeground [deferEtw [triggered [renderMs [gpuMs "
+                             "[focusCycle [focusWindow [focusWidth [adapter]]]]]]]]]]\n");
         return 1;
     }
     const auto buffers = static_cast<std::uint32_t>(std::atoi(a_argv[1]));
@@ -478,13 +490,23 @@ int main(int a_argc, char **a_argv)
     const bool isTriggered = a_argc >= 12 && std::atoi(a_argv[11]) != 0;
     const double renderMs = a_argc >= 13 ? std::atof(a_argv[12]) : 20.0;
     const double gpuMs = a_argc >= 14 ? std::atof(a_argv[13]) : 5.0;
+    const bool cyclesFocus = a_argc >= 15 && std::atoi(a_argv[14]) != 0;
+    const auto focusWindow =
+        a_argc >= 16 ? reinterpret_cast<HWND>(static_cast<std::uintptr_t>(std::strtoull(a_argv[15], nullptr, 10)))
+                     : nullptr;
+    const int focusWidth = a_argc >= 17 ? std::atoi(a_argv[16]) : 1280;
+    const std::string adapter = a_argc >= 18 ? a_argv[17] : "auto";
     if (buffers < 1 || buffers > 3 || queued < 1 || queued > 2 || seconds <= 0.0 ||
         seconds > (isTriggered ? 180.0 : 30.0) || renderMs <= 0 || gpuMs <= 0 ||
-        (isTriggered && (!emitsEtw || !defersEtw || seconds < 8.0)) || (emitsEtw && !isTracing))
+        (isTriggered && (!emitsEtw || !defersEtw || seconds < 8.0)) || (emitsEtw && !isTracing) ||
+        (cyclesFocus && (isTriggered || seconds != 20.0 || !requiresForeground)) ||
+        (!cyclesFocus && (focusWindow || focusWidth != 1280)) || (focusWidth != 960 && focusWidth != 1280) ||
+        (adapter != "auto" && adapter != "intel" && adapter != "nvidia"))
     {
         return 1;
     }
-    auto recorder = std::make_unique<Recorder>(isTriggered ? 524288 : (seconds > 5.0 ? 1048576 : k_spanCapacity));
+    // 高 FPS の Adapter 比較でも全 Sample を保持し、容量不足で統計を間引かない
+    auto recorder = std::make_unique<Recorder>(isTriggered ? 524288 : (seconds > 5.0 ? 2097152 : k_spanCapacity));
     recorder->isCircular = isTriggered;
     recorder->trigger.renderThreshold = static_cast<std::int64_t>(renderMs * 1e6);
     recorder->trigger.gpuThreshold = static_cast<std::int64_t>(gpuMs * 1e6);
@@ -503,7 +525,7 @@ int main(int a_argc, char **a_argv)
     AllocationProbe allocationsProbe;
     cue::EditorHostConfig config;
     config.window.title = "CueEngine Spike Investigation";
-    config.window.clientSize = {1280, 720};
+    config.window.clientSize = {static_cast<std::uint32_t>(focusWidth), 720};
     config.imgui.settingsFile.clear();
     config.performanceSettingsFile.clear();
     config.frame.maxFps = 0;
@@ -512,6 +534,41 @@ int main(int a_argc, char **a_argv)
     config.presentation.isWaitableEnabled = waitable;
     config.presentation.maxQueuedFrames = queued;
     config.gpu = {buffers, buffers};
+    if (adapter != "auto")
+    {
+        // 優先順だけでは選択結果を保証しないため、実 Device の Vendor と Software Flag を検査する
+        config.createBackend = [adapter](cue::IFileSystem *a_files) -> cue::Result<std::unique_ptr<cue::IBackend>>
+        {
+            const auto selection = adapter == "intel" ? cue::dx12::AdapterSelection::HardwareMinimumPower
+                                                      : cue::dx12::AdapterSelection::HardwarePreferred;
+            auto result = cue::dx12::DX12Backend::create(selection, {}, a_files);
+            if (!result.has_value())
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::failure(*result.try_error());
+            }
+            auto backend = result.take_value();
+            auto *device = static_cast<cue::dx12::DX12RenderDevice *>(backend->get_render_device());
+            DXGI_ADAPTER_DESC1 desc{};
+            const HRESULT described = device->adapter()->GetDesc1(&desc);
+            if (FAILED(described))
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                    {cue::ErrorCategory::PlatformFailure, "Probe.adapter_description", described});
+            }
+            const UINT expectedVendor = adapter == "intel" ? 0x8086 : 0x10de;
+            if (desc.VendorId != expectedVendor || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                    {cue::ErrorCategory::InvalidState, "Probe.unexpected_adapter"});
+            }
+            std::printf("adapter requested=%s vendor=0x%04x device=0x%04x luid=0x%08lx%08lx software=%d\n",
+                        adapter.c_str(), desc.VendorId, desc.DeviceId,
+                        static_cast<unsigned long>(desc.AdapterLuid.HighPart), desc.AdapterLuid.LowPart,
+                        device->is_software_adapter() ? 1 : 0);
+            std::fflush(stdout);
+            return cue::Result<std::unique_ptr<cue::IBackend>>::success(std::move(backend));
+        };
+    }
     auto storage = cue::Path::create(prefix + "-storage");
     if (!storage.has_value())
     {
@@ -539,10 +596,28 @@ int main(int a_argc, char **a_argv)
         return 3;
     }
     WindowObservation window;
+    window.expectedWidth = focusWidth;
+    std::printf("window_expected_size width=%d height=720\n", focusWidth);
     EnumWindows(foreground_window, reinterpret_cast<LPARAM>(&window.window));
     if (!window.window)
     {
         return 10;
+    }
+    cue::test::FocusExperiment focus;
+    if (cyclesFocus && focusWidth == 960)
+    {
+        MONITORINFO monitor{sizeof(MONITORINFO)};
+        if (!GetMonitorInfoW(MonitorFromWindow(window.window, MONITOR_DEFAULTTONEAREST), &monitor) ||
+            !SetWindowPos(window.window, nullptr, monitor.rcWork.left, monitor.rcWork.top, 0, 0,
+                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            return 13;
+        }
+    }
+    if (cyclesFocus && !focus.start(window.window, focusWindow))
+    {
+        std::fprintf(stderr, "Focus companion could not be placed without overlap or started\n");
+        return 13;
     }
     if (requiresForeground)
     {
@@ -597,6 +672,10 @@ int main(int a_argc, char **a_argv)
     recorder->isGpuRecording.store(true, std::memory_order_release);
     recorder->isRecording.store(true, std::memory_order_release);
     window.sample();
+    if (cyclesFocus)
+    {
+        focus.sample(start, start);
+    }
     const auto end = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
     while (true)
     {
@@ -614,9 +693,17 @@ int main(int a_argc, char **a_argv)
             return 6;
         }
         window.sample();
+        if (cyclesFocus)
+        {
+            focus.sample(Clock::now(), start);
+        }
     }
     const auto stopped = Clock::now();
     recorder->isRecording.store(false, std::memory_order_release);
+    if (cyclesFocus && !focus.stop())
+    {
+        return 14;
+    }
     if (!markers.synchronize("Stop", stopSync))
     {
         return 9;
@@ -706,5 +793,7 @@ int main(int a_argc, char **a_argv)
     std::printf("window_checks=%zu mismatches=%zu changes=%zu final_state=%llu initial_state=%llu\n", window.checks,
                 window.mismatches, window.changes, static_cast<unsigned long long>(window.previous),
                 static_cast<unsigned long long>(window.initial));
-    return shutdownSucceeded && (!isTracing || recorder->write(prefix)) ? 0 : 8;
+    const bool focusSaved = !cyclesFocus || focus.write(prefix);
+    const bool traceSaved = !isTracing || recorder->write(prefix);
+    return shutdownSucceeded && focusSaved && traceSaved ? 0 : 8;
 }

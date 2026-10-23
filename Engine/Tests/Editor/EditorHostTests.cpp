@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <Passes/PresentToSwapChainPass.h>
+#include <RHI/Backend.h>
 
 namespace
 {
@@ -515,11 +516,50 @@ int test_resize_ui_display(bool a_usesWorkers)
     }
     return 0;
 }
+/// @brief 注入した Factory の失敗と空の成功値でも初期化を拒否し、Window / UI を回収する
+int test_backend_factory_failure()
+{
+    for (const bool returnsNull : {false, true})
+    {
+        int calls = 0;
+        cue::EditorHostConfig config;
+        config.imgui.settingsFile.clear();
+        config.performanceSettingsFile.clear();
+        config.createBackend = [&](cue::IFileSystem *a_files) -> cue::Result<std::unique_ptr<cue::IBackend>>
+        {
+            ++calls;
+            if (!a_files)
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                    {cue::ErrorCategory::InvalidArgument, "Test.missing_files"});
+            }
+            if (returnsNull)
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::success(nullptr);
+            }
+            return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                {cue::ErrorCategory::InvalidState, "Test.backend_factory"});
+        };
+        cue::EditorHost host(std::move(config));
+        auto initialized = host.initialize();
+        const auto expected = returnsNull ? "WindowsHost.backend" : "Test.backend_factory";
+        if (initialized.has_value() || initialized.try_error()->operation != expected || calls != 1 ||
+            !host.shutdown().has_value() || host.step().has_value())
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
 int main()
 {
+    if (const int result = test_backend_factory_failure(); result != 0)
+    {
+        return 80 + result;
+    }
     for (const auto frames : {1u, 2u, 3u})
     {
         if (const int result = test_default_ui_display(frames); result != 0)

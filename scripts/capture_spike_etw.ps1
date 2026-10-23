@@ -9,6 +9,10 @@ param(
     [switch]$DeferredMarkers,
     [switch]$PresentationOnly,
     [switch]$Triggered,
+    [switch]$FocusCycle,
+    [switch]$CpuSampling,
+    [UInt64]$FocusWindow = 0,
+    [ValidateSet(960, 1280)] [int]$FocusWidth = 1280,
     [ValidateRange(0.001, 10000)] [double]$RenderTriggerMs = 20,
     [ValidateRange(0.001, 10000)] [double]$GpuTriggerMs = 5
 )
@@ -20,6 +24,17 @@ if ($Triggered -and ($Cases -ne 'latency2' -or $Seconds -lt 8))
 }
 if (!$Triggered -and $Seconds -gt 20) { throw '通常記録は 20 秒以内です。' }
 if ($Triggered) { $DeferredMarkers = $true }
+if ($CpuSampling -and !$FocusCycle) { throw 'CpuSampling は現在 FocusCycle と組み合わせて使用します。' }
+if (!$FocusCycle -and ($FocusWindow -ne 0 -or $FocusWidth -ne 1280)) { throw '比較 Window と Size は FocusCycle で指定してください。' }
+if ($FocusCycle)
+{
+    if ($Triggered -or $Cases -ne 'latency2' -or $Seconds -ne 20)
+    {
+        throw 'FocusCycle は latency2、20 秒、Triggered なしを指定してください。'
+    }
+    $RequireForeground = $true
+    $DeferredMarkers = $true
+}
 if ($HardwareScheduling -and $PresentationOnly)
 {
     throw 'HardwareScheduling と PresentationOnly は同時指定できません。'
@@ -54,13 +69,21 @@ if ($Collector)
         $session = [string]$configuration.Session
         $markerSession = $session + '-Markers'
         $isTriggered = [bool]$configuration.Triggered
+        $usesMarkerSession = $isTriggered -or [bool]$configuration.FocusCycle
         $freezeFile = Join-Path $outputPath 'on-q2-freeze.flag'
         $frozenFile = Join-Path $outputPath 'on-q2-frozen.flag'
         if ($session -notmatch '^CueSpike-[0-9a-f]{32}$') { throw 'Session 名が不正です。' }
         $existing = (& $xperf -loggers | Out-String)
         if ($existing -match '(?m)^Logger Name\s*:\s*NT Kernel Logger\s*$') { throw '既存の Kernel Session を保全するため停止します。' }
         $kernelArguments = @('-on','PROC_THREAD+LOADER+CSWITCH+DISPATCHER+DPC+INTERRUPT')
-        if ($configuration.Stacks) { $kernelArguments += @('-stackwalk','CSwitch+ReadyThread') }
+        $stackEvents = @()
+        if ($configuration.Stacks) { $stackEvents += 'CSwitch','ReadyThread' }
+        if ($configuration.CpuSampling)
+        {
+            $kernelArguments[1] += '+PROFILE'
+            $stackEvents += 'Profile'
+        }
+        if ($stackEvents.Count) { $kernelArguments += @('-stackwalk',($stackEvents -join '+')) }
         $kernelArguments += @('-ClockType','PerfCounter','-f',(Join-Path $outputPath 'Kernel.etl'),'-buffersize','256','-minbuffers','64','-maxbuffers','256')
         if ($isTriggered)
         {
@@ -70,6 +93,11 @@ if ($Collector)
             $kernelArguments += '-Buffering'
             $kernelArguments[$kernelArguments.IndexOf('-on') + 1] += '+HARD_FAULTS'
             $kernelArguments[$kernelArguments.IndexOf('-minbuffers') + 1] = '512'
+            $kernelArguments[$kernelArguments.IndexOf('-maxbuffers') + 1] = '512'
+        }
+        elseif ($configuration.FocusCycle)
+        {
+            $kernelArguments[$kernelArguments.IndexOf('-minbuffers') + 1] = '256'
             $kernelArguments[$kernelArguments.IndexOf('-maxbuffers') + 1] = '512'
         }
         $kernelArguments | ConvertTo-Json | Set-Content (Join-Path $outputPath 'KernelArguments.json') -Encoding utf8
@@ -85,7 +113,7 @@ if ($Collector)
             # Base / GPU Scheduler の大量 Event を外し、表示経路と Kernel Scheduling の再現を優先する
             $providers = '9d765397-a1ac-4d0f-9ae5-0fa779d47f90:0x1:5+802ec45a-1e99-4b83-9920-87c98277ba9d:0x8000840:5+ca11c036-0102-4a2d-a6ad-f03cfed5d3c9:0xf:5+9e9bba3c-2e38-40cb-99f4-9e8281425164:0xffff:5'
         }
-        if ($isTriggered) { $providers = $providers.Replace('9d765397-a1ac-4d0f-9ae5-0fa779d47f90:0x1:5+', '') }
+        if ($usesMarkerSession) { $providers = $providers.Replace('9d765397-a1ac-4d0f-9ae5-0fa779d47f90:0x1:5+', '') }
         Set-Content -LiteralPath (Join-Path $outputPath 'Providers.txt') -Value $providers -Encoding ascii
         $userArguments = @('-start',$session,'-on',$providers,'-ClockType','PerfCounter','-f',
                            (Join-Path $outputPath 'UserGpu.etl'),'-buffersize','256','-minbuffers','64','-maxbuffers','256')
@@ -97,14 +125,21 @@ if ($Collector)
             $userArguments[$userArguments.IndexOf('-minbuffers') + 1] = '1024'
             $userArguments[$userArguments.IndexOf('-maxbuffers') + 1] = '1024'
         }
+        elseif ($configuration.FocusCycle)
+        {
+            $userArguments[$userArguments.IndexOf('-minbuffers') + 1] = '512'
+            $userArguments[$userArguments.IndexOf('-maxbuffers') + 1] = '1024'
+        }
         & $xperf @userArguments *> (Join-Path $outputPath 'UserStart.log')
         if ($LASTEXITCODE -ne 0) { throw ('User start exit=' + $LASTEXITCODE) }
         $userStarted = $true
         $status.UserStarted = $true
-        if ($isTriggered)
+        if ($usesMarkerSession)
         {
             # 停止後に出す全 CPU Marker は別の逐次 Session に残し、GPU 循環 Buffer の上書きを避ける
-            & $xperf -start $markerSession -on '9d765397-a1ac-4d0f-9ae5-0fa779d47f90:0x1:5' -ClockType PerfCounter -f (Join-Path $outputPath 'Markers.etl') -buffersize 256 -minbuffers 64 -maxbuffers 256 *> (Join-Path $outputPath 'MarkerStart.log')
+            $markerMinBuffers = if ($configuration.FocusCycle) { '256' } else { '64' }
+            $markerMaxBuffers = if ($configuration.FocusCycle) { '1024' } else { '256' }
+            & $xperf -start $markerSession -on '9d765397-a1ac-4d0f-9ae5-0fa779d47f90:0x1:5' -ClockType PerfCounter -f (Join-Path $outputPath 'Markers.etl') -buffersize 256 -minbuffers $markerMinBuffers -maxbuffers $markerMaxBuffers *> (Join-Path $outputPath 'MarkerStart.log')
             if ($LASTEXITCODE -ne 0) { throw ('Marker start exit=' + $LASTEXITCODE) }
             $markersStarted = $true
         }
@@ -174,7 +209,7 @@ if (Test-Path -LiteralPath $outputPath)
     if (@(Get-ChildItem -LiteralPath $outputPath -Force).Count -ne 0) { throw '既存記録を保全するため空の出力先を指定してください。' }
 }
 else { New-Item -ItemType Directory -Path $outputPath | Out-Null }
-@{ Session=('CueSpike-' + [Guid]::NewGuid().ToString('N')); Seconds=$Seconds; Cases=$Cases; Probe=$probe; Stacks=[bool]$Stacks; HardwareScheduling=[bool]$HardwareScheduling; RequireForeground=[bool]$RequireForeground; DeferredMarkers=[bool]$DeferredMarkers; PresentationOnly=[bool]$PresentationOnly; Triggered=[bool]$Triggered; RenderTriggerMs=$RenderTriggerMs; GpuTriggerMs=$GpuTriggerMs } | ConvertTo-Json | Set-Content -LiteralPath $configurationFile -Encoding utf8
+@{ Session=('CueSpike-' + [Guid]::NewGuid().ToString('N')); Seconds=$Seconds; Cases=$Cases; Probe=$probe; Stacks=[bool]$Stacks; CpuSampling=[bool]$CpuSampling; HardwareScheduling=[bool]$HardwareScheduling; RequireForeground=[bool]$RequireForeground; DeferredMarkers=[bool]$DeferredMarkers; PresentationOnly=[bool]$PresentationOnly; Triggered=[bool]$Triggered; FocusCycle=[bool]$FocusCycle; FocusWindow=$FocusWindow; FocusWidth=$FocusWidth; RenderTriggerMs=$RenderTriggerMs; GpuTriggerMs=$GpuTriggerMs } | ConvertTo-Json | Set-Content -LiteralPath $configurationFile -Encoding utf8
 $arguments = @('-NoProfile','-File',('"' + $PSCommandPath + '"'),'-OutputDirectory',('"' + $outputPath + '"'),'-Collector')
 $process = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -PassThru
 try
@@ -194,7 +229,7 @@ try
     {
         Write-Output ('Recording ' + $case[0])
         $prefix = Join-Path $outputPath $case[0]
-        & $probe $case[1] $case[2] $case[3] 0 $Seconds $prefix 1 1 ([int][bool]$RequireForeground) ([int][bool]$DeferredMarkers) ([int][bool]$Triggered) $RenderTriggerMs $GpuTriggerMs 2>&1 | Tee-Object -FilePath ($prefix + '.log')
+        & $probe $case[1] $case[2] $case[3] 0 $Seconds $prefix 1 1 ([int][bool]$RequireForeground) ([int][bool]$DeferredMarkers) ([int][bool]$Triggered) $RenderTriggerMs $GpuTriggerMs ([int][bool]$FocusCycle) $FocusWindow $FocusWidth 2>&1 | Tee-Object -FilePath ($prefix + '.log')
         if ($LASTEXITCODE -ne 0) { throw ('Probe exit=' + $LASTEXITCODE) }
     }
 }

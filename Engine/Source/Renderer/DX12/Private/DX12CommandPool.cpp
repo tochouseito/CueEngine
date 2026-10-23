@@ -15,6 +15,7 @@
 
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
+#include <Foundation/TimingTrace.h>
 #include <Platform/Diagnostics.h>
 
 namespace cue::dx12
@@ -631,14 +632,17 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
 /// @brief 提出と同じ排他区間で Context に Queue の Fence 値を紐づける
 Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, ICommandContext& a_context)
 {
+    TimingTraceScope traceSubmit("CommandPool.Submit");
     const auto state = m_state;
+    TimingTraceScope traceLock("CommandPool.SubmitLock");
     std::lock_guard lock(state->mutex);
+    traceLock.finish();
     if (state->isStopping || state->isFatal)
     {
         return Result<commandCompletion>::failure({state->isFatal ? ErrorCategory::Fatal : ErrorCategory::InvalidState,
                                                    "DX12CommandPool.submit.unavailable"});
     }
-    auto* queue = dynamic_cast<DX12GpuCommandQueue*>(&a_queue);
+    auto *queue = dynamic_cast<DX12GpuCommandQueue *>(&a_queue);
     auto* context = dynamic_cast<DX12GpuCommandContext*>(&a_context);
     if (!context || context->m_device.Get() != state->device.Get())
     {

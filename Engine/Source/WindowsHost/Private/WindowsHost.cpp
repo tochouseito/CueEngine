@@ -525,7 +525,8 @@ Result<void> WindowsHost::initialize()
     }
 
     // Backend が Device を所有し、Window より先に停止できる順序で保持する
-    auto backendResult = create_backend(m_state->files.get());
+    auto backendResult = m_config.callbacks.createBackend ? m_config.callbacks.createBackend(m_state->files.get())
+                                                        : create_backend(m_state->files.get());
     if (!backendResult.has_value())
     {
         return rollback(*backendResult.try_error());
