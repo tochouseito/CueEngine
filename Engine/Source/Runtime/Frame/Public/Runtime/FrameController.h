@@ -1,10 +1,10 @@
 #pragma once
 
 #include <Foundation/Result.h>
-#include <Foundation/TimingSamples.h>
 #include <Platform/Clock.h>
 #include <Platform/Thread.h>
 #include <Platform/Waiter.h>
+#include <Profiler/Profiler.h>
 #include <Runtime/FramePacing.h>
 #include <Runtime/Simulation.h>
 
@@ -110,11 +110,12 @@ class FrameController final
 public:
     /// @brief 借用Serviceを受け取り、開始前のControllerを作る
   FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
-                  SimulationConfig a_simulation = {});
+                  SimulationConfig a_simulation = {}, Profiler *a_profiler = nullptr);
 
   /// @brief Callbackを構築時に渡す既存の入口
   FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
-                  FrameCallback a_update, FrameCallback a_render, SimulationConfig a_simulation = {});
+                  FrameCallback a_update, FrameCallback a_render, SimulationConfig a_simulation = {},
+                  Profiler *a_profiler = nullptr);
 
   /// @brief Workerを停止・joinしてから資源を解放する
   ~FrameController();
@@ -222,15 +223,18 @@ private:
   std::thread::id m_ownerId;
   mutable std::mutex m_mutex;
   FrameProgress m_progress;
-  TimingSamples m_mainTimings;
-  TimingSamples m_updateTimings;
-  TimingSamples m_renderTimings;
-  TimingSamples m_limitTimings;
-  TimingSamples m_intervalTimings;
-  TimingSamples m_cycleTimings;
-  TimingSamples m_inputToRenderStartTimings;
-  TimingSamples m_inputToRenderCompleteTimings;
-  TimingSamples m_presentationWaitTimings;
+  // 単独利用では自身が所有し、Host 指定時は同じ Registry に計測を集約する
+  Profiler m_ownedProfiler;
+  Profiler &m_profiler;
+  ProfileMetric m_mainTimings;
+  ProfileMetric m_updateTimings;
+  ProfileMetric m_renderTimings;
+  ProfileMetric m_limitTimings;
+  ProfileMetric m_intervalTimings;
+  ProfileMetric m_cycleTimings;
+  ProfileMetric m_inputToRenderStartTimings;
+  ProfileMetric m_inputToRenderCompleteTimings;
+  ProfileMetric m_presentationWaitTimings;
   std::array<std::chrono::steady_clock::time_point, 8> m_frameInputTimes{};
   FramePacingSource m_pacingSource;
   SimulationConfig m_simulationConfig;

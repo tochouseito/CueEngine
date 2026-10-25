@@ -17,6 +17,7 @@
 #include <Foundation/Result.h>
 #include <FrameGraph/FrameGraphBuilder.h>
 #include <FrameGraph/FrameGraphPerformance.h>
+#include <Profiler/Profiler.h>
 #include <RHI/Command.h>
 
 namespace cue::dx12
@@ -49,9 +50,11 @@ class DX12FrameGraphFrames final
     /// @brief 同じ Plan から枠ごとに独立した Resource と必要な View を作る
     ///
     /// 途中失敗では生成済みの枠と Descriptor を回収し、部分生成物を公開しない
+    /// a_profiler は描画枠の停止まで借用する。未指定なら内部に記録先を所有する
     [[nodiscard]] static Result<std::unique_ptr<DX12FrameGraphFrames>> create(const DX12ResourceContext &a_resources,
                                                                               const FrameGraphPlan &a_plan,
-                                                                              DX12FrameGraphFramesConfig a_config = {});
+                                                                              DX12FrameGraphFramesConfig a_config = {},
+                                                                              Profiler *a_profiler = nullptr);
 
     /// @brief GPU 完了後に枠の Resource と Descriptor を回収する
     ~DX12FrameGraphFrames();
@@ -151,13 +154,14 @@ class DX12FrameGraphFrames final
     /// @brief 同じ Graph の一時 Resource Handle か確認する
     [[nodiscard]] bool owns(std::uint32_t a_frameIndex, FrameGraphResourceHandle a_handle) const noexcept;
 
+    std::unique_ptr<Profiler> m_ownedProfiler;
     std::vector<Frame> m_frames;
     DX12ViewManager *m_viewManager = nullptr;
     DX12RenderDevice *m_device = nullptr;
     FrameGraphResourceHandle m_borrowedRtvResource;
     std::uint64_t m_graphId = 0;
     bool m_isClosed = false;
-    std::vector<TimingSamples> m_passTimings;
+    std::vector<ProfileMetric> m_passTimings;
     std::array<bool, 3> m_timestampSupported{true, true, false};
 };
 } // namespace cue::dx12

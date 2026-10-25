@@ -20,9 +20,9 @@
 #include <DX12/DX12RenderDevice.h>
 #include <DX12/DX12SwapChain.h>
 #include <DX12/DX12ViewManager.h>
-#include <Foundation/TimingTrace.h>
 #include <Passes/PresentToSwapChainPass.h>
 #include <Platform/Windows/WindowsPlatform.h>
+#include <Profiler/TimingTrace.h>
 
 namespace
 {

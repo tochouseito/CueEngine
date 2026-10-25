@@ -105,6 +105,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
     void* m_fenceEvent = nullptr;
     std::atomic<std::uint64_t> m_fenceValue = 0;
+#if defined(CUE_DESKTOP_INVESTIGATION)
+    // Queue の寿命に閉じた成功値だけを共有する。競合した初回照会の重複は許容する
+    mutable std::atomic<std::uint64_t> m_studyFrequency = 0;
+#endif
     mutable std::mutex m_mutex;
     std::mutex m_waitMutex;
     std::uint64_t m_registeredFence = 0;

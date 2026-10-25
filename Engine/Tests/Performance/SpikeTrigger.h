@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cstdint>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::test
 {
@@ -51,7 +51,7 @@ inline bool gpu_submit_lead(const TimingTraceGpuRecord &a_calibration, const Tim
         return false;
     }
     const auto gpuDelta = a_pass.beginTick - a_calibration.beginTick;
-    const auto cpuDelta = static_cast<std::int64_t>(a_calibration.cpuTick) - a_submit.qpcAfter;
+    const auto cpuDelta = static_cast<std::int64_t>(a_calibration.cpuTick) - a_submit.cpuAfter;
     const double nanos = static_cast<double>(gpuDelta) * 1e9 / a_calibration.frequency +
                          static_cast<double>(cpuDelta) * 1e9 / a_qpcFrequency;
     if (nanos < -1e12 || nanos > 1e12)

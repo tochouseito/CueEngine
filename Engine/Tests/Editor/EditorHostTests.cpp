@@ -15,6 +15,50 @@
 
 namespace
 {
+/// @brief 共通 Snapshot と既存 API の全統計項目が一致するかを確認する
+[[nodiscard]] bool matches_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name,
+                                  const cue::TimingStatistics &a_expected)
+{
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        const auto &actual = metric.statistics;
+        if (metric.name == a_name)
+        {
+            return actual.sampleCount == a_expected.sampleCount && actual.lastDuration == a_expected.lastDuration &&
+                   actual.averageDuration == a_expected.averageDuration &&
+                   actual.p95Duration == a_expected.p95Duration && actual.maxDuration == a_expected.maxDuration;
+        }
+    }
+    return false;
+}
+
+/// @brief 計測項目が未記録でも登録され、停止後にも保持されることを確認する
+[[nodiscard]] bool has_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name)
+{
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        if (metric.name == a_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Resize が継続中の CPU 系列を二重登録しないことを確認する
+[[nodiscard]] bool has_single_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name)
+{
+    std::size_t count = 0;
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        if (metric.name == a_name)
+        {
+            ++count;
+        }
+    }
+    return count == 1;
+}
+
 /// @brief 後続の ImGuiPass と同じ注入経路で実 GPU 表示と解放順を検査する
 class EditorDisplayPass final : public cue::FrameGraphPass
 {
@@ -229,6 +273,20 @@ int test_owner_thread_frames()
         return 9;
     }
 
+    // 単一 Thread の静止点で取得し、既存 API と共通 Profiler の全統計値を比較する
+    auto snapshot = host.profiler_snapshot();
+    if (!snapshot.has_value() || !matches_metric(*snapshot.try_value(), "Frame.Main", frameTiming.try_value()->main) ||
+        !matches_metric(*snapshot.try_value(), "Frame.Update", frameTiming.try_value()->update) ||
+        !matches_metric(*snapshot.try_value(), "Frame.Render", frameTiming.try_value()->render) ||
+        !matches_metric(*snapshot.try_value(), "ImGui.UiBuild", uiTiming.try_value()->uiBuild) ||
+        !matches_metric(*snapshot.try_value(), "ImGui.SnapshotCopy", uiTiming.try_value()->snapshotCopy) ||
+        !has_metric(*snapshot.try_value(), "Graph.Record") || !has_metric(*snapshot.try_value(), "Host.Present") ||
+        !has_metric(*snapshot.try_value(), "Input.ToCpuComplete") ||
+        !has_metric(*snapshot.try_value(), "GPU.EditorDisplay"))
+    {
+        return 10;
+    }
+
     bool rejectedOtherThread = false;
     std::thread worker(
         [&]()
@@ -240,10 +298,12 @@ int test_owner_thread_frames()
             auto frameTiming = host.frame_timing_info();
             auto uiTiming = host.ui_timing_info();
             auto graphTiming = host.graph_performance();
+            auto snapshot = host.profiler_snapshot();
             auto stop = host.shutdown();
             rejectedOtherThread = !initialize.has_value() && !step.has_value() && !progress.has_value() &&
                                   !stop.has_value() && !ui.has_value() && !frameTiming.has_value() &&
-                                  !uiTiming.has_value() && !graphTiming.has_value() &&
+                                  !uiTiming.has_value() && !graphTiming.has_value() && !snapshot.has_value() &&
+                                  snapshot.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   initialize.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   step.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   progress.try_error()->category == cue::ErrorCategory::WrongThread &&
@@ -265,6 +325,15 @@ int test_owner_thread_frames()
     if (host.step().has_value() || host.frame_progress().has_value() || host.ui_frame_info().has_value())
     {
         return 8;
+    }
+    // Producer と Native 資源を破棄した後も CPU の最終値と回収済み GPU 結果が残る
+    auto finalSnapshot = host.profiler_snapshot();
+    if (!finalSnapshot.has_value() ||
+        !matches_metric(*finalSnapshot.try_value(), "Frame.Render", frameTiming.try_value()->render) ||
+        !matches_metric(*finalSnapshot.try_value(), "ImGui.UiBuild", uiTiming.try_value()->uiBuild) ||
+        !has_metric(*finalSnapshot.try_value(), "GPU.EditorDisplay"))
+    {
+        return 11;
     }
     return 0;
 }
@@ -513,6 +582,13 @@ int test_resize_ui_display(bool a_usesWorkers)
         !host.shutdown().has_value() || IsWindow(handle))
     {
         return 7;
+    }
+    // Resize を越えて CPU 集計を継続し、停止後にも一つの系列として取得できる
+    auto snapshot = host.profiler_snapshot();
+    if (!snapshot.has_value() || !has_single_metric(*snapshot.try_value(), "Graph.Record") ||
+        !has_single_metric(*snapshot.try_value(), "Graph.FrameFenceWait"))
+    {
+        return 8;
     }
     return 0;
 }

@@ -1,6 +1,6 @@
 #include <DX12/DX12SwapChain.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <exception>
 #include <memory>

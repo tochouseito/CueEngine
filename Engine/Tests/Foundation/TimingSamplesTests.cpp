@@ -1,5 +1,5 @@
 #include <Foundation/ScopedFlag.h>
-#include <Foundation/TimingSamples.h>
+#include <Profiler/TimingSamples.h>
 
 #include <algorithm>
 #include <array>

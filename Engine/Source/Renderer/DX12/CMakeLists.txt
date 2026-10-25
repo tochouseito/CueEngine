@@ -60,7 +60,7 @@ add_library(Cue.Renderer.DX12 STATIC
 target_include_directories(Cue.Renderer.DX12 PUBLIC Public)
 target_include_directories(Cue.Renderer.DX12 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Generated")
 target_link_libraries(Cue.Renderer.DX12
-    PUBLIC Cue.Foundation Cue.Renderer.FrameGraph Cue.Renderer.Passes Cue.Renderer.RHI
+    PUBLIC Cue.Foundation Cue.Profiler Cue.Renderer.FrameGraph Cue.Renderer.Passes Cue.Renderer.RHI
     PRIVATE Cue.Foundation.Windows Cue.Platform.Windows Cue.WinPixEventRuntime d3d12 dxgi dxguid
 )
 target_compile_features(Cue.Renderer.DX12 PUBLIC cxx_std_20)

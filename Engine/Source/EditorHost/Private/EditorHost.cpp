@@ -1,6 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <algorithm>
 #include <chrono>
@@ -226,6 +226,12 @@ const Path *EditorHost::log_file_path() const noexcept
     return m_windows.log_file_path();
 }
 
+/// @brief 実行資源の停止後も残る共通 Profiler の集計を取得する
+Result<ProfilerSnapshot> EditorHost::profiler_snapshot() const
+{
+    return m_windows.profiler_snapshot();
+}
+
 /// @brief Editor の表示を抽象 Pass として下位 Host へ渡し、明示された Pass は優先する
 MainFrameGraphConfig EditorHost::prepare_graph(MainFrameGraphConfig a_config)
 {
@@ -376,7 +382,7 @@ Result<void> EditorHost::initialize_ui(Window &a_window)
         }
         m_imguiConfig.settingsFile = path.try_value()->utf8();
     }
-    auto result = ImGuiManager::create(a_window, std::move(m_imguiConfig));
+    auto result = ImGuiManager::create(a_window, std::move(m_imguiConfig), m_windows.profiler());
     if (!result.has_value())
     {
         return Result<void>::failure(*result.try_error());

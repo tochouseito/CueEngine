@@ -1,0 +1,56 @@
+[
+    {
+        "run": "new-descriptor-stress-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-descriptor-stress-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-descriptor-stress-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-1-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-1-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-2-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-2-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-3-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    },
+    {
+        "run": "new-stress-3-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 1084
+    }
+]

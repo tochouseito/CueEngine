@@ -6,11 +6,11 @@ endif()
 # Foundation と公開 Header は Platform 実装なしで単独検証する
 find_package(Threads REQUIRED)
 add_executable(CueTimingTraceTests Foundation/TimingTraceTests.cpp)
-target_link_libraries(CueTimingTraceTests PRIVATE Cue.Foundation Threads::Threads)
+target_link_libraries(CueTimingTraceTests PRIVATE Cue.Profiler Threads::Threads)
 add_test(NAME Cue.Foundation.TimingTrace COMMAND CueTimingTraceTests)
 
 add_executable(CueSpikeTriggerTests Performance/SpikeTriggerTests.cpp)
-target_link_libraries(CueSpikeTriggerTests PRIVATE Cue.Foundation Threads::Threads)
+target_link_libraries(CueSpikeTriggerTests PRIVATE Cue.Profiler Threads::Threads)
 add_test(NAME Cue.Performance.SpikeTrigger COMMAND CueSpikeTriggerTests)
 
 add_executable(CueFoundationResultTests Foundation/ResultTests.cpp)
@@ -23,8 +23,20 @@ add_test(NAME Cue.Foundation.Path COMMAND CueFoundationPathTests)
 
 # 計測分布の p95、固定容量、Overflow と入れ子 Guard を確認する
 add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
-target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Foundation)
+target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Profiler)
 add_test(NAME Cue.Foundation.TimingSamples COMMAND CueFoundationTimingTests)
+
+# 共通 Profiler の全標本集計、終了後保持、並行記録、容量超過と循環履歴を検証する
+add_executable(CueProfilerTests Profiler/ProfilerTests.cpp)
+target_link_libraries(CueProfilerTests PRIVATE Cue.Profiler Threads::Threads)
+add_test(NAME Cue.Profiler.Core COMMAND CueProfilerTests)
+
+# Windows 調査 Tool の File 出力を、Platform 非依存の Profiler 本体から分離して検証する
+if(WIN32)
+    add_executable(CueSpikeTraceExportTests Performance/SpikeTraceExportTests.cpp)
+    target_link_libraries(CueSpikeTraceExportTests PRIVATE Cue.Profiler Threads::Threads)
+    add_test(NAME Cue.Profiler.TraceExport COMMAND CueSpikeTraceExportTests)
+endif()
 
 add_executable(CueLoggingHeaderCompile Logging/PublicHeaderCompile.cpp)
 target_link_libraries(CueLoggingHeaderCompile PRIVATE Cue.Logging)

@@ -19,7 +19,7 @@ struct TimingStatistics final
 
 /// @brief 直近 120 Sample の容量を固定し、Frame ごとの Allocation を避ける
 ///
-/// Owner Thread または外部 Lock で保護する。コピーした Snapshot の集計は Lock 外で行える
+/// Profiler の系列実装が所有し、その Mutex で保護する。単体利用では外部排他が必要
 class TimingSamples final
 {
   public:

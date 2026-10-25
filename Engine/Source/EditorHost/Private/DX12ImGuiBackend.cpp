@@ -1,6 +1,7 @@
 #include "DX12ImGuiBackend.h"
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/Profiler.h>
+#include <Profiler/TimingTrace.h>
 
 #include "ImGuiSynchronization.h"
 
@@ -74,7 +75,8 @@ class DX12ImGuiBackend::State final
     std::vector<std::uint64_t> ringFences;
     std::optional<std::size_t> recordedRing;
     std::uint64_t ringCalls = 0;
-    TimingSamples gpuWaitTimes;
+    std::unique_ptr<Profiler> ownedProfiler;
+    ProfileMetric gpuWaitTimes;
 
     /// @brief 再利用する資源の完了済 Fence は待たず、必要な CPU 待機の経過時間だけを記録する
     [[nodiscard]] Result<void> wait_for_usage(std::uint64_t a_fence)
@@ -198,7 +200,8 @@ DX12ImGuiBackend::DX12ImGuiBackend(CreateToken) noexcept
 
 /// @brief SwapChain の Queue を借用し、Editor 専用 Heap を公式 Backend に接続する
 Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_backend, ImGuiContext &a_context,
-                                                                   std::uint32_t a_frameCount, std::uint32_t a_capacity)
+                                                                   std::uint32_t a_frameCount, std::uint32_t a_capacity,
+                                                                   Profiler *a_profiler)
 {
     using BackendResult = Result<std::unique_ptr<DX12ImGuiBackend>>;
     if (a_frameCount == 0 || a_frameCount > 8 || a_capacity == 0)
@@ -229,6 +232,12 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         auto result = std::make_unique<DX12ImGuiBackend>(CreateToken{});
         result->m_state = std::make_unique<State>();
         auto &state = *result->m_state;
+        if (!a_profiler)
+        {
+            state.ownedProfiler = std::make_unique<Profiler>();
+            a_profiler = state.ownedProfiler.get();
+        }
+        state.gpuWaitTimes = a_profiler->create_metric("ImGui.GpuFenceWait");
         state.context = &a_context;
         state.device = device->device();
         state.queue = queue;

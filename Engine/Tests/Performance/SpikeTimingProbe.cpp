@@ -1,4 +1,5 @@
 #include "FocusExperiment.h"
+#include "SpikeTraceExport.h"
 #include "SpikeTrigger.h"
 
 #include <EditorHost/EditorHost.h>
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,13 +25,139 @@
 
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12RenderDevice.h>
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
+#include <Profiler/TraceBuffer.h>
+#include <WindowsHost/WindowsHost.h>
 
 namespace
 {
 using Clock = std::chrono::steady_clock;
 inline constexpr std::size_t k_threadCapacity = 4;
 inline constexpr std::size_t k_spanCapacity = 262144;
+
+/// @brief 通常 ImGui Pass と同じ BackBuffer Clear / Barrier を保ち、UI の描画だけを除く
+class ProbeBackBufferClearPass final : public cue::FrameGraphPass
+{
+  public:
+    /// @brief GPU Query で ImGui の記録と取り違えない固定名を返す
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "BackBufferClear";
+    }
+
+    /// @brief 通常の表示 Pass と同じ Graphics Queue を使う
+    [[nodiscard]] cue::QueueType type() const noexcept override
+    {
+        return cue::QueueType::Graphics;
+    }
+
+    /// @brief 外部 BackBuffer と設定済み Clear 色を Graph の生成時に保持する
+    [[nodiscard]] cue::Result<void> setup(cue::FrameGraphBuilder &a_builder) override
+    {
+        auto buffer = a_builder.get_texture("BackBuffer");
+        if (!buffer.has_value())
+        {
+            return cue::Result<void>::failure(*buffer.try_error());
+        }
+        auto desc = a_builder.texture_desc(*buffer.try_value());
+        if (!desc.has_value())
+        {
+            return cue::Result<void>::failure(*desc.try_error());
+        }
+        m_backBuffer = buffer.take_value();
+        m_clearColor = desc.try_value()->clearColor;
+        return cue::Result<void>::success();
+    }
+
+    /// @brief Present 復帰を含む遷移は通常と同じ Graph に任せる
+    [[nodiscard]] cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
+    {
+        return a_builder.use(m_backBuffer, cue::FrameGraphAccess::Write, cue::FrameGraphResourceState::RenderTarget);
+    }
+
+    /// @brief UI 版と同じ Clear と RTV 設定だけを記録する
+    [[nodiscard]] cue::Result<void> execute(cue::FrameGraphContext &a_context) override
+    {
+        auto clear = a_context.clear_render_target(m_backBuffer, m_clearColor);
+        return clear.has_value() ? a_context.set_render_target(m_backBuffer) : std::move(clear);
+    }
+
+  private:
+    cue::FrameGraphResourceHandle m_backBuffer;
+    std::array<float, 4> m_clearColor{};
+};
+
+/// @brief 計測手順を共有し、ImGui 無効時は Context / Backend / UI Callback を一切生成しない
+class ProbeHost final
+{
+  public:
+    /// @brief 起動時にだけ Host の所有先を決め、通常の Editor 設定は変更しない
+    ProbeHost(cue::EditorHostConfig a_config, bool a_withoutImGui)
+    {
+        if (!a_withoutImGui)
+        {
+            m_editor = std::make_unique<cue::EditorHost>(std::move(a_config));
+            return;
+        }
+        cue::WindowsHostConfig config;
+        config.window = std::move(a_config.window);
+        config.frame = cue::frame_config_for_buffering(a_config.frame, a_config.gpu.resourceFrameCount);
+        config.presentation = a_config.presentation;
+        config.graph = std::move(a_config.graph);
+        config.graph.displayPassFactory = []() { return std::make_unique<ProbeBackBufferClearPass>(); };
+        config.storage = std::move(a_config.storage);
+        config.fileSystem = std::move(a_config.fileSystem);
+        config.logging = a_config.logging;
+        config.gpu = a_config.gpu;
+        config.performancePolicy = a_config.performancePolicy;
+        config.performanceSettingsFile = std::move(a_config.performanceSettingsFile);
+        config.simulation = a_config.simulation;
+        config.callbacks.simulationUpdate = std::move(a_config.simulationUpdate);
+        config.callbacks.prepareFrame = std::move(a_config.prepareFrame);
+        config.callbacks.createBackend = std::move(a_config.createBackend);
+        m_windows = std::make_unique<cue::WindowsHost>(std::move(config));
+    }
+
+    /// @brief 選択した Host の初期化と失敗回収の契約を維持する
+    [[nodiscard]] cue::Result<void> initialize()
+    {
+        return m_editor ? m_editor->initialize() : m_windows->initialize();
+    }
+
+    /// @brief 両条件とも同じ Main / Update / Render の進行方式を使う
+    [[nodiscard]] cue::Result<bool> step()
+    {
+        return m_editor ? m_editor->step() : m_windows->step();
+    }
+
+    /// @brief 完了 Frame 数は UI の有無にかかわらず Runtime の値を採用する
+    [[nodiscard]] cue::Result<cue::FrameProgress> frame_progress() const
+    {
+        return m_editor ? m_editor->frame_progress() : m_windows->frame_progress();
+    }
+
+    /// @brief UI がない条件は Snapshot 自体が存在しないことを零件で示す
+    [[nodiscard]] cue::Result<cue::ImGuiTransferInfo> ui_transfer_info() const
+    {
+        return m_editor ? m_editor->ui_transfer_info() : cue::Result<cue::ImGuiTransferInfo>::success({});
+    }
+
+    /// @brief 共通 Graph と GPU Query の集計はどちらの条件も保持する
+    [[nodiscard]] cue::Result<cue::MainFrameGraphPerformance> graph_performance() const
+    {
+        return m_editor ? m_editor->graph_performance() : m_windows->graph_performance();
+    }
+
+    /// @brief Worker と GPU を排出してから結果の File 出力を許可する
+    [[nodiscard]] cue::Result<void> shutdown()
+    {
+        return m_editor ? m_editor->shutdown() : m_windows->shutdown();
+    }
+
+  private:
+    std::unique_ptr<cue::EditorHost> m_editor;
+    std::unique_ptr<cue::WindowsHost> m_windows;
+};
 
 // SDK が要求する Provider Handle を、main が所有する EtwMarkers の寿命内だけ登録する
 TRACELOGGING_DEFINE_PROVIDER(g_spikeProvider, "CueEngine.SpikeTiming",
@@ -152,18 +280,16 @@ class Recorder final
   public:
     struct Thread final
     {
-        std::vector<cue::TimingTraceSpan> spans;
+        cue::TraceBuffer<cue::TimingTraceSpan> spans;
         DWORD id = 0;
-        std::size_t count = 0;
-        std::size_t dropped = 0;
     };
     std::array<Thread, k_threadCapacity> threads;
     std::atomic<std::size_t> nextThread{0};
     std::atomic<std::size_t> droppedThreads{0};
     std::atomic<bool> isRecording{false};
     std::atomic<bool> isGpuRecording{false};
+    mutable std::atomic<std::size_t> earlyFileWriteAttempts{0};
     std::chrono::nanoseconds started{};
-    bool emitsEtw = false;
     bool isCircular = false;
     cue::test::SpikeTrigger trigger;
     std::uint64_t qpcFrequency = 0;
@@ -175,16 +301,17 @@ class Recorder final
         std::atomic_flag writing = ATOMIC_FLAG_INIT;
         std::size_t sequence = 0;
     };
-    std::vector<GpuRecord> gpuRecords{524288};
+    cue::TraceBuffer<GpuRecord> gpuRecords{524288};
     std::atomic<std::size_t> gpuCount{0};
     std::atomic<std::size_t> gpuDropped{0};
 
     /// @brief 長い手動計測も測定開始前に容量を確保し、測定中の再確保と区間の間引きを避ける
-    explicit Recorder(std::size_t a_spanCapacity)
+    explicit Recorder(std::size_t a_spanCapacity, bool a_isCircular = false) : isCircular(a_isCircular)
     {
         for (auto &thread : threads)
         {
             thread.spans.resize(a_spanCapacity);
+            thread.spans.set_circular(a_isCircular);
         }
     }
 
@@ -204,13 +331,21 @@ class Recorder final
         return point;
     }
 
+    /// @brief 出力 Adapter へ成功した記録の識別子だけを返し、保存先や送出方法を記録層へ持ち込まない
+    struct AppendResult final
+    {
+        bool isStored = false;
+        std::size_t sequence = 0;
+        DWORD thread = 0;
+    };
+
     /// @brief Worker 終了まで配列を読まない。Trigger 待受では古い履歴だけ循環上書きし、通常記録の不足は数える
-    static void record(void *a_context, const cue::TimingTraceSpan &a_span) noexcept
+    [[nodiscard]] static AppendResult record(void *a_context, const cue::TimingTraceSpan &a_span) noexcept
     {
         auto &recorder = *static_cast<Recorder *>(a_context);
         if (!recorder.isRecording.load(std::memory_order_acquire) || a_span.begin.time < recorder.started)
         {
-            return;
+            return {};
         }
         thread_local Recorder *owner = nullptr;
         thread_local std::size_t index = k_threadCapacity;
@@ -226,25 +361,19 @@ class Recorder final
         if (index >= k_threadCapacity)
         {
             recorder.droppedThreads.fetch_add(1, std::memory_order_relaxed);
-            return;
+            return {};
         }
         auto &thread = recorder.threads[index];
-        if (!recorder.isCircular && thread.count == thread.spans.size())
+        if (!thread.spans.append(a_span))
         {
-            ++thread.dropped;
-            return;
+            return {};
         }
-        thread.spans[thread.count % thread.spans.size()] = a_span;
-        ++thread.count;
         if (recorder.isCircular && std::strcmp(a_span.name, "Frame.Render") == 0)
         {
             recorder.trigger.consider(1, a_span.frame, (a_span.end.time - a_span.begin.time).count(),
                                       a_span.end.time.count());
         }
-        if (recorder.emitsEtw)
-        {
-            EtwMarkers::write(a_span, thread.count - 1, thread.id);
-        }
+        return {true, thread.spans.accepted_count() - 1, thread.id};
     }
 
     /// @brief 完了回収は CPU 計測停止後も Shutdown まで保持する。名前は借用期間内に複写する
@@ -308,87 +437,78 @@ class Recorder final
             }
         }
     }
+};
 
-    /// @brief 生 Tick を変換せず保存する。異なる Queue の Tick を直接比較しない
-    bool write_gpu(const std::string &a_prefix) const
+/// @brief 明示的な ETW 出力設定を RAM Recorder と分離し、成功した記録だけを送出する
+///
+/// main が Recorder と Provider より先に破棄しない。Callback は Worker から呼ばれ、例外を送出しない
+class TraceOutputAdapter final
+{
+  public:
+    Recorder &recorder;
+    bool emitsEtw = false;
+
+    /// @brief Windows の時計取得は手動 Tool 内に閉じ、共通 Profiler の時刻契約へ渡す
+    static cue::TimingTracePoint capture(void *a_context) noexcept
     {
-        std::FILE *file = nullptr;
-        if (fopen_s(&file, (a_prefix + "-gpu.csv").c_str(), "w") != 0)
-        {
-            return false;
-        }
-        std::fprintf(file, "kind,frame,queue,queue_type,detail,name,begin_tick,end_tick,frequency,cpu_tick,"
-                           "qpc_before,qpc_after,status\n");
-        const auto count = (std::min)(gpuCount.load(), gpuRecords.size());
-        for (std::size_t index = 0; index < count; ++index)
-        {
-            const auto first = isCircular ? gpuCount.load() - count : 0;
-            const auto &r = gpuRecords[(first + index) % gpuRecords.size()].record;
-            std::fprintf(file, "%u,%llu,%llu,%u,%llu,\"", r.kind, static_cast<unsigned long long>(r.frame),
-                         static_cast<unsigned long long>(r.queue), r.queueType,
-                         static_cast<unsigned long long>(r.detail));
-            for (const char *c = r.name; *c; ++c)
-            {
-                if (*c == '"')
-                {
-                    std::fputc('"', file);
-                }
-                std::fputc(*c, file);
-            }
-            std::fprintf(file, "\",%llu,%llu,%llu,%llu,%lld,%lld,%lld\n", static_cast<unsigned long long>(r.beginTick),
-                         static_cast<unsigned long long>(r.endTick), static_cast<unsigned long long>(r.frequency),
-                         static_cast<unsigned long long>(r.cpuTick), r.qpcBefore, r.qpcAfter, r.status);
-        }
-        const bool hadError = std::ferror(file) != 0;
-        const bool succeeded = std::fclose(file) == 0 && !hadError;
-        std::printf("gpu_records=%zu dropped=%zu overwritten=%zu\n", count, gpuDropped.load(),
-                    isCircular ? gpuCount.load() - count : 0);
-        return succeeded && gpuDropped == 0;
+        return Recorder::capture(&static_cast<TraceOutputAdapter *>(a_context)->recorder);
     }
 
-    /// @brief 全 Worker 停止後にだけ File を作り、欠落件数を明記する
-    bool write(const std::string &a_prefix) const
+    /// @brief 通常は RAM 保存だけを行い、即時 ETW モードを指定した場合だけ外部へ送る
+    static void record(void *a_context, const cue::TimingTraceSpan &a_span) noexcept
     {
-        std::FILE *file = nullptr;
-        if (fopen_s(&file, (a_prefix + "-spans.csv").c_str(), "w") != 0)
+        auto &adapter = *static_cast<TraceOutputAdapter *>(a_context);
+        const auto stored = Recorder::record(&adapter.recorder, a_span);
+        if (stored.isStored && adapter.emitsEtw)
+        {
+            EtwMarkers::write(a_span, stored.sequence, stored.thread);
+        }
+    }
+
+    /// @brief GPU 記録も同じ RAM Owner へ転送し、終了時の CSV 保存と混ぜない
+    static void record_gpu(void *a_context, const cue::TimingTraceGpuRecord &a_record) noexcept
+    {
+        Recorder::record_gpu(&static_cast<TraceOutputAdapter *>(a_context)->recorder, a_record);
+    }
+
+    /// @brief 停止・Join 後の全区間を ETW へ出し、記録中の遅延送出を拒否する
+    [[nodiscard]] bool write_deferred() const noexcept
+    {
+        if (recorder.isRecording.load() || recorder.isGpuRecording.load())
         {
             return false;
         }
-        std::fprintf(file, "thread,frame,name,detail,outcome,begin_ns,end_ns,duration_ns,cycles,cycles_valid,cpu_begin,"
-                           "cpu_end,source_sequence\n");
-        std::size_t dropped = droppedThreads.load();
-        std::size_t count = 0;
-        for (const auto &thread : threads)
+        for (const auto &thread : recorder.threads)
         {
-            dropped += thread.dropped;
-            const auto retained = (std::min)(thread.count, thread.spans.size());
-            count += retained;
-            const auto first = isCircular ? thread.count - retained : 0;
-            if (retained)
-            {
-                std::printf("retention thread=%lu total=%zu retained=%zu first_sequence=%zu begin_ns=%lld\n", thread.id,
-                            thread.count, retained, first,
-                            (thread.spans[first % thread.spans.size()].begin.time - started).count());
-            }
+            const auto retained = thread.spans.retained_count();
+            const auto first = thread.spans.first_sequence();
             for (std::size_t index = 0; index < retained; ++index)
             {
-                const auto &span = thread.spans[(first + index) % thread.spans.size()];
-                const bool hasCycles = span.begin.hasThreadCycles && span.end.hasThreadCycles &&
-                                       span.end.threadCycles >= span.begin.threadCycles;
-                std::fprintf(
-                    file, "%lu,%llu,%s,%llu,%u,%lld,%lld,%lld,%llu,%d,%u,%u,%zu\n", thread.id,
-                    static_cast<unsigned long long>(span.frame), span.name,
-                    static_cast<unsigned long long>(span.detail), span.outcome, (span.begin.time - started).count(),
-                    (span.end.time - started).count(), (span.end.time - span.begin.time).count(),
-                    static_cast<unsigned long long>(hasCycles ? span.end.threadCycles - span.begin.threadCycles : 0),
-                    hasCycles, span.begin.processor, span.end.processor, first + index);
+                EtwMarkers::write(thread.spans[(first + index) % thread.spans.size()], index, thread.id);
             }
         }
-        const bool hadError = std::ferror(file) != 0;
-        const bool succeeded = std::fclose(file) == 0 && !hadError;
-        std::printf("trace_spans=%zu dropped=%zu\n", count, dropped);
-        return succeeded && dropped == 0 && write_gpu(a_prefix);
+        return true;
     }
+};
+
+/// @brief 早期終了でも Host の Worker 回収後に Sink を解除し、借用 Adapter の失効を防ぐ
+class TraceRegistration final
+{
+  public:
+    /// @brief Host より前に構築し、Host の破棄が終わるまで登録先を保持する
+    explicit TraceRegistration(cue::TimingTraceSink *a_sink) noexcept
+    {
+        cue::set_timing_trace_sink(a_sink);
+    }
+
+    /// @brief 通常停止済みでも解除を繰り返せる。全 Worker が止まってから呼ばれる
+    ~TraceRegistration()
+    {
+        cue::set_timing_trace_sink(nullptr);
+    }
+
+    TraceRegistration(const TraceRegistration &) = delete;
+    TraceRegistration &operator=(const TraceRegistration &) = delete;
 };
 
 /// @brief 計測区間の Process CPU 使用時間を秒で返す
@@ -425,21 +545,35 @@ BOOL CALLBACK foreground_window(HWND a_window, LPARAM a_context)
 struct WindowObservation final
 {
     LONG expectedWidth = 1280;
+    LONG expectedHeight = 720;
     HWND window = nullptr;
     std::size_t checks = 0;
     std::size_t mismatches = 0;
     std::size_t changes = 0;
     std::uint64_t previous = ~std::uint64_t{0};
     std::uint64_t initial = 0;
+    std::optional<POINT> fixedPointer;
+    RECT fixedRect{};
+    std::size_t pointerChanges = 0;
+    std::size_t windowMoves = 0;
 
     /// @brief 可視 Flag は遮蔽の判定ではない。前面・最小化・Client Size の異常を別 Bit に保持する
     void sample()
     {
+        if (fixedPointer)
+        {
+            POINT point{};
+            RECT rect{};
+            pointerChanges += !GetCursorPos(&point) || point.x != fixedPointer->x || point.y != fixedPointer->y;
+            windowMoves += !GetWindowRect(window, &rect) || rect.left != fixedRect.left || rect.top != fixedRect.top ||
+                           rect.right != fixedRect.right || rect.bottom != fixedRect.bottom;
+        }
         RECT client{};
         const bool hasClient = GetClientRect(window, &client) != 0;
-        const std::uint64_t state = (GetForegroundWindow() == window ? 1u : 0u) | (IsWindowVisible(window) ? 2u : 0u) |
-                                    (IsIconic(window) ? 4u : 0u) |
-                                    (hasClient && client.right == expectedWidth && client.bottom == 720 ? 8u : 0u);
+        const std::uint64_t state =
+            (GetForegroundWindow() == window ? 1u : 0u) | (IsWindowVisible(window) ? 2u : 0u) |
+            (IsIconic(window) ? 4u : 0u) |
+            (hasClient && client.right == expectedWidth && client.bottom == expectedHeight ? 8u : 0u);
         if (checks == 0)
         {
             initial = state;
@@ -470,11 +604,12 @@ int main(int a_argc, char **a_argv)
     std::fprintf(stderr, "Configure with -DCUE_ENABLE_TIMING_TRACE=ON\n");
     return 1;
 #endif
-    if (a_argc < 8 || a_argc > 18)
+    if (a_argc < 8 || a_argc > 21 || a_argc == 20)
     {
         std::fprintf(stderr, "buffers waitable queued ui seconds prefix traceEnabled "
                              "[emitEtw [requireForeground [deferEtw [triggered [renderMs [gpuMs "
-                             "[focusCycle [focusWindow [focusWidth [adapter]]]]]]]]]]\n");
+                             "[focusCycle [focusWindow [focusWidth [adapter [fixedPlacement "
+                             "[clientWidth clientHeight]]]]]]]]]]]]\n");
         return 1;
     }
     const auto buffers = static_cast<std::uint32_t>(std::atoi(a_argv[1]));
@@ -496,18 +631,24 @@ int main(int a_argc, char **a_argv)
                      : nullptr;
     const int focusWidth = a_argc >= 17 ? std::atoi(a_argv[16]) : 1280;
     const std::string adapter = a_argc >= 18 ? a_argv[17] : "auto";
-    if (buffers < 1 || buffers > 3 || queued < 1 || queued > 2 || seconds <= 0.0 ||
+    const bool fixedPlacement = a_argc >= 19 && std::atoi(a_argv[18]) != 0;
+    // 既存引数の意味を維持し、描画領域だけを解像度比較用に上書きする
+    const int clientWidth = a_argc >= 21 ? std::atoi(a_argv[19]) : focusWidth;
+    const int clientHeight = a_argc >= 21 ? std::atoi(a_argv[20]) : 720;
+    if (buffers < 1 || buffers > 3 || queued < 1 || queued > 2 || seconds <= 0.0 || ui < 0 || ui > 3 ||
         seconds > (isTriggered ? 180.0 : 30.0) || renderMs <= 0 || gpuMs <= 0 ||
         (isTriggered && (!emitsEtw || !defersEtw || seconds < 8.0)) || (emitsEtw && !isTracing) ||
-        (cyclesFocus && (isTriggered || seconds != 20.0 || !requiresForeground)) ||
+        (cyclesFocus && (isTriggered || seconds != 20.0 || !requiresForeground)) || (cyclesFocus && fixedPlacement) ||
+        clientWidth < 1 || clientWidth > 16384 || clientHeight < 1 || clientHeight > 16384 ||
+        (cyclesFocus && (clientWidth != focusWidth || clientHeight != 720)) ||
         (!cyclesFocus && (focusWindow || focusWidth != 1280)) || (focusWidth != 960 && focusWidth != 1280) ||
         (adapter != "auto" && adapter != "intel" && adapter != "nvidia"))
     {
         return 1;
     }
     // 高 FPS の Adapter 比較でも全 Sample を保持し、容量不足で統計を間引かない
-    auto recorder = std::make_unique<Recorder>(isTriggered ? 524288 : (seconds > 5.0 ? 2097152 : k_spanCapacity));
-    recorder->isCircular = isTriggered;
+    auto recorder =
+        std::make_unique<Recorder>(isTriggered ? 524288 : (seconds > 5.0 ? 2097152 : k_spanCapacity), isTriggered);
     recorder->trigger.renderThreshold = static_cast<std::int64_t>(renderMs * 1e6);
     recorder->trigger.gpuThreshold = static_cast<std::int64_t>(gpuMs * 1e6);
     LARGE_INTEGER qpcFrequency{};
@@ -519,15 +660,23 @@ int main(int a_argc, char **a_argv)
         std::fprintf(stderr, "ETW provider registration or collector is unavailable\n");
         return 9;
     }
-    recorder->emitsEtw = emitsEtw && !defersEtw;
-    cue::TimingTraceSink sink{recorder.get(), Recorder::capture, Recorder::record, Recorder::record_gpu};
-    cue::set_timing_trace_sink(isTracing ? &sink : nullptr);
-    AllocationProbe allocationsProbe;
+    TraceOutputAdapter outputAdapter{*recorder, emitsEtw && !defersEtw};
+    cue::TimingTraceSink sink{&outputAdapter, TraceOutputAdapter::capture, TraceOutputAdapter::record,
+                              TraceOutputAdapter::record_gpu};
+    TraceRegistration registration(isTracing ? &sink : nullptr);
+    std::unique_ptr<AllocationProbe> allocationsProbe;
+    if (ui != 3)
+    {
+        allocationsProbe = std::make_unique<AllocationProbe>();
+    }
     cue::EditorHostConfig config;
     config.window.title = "CueEngine Spike Investigation";
-    config.window.clientSize = {static_cast<std::uint32_t>(focusWidth), 720};
+    config.window.clientSize = {static_cast<std::uint32_t>(clientWidth), static_cast<std::uint32_t>(clientHeight)};
     config.imgui.settingsFile.clear();
     config.performanceSettingsFile.clear();
+    // 測定区間は Trace 配列だけを更新し、Host の File Log と Debug 出力を発生させない
+    config.logging.isFileEnabled = false;
+    config.logging.debugOutput = cue::DebugLogOutput::Disabled;
     config.frame.maxFps = 0;
     config.presentation.isVSyncEnabled = false;
     config.presentation.isTearingAllowed = true;
@@ -575,7 +724,7 @@ int main(int a_argc, char **a_argv)
         return 2;
     }
     config.storage.dataRootOverride = storage.take_value();
-    if (ui != 0)
+    if (ui != 0 && ui != 3)
     {
         config.buildUi = [ui]()
         {
@@ -590,18 +739,83 @@ int main(int a_argc, char **a_argv)
             return cue::Result<void>::success();
         };
     }
-    cue::EditorHost host(std::move(config));
+    ProbeHost host(std::move(config), ui == 3);
     if (!host.initialize().has_value())
     {
         return 3;
     }
+    // Context のない比較を、空の UI を構築した比較と混同しない
+    const bool hasImGuiContext = ImGui::GetCurrentContext() != nullptr;
+    if (ui == 3 && hasImGuiContext)
+    {
+        return 15;
+    }
+    std::printf("ui_mode=%s imgui_initialized=%d current_context=%d host_file_logging=0\n",
+                ui == 3 ? "no_imgui" : "imgui", ui != 3, hasImGuiContext);
     WindowObservation window;
-    window.expectedWidth = focusWidth;
-    std::printf("window_expected_size width=%d height=720\n", focusWidth);
+    window.expectedWidth = clientWidth;
+    window.expectedHeight = clientHeight;
+    std::printf("window_expected_size width=%d height=%d\n", clientWidth, clientHeight);
     EnumWindows(foreground_window, reinterpret_cast<LPARAM>(&window.window));
     if (!window.window)
     {
         return 10;
+    }
+    if (a_argc >= 21)
+    {
+        // FHD Monitor 上でも装飾枠による寸法制限を避ける。解像度比較の両条件を同じ枠なし形式にする
+        RECT requested{0, 0, clientWidth, clientHeight};
+        const auto previousStyle = static_cast<DWORD>(GetWindowLongPtrW(window.window, GWL_STYLE));
+        const auto style = (previousStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP;
+        const auto extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(window.window, GWL_EXSTYLE));
+        SetLastError(ERROR_SUCCESS);
+        const auto replacedStyle = SetWindowLongPtrW(window.window, GWL_STYLE, style);
+        if ((replacedStyle == 0 && GetLastError() != ERROR_SUCCESS) ||
+            !AdjustWindowRectEx(&requested, style, FALSE, extendedStyle) ||
+            !SetWindowPos(window.window, nullptr, 0, 0, requested.right - requested.left,
+                          requested.bottom - requested.top,
+                          SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED))
+        {
+            return 16;
+        }
+        std::printf("window_style=borderless fullscreen_exclusive=0\n");
+    }
+    RECT actualClient{};
+    if (!GetClientRect(window.window, &actualClient))
+    {
+        return 16;
+    }
+    std::printf("window_actual_size width=%ld height=%ld\n", actualClient.right, actualClient.bottom);
+    if (actualClient.right != clientWidth || actualClient.bottom != clientHeight)
+    {
+        return 16;
+    }
+    if (fixedPlacement)
+    {
+        // 両条件を同じ Monitor の Pointer 下へ配置し、外部 Window の Hit Test を比較へ混ぜない
+        POINT point{};
+        RECT rect{};
+        MONITORINFOEXA monitor{};
+        monitor.cbSize = sizeof(monitor);
+        if (!GetCursorPos(&point) || !GetWindowRect(window.window, &rect) ||
+            !GetMonitorInfoA(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &monitor))
+        {
+            return 13;
+        }
+        const LONG width = rect.right - rect.left;
+        const LONG height = rect.bottom - rect.top;
+        const auto left = std::clamp(point.x - width / 2, monitor.rcWork.left,
+                                     (std::max)(monitor.rcWork.left, monitor.rcWork.right - width));
+        const auto top = std::clamp(point.y - height / 2, monitor.rcWork.top,
+                                    (std::max)(monitor.rcWork.top, monitor.rcWork.bottom - height));
+        if (!SetWindowPos(window.window, nullptr, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) ||
+            !GetWindowRect(window.window, &window.fixedRect))
+        {
+            return 13;
+        }
+        window.fixedPointer = point;
+        std::printf("placement_fixed=1 monitor=%s pointer_x=%ld pointer_y=%ld left=%ld top=%ld\n",
+                    monitor.szDevice, point.x, point.y, left, top);
     }
     cue::test::FocusExperiment focus;
     if (cyclesFocus && focusWidth == 960)
@@ -667,6 +881,11 @@ int main(int a_argc, char **a_argv)
         return 9;
     }
     const auto start = Clock::now();
+    IO_COUNTERS ioBefore{}, ioAfter{};
+    if (!GetProcessIoCounters(GetCurrentProcess(), &ioBefore))
+    {
+        return 15;
+    }
     recorder->started = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch());
     recorder->trigger.armedAt = recorder->started.count() + 6000000000;
     recorder->isGpuRecording.store(true, std::memory_order_release);
@@ -699,6 +918,10 @@ int main(int a_argc, char **a_argv)
         }
     }
     const auto stopped = Clock::now();
+    if (!GetProcessIoCounters(GetCurrentProcess(), &ioAfter))
+    {
+        return 15;
+    }
     recorder->isRecording.store(false, std::memory_order_release);
     if (cyclesFocus && !focus.stop())
     {
@@ -746,6 +969,9 @@ int main(int a_argc, char **a_argv)
         transferFinal.try_value()->snapshotAllocations - transferInitial.try_value()->snapshotAllocations;
     const double elapsed = std::chrono::duration<double>(stopped - start).count();
     auto graph = host.graph_performance();
+    const bool shutdownSucceeded = host.shutdown().has_value();
+    recorder->isGpuRecording.store(false, std::memory_order_release);
+    cue::set_timing_trace_sink(nullptr);
     if (graph.has_value())
     {
         // GPU は非同期に完了する直近 120 標本であり、CPU Trace 全区間の統計とは区別する
@@ -760,20 +986,12 @@ int main(int a_argc, char **a_argv)
             }
         }
     }
-    const bool shutdownSucceeded = host.shutdown().has_value();
-    recorder->isGpuRecording.store(false, std::memory_order_release);
-    cue::set_timing_trace_sink(nullptr);
     if (emitsEtw && defersEtw)
     {
         // Worker 停止後に全区間を出す。Header の Thread と出力時刻を元区間の識別に使わない
-        for (const auto &thread : recorder->threads)
+        if (!outputAdapter.write_deferred())
         {
-            const auto retained = (std::min)(thread.count, thread.spans.size());
-            const auto first = isTriggered ? thread.count - retained : 0;
-            for (std::size_t index = 0; index < retained; ++index)
-            {
-                EtwMarkers::write(thread.spans[(first + index) % thread.spans.size()], index, thread.id);
-            }
+            return 9;
         }
     }
     if (isTracing)
@@ -793,7 +1011,13 @@ int main(int a_argc, char **a_argv)
     std::printf("window_checks=%zu mismatches=%zu changes=%zu final_state=%llu initial_state=%llu\n", window.checks,
                 window.mismatches, window.changes, static_cast<unsigned long long>(window.previous),
                 static_cast<unsigned long long>(window.initial));
+    const auto writeOperations = ioAfter.WriteOperationCount - ioBefore.WriteOperationCount;
+    const auto writeBytes = ioAfter.WriteTransferCount - ioBefore.WriteTransferCount;
+    std::printf("measurement_io write_operations=%llu write_bytes=%llu\n",
+                static_cast<unsigned long long>(writeOperations), static_cast<unsigned long long>(writeBytes));
+    std::printf("placement_checks pointer_changes=%zu window_moves=%zu\n", window.pointerChanges, window.windowMoves);
     const bool focusSaved = !cyclesFocus || focus.write(prefix);
-    const bool traceSaved = !isTracing || recorder->write(prefix);
-    return shutdownSucceeded && focusSaved && traceSaved ? 0 : 8;
+    const bool traceSaved = !isTracing || cue::test::SpikeTraceExporter<Recorder>::write(*recorder, prefix);
+    std::printf("recording_output guarded=1 early_file_write_attempts=%zu\n", recorder->earlyFileWriteAttempts.load());
+    return shutdownSucceeded && focusSaved && traceSaved && recorder->earlyFileWriteAttempts.load() == 0 ? 0 : 8;
 }

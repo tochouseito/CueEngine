@@ -29,7 +29,7 @@ struct TimingTraceSpan final
     TimingTracePoint end;
 };
 
-/// @brief GPU の生 Tick と CPU QPC を保持する調査記録。name は Callback 中だけ借用する
+/// @brief GPU と CPU の生 Tick を保持する調査記録。name は Callback 中だけ借用する
 /// kind は 0: Clock 対応、1: CPU 提出、2: 完了 Pass とする。時刻の変換は解析側で行う
 struct TimingTraceGpuRecord final
 {
@@ -41,8 +41,11 @@ struct TimingTraceGpuRecord final
     std::uint64_t endTick = 0;
     std::uint64_t frequency = 0;
     std::uint64_t cpuTick = 0;
-    std::int64_t qpcBefore = 0;
-    std::int64_t qpcAfter = 0;
+    std::int64_t cpuBefore = 0;
+    std::int64_t cpuAfter = 0;
+    // 0 は未指定。Domain の識別と Native Tick の換算は Platform Adapter が所有する
+    std::uint64_t cpuClockId = 0;
+    std::uint64_t cpuFrequency = 0;
     std::int64_t status = 0;
     std::uint32_t kind = 0;
     std::uint32_t queueType = 0;

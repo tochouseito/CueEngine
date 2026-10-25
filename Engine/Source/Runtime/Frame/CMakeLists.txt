@@ -10,6 +10,7 @@ target_include_directories(Cue.Runtime.Frame PUBLIC
 
 target_link_libraries(Cue.Runtime.Frame PUBLIC
     Cue.Platform
+    Cue.Profiler
 )
 
 target_compile_features(Cue.Runtime.Frame PUBLIC cxx_std_20)

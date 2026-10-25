@@ -9,8 +9,8 @@
 #include <vector>
 
 #include <Foundation/Result.h>
-#include <Foundation/TimingSamples.h>
 #include <Platform/Window.h>
+#include <Profiler/Profiler.h>
 #include <Runtime/FrameController.h>
 
 namespace cue
@@ -96,8 +96,9 @@ public:
     /// @brief Context と入力接続を確保して Win32 Backend を作成する
     ///
     /// 途中失敗時は部分生成物を回収し、成功時だけ所有権を返す
-    [[nodiscard]] static Result<std::unique_ptr<ImGuiManager>> create(Window& a_window,
-                                                                    ImGuiManagerConfig a_config = {});
+    [[nodiscard]] static Result<std::unique_ptr<ImGuiManager>> create(Window &a_window,
+                                                                      ImGuiManagerConfig a_config = {},
+                                                                      Profiler *a_profiler = nullptr);
 
     /// @brief 明示停止がない場合も Handler を解除してから Context を解放する
     ~ImGuiManager();

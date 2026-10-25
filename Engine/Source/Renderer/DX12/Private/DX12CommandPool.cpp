@@ -15,8 +15,8 @@
 
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
-#include <Foundation/TimingTrace.h>
 #include <Platform/Diagnostics.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::dx12
 {

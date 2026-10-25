@@ -1,4 +1,4 @@
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <array>
 #include <atomic>

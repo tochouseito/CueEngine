@@ -1,0 +1,16 @@
+case,metric,count,avg_ms,p95_ms,max_ms
+new-borderless,MsGPUBusy,1794,2.537626086956522,4.7972,9.5883
+new-borderless,MsGPUTime,1794,16.672500668896323,18.0059,22.9716
+new-borderless,MsGPUWait,1794,14.1348745819398,16.3715,17.1333
+new-borderless,MsInPresentAPI,1794,0.32792998885172797,0.4524,1.4058
+new-borderless,MsUntilDisplayed,1794,8.972662040133779,15.3628,22.1745
+new-borderless-waitable,MsGPUBusy,1794,2.5906748606465997,5.1478,10.1637
+new-borderless-waitable,MsGPUTime,1794,16.671854849498327,18.5053,23.8579
+new-borderless-waitable,MsGPUWait,1794,14.081179988851728,16.3543,16.9883
+new-borderless-waitable,MsInPresentAPI,1794,0.3300614269788183,0.462,1.6071
+new-borderless-waitable,MsUntilDisplayed,1794,9.27014392419175,15.9197,21.6144
+new-screen-windowed,MsGPUBusy,1794,1.728956856187291,3.4417,7.526
+new-screen-windowed,MsGPUTime,1794,1.7377449275362318,3.4459,7.5305
+new-screen-windowed,MsGPUWait,1794,0.008788071348940914,0.0143,0.8264
+new-screen-windowed,MsInPresentAPI,1794,0.23055964325529543,0.2993,1.6593
+new-screen-windowed,MsUntilDisplayed,133,22.215724060150375,29.5828,30.946

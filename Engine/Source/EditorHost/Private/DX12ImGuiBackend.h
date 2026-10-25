@@ -10,6 +10,7 @@ struct ImDrawData;
 
 namespace cue
 {
+class Profiler;
 /// @brief Manager の Context を借用する Editor 内部の公式 DX12 Backend 接続
 ///
 /// Manager と Native Backend はこの Adapter より長く生存させる
@@ -24,9 +25,11 @@ class DX12ImGuiBackend final
     /// @brief static create の部分生成状態を構築する
     explicit DX12ImGuiBackend(CreateToken) noexcept;
     /// @brief Device、Queue、Format を検証し、専用 Heap と Device Objects を生成する
+    /// a_profiler は停止まで借用する。未指定なら Adapter 内に記録先を所有する
     [[nodiscard]] static Result<std::unique_ptr<DX12ImGuiBackend>> create(IBackend &a_backend, ImGuiContext &a_context,
                                                                           std::uint32_t a_frameCount,
-                                                                          std::uint32_t a_capacity);
+                                                                          std::uint32_t a_capacity,
+                                                                          Profiler *a_profiler = nullptr);
     /// @brief GPU 完了を確認できない借用資源を暗黙破棄しない
     ~DX12ImGuiBackend();
     /// @brief 生成済み Device Objects の公式 Frame 開始処理を実行する

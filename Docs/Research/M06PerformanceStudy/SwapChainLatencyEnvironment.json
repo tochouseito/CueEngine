@@ -1,0 +1,27 @@
+{
+  "os": [
+    {
+      "Caption": "Microsoft Windows 11 Home",
+      "Version": "10.0.26200",
+      "BuildNumber": "26200"
+    }
+  ],
+  "cpu": [
+    {
+      "Name": "AMD Ryzen 7 3700X 8-Core Processor             ",
+      "NumberOfCores": 8,
+      "NumberOfLogicalProcessors": 16
+    }
+  ],
+  "gpu_inventory": [
+    {
+      "Name": "NVIDIA GeForce RTX 3060",
+      "DriverVersion": "32.0.16.1742",
+      "DriverDate": "2026-09-30T09:00:00+09:00"
+    }
+  ],
+  "timestamp_utc": "2026-10-09T00:09:08.4079842Z",
+  "executable": "C:\\Users\\sinse\\source\\repos\\CueEngine\\out\\build\\windows-vs2026-performance\\Study\\Development\\CueEditorTimingProbe.exe",
+  "executable_sha256": "8F4C34085A90617E7D5523A750E2B358B7ED646307AA0186091D7DF1FB8D921B",
+  "note": "Visible window; warmup excluded; no minimized run; GUI occlusion and power state not controlled"
+}

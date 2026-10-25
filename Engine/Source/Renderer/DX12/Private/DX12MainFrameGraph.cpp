@@ -1,6 +1,6 @@
 #include <DX12/DX12MainFrameGraph.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <algorithm>
 #include <array>
@@ -36,7 +36,16 @@ DX12MainFrameGraph::DX12MainFrameGraph(CreateToken) noexcept
 /// @brief 旧 Pass 契約に従って Clear、追加 Pass、表示 Pass を組み立てる
 Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX12ResourceContext &a_resources,
                                                                        DX12SwapChain &a_swapChain,
-                                                                       DX12MainFrameGraphConfig a_config)
+                                                                       DX12MainFrameGraphConfig a_config,
+                                                                       Profiler *a_profiler)
+{
+    return create_internal(a_resources, a_swapChain, std::move(a_config), a_profiler);
+}
+
+/// @brief 再生成時に CPU 系列を再登録せず、既存の履歴と記録先を引き継ぐ
+Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create_internal(
+    const DX12ResourceContext &a_resources, DX12SwapChain &a_swapChain, DX12MainFrameGraphConfig a_config,
+    Profiler *a_profiler, ProfileMetric a_recordTimings, ProfileMetric a_frameWaitTimings)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
     // Backend の生成基盤を借用し、描画に必要な Device、Queue と枠数を検証する
@@ -74,6 +83,18 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     }
     try
     {
+        auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
+        if (!a_profiler)
+        {
+            result->m_ownedProfiler = std::make_unique<Profiler>();
+            a_profiler = result->m_ownedProfiler.get();
+        }
+        result->m_profiler = a_profiler;
+        // Resize は同じ系列の Handle を共有し、初回生成時だけ Registry へ登録する
+        result->m_recordTimings =
+            a_recordTimings.is_valid() ? std::move(a_recordTimings) : a_profiler->create_metric("Graph.Record");
+        result->m_frameWaitTimings = a_frameWaitTimings.is_valid() ? std::move(a_frameWaitTimings)
+                                                                   : a_profiler->create_metric("Graph.FrameFenceWait");
         // Graph が消費する設定とは別に、Resize で再実行する Callback と Factory を保持する
         const bool hasOneShotDisplayPass = a_config.displayPass != nullptr;
         MainFrameGraphConfig compositionConfig;
@@ -89,13 +110,12 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
         // Plan に従って枠ごとの一時 Resource と RTV／SRV を生成する
         // BackBuffer の RTV は SwapChain から借用するため、Graph 側で重複生成しない
         auto framesResult = DX12FrameGraphFrames::create(a_resources, *composition.graph->plan(),
-                                                         {a_config.frameCount, composition.backBuffer});
+                                                         {a_config.frameCount, composition.backBuffer}, a_profiler);
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
         // 配列確保を先に完了させ、確保失敗時に不完全な管理状態へ Resource の所有権を移さない
-        auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
         result->m_poolLeases.resize(a_config.frameCount);
         result->m_externalBindings.resize(a_config.frameCount);
         result->m_isPrepared.resize(a_config.frameCount, false);
@@ -806,7 +826,9 @@ Result<void> DX12MainFrameGraph::resize(const DX12ResourceContext &a_resources, 
     {
         return resized;
     }
-    auto rebuiltResult = create(a_resources, *swapChain, std::move(rebuildConfig));
+    // 再構築後も Host の同じ記録先を使い、Graph の CPU 統計は既存の Metric に保持する
+    auto rebuiltResult = create_internal(a_resources, *swapChain, std::move(rebuildConfig), m_profiler, m_recordTimings,
+                                         m_frameWaitTimings);
     if (!rebuiltResult.has_value())
     {
         return Result<void>::failure(*rebuiltResult.try_error());

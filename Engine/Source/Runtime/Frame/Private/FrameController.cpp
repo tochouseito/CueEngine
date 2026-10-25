@@ -1,6 +1,6 @@
 #include <Runtime/FrameController.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <algorithm>
 #include <chrono>
@@ -28,17 +28,26 @@ Result<void> invoke_callback(FrameCallback& a_callback, std::uint64_t a_frame, s
 
 /// @brief 借用Serviceを保持する
 FrameController::FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter,
-                                 ThreadFactory &a_threadFactory, SimulationConfig a_simulation)
+                                 ThreadFactory &a_threadFactory, SimulationConfig a_simulation, Profiler *a_profiler)
     : m_desc(a_desc), m_clock(a_clock), m_waiter(a_waiter), m_threadFactory(a_threadFactory),
-      m_ownerId(std::this_thread::get_id()), m_simulationConfig(a_simulation), m_simulation(a_simulation)
+      m_ownerId(std::this_thread::get_id()), m_profiler(a_profiler ? *a_profiler : m_ownedProfiler),
+      m_mainTimings(m_profiler.create_metric("Frame.Main")), m_updateTimings(m_profiler.create_metric("Frame.Update")),
+      m_renderTimings(m_profiler.create_metric("Frame.Render")),
+      m_limitTimings(m_profiler.create_metric("Frame.FpsWait")),
+      m_intervalTimings(m_profiler.create_metric("Frame.Interval")),
+      m_cycleTimings(m_profiler.create_metric("Frame.CycleInterval")),
+      m_inputToRenderStartTimings(m_profiler.create_metric("Frame.AdoptedToRenderStart")),
+      m_inputToRenderCompleteTimings(m_profiler.create_metric("Frame.AdoptedToRenderComplete")),
+      m_presentationWaitTimings(m_profiler.create_metric("Frame.PresentationWait")), m_simulationConfig(a_simulation),
+      m_simulation(a_simulation)
 {
 }
 
 /// @brief 構築時にCallbackを渡す既存の入口を維持する
 FrameController::FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter,
                                  ThreadFactory &a_threadFactory, FrameCallback a_update, FrameCallback a_render,
-                                 SimulationConfig a_simulation)
-    : FrameController(a_desc, a_clock, a_waiter, a_threadFactory, a_simulation)
+                                 SimulationConfig a_simulation, Profiler *a_profiler)
+    : FrameController(a_desc, a_clock, a_waiter, a_threadFactory, a_simulation, a_profiler)
 {
     m_update = std::move(a_update);
     m_render = std::move(a_render);
@@ -690,19 +699,19 @@ Result<void> FrameController::resume(FrameControllerDesc a_desc, std::optional<S
     m_hasStarted = false;
     {
         std::lock_guard lock(m_mutex);
-        m_mainTimings = {};
-        m_updateTimings = {};
-        m_renderTimings = {};
-        m_limitTimings = {};
-        m_intervalTimings = {};
+        m_mainTimings.reset();
+        m_updateTimings.reset();
+        m_renderTimings.reset();
+        m_limitTimings.reset();
+        m_intervalTimings.reset();
         m_hasRenderCompletionSample = false;
         m_progress.lastFrameInterval = {};
         m_progress.lastCycleInterval = {};
         m_progress.lastLimitWaitDuration = {};
-        m_cycleTimings = {};
-        m_inputToRenderStartTimings = {};
-        m_inputToRenderCompleteTimings = {};
-        m_presentationWaitTimings = {};
+        m_cycleTimings.reset();
+        m_inputToRenderStartTimings.reset();
+        m_inputToRenderCompleteTimings.reset();
+        m_presentationWaitTimings.reset();
     }
     return start();
 }

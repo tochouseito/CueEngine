@@ -12,6 +12,7 @@
 #include <Foundation/Result.h>
 #include <Passes/MainFrameGraph.h>
 #include <Platform/Window.h>
+#include <Profiler/Profiler.h>
 #include <RHI/FrameExecution.h>
 #include <RHI/Presentation.h>
 #include <Runtime/FrameController.h>
@@ -118,6 +119,11 @@ class WindowsHost final
     /// 構築 Thread から呼ぶ。失敗時も shutdown を呼ぶ
     [[nodiscard]] Result<bool> step();
 
+    /// @brief 初期化後から Host 破棄まで Registry を借用する。Owner 専用、登録は Worker 停止中に行う
+    [[nodiscard]] Profiler *profiler() const noexcept;
+    /// @brief 全計測の所有 Snapshot を返す。Owner 専用で停止後も利用できる
+    [[nodiscard]] Result<ProfilerSnapshot> profiler_snapshot() const;
+
     /// @brief 入力到達から対応 Frame の Present / CPU 完了までの統計を返す。Owner Thread 専用
     [[nodiscard]] Result<InputLatencyInfo> input_latency_info() const;
 
@@ -163,6 +169,8 @@ class WindowsHost final
 
     WindowsHostConfig m_config;
     std::thread::id m_ownerId;
+    // 実行資源の停止後も最終値を保持し、Producer より後に破棄する
+    std::unique_ptr<Profiler> m_profiler;
     std::unique_ptr<State> m_state;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
     bool m_isStepping = false;

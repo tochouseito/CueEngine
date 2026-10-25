@@ -1,0 +1,353 @@
+[
+    {
+        "run": "new-borderless-1",
+        "case": "new-borderless",
+        "repeat": 1,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "12964"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x2416C5E0AC0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-borderless-2",
+        "case": "new-borderless",
+        "repeat": 2,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "40308"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x1EBE8B299D0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-borderless-3",
+        "case": "new-borderless",
+        "repeat": 3,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "39712"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x29F62C5A4D0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-borderless-waitable-1",
+        "case": "new-borderless-waitable",
+        "repeat": 1,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "27524"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x2D5DC4DAD50"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-borderless-waitable-2",
+        "case": "new-borderless-waitable",
+        "repeat": 2,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "40704"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x22CF6F250F0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-borderless-waitable-3",
+        "case": "new-borderless-waitable",
+        "repeat": 3,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "35072"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x1B1F666C490"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 598,
+        "display_time_unavailable_rows": 0,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Hardware Composed: Independent Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-screen-windowed-1",
+        "case": "new-screen-windowed",
+        "repeat": 1,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "44940"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x1F444B1F4C0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 96,
+        "display_time_unavailable_rows": 502,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Composed: Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-screen-windowed-2",
+        "case": "new-screen-windowed",
+        "repeat": 2,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "30256"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x120DAB9F470"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 18,
+        "display_time_unavailable_rows": 580,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Composed: Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    },
+    {
+        "run": "new-screen-windowed-3",
+        "case": "new-screen-windowed",
+        "repeat": 3,
+        "target_valid": true,
+        "targets": [
+            [
+                "CueEditorTimingProbe.exe",
+                "37732"
+            ]
+        ],
+        "engine_status": 0,
+        "raw_rows": 718,
+        "selected_rows": 598,
+        "expected_measurement_frames": 600,
+        "row_selection": "skip warmup rows, take up to measurement frames; ordinal only, not Engine FrameId aligned",
+        "swapchains": [
+            "0x21353CA86B0"
+        ],
+        "data_loss": {
+            "EtwEventsLost": 0,
+            "EtwBuffersLost": 0,
+            "OverflowedPresents": 0
+        },
+        "loss_source": "CSV counters if present, otherwise maximum ETW status log counters reported during capture",
+        "loss_counters_valid": true,
+        "display_time_observed_rows": 19,
+        "display_time_unavailable_rows": 579,
+        "display_time_note": "NA is unavailable; it is not proof that the frame was never displayed",
+        "present_modes": {
+            "Composed: Flip": 598
+        },
+        "sync_intervals": {
+            "0": 598
+        },
+        "allows_tearing": {
+            "0": 598
+        }
+    }
+]

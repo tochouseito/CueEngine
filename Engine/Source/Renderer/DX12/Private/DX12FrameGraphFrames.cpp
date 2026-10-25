@@ -12,8 +12,8 @@
 #include <DX12/DX12FrameGraphResources.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
-#include <Foundation/TimingTrace.h>
 #include <Platform/Diagnostics.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::dx12
 {
@@ -58,7 +58,8 @@ DX12FrameGraphFrames::DX12FrameGraphFrames(CreateToken) noexcept
 /// @brief 一時 Texture の View を作り、外部 Texture の View Slot を枠ごとに予約する
 Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const DX12ResourceContext &a_resources,
                                                                            const FrameGraphPlan &a_plan,
-                                                                           DX12FrameGraphFramesConfig a_config)
+                                                                           DX12FrameGraphFramesConfig a_config,
+                                                                           Profiler *a_profiler)
 {
     using FramesResult = Result<std::unique_ptr<DX12FrameGraphFrames>>;
     auto &device = a_resources.get_render_device();
@@ -108,12 +109,22 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
             }
         }
         auto frames = std::make_unique<DX12FrameGraphFrames>(CreateToken{});
+        if (!a_profiler)
+        {
+            frames->m_ownedProfiler = std::make_unique<Profiler>();
+            a_profiler = frames->m_ownedProfiler.get();
+        }
         frames->m_viewManager = &viewManager;
         frames->m_device = &device;
         frames->m_borrowedRtvResource = borrowedRtvResource;
         frames->m_graphId = a_plan.resources().empty() ? 0 : a_plan.resources().front().handle.graphId;
         frames->m_frames.resize(frameCount);
-        frames->m_passTimings.resize(a_plan.passes().size());
+        frames->m_passTimings.reserve(a_plan.passes().size());
+        for (const auto &pass : a_plan.passes())
+        {
+            // Pass ごとの独立した履歴を登録し、GPU 完了後の標本だけを Profiler へ渡す
+            frames->m_passTimings.push_back(a_profiler->create_metric("GPU." + pass.name));
+        }
         D3D12_FEATURE_DATA_D3D12_OPTIONS3 options{};
         if (SUCCEEDED(device.device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options, sizeof(options))))
             frames->m_timestampSupported[2] = options.CopyQueueTimestampQueriesSupported != FALSE;

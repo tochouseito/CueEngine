@@ -1,6 +1,10 @@
 #include <DX12/DX12QueuePool.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
+
+#if defined(CUE_DESKTOP_INVESTIGATION)
+#include <Foundation/DesktopInvestigation.h>
+#endif
 
 #include <exception>
 #include <limits>
@@ -39,6 +43,20 @@ Error queue_error(const char* a_operation, HRESULT a_result)
 }
 
 #if defined(CUE_ENABLE_TIMING_TRACE)
+// 同じ Windows Process の CPU Clock Domain。Native 形式の解釈は Windows Adapter 側に閉じる
+inline constexpr std::uint64_t k_performanceCounterClock = 1;
+
+/// @brief GPU Trace の初回だけ CPU Clock の周波数を取得し、通常提出では時計照会を増やさない
+std::uint64_t cpu_clock_frequency() noexcept
+{
+    static const std::uint64_t frequency = []() noexcept -> std::uint64_t
+    {
+        LARGE_INTEGER value{};
+        return QueryPerformanceFrequency(&value) && value.QuadPart > 0 ? static_cast<std::uint64_t>(value.QuadPart) : 0;
+    }();
+    return frequency;
+}
+
 /// @brief Native Clock の生値と取得区間を残す。失敗も標本として保持し、通常の提出結果を変えない
 void trace_calibration(ID3D12CommandQueue &a_queue, std::uint64_t a_identity, QueueType a_type, std::uint64_t a_fence,
                        const char *a_phase) noexcept
@@ -55,8 +73,11 @@ void trace_calibration(ID3D12CommandQueue &a_queue, std::uint64_t a_identity, Qu
         QueryPerformanceCounter(&before);
         record.status = a_queue.GetClockCalibration(&record.beginTick, &record.cpuTick);
         QueryPerformanceCounter(&after);
-        record.qpcBefore = before.QuadPart;
-        record.qpcAfter = after.QuadPart;
+        // Clock ID は Windows Adapter 側の識別子。共通 DTO は Native の時計名を持たない
+        record.cpuClockId = k_performanceCounterClock;
+        record.cpuFrequency = cpu_clock_frequency();
+        record.cpuBefore = before.QuadPart;
+        record.cpuAfter = after.QuadPart;
         const auto frequencyResult = a_queue.GetTimestampFrequency(&record.frequency);
         if (SUCCEEDED(record.status) && FAILED(frequencyResult))
         {
@@ -246,17 +267,24 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
     }
 #if defined(CUE_ENABLE_TIMING_TRACE)
     trace_calibration(*m_queue.Get(), identity(), m_type, m_fenceValue.load() + 1, "BeforeSubmit");
+    auto *traceSink = timing_trace_gpu_sink();
     LARGE_INTEGER submitBegin{}, submitEnd{};
-    QueryPerformanceCounter(&submitBegin);
+    if (traceSink)
+    {
+        QueryPerformanceCounter(&submitBegin);
+    }
 #endif
     m_queue->ExecuteCommandLists(static_cast<UINT>(a_lists.size()), a_lists.data());
 #if defined(CUE_ENABLE_TIMING_TRACE)
-    QueryPerformanceCounter(&submitEnd);
+    if (traceSink)
+    {
+        QueryPerformanceCounter(&submitEnd);
+    }
 #endif
     // Signal 失敗時も作業自体は投入済みなので、呼出側は Resource を保持して停止する
     auto signalResult = signal_locked();
 #if defined(CUE_ENABLE_TIMING_TRACE)
-    if (auto *sink = timing_trace_gpu_sink())
+    if (traceSink)
     {
         TimingTraceGpuRecord record;
         record.kind = 1;
@@ -265,10 +293,12 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
         record.queue = identity();
         record.queueType = static_cast<std::uint32_t>(m_type);
         record.detail = signalResult.has_value() ? *signalResult.try_value() : 0;
-        record.qpcBefore = submitBegin.QuadPart;
-        record.qpcAfter = submitEnd.QuadPart;
+        record.cpuClockId = k_performanceCounterClock;
+        record.cpuFrequency = cpu_clock_frequency();
+        record.cpuBefore = submitBegin.QuadPart;
+        record.cpuAfter = submitEnd.QuadPart;
         record.status = signalResult.has_value() ? 0 : -1;
-        sink->recordGpu(sink->context, record);
+        traceSink->recordGpu(traceSink->context, record);
     }
 #endif
     if (!signalResult.has_value())
@@ -430,12 +460,29 @@ Result<void> DX12GpuCommandQueue::wait_for_queue(IQueueContext& a_queue, std::ui
 /// @brief Timestamp の基準を Queue から取得し、失敗理由を返す
 Result<std::uint64_t> DX12GpuCommandQueue::get_timestamp_frequency() const
 {
+    TimingTraceScope traceFrequency("Queue.TimestampFrequency");
+#if defined(CUE_DESKTOP_INVESTIGATION)
+    if (investigation::enabled(investigation::k_cacheFrequency))
+    {
+        const auto cached = m_studyFrequency.load(std::memory_order_relaxed);
+        if (cached != 0)
+        {
+            return Result<std::uint64_t>::success(cached);
+        }
+    }
+#endif
     std::uint64_t frequency = 0;
     const HRESULT result = m_queue->GetTimestampFrequency(&frequency);
     if (FAILED(result))
     {
         return Result<std::uint64_t>::failure(queue_error("ID3D12CommandQueue.GetTimestampFrequency", result));
     }
+#if defined(CUE_DESKTOP_INVESTIGATION)
+    if (investigation::enabled(investigation::k_cacheFrequency))
+    {
+        m_studyFrequency.store(frequency, std::memory_order_relaxed);
+    }
+#endif
     return Result<std::uint64_t>::success(frequency);
 }
 

@@ -1,0 +1,4873 @@
+{
+  "baseline_native_ms": {
+    "count": 3600,
+    "avg": 0.243856,
+    "median": 0.2282,
+    "p95": 0.3735,
+    "max": 1.0147
+  },
+  "cases": {
+    "new-present-profile": {
+      "count": 1800,
+      "invalid": 0,
+      "gpu_ready_before_count": 0,
+      "gpu_ready_after_count": 0,
+      "gpu_readiness_unknown_count": 1800,
+      "native_ms": {
+        "count": 1800,
+        "avg": 0.2451778888888889,
+        "median": 0.23135,
+        "p95": 0.3456,
+        "max": 1.2285
+      },
+      "dispatch_ms": {
+        "count": 1800,
+        "avg": 0.2456725,
+        "median": 0.23185,
+        "p95": 0.346,
+        "max": 1.2295
+      },
+      "cycles": {
+        "count": 1800,
+        "avg": 852782.5966666667,
+        "median": 830521.5,
+        "p95": 1098021,
+        "max": 2010284
+      },
+      "profile_cycles": {
+        "count": 1800,
+        "avg": 856878.185,
+        "median": 834411.0,
+        "p95": 1101743,
+        "max": 2021173
+      },
+      "switched_count": 105,
+      "reason_bit_counts": {
+        "27": 94,
+        "0": 4,
+        "30": 6,
+        "28": 2,
+        "32": 1
+      },
+      "groups_ms": {
+        "switched": {
+          "count": 105,
+          "avg": 0.39229238095238095,
+          "median": 0.3162,
+          "p95": 0.9322,
+          "max": 1.2285
+        },
+        "no_switch": {
+          "count": 1695,
+          "avg": 0.2360646017699115,
+          "median": 0.2289,
+          "p95": 0.3115,
+          "max": 0.5761
+        },
+        "ui_overlap": {
+          "count": 0
+        },
+        "no_ui_overlap": {
+          "count": 1800,
+          "avg": 0.2451778888888889,
+          "median": 0.23135,
+          "p95": 0.3456,
+          "max": 1.2285
+        },
+        "pump_overlap": {
+          "count": 6,
+          "avg": 0.31278333333333336,
+          "median": 0.30395,
+          "p95": 0.3698,
+          "max": 0.3698
+        },
+        "no_pump_overlap": {
+          "count": 1794,
+          "avg": 0.24495178372352286,
+          "median": 0.23125,
+          "p95": 0.3448,
+          "max": 1.2285
+        }
+      },
+      "ui_overlap_total_ms": 0.0,
+      "pump_overlap_total_ms": 0.0057
+    },
+    "new-present-profile-gate": {
+      "count": 1800,
+      "invalid": 0,
+      "gpu_ready_before_count": 0,
+      "gpu_ready_after_count": 0,
+      "gpu_readiness_unknown_count": 1800,
+      "native_ms": {
+        "count": 1800,
+        "avg": 0.2391561111111111,
+        "median": 0.2273,
+        "p95": 0.3436,
+        "max": 0.9988
+      },
+      "dispatch_ms": {
+        "count": 1800,
+        "avg": 0.23965072222222222,
+        "median": 0.22775,
+        "p95": 0.3442,
+        "max": 0.9993
+      },
+      "cycles": {
+        "count": 1800,
+        "avg": 837283.5694444445,
+        "median": 811838.0,
+        "p95": 1094069,
+        "max": 1829915
+      },
+      "profile_cycles": {
+        "count": 1800,
+        "avg": 841142.0622222222,
+        "median": 815866.0,
+        "p95": 1099298,
+        "max": 1833316
+      },
+      "switched_count": 136,
+      "reason_bit_counts": {
+        "27": 130,
+        "0": 2,
+        "30": 4,
+        "31": 3
+      },
+      "groups_ms": {
+        "switched": {
+          "count": 136,
+          "avg": 0.3364860294117647,
+          "median": 0.32020000000000004,
+          "p95": 0.5079,
+          "max": 0.9988
+        },
+        "no_switch": {
+          "count": 1664,
+          "avg": 0.23120126201923077,
+          "median": 0.2232,
+          "p95": 0.3018,
+          "max": 0.5155
+        },
+        "ui_overlap": {
+          "count": 1800,
+          "avg": 0.2391561111111111,
+          "median": 0.2273,
+          "p95": 0.3436,
+          "max": 0.9988
+        },
+        "no_ui_overlap": {
+          "count": 0
+        },
+        "pump_overlap": {
+          "count": 1668,
+          "avg": 0.23653465227817747,
+          "median": 0.22615000000000002,
+          "p95": 0.3282,
+          "max": 0.9988
+        },
+        "no_pump_overlap": {
+          "count": 132,
+          "avg": 0.2722818181818182,
+          "median": 0.2667,
+          "p95": 0.3876,
+          "max": 0.9833
+        }
+      },
+      "ui_overlap_total_ms": 268.0617000000001,
+      "pump_overlap_total_ms": 2.580099999999989
+    },
+    "new-present-profile-main": {
+      "count": 1800,
+      "invalid": 0,
+      "gpu_ready_before_count": 0,
+      "gpu_ready_after_count": 0,
+      "gpu_readiness_unknown_count": 1800,
+      "native_ms": {
+        "count": 1800,
+        "avg": 0.2550335,
+        "median": 0.22775,
+        "p95": 0.407,
+        "max": 1.129
+      },
+      "dispatch_ms": {
+        "count": 1800,
+        "avg": 0.2555273888888889,
+        "median": 0.22825,
+        "p95": 0.4076,
+        "max": 1.1298
+      },
+      "cycles": {
+        "count": 1800,
+        "avg": 896037.7272222223,
+        "median": 816149.5,
+        "p95": 1404144,
+        "max": 2740740
+      },
+      "profile_cycles": {
+        "count": 1800,
+        "avg": 900538.1016666667,
+        "median": 820226.0,
+        "p95": 1412258,
+        "max": 2749935
+      },
+      "switched_count": 156,
+      "reason_bit_counts": {
+        "27": 123,
+        "30": 30,
+        "0": 3,
+        "31": 5,
+        "32": 1,
+        "28": 1
+      },
+      "groups_ms": {
+        "switched": {
+          "count": 156,
+          "avg": 0.3859942307692308,
+          "median": 0.34715,
+          "p95": 0.606,
+          "max": 1.129
+        },
+        "no_switch": {
+          "count": 1644,
+          "avg": 0.24260656934306568,
+          "median": 0.2223,
+          "p95": 0.3772,
+          "max": 0.6439
+        },
+        "ui_overlap": {
+          "count": 0
+        },
+        "no_ui_overlap": {
+          "count": 1800,
+          "avg": 0.2550335,
+          "median": 0.22775,
+          "p95": 0.407,
+          "max": 1.129
+        },
+        "pump_overlap": {
+          "count": 0
+        },
+        "no_pump_overlap": {
+          "count": 1800,
+          "avg": 0.2550335,
+          "median": 0.22775,
+          "p95": 0.407,
+          "max": 1.129
+        }
+      },
+      "ui_overlap_total_ms": 0.0,
+      "pump_overlap_total_ms": 0.0
+    },
+    "new-present-profile-minimal": {
+      "count": 1800,
+      "invalid": 0,
+      "gpu_ready_before_count": 0,
+      "gpu_ready_after_count": 0,
+      "gpu_readiness_unknown_count": 1800,
+      "native_ms": {
+        "count": 1800,
+        "avg": 0.25496305555555554,
+        "median": 0.22555,
+        "p95": 0.4159,
+        "max": 1.3176
+      },
+      "dispatch_ms": {
+        "count": 1800,
+        "avg": 0.2554648888888889,
+        "median": 0.2261,
+        "p95": 0.4167,
+        "max": 1.3184
+      },
+      "cycles": {
+        "count": 1800,
+        "avg": 886510.8666666667,
+        "median": 811119.5,
+        "p95": 1418876,
+        "max": 2556420
+      },
+      "profile_cycles": {
+        "count": 1800,
+        "avg": 890706.5366666666,
+        "median": 815022.0,
+        "p95": 1424384,
+        "max": 2561512
+      },
+      "switched_count": 153,
+      "reason_bit_counts": {
+        "27": 138,
+        "30": 9,
+        "31": 6,
+        "28": 2,
+        "0": 1
+      },
+      "groups_ms": {
+        "switched": {
+          "count": 153,
+          "avg": 0.4198130718954248,
+          "median": 0.3918,
+          "p95": 0.7531,
+          "max": 1.3176
+        },
+        "no_switch": {
+          "count": 1647,
+          "avg": 0.2396491196114147,
+          "median": 0.2213,
+          "p95": 0.3825,
+          "max": 0.7089
+        },
+        "ui_overlap": {
+          "count": 0
+        },
+        "no_ui_overlap": {
+          "count": 1800,
+          "avg": 0.25496305555555554,
+          "median": 0.22555,
+          "p95": 0.4159,
+          "max": 1.3176
+        },
+        "pump_overlap": {
+          "count": 3,
+          "avg": 0.36606666666666665,
+          "median": 0.3516,
+          "p95": 0.4916,
+          "max": 0.4916
+        },
+        "no_pump_overlap": {
+          "count": 1797,
+          "avg": 0.2547775737340011,
+          "median": 0.2255,
+          "p95": 0.4159,
+          "max": 1.3176
+        }
+      },
+      "ui_overlap_total_ms": 0.0,
+      "pump_overlap_total_ms": 0.004699999999999999
+    }
+  },
+  "calibration": {
+    "Empty": {
+      "count": 720,
+      "invalid": 0,
+      "switched_count": 0,
+      "elapsed_ms": {
+        "count": 720,
+        "avg": 2.5972222222222223e-05,
+        "median": 0.0,
+        "p95": 0.0001,
+        "max": 0.0002
+      },
+      "hook_ms": {
+        "count": 720,
+        "avg": 0.0010058333333333334,
+        "median": 0.001,
+        "p95": 0.0014,
+        "max": 0.0031
+      },
+      "cycles": {
+        "count": 720,
+        "avg": 999.5513888888889,
+        "median": 1078.0,
+        "p95": 1437,
+        "max": 2156
+      },
+      "profile_cycles": {
+        "count": 720,
+        "avg": 2176.8083333333334,
+        "median": 2196.0,
+        "p95": 2880,
+        "max": 6770
+      },
+      "wait_reason_maps": {
+        "0x0": 720
+      }
+    },
+    "Sleep": {
+      "count": 720,
+      "invalid": 0,
+      "switched_count": 720,
+      "elapsed_ms": {
+        "count": 720,
+        "avg": 13.608996805555556,
+        "median": 13.6219,
+        "p95": 14.0955,
+        "max": 17.438
+      },
+      "hook_ms": {
+        "count": 720,
+        "avg": 13.615718472222222,
+        "median": 13.629999999999999,
+        "p95": 14.1055,
+        "max": 17.4443
+      },
+      "cycles": {
+        "count": 720,
+        "avg": 46743.43472222222,
+        "median": 47787.0,
+        "p95": 74374,
+        "max": 104556
+      },
+      "profile_cycles": {
+        "count": 720,
+        "avg": 58542.92222222222,
+        "median": 60565.5,
+        "p95": 91334,
+        "max": 127914
+      },
+      "wait_reason_maps": {
+        "0x10": 645,
+        "0x80000010": 75
+      }
+    },
+    "Busy": {
+      "count": 720,
+      "invalid": 0,
+      "switched_count": 605,
+      "elapsed_ms": {
+        "count": 720,
+        "avg": 2.0002155555555556,
+        "median": 2.0,
+        "p95": 2.0001,
+        "max": 2.0826
+      },
+      "hook_ms": {
+        "count": 720,
+        "avg": 2.0045044444444446,
+        "median": 2.004,
+        "p95": 2.0067,
+        "max": 2.087
+      },
+      "cycles": {
+        "count": 720,
+        "avg": 7064374.897222222,
+        "median": 7114678.5,
+        "p95": 7172346,
+        "max": 7188514
+      },
+      "profile_cycles": {
+        "count": 720,
+        "avg": 7070563.168055556,
+        "median": 7120597.0,
+        "p95": 7175735,
+        "max": 7199681
+      },
+      "wait_reason_maps": {
+        "0x0": 115,
+        "0x40000000": 247,
+        "0xc0000000": 239,
+        "0x80000000": 119
+      }
+    }
+  },
+  "runs": [
+    {
+      "run": "new-baseline-1-after",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.0480075,
+          "median": 0.045899999999999996,
+          "p95": 0.0584,
+          "max": 0.06
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.16082533333333332,
+          "median": 0.14445,
+          "p95": 0.2859,
+          "max": 0.8292
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0057111666666666665,
+          "median": 0.0055,
+          "p95": 0.0074,
+          "max": 0.0124
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.18095066666666668,
+          "median": 0.1615,
+          "p95": 0.3188,
+          "max": 0.8548
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0002135,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0017
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0008878333333333334,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.1789
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0128155,
+          "median": 0.0125,
+          "p95": 0.0171,
+          "max": 0.0319
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00017916666666666667,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.002
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008622,
+          "median": 0.0086,
+          "p95": 0.0108,
+          "max": 0.1781
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03601183333333333,
+          "median": 0.0362,
+          "p95": 0.0472,
+          "max": 0.2026
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.047267666666666666,
+          "median": 0.0475,
+          "p95": 0.0622,
+          "max": 0.2138
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.04919316666666667,
+          "median": 0.0494,
+          "p95": 0.0651,
+          "max": 0.2156
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012904166666666666,
+          "median": 0.0127,
+          "p95": 0.0162,
+          "max": 0.0395
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023310833333333333,
+          "median": 0.023,
+          "p95": 0.0296,
+          "max": 0.056
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004267333333333333,
+          "median": 0.0042,
+          "p95": 0.0056,
+          "max": 0.0077
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.0519415,
+          "median": 0.03405,
+          "p95": 0.1631,
+          "max": 0.712
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.000434,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0025
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00025716666666666667,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0008
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.03433933333333333,
+          "median": 0.0303,
+          "p95": 0.0567,
+          "max": 0.2198
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.1424325,
+          "median": 0.1188,
+          "p95": 0.2762,
+          "max": 0.8638
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.016037666666666665,
+          "median": 0.0149,
+          "p95": 0.0229,
+          "max": 0.0596
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005691666666666667,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.0025
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.0003215,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0019
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.416666666666667e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08568,
+          "median": 0.08005000000000001,
+          "p95": 0.1289,
+          "max": 0.2701
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.0080835,
+          "median": 0.0077,
+          "p95": 0.0114,
+          "max": 0.0419
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09671233333333333,
+          "median": 0.0908,
+          "p95": 0.1423,
+          "max": 0.2817
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0018155,
+          "median": 0.0017,
+          "p95": 0.0026,
+          "max": 0.0058
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.00027233333333333336,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.1388
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0009703333333333334,
+          "median": 0.0009,
+          "p95": 0.0013,
+          "max": 0.0031
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.2364105,
+          "median": 0.2219,
+          "p95": 0.3547,
+          "max": 0.7914
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2371115,
+          "median": 0.2228,
+          "p95": 0.3557,
+          "max": 0.7923
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5965128333333334,
+          "median": 0.55255,
+          "p95": 0.872,
+          "max": 1.6762
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.061175833333333,
+          "median": 16.104300000000002,
+          "p95": 16.1856,
+          "max": 16.2792
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-baseline-1-before",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.05129,
+          "median": 0.05085,
+          "p95": 0.0593,
+          "max": 0.0612
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.18088266666666666,
+          "median": 0.15360000000000001,
+          "p95": 0.3526,
+          "max": 0.8924
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0061003333333333335,
+          "median": 0.0057,
+          "p95": 0.0084,
+          "max": 0.0219
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.20252283333333335,
+          "median": 0.1714,
+          "p95": 0.3784,
+          "max": 0.9214
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.000219,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0011
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006711666666666667,
+          "median": 0.0007,
+          "p95": 0.001,
+          "max": 0.0014
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.013635,
+          "median": 0.013049999999999999,
+          "p95": 0.0197,
+          "max": 0.0253
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00019483333333333334,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.009251333333333334,
+          "median": 0.0089,
+          "p95": 0.0128,
+          "max": 0.1849
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.039223,
+          "median": 0.0373,
+          "p95": 0.0573,
+          "max": 0.2554
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.051229666666666666,
+          "median": 0.0488,
+          "p95": 0.0744,
+          "max": 0.269
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.05319683333333333,
+          "median": 0.0507,
+          "p95": 0.0771,
+          "max": 0.2706
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013898166666666666,
+          "median": 0.0134,
+          "p95": 0.0197,
+          "max": 0.0279
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.025275833333333334,
+          "median": 0.0244,
+          "p95": 0.0356,
+          "max": 0.102
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004512166666666667,
+          "median": 0.0043,
+          "p95": 0.007,
+          "max": 0.0091
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.065503,
+          "median": 0.03995,
+          "p95": 0.2256,
+          "max": 0.8415
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004108333333333333,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.001
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.000295,
+          "median": 0.0002,
+          "p95": 0.0006,
+          "max": 0.0009
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.038079166666666664,
+          "median": 0.032,
+          "p95": 0.0614,
+          "max": 0.1402
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.165024,
+          "median": 0.1323,
+          "p95": 0.3489,
+          "max": 0.9966
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.0178225,
+          "median": 0.0157,
+          "p95": 0.025,
+          "max": 0.2131
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005938333333333334,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.0018
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.000315,
+          "median": 0.0003,
+          "p95": 0.0005,
+          "max": 0.0012
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.8e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0005
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.09250433333333333,
+          "median": 0.0846,
+          "p95": 0.1444,
+          "max": 0.277
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008729333333333334,
+          "median": 0.0082,
+          "p95": 0.013,
+          "max": 0.0417
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.10437216666666667,
+          "median": 0.0958,
+          "p95": 0.1642,
+          "max": 0.2946
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0018398333333333333,
+          "median": 0.0017,
+          "p95": 0.0027,
+          "max": 0.005
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.00018816666666666667,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0545
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0010585,
+          "median": 0.001,
+          "p95": 0.0016,
+          "max": 0.003
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.25258583333333334,
+          "median": 0.23265,
+          "p95": 0.395,
+          "max": 0.7951
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2532915,
+          "median": 0.2333,
+          "p95": 0.3957,
+          "max": 0.7963
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.652474,
+          "median": 0.6006,
+          "p95": 1.0287,
+          "max": 1.7562
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.005073166666666,
+          "median": 16.05555,
+          "p95": 16.1758,
+          "max": 16.2845
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-baseline-2-after",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.050715,
+          "median": 0.04925,
+          "p95": 0.0591,
+          "max": 0.0617
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.18252816666666666,
+          "median": 0.15695,
+          "p95": 0.3753,
+          "max": 0.8861
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.006125,
+          "median": 0.0058,
+          "p95": 0.0079,
+          "max": 0.0201
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.2049365,
+          "median": 0.1762,
+          "p95": 0.3988,
+          "max": 0.9064
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00025716666666666667,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0014
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0005913333333333334,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0022
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.013058,
+          "median": 0.0127,
+          "p95": 0.0187,
+          "max": 0.0958
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00019,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0007
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.00818,
+          "median": 0.0088,
+          "p95": 0.0117,
+          "max": 0.0236
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.036164666666666664,
+          "median": 0.0385,
+          "p95": 0.052,
+          "max": 0.1833
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.0472775,
+          "median": 0.0503,
+          "p95": 0.0686,
+          "max": 0.1953
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.049534166666666664,
+          "median": 0.0522,
+          "p95": 0.0726,
+          "max": 0.1971
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013569833333333333,
+          "median": 0.0135,
+          "p95": 0.0175,
+          "max": 0.0558
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.024218166666666666,
+          "median": 0.0244,
+          "p95": 0.0315,
+          "max": 0.3024
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004142333333333333,
+          "median": 0.0042,
+          "p95": 0.0062,
+          "max": 0.0109
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.07743933333333333,
+          "median": 0.04575,
+          "p95": 0.2524,
+          "max": 0.7604
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004485,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0012
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.0002715,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.001
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.0412315,
+          "median": 0.03455,
+          "p95": 0.0615,
+          "max": 0.2213
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.1775995,
+          "median": 0.15150000000000002,
+          "p95": 0.3556,
+          "max": 0.8978
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.018780333333333333,
+          "median": 0.0167,
+          "p95": 0.0261,
+          "max": 0.1633
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0006533333333333333,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0017
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.000314,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0007
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 6.183333333333334e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.093487,
+          "median": 0.08895,
+          "p95": 0.129,
+          "max": 0.2373
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008521,
+          "median": 0.00795,
+          "p95": 0.0123,
+          "max": 0.0484
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.10520533333333333,
+          "median": 0.10035,
+          "p95": 0.1475,
+          "max": 0.2593
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.001961,
+          "median": 0.0019,
+          "p95": 0.0027,
+          "max": 0.0038
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.0004561666666666667,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.1227
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0010335,
+          "median": 0.001,
+          "p95": 0.0015,
+          "max": 0.0022
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.2603375,
+          "median": 0.24054999999999999,
+          "p95": 0.3876,
+          "max": 1.0147
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2610553333333333,
+          "median": 0.24130000000000001,
+          "p95": 0.3885,
+          "max": 1.0154
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.6685766666666667,
+          "median": 0.6252,
+          "p95": 1.0283,
+          "max": 1.5682
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 15.9880505,
+          "median": 16.03145,
+          "p95": 16.1361,
+          "max": 16.238
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-baseline-2-before",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.04857,
+          "median": 0.047049999999999995,
+          "p95": 0.0576,
+          "max": 0.0609
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.16888783333333332,
+          "median": 0.14505,
+          "p95": 0.3431,
+          "max": 0.8167
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005735166666666667,
+          "median": 0.0055,
+          "p95": 0.0076,
+          "max": 0.0168
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.18847216666666666,
+          "median": 0.1626,
+          "p95": 0.3618,
+          "max": 0.8425
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0002185,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.002
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0021435,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.3818
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0141665,
+          "median": 0.0128,
+          "p95": 0.0182,
+          "max": 0.249
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00018033333333333334,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0007
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008553,
+          "median": 0.0087,
+          "p95": 0.0115,
+          "max": 0.0181
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.0368625,
+          "median": 0.0365,
+          "p95": 0.0499,
+          "max": 0.3444
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04825633333333333,
+          "median": 0.0481,
+          "p95": 0.066,
+          "max": 0.3596
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.050372,
+          "median": 0.0498,
+          "p95": 0.0685,
+          "max": 0.362
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013365666666666666,
+          "median": 0.0131,
+          "p95": 0.017,
+          "max": 0.048
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.0246395,
+          "median": 0.0237,
+          "p95": 0.0323,
+          "max": 0.1843
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004192666666666667,
+          "median": 0.004,
+          "p95": 0.006,
+          "max": 0.0109
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.05731833333333333,
+          "median": 0.0338,
+          "p95": 0.2156,
+          "max": 0.6812
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.000403,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.001
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00024483333333333334,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.001
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.035249,
+          "median": 0.030350000000000002,
+          "p95": 0.0608,
+          "max": 0.1804
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.15018666666666666,
+          "median": 0.1183,
+          "p95": 0.3283,
+          "max": 0.7937
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.0168345,
+          "median": 0.015,
+          "p95": 0.0236,
+          "max": 0.1989
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005966666666666667,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.0042
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00031549999999999997,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.001
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.366666666666667e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08716966666666667,
+          "median": 0.0812,
+          "p95": 0.1233,
+          "max": 0.3911
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008202666666666667,
+          "median": 0.0077,
+          "p95": 0.0112,
+          "max": 0.0871
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09840166666666667,
+          "median": 0.092,
+          "p95": 0.1412,
+          "max": 0.404
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0017538333333333334,
+          "median": 0.0016,
+          "p95": 0.0026,
+          "max": 0.01
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.316666666666667e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0009651666666666667,
+          "median": 0.0009,
+          "p95": 0.0014,
+          "max": 0.0021
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.23103883333333333,
+          "median": 0.2182,
+          "p95": 0.3312,
+          "max": 0.6566
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.23174466666666665,
+          "median": 0.2187,
+          "p95": 0.3321,
+          "max": 0.6576
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.6070338333333334,
+          "median": 0.5563,
+          "p95": 0.919,
+          "max": 2.03
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.049807666666666,
+          "median": 16.0991,
+          "p95": 16.1795,
+          "max": 16.2222
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-baseline-3-after",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.04844,
+          "median": 0.0479,
+          "p95": 0.0547,
+          "max": 0.0585
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.16259183333333332,
+          "median": 0.146,
+          "p95": 0.2827,
+          "max": 1.0064
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005707833333333333,
+          "median": 0.0054,
+          "p95": 0.0077,
+          "max": 0.0148
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.1835225,
+          "median": 0.16549999999999998,
+          "p95": 0.3069,
+          "max": 1.0695
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00022433333333333333,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0013
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006821666666666666,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0217
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.013122333333333333,
+          "median": 0.0121,
+          "p95": 0.0176,
+          "max": 0.1761
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00016083333333333333,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008470333333333333,
+          "median": 0.0086,
+          "p95": 0.0113,
+          "max": 0.0204
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03680283333333333,
+          "median": 0.0364,
+          "p95": 0.0487,
+          "max": 0.2217
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.048118666666666664,
+          "median": 0.0479,
+          "p95": 0.0642,
+          "max": 0.2338
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.049894,
+          "median": 0.0496,
+          "p95": 0.0667,
+          "max": 0.2359
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013061333333333333,
+          "median": 0.0127,
+          "p95": 0.0165,
+          "max": 0.0398
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023604,
+          "median": 0.0231,
+          "p95": 0.0302,
+          "max": 0.0543
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004301333333333333,
+          "median": 0.0042,
+          "p95": 0.0056,
+          "max": 0.0089
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.053482666666666664,
+          "median": 0.0376,
+          "p95": 0.1577,
+          "max": 0.9344
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004121666666666667,
+          "median": 0.0004,
+          "p95": 0.0006,
+          "max": 0.0016
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00026733333333333334,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.001
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.035096,
+          "median": 0.031,
+          "p95": 0.0586,
+          "max": 0.1446
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.14578983333333334,
+          "median": 0.12225,
+          "p95": 0.2715,
+          "max": 1.0261
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.016793166666666668,
+          "median": 0.0151,
+          "p95": 0.0236,
+          "max": 0.3908
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0006473333333333333,
+          "median": 0.0005,
+          "p95": 0.001,
+          "max": 0.0304
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.000314,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.002
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.466666666666667e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08751816666666666,
+          "median": 0.08155000000000001,
+          "p95": 0.1216,
+          "max": 0.2222
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008597666666666667,
+          "median": 0.0079,
+          "p95": 0.011,
+          "max": 0.1751
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.099199,
+          "median": 0.09245,
+          "p95": 0.1388,
+          "max": 0.3012
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0017771666666666667,
+          "median": 0.0016,
+          "p95": 0.0026,
+          "max": 0.0063
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 9.483333333333333e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0331
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.001007,
+          "median": 0.001,
+          "p95": 0.0014,
+          "max": 0.0042
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.2336615,
+          "median": 0.22145,
+          "p95": 0.3389,
+          "max": 0.5774
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.23434083333333333,
+          "median": 0.2222,
+          "p95": 0.34,
+          "max": 0.5799
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.6011196666666667,
+          "median": 0.56235,
+          "p95": 0.8323,
+          "max": 1.6754
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.054740333333335,
+          "median": 16.0938,
+          "p95": 16.1795,
+          "max": 16.2494
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-baseline-3-before",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.0482575,
+          "median": 0.0468,
+          "p95": 0.0603,
+          "max": 0.0695
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.17934516666666667,
+          "median": 0.15165,
+          "p95": 0.3888,
+          "max": 0.9406
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.006268166666666667,
+          "median": 0.0055,
+          "p95": 0.0088,
+          "max": 0.1835
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.20101566666666668,
+          "median": 0.1704,
+          "p95": 0.4137,
+          "max": 0.966
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00023883333333333333,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0009
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006726666666666667,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.021
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0131915,
+          "median": 0.0128,
+          "p95": 0.0193,
+          "max": 0.0336
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.0001765,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0005
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008417333333333334,
+          "median": 0.0086,
+          "p95": 0.0125,
+          "max": 0.0221
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.037200166666666666,
+          "median": 0.0375,
+          "p95": 0.0539,
+          "max": 0.156
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04827183333333333,
+          "median": 0.0488,
+          "p95": 0.07,
+          "max": 0.1671
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.050154,
+          "median": 0.05065,
+          "p95": 0.0719,
+          "max": 0.1692
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013314,
+          "median": 0.0132,
+          "p95": 0.0173,
+          "max": 0.0318
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.024098833333333333,
+          "median": 0.0241,
+          "p95": 0.0325,
+          "max": 0.0532
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004412166666666667,
+          "median": 0.0043,
+          "p95": 0.0063,
+          "max": 0.0412
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.06983466666666667,
+          "median": 0.039349999999999996,
+          "p95": 0.22,
+          "max": 0.7844
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004355,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0013
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00027916666666666666,
+          "median": 0.0002,
+          "p95": 0.0006,
+          "max": 0.001
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.03922883333333333,
+          "median": 0.03225,
+          "p95": 0.0609,
+          "max": 0.2374
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.16888316666666667,
+          "median": 0.1309,
+          "p95": 0.3687,
+          "max": 0.9379
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.017667166666666668,
+          "median": 0.015850000000000003,
+          "p95": 0.0248,
+          "max": 0.1217
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.000613,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0016
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.0003013333333333333,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0009
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.7333333333333336e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.09157983333333333,
+          "median": 0.0856,
+          "p95": 0.1406,
+          "max": 0.2391
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.0084695,
+          "median": 0.008,
+          "p95": 0.0123,
+          "max": 0.0233
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.10309916666666667,
+          "median": 0.09645000000000001,
+          "p95": 0.1556,
+          "max": 0.2521
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0019068333333333333,
+          "median": 0.0017,
+          "p95": 0.0027,
+          "max": 0.0113
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.0011181666666666666,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.452
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0013408333333333334,
+          "median": 0.001,
+          "p95": 0.0015,
+          "max": 0.1905
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.24910183333333333,
+          "median": 0.23235,
+          "p95": 0.39,
+          "max": 0.8303
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.249792,
+          "median": 0.23285,
+          "p95": 0.391,
+          "max": 0.8312
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.6468546666666667,
+          "median": 0.59275,
+          "p95": 1.0089,
+          "max": 1.7563
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.010954833333333,
+          "median": 16.0647,
+          "p95": 16.1702,
+          "max": 16.3374
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-1-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.047635,
+          "median": 0.0465,
+          "p95": 0.0531,
+          "max": 0.0539
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.154042,
+          "median": 0.1412,
+          "p95": 0.2676,
+          "max": 0.5096
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0058605,
+          "median": 0.0054,
+          "p95": 0.0076,
+          "max": 0.1475
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.17420883333333334,
+          "median": 0.15925,
+          "p95": 0.2968,
+          "max": 0.5342
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00020533333333333333,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0014
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0005203333333333334,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.0014
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.012488833333333333,
+          "median": 0.0123,
+          "p95": 0.0162,
+          "max": 0.025
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00017383333333333335,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008017333333333333,
+          "median": 0.0084,
+          "p95": 0.0102,
+          "max": 0.0278
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.036025666666666664,
+          "median": 0.0365,
+          "p95": 0.0449,
+          "max": 0.2197
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04693716666666667,
+          "median": 0.0477,
+          "p95": 0.0584,
+          "max": 0.2331
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.048973333333333334,
+          "median": 0.0496,
+          "p95": 0.0611,
+          "max": 0.236
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.0127135,
+          "median": 0.0128,
+          "p95": 0.0156,
+          "max": 0.0205
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.0229885,
+          "median": 0.0233,
+          "p95": 0.0286,
+          "max": 0.0404
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004058,
+          "median": 0.0041,
+          "p95": 0.0052,
+          "max": 0.0085
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.04765783333333334,
+          "median": 0.0314,
+          "p95": 0.1646,
+          "max": 0.3554
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.000395,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0025
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.0002536666666666667,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0008
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.03540583333333333,
+          "median": 0.0302,
+          "p95": 0.0566,
+          "max": 0.3063
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.13867083333333333,
+          "median": 0.11624999999999999,
+          "p95": 0.2836,
+          "max": 0.4895
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.015935833333333333,
+          "median": 0.0147,
+          "p95": 0.0221,
+          "max": 0.0389
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005788333333333333,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.0027
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00030266666666666663,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0006
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.466666666666667e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08515,
+          "median": 0.0808,
+          "p95": 0.1111,
+          "max": 0.291
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008353833333333333,
+          "median": 0.0077,
+          "p95": 0.0102,
+          "max": 0.2805
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.0969,
+          "median": 0.0918,
+          "p95": 0.1254,
+          "max": 0.3601
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0017513333333333333,
+          "median": 0.0016,
+          "p95": 0.0025,
+          "max": 0.0039
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.0007289999999999999,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.3354
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0009263333333333334,
+          "median": 0.0009,
+          "p95": 0.0012,
+          "max": 0.0026
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.22710966666666665,
+          "median": 0.21610000000000001,
+          "p95": 0.306,
+          "max": 1.0762
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.23162583333333334,
+          "median": 0.22045,
+          "p95": 0.3108,
+          "max": 1.0813
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5871636666666666,
+          "median": 0.5554,
+          "p95": 0.818,
+          "max": 1.4733
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.0691765,
+          "median": 16.09985,
+          "p95": 16.1784,
+          "max": 16.2403
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-2-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.052725,
+          "median": 0.049049999999999996,
+          "p95": 0.0647,
+          "max": 0.0738
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.18630916666666666,
+          "median": 0.1608,
+          "p95": 0.3777,
+          "max": 1.3965
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.006281666666666666,
+          "median": 0.006,
+          "p95": 0.0084,
+          "max": 0.0171
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.20948833333333333,
+          "median": 0.18085,
+          "p95": 0.3969,
+          "max": 1.4173
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00021533333333333333,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0009
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0005823333333333334,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0017
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.012891166666666667,
+          "median": 0.0127,
+          "p95": 0.0183,
+          "max": 0.0279
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00021166666666666667,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008286666666666666,
+          "median": 0.0089,
+          "p95": 0.0119,
+          "max": 0.1398
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03482383333333333,
+          "median": 0.038,
+          "p95": 0.05,
+          "max": 0.095
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.0459005,
+          "median": 0.0499,
+          "p95": 0.0661,
+          "max": 0.1819
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.047876833333333334,
+          "median": 0.0517,
+          "p95": 0.0688,
+          "max": 0.184
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.0133805,
+          "median": 0.0133,
+          "p95": 0.0173,
+          "max": 0.2132
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023668166666666667,
+          "median": 0.0243,
+          "p95": 0.0318,
+          "max": 0.2234
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.0040384999999999996,
+          "median": 0.0041,
+          "p95": 0.0058,
+          "max": 0.0124
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.08778066666666667,
+          "median": 0.059300000000000005,
+          "p95": 0.2444,
+          "max": 1.2464
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.000446,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.001
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.0004065,
+          "median": 0.0003,
+          "p95": 0.0005,
+          "max": 0.0537
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.043886666666666664,
+          "median": 0.038349999999999995,
+          "p95": 0.0658,
+          "max": 0.1867
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.19201833333333335,
+          "median": 0.1711,
+          "p95": 0.3684,
+          "max": 1.3682
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.019059666666666666,
+          "median": 0.017550000000000003,
+          "p95": 0.0251,
+          "max": 0.175
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0006315,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0017
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.0003193333333333333,
+          "median": 0.0003,
+          "p95": 0.0005,
+          "max": 0.0009
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.633333333333334e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.09732816666666666,
+          "median": 0.09275,
+          "p95": 0.139,
+          "max": 0.277
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008917333333333333,
+          "median": 0.0084,
+          "p95": 0.0121,
+          "max": 0.1022
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.10975966666666667,
+          "median": 0.1051,
+          "p95": 0.1521,
+          "max": 0.2923
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0020046666666666667,
+          "median": 0.002,
+          "p95": 0.0028,
+          "max": 0.0052
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.00019833333333333335,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0926
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0010641666666666666,
+          "median": 0.001,
+          "p95": 0.0015,
+          "max": 0.0044
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.2743141666666667,
+          "median": 0.2511,
+          "p95": 0.3942,
+          "max": 1.2285
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2791865,
+          "median": 0.25645,
+          "p95": 0.4022,
+          "max": 1.2387
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.703789,
+          "median": 0.6557999999999999,
+          "p95": 1.0741,
+          "max": 1.8217
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 15.953627000000001,
+          "median": 16.0,
+          "p95": 16.1179,
+          "max": 16.2074
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-3-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.0484875,
+          "median": 0.04675,
+          "p95": 0.0544,
+          "max": 0.056
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.16141616666666667,
+          "median": 0.1434,
+          "p95": 0.2765,
+          "max": 0.6655
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005713,
+          "median": 0.00545,
+          "p95": 0.0073,
+          "max": 0.0157
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.182683,
+          "median": 0.16265000000000002,
+          "p95": 0.3108,
+          "max": 0.6826
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00020866666666666668,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0005
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006413333333333333,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0025
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.012462666666666667,
+          "median": 0.012,
+          "p95": 0.0168,
+          "max": 0.0405
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.000174,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0007
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008627833333333333,
+          "median": 0.0087,
+          "p95": 0.0109,
+          "max": 0.0187
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03593216666666667,
+          "median": 0.036,
+          "p95": 0.0454,
+          "max": 0.0792
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.0473425,
+          "median": 0.0474,
+          "p95": 0.0598,
+          "max": 0.1023
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.049423666666666664,
+          "median": 0.0493,
+          "p95": 0.0637,
+          "max": 0.1059
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012874,
+          "median": 0.0126,
+          "p95": 0.0159,
+          "max": 0.0497
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023911166666666667,
+          "median": 0.0234,
+          "p95": 0.0301,
+          "max": 0.0604
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004226,
+          "median": 0.0041,
+          "p95": 0.0053,
+          "max": 0.0203
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.05158833333333333,
+          "median": 0.03445,
+          "p95": 0.1519,
+          "max": 0.5126
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.00041683333333333335,
+          "median": 0.0004,
+          "p95": 0.0006,
+          "max": 0.004
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.0002598333333333333,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0006
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.033350833333333336,
+          "median": 0.031,
+          "p95": 0.0544,
+          "max": 0.089
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.14143766666666666,
+          "median": 0.1205,
+          "p95": 0.2732,
+          "max": 0.665
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.015762333333333333,
+          "median": 0.0151,
+          "p95": 0.0215,
+          "max": 0.0298
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005716666666666666,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0013
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00030849999999999996,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0008
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.7333333333333336e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0005
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.084405,
+          "median": 0.07965,
+          "p95": 0.1117,
+          "max": 0.4289
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008488666666666667,
+          "median": 0.0078,
+          "p95": 0.0106,
+          "max": 0.0933
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09626066666666666,
+          "median": 0.0912,
+          "p95": 0.128,
+          "max": 0.4408
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0016753333333333334,
+          "median": 0.0016,
+          "p95": 0.0022,
+          "max": 0.0039
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 0.000239,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0816
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0009746666666666666,
+          "median": 0.0009,
+          "p95": 0.0013,
+          "max": 0.0022
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.23410983333333332,
+          "median": 0.22265000000000001,
+          "p95": 0.313,
+          "max": 0.9322
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.238608,
+          "median": 0.22705,
+          "p95": 0.3167,
+          "max": 0.9362
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5972348333333334,
+          "median": 0.5678,
+          "p95": 0.811,
+          "max": 1.3077
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.064316666666667,
+          "median": 16.091749999999998,
+          "p95": 16.1808,
+          "max": 16.4799
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-gate-1-case",
+      "metrics_ms": {
+        "MainGateWait": {
+          "count": 600,
+          "avg": 0.28397116666666666,
+          "median": 0.2771,
+          "p95": 0.3818,
+          "max": 0.6172
+        },
+        "Readout": {
+          "count": 40,
+          "avg": 0.0522625,
+          "median": 0.0475,
+          "p95": 0.0648,
+          "max": 0.2182
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.15351116666666667,
+          "median": 0.14005,
+          "p95": 0.2396,
+          "max": 0.7396
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0055941666666666666,
+          "median": 0.0053,
+          "p95": 0.0075,
+          "max": 0.0154
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.4536145,
+          "median": 0.42955,
+          "p95": 0.6367,
+          "max": 1.0929
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0001865,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0006
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0007081666666666666,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0779
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.013106666666666668,
+          "median": 0.0124,
+          "p95": 0.0176,
+          "max": 0.1847
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00016333333333333334,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0016
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008106,
+          "median": 0.0083,
+          "p95": 0.0106,
+          "max": 0.022
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03476766666666667,
+          "median": 0.0349,
+          "p95": 0.0456,
+          "max": 0.2048
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.045967666666666664,
+          "median": 0.0461,
+          "p95": 0.0604,
+          "max": 0.216
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.04802716666666667,
+          "median": 0.0481,
+          "p95": 0.0629,
+          "max": 0.218
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.0133805,
+          "median": 0.0128,
+          "p95": 0.0162,
+          "max": 0.1325
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023844,
+          "median": 0.02305,
+          "p95": 0.0303,
+          "max": 0.1448
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004159166666666667,
+          "median": 0.0041,
+          "p95": 0.0054,
+          "max": 0.0143
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.00014333333333333334,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0005
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004145,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0009
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00023733333333333335,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0007
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.028939833333333335,
+          "median": 0.0274,
+          "p95": 0.0375,
+          "max": 0.206
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.07910733333333334,
+          "median": 0.0764,
+          "p95": 0.1051,
+          "max": 0.2971
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.013945833333333333,
+          "median": 0.0137,
+          "p95": 0.0176,
+          "max": 0.1183
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005175,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.002
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.000317,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0022
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.383333333333334e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0004
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08350416666666667,
+          "median": 0.0789,
+          "p95": 0.1105,
+          "max": 0.2967
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008160166666666666,
+          "median": 0.0079,
+          "p95": 0.0107,
+          "max": 0.043
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09493333333333333,
+          "median": 0.09,
+          "p95": 0.1256,
+          "max": 0.3093
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0016628333333333332,
+          "median": 0.0016,
+          "p95": 0.0021,
+          "max": 0.0051
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 3.6666666666666666e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.003400666666666667,
+          "median": 0.0032,
+          "p95": 0.0044,
+          "max": 0.0513
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.23571933333333334,
+          "median": 0.2227,
+          "p95": 0.3429,
+          "max": 0.5155
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.24060633333333334,
+          "median": 0.2274,
+          "p95": 0.3472,
+          "max": 0.521
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5350066666666666,
+          "median": 0.5145,
+          "p95": 0.7184,
+          "max": 1.0642
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.1219205,
+          "median": 16.1419,
+          "p95": 16.2567,
+          "max": 16.3651
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-gate-2-case",
+      "metrics_ms": {
+        "MainGateWait": {
+          "count": 600,
+          "avg": 0.293972,
+          "median": 0.28615,
+          "p95": 0.3677,
+          "max": 0.6182
+        },
+        "Readout": {
+          "count": 40,
+          "avg": 0.0463425,
+          "median": 0.0458,
+          "p95": 0.0523,
+          "max": 0.0528
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.15711633333333333,
+          "median": 0.141,
+          "p95": 0.2659,
+          "max": 1.2393
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005631,
+          "median": 0.0054,
+          "p95": 0.0072,
+          "max": 0.0134
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.4672136666666667,
+          "median": 0.43985,
+          "p95": 0.6546,
+          "max": 1.9328
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00025066666666666667,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0012
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006491666666666666,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0025
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.01418,
+          "median": 0.0134,
+          "p95": 0.0193,
+          "max": 0.2049
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.000193,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0008
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008766166666666667,
+          "median": 0.0086,
+          "p95": 0.0109,
+          "max": 0.1821
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.036457666666666666,
+          "median": 0.0356,
+          "p95": 0.0447,
+          "max": 0.2442
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.048120333333333334,
+          "median": 0.0469,
+          "p95": 0.0589,
+          "max": 0.2556
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.050233,
+          "median": 0.0488,
+          "p95": 0.0623,
+          "max": 0.2578
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.013575,
+          "median": 0.0132,
+          "p95": 0.0164,
+          "max": 0.0806
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.024381,
+          "median": 0.0238,
+          "p95": 0.03,
+          "max": 0.091
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004407166666666667,
+          "median": 0.0043,
+          "p95": 0.0055,
+          "max": 0.0098
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.00014116666666666666,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004471666666666667,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.002
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00021383333333333334,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0006
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.029423666666666667,
+          "median": 0.0282,
+          "p95": 0.0361,
+          "max": 0.2199
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.0804115,
+          "median": 0.0782,
+          "p95": 0.0957,
+          "max": 0.271
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.014530833333333333,
+          "median": 0.0142,
+          "p95": 0.0177,
+          "max": 0.1541
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005331666666666667,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0022
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00029633333333333334,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0007
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.416666666666667e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08571533333333334,
+          "median": 0.0812,
+          "p95": 0.1085,
+          "max": 0.2888
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.0082995,
+          "median": 0.0079,
+          "p95": 0.0115,
+          "max": 0.0241
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09729283333333333,
+          "median": 0.09275,
+          "p95": 0.1232,
+          "max": 0.3015
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0017146666666666666,
+          "median": 0.0017,
+          "p95": 0.0022,
+          "max": 0.004
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.3666666666666666e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0034018333333333335,
+          "median": 0.0032,
+          "p95": 0.0045,
+          "max": 0.007
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.24794283333333333,
+          "median": 0.23365000000000002,
+          "p95": 0.357,
+          "max": 0.9988
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2526678333333333,
+          "median": 0.23825000000000002,
+          "p95": 0.3642,
+          "max": 1.0026
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5559545,
+          "median": 0.5343,
+          "p95": 0.7157,
+          "max": 1.6228
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.100733833333333,
+          "median": 16.122950000000003,
+          "p95": 16.2045,
+          "max": 16.363
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-gate-3-case",
+      "metrics_ms": {
+        "MainGateWait": {
+          "count": 600,
+          "avg": 0.2834121666666667,
+          "median": 0.27595000000000003,
+          "p95": 0.3698,
+          "max": 0.5354
+        },
+        "Readout": {
+          "count": 40,
+          "avg": 0.0454375,
+          "median": 0.04665,
+          "p95": 0.0509,
+          "max": 0.0536
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.1505315,
+          "median": 0.1352,
+          "p95": 0.2539,
+          "max": 0.7721
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005601666666666666,
+          "median": 0.0053,
+          "p95": 0.0078,
+          "max": 0.0138
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.44973,
+          "median": 0.42715000000000003,
+          "p95": 0.6266,
+          "max": 1.067
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.000224,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0007
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0005926666666666667,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0015
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.012923666666666667,
+          "median": 0.0122,
+          "p95": 0.0169,
+          "max": 0.1781
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.000167,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008167166666666666,
+          "median": 0.0083,
+          "p95": 0.0104,
+          "max": 0.0143
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03454633333333333,
+          "median": 0.03465,
+          "p95": 0.0431,
+          "max": 0.0697
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04559883333333333,
+          "median": 0.0457,
+          "p95": 0.0572,
+          "max": 0.0863
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.04757483333333333,
+          "median": 0.0474,
+          "p95": 0.0602,
+          "max": 0.0926
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012905333333333333,
+          "median": 0.0128,
+          "p95": 0.0153,
+          "max": 0.0211
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023282833333333332,
+          "median": 0.022949999999999998,
+          "p95": 0.0279,
+          "max": 0.0665
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004126166666666667,
+          "median": 0.0041,
+          "p95": 0.0051,
+          "max": 0.0111
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.00014566666666666667,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.00043183333333333333,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0009
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.0002235,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0006
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.027429166666666668,
+          "median": 0.0268,
+          "p95": 0.0342,
+          "max": 0.065
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.07747216666666666,
+          "median": 0.07575000000000001,
+          "p95": 0.0919,
+          "max": 0.2565
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.014003,
+          "median": 0.0138,
+          "p95": 0.0168,
+          "max": 0.0544
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.00053,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0014
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00030033333333333333,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0007
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.633333333333334e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08396,
+          "median": 0.0784,
+          "p95": 0.1193,
+          "max": 0.3078
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008499666666666668,
+          "median": 0.0077,
+          "p95": 0.0108,
+          "max": 0.138
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09595383333333334,
+          "median": 0.0896,
+          "p95": 0.1416,
+          "max": 0.3208
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0016793333333333332,
+          "median": 0.0016,
+          "p95": 0.0021,
+          "max": 0.0035
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.3333333333333334e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0034723333333333333,
+          "median": 0.0031,
+          "p95": 0.0044,
+          "max": 0.0982
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.23380616666666668,
+          "median": 0.2244,
+          "p95": 0.3313,
+          "max": 0.5788
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.23839866666666668,
+          "median": 0.2291,
+          "p95": 0.336,
+          "max": 0.5829
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5309466666666667,
+          "median": 0.51735,
+          "p95": 0.6848,
+          "max": 0.9426
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.128552833333334,
+          "median": 16.141150000000003,
+          "p95": 16.2347,
+          "max": 16.4147
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-main-1-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.0469775,
+          "median": 0.04535,
+          "p95": 0.0525,
+          "max": 0.0537
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.146158,
+          "median": 0.13125,
+          "p95": 0.2736,
+          "max": 0.6524
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005437833333333334,
+          "median": 0.0052,
+          "p95": 0.0071,
+          "max": 0.0116
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.1638,
+          "median": 0.14605,
+          "p95": 0.2901,
+          "max": 0.6691
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0002678333333333333,
+          "median": 0.0003,
+          "p95": 0.0005,
+          "max": 0.0008
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 7.500000000000001e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.010120166666666666,
+          "median": 0.0098,
+          "p95": 0.0128,
+          "max": 0.0395
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.0001375,
+          "median": 0.0001,
+          "p95": 0.0002,
+          "max": 0.0005
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008113500000000001,
+          "median": 0.0082,
+          "p95": 0.0098,
+          "max": 0.0166
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03458866666666666,
+          "median": 0.0339,
+          "p95": 0.0426,
+          "max": 0.2342
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.045382,
+          "median": 0.0447,
+          "p95": 0.056,
+          "max": 0.2447
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.047009,
+          "median": 0.0461,
+          "p95": 0.0581,
+          "max": 0.2462
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012178166666666667,
+          "median": 0.0119,
+          "p95": 0.0147,
+          "max": 0.0238
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.021638,
+          "median": 0.0211,
+          "p95": 0.026,
+          "max": 0.0397
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.0038233333333333335,
+          "median": 0.0035,
+          "p95": 0.0043,
+          "max": 0.14
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.000173,
+          "median": 0.0002,
+          "p95": 0.0002,
+          "max": 0.0018
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004091666666666667,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0015
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00019583333333333334,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0006
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.023510833333333335,
+          "median": 0.0221,
+          "p95": 0.0292,
+          "max": 0.1693
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.07218766666666666,
+          "median": 0.0688,
+          "p95": 0.0867,
+          "max": 0.2481
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.013933166666666667,
+          "median": 0.0138,
+          "p95": 0.0169,
+          "max": 0.0308
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005265,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0029
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.0005903333333333333,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.169
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.2000000000000004e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08172033333333334,
+          "median": 0.0777,
+          "p95": 0.1053,
+          "max": 0.3248
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.0079655,
+          "median": 0.0076,
+          "p95": 0.0097,
+          "max": 0.0564
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09328583333333333,
+          "median": 0.08885000000000001,
+          "p95": 0.1191,
+          "max": 0.3405
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0016328333333333334,
+          "median": 0.0016,
+          "p95": 0.002,
+          "max": 0.0075
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0010045,
+          "median": 0.001,
+          "p95": 0.0013,
+          "max": 0.0037
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.22222166666666668,
+          "median": 0.2127,
+          "p95": 0.304,
+          "max": 0.4491
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.2266985,
+          "median": 0.21705,
+          "p95": 0.3093,
+          "max": 0.4548
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.4993921666666667,
+          "median": 0.48365,
+          "p95": 0.6498,
+          "max": 0.902
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-main-2-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.0535025,
+          "median": 0.0516,
+          "p95": 0.0619,
+          "max": 0.0687
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.22710683333333334,
+          "median": 0.19095,
+          "p95": 0.5401,
+          "max": 1.398
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0070845,
+          "median": 0.0066,
+          "p95": 0.0107,
+          "max": 0.0198
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.250873,
+          "median": 0.21315,
+          "p95": 0.5601,
+          "max": 1.4176
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0003511666666666667,
+          "median": 0.0003,
+          "p95": 0.0007,
+          "max": 0.0011
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.00010433333333333334,
+          "median": 0.0001,
+          "p95": 0.0002,
+          "max": 0.0024
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0138985,
+          "median": 0.0135,
+          "p95": 0.0189,
+          "max": 0.0287
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.0001775,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0011
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.010786166666666666,
+          "median": 0.0104,
+          "p95": 0.0144,
+          "max": 0.046
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.0478025,
+          "median": 0.0456,
+          "p95": 0.0642,
+          "max": 0.3108
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.0622915,
+          "median": 0.05985,
+          "p95": 0.0827,
+          "max": 0.3259
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.06439366666666667,
+          "median": 0.0617,
+          "p95": 0.0849,
+          "max": 0.3279
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.015843666666666666,
+          "median": 0.0155,
+          "p95": 0.0214,
+          "max": 0.0304
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.028325166666666665,
+          "median": 0.0276,
+          "p95": 0.0384,
+          "max": 0.0594
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004801666666666667,
+          "median": 0.0046,
+          "p95": 0.0071,
+          "max": 0.0133
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.00020216666666666668,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0023
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004688333333333333,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.0013
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00020466666666666666,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0008
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.030044,
+          "median": 0.0289,
+          "p95": 0.0402,
+          "max": 0.0771
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.09430516666666666,
+          "median": 0.0907,
+          "p95": 0.1257,
+          "max": 0.3428
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.018184,
+          "median": 0.0177,
+          "p95": 0.0241,
+          "max": 0.0552
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0006596666666666667,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0071
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00038366666666666665,
+          "median": 0.0003,
+          "p95": 0.0006,
+          "max": 0.0062
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 6.05e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.1194685,
+          "median": 0.11485000000000001,
+          "p95": 0.1676,
+          "max": 0.3183
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.011777666666666667,
+          "median": 0.0108,
+          "p95": 0.0168,
+          "max": 0.1301
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.13535016666666666,
+          "median": 0.131,
+          "p95": 0.191,
+          "max": 0.3446
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0021228333333333333,
+          "median": 0.002,
+          "p95": 0.003,
+          "max": 0.0199
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.3666666666666666e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.001242,
+          "median": 0.0012,
+          "p95": 0.0018,
+          "max": 0.0083
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.3263648333333333,
+          "median": 0.30774999999999997,
+          "p95": 0.4911,
+          "max": 1.129
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.33225166666666667,
+          "median": 0.31385,
+          "p95": 0.4999,
+          "max": 1.1395
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.7056345,
+          "median": 0.67935,
+          "p95": 0.9647,
+          "max": 1.7891
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-main-3-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.046625,
+          "median": 0.04485,
+          "p95": 0.0527,
+          "max": 0.0573
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.14548766666666665,
+          "median": 0.13145,
+          "p95": 0.2804,
+          "max": 0.7091
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.005465333333333333,
+          "median": 0.0052,
+          "p95": 0.0071,
+          "max": 0.0146
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.16338733333333333,
+          "median": 0.14795,
+          "p95": 0.2985,
+          "max": 0.7275
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00026416666666666667,
+          "median": 0.0003,
+          "p95": 0.0005,
+          "max": 0.0008
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 7.55e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0002
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0101245,
+          "median": 0.0099,
+          "p95": 0.0125,
+          "max": 0.0191
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.000127,
+          "median": 0.0001,
+          "p95": 0.0002,
+          "max": 0.0005
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.007949666666666667,
+          "median": 0.0083,
+          "p95": 0.0098,
+          "max": 0.0202
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.034052,
+          "median": 0.0344,
+          "p95": 0.0428,
+          "max": 0.1749
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04473083333333333,
+          "median": 0.0453,
+          "p95": 0.0569,
+          "max": 0.1858
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.04638316666666667,
+          "median": 0.0468,
+          "p95": 0.0591,
+          "max": 0.1874
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012416833333333334,
+          "median": 0.0121,
+          "p95": 0.0147,
+          "max": 0.1
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.021942333333333335,
+          "median": 0.0217,
+          "p95": 0.0268,
+          "max": 0.1095
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.003491666666666667,
+          "median": 0.0034,
+          "p95": 0.0042,
+          "max": 0.0096
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.00016383333333333335,
+          "median": 0.0002,
+          "p95": 0.0002,
+          "max": 0.0006
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004006666666666667,
+          "median": 0.0004,
+          "p95": 0.0007,
+          "max": 0.001
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00022183333333333335,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0006
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.022740333333333335,
+          "median": 0.0219,
+          "p95": 0.0296,
+          "max": 0.1879
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.0697815,
+          "median": 0.0689,
+          "p95": 0.0836,
+          "max": 0.2414
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.013391833333333334,
+          "median": 0.0135,
+          "p95": 0.0163,
+          "max": 0.0398
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005261666666666666,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0015
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00029299999999999997,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0013
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 4.483333333333334e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08160416666666667,
+          "median": 0.0775,
+          "p95": 0.1056,
+          "max": 0.243
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008872833333333333,
+          "median": 0.00785,
+          "p95": 0.0109,
+          "max": 0.2067
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.0936645,
+          "median": 0.08875,
+          "p95": 0.1226,
+          "max": 0.2958
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0015596666666666667,
+          "median": 0.0015,
+          "p95": 0.002,
+          "max": 0.0033
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.116666666666667e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.000937,
+          "median": 0.0009,
+          "p95": 0.0012,
+          "max": 0.0113
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.216514,
+          "median": 0.20765,
+          "p95": 0.2787,
+          "max": 0.8205
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.220905,
+          "median": 0.21195,
+          "p95": 0.2834,
+          "max": 0.8285
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.4907505,
+          "median": 0.47535,
+          "p95": 0.616,
+          "max": 1.1835
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-minimal-1-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.04881,
+          "median": 0.0491,
+          "p95": 0.0547,
+          "max": 0.0658
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.12737183333333332,
+          "median": 0.10955000000000001,
+          "p95": 0.2899,
+          "max": 0.5967
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0014921666666666666,
+          "median": 0.0014,
+          "p95": 0.0022,
+          "max": 0.0035
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.1418425,
+          "median": 0.11935000000000001,
+          "p95": 0.3055,
+          "max": 0.6174
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0002305,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0008
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0009245,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.1692
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.0131195,
+          "median": 0.0125,
+          "p95": 0.0189,
+          "max": 0.0495
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.0001485,
+          "median": 0.0001,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008592666666666667,
+          "median": 0.0086,
+          "p95": 0.0117,
+          "max": 0.1415
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.0357115,
+          "median": 0.0363,
+          "p95": 0.0483,
+          "max": 0.0719
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.047274833333333335,
+          "median": 0.0478,
+          "p95": 0.065,
+          "max": 0.1782
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.04931566666666667,
+          "median": 0.0497,
+          "p95": 0.0681,
+          "max": 0.1797
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.014412166666666667,
+          "median": 0.0132,
+          "p95": 0.0181,
+          "max": 0.2483
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.0256125,
+          "median": 0.0239,
+          "p95": 0.0339,
+          "max": 0.2609
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004207166666666666,
+          "median": 0.0041,
+          "p95": 0.006,
+          "max": 0.0089
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.0236315,
+          "median": 0.0002,
+          "p95": 0.1758,
+          "max": 0.4431
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.0004243333333333333,
+          "median": 0.0004,
+          "p95": 0.0006,
+          "max": 0.0083
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00027183333333333335,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0008
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.027624166666666665,
+          "median": 0.0217,
+          "p95": 0.051,
+          "max": 0.2763
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.10594266666666667,
+          "median": 0.07435,
+          "p95": 0.2824,
+          "max": 0.6043
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.015063333333333333,
+          "median": 0.0139,
+          "p95": 0.0219,
+          "max": 0.0349
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005696666666666667,
+          "median": 0.0005,
+          "p95": 0.0009,
+          "max": 0.002
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.0003005,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0012
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 6e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0011
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08575833333333334,
+          "median": 0.08024999999999999,
+          "p95": 0.1266,
+          "max": 0.227
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.008152333333333333,
+          "median": 0.0077,
+          "p95": 0.0114,
+          "max": 0.061
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09726683333333333,
+          "median": 0.09195,
+          "p95": 0.141,
+          "max": 0.2406
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0017121666666666667,
+          "median": 0.0016,
+          "p95": 0.0025,
+          "max": 0.0038
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 7.25e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0184
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0009313333333333334,
+          "median": 0.0009,
+          "p95": 0.0014,
+          "max": 0.0045
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.23459833333333333,
+          "median": 0.21965,
+          "p95": 0.3623,
+          "max": 0.6617
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.23904583333333335,
+          "median": 0.2236,
+          "p95": 0.3661,
+          "max": 0.6678
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5646543333333334,
+          "median": 0.5235,
+          "p95": 0.8569,
+          "max": 1.3821
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.092062666666667,
+          "median": 16.1338,
+          "p95": 16.2148,
+          "max": 16.2727
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-minimal-2-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.05242,
+          "median": 0.0493,
+          "p95": 0.0624,
+          "max": 0.1021
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.18017133333333332,
+          "median": 0.136,
+          "p95": 0.4333,
+          "max": 1.3563
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.001794,
+          "median": 0.0016,
+          "p95": 0.0028,
+          "max": 0.0113
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.19832216666666666,
+          "median": 0.15360000000000001,
+          "p95": 0.4524,
+          "max": 1.3756
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.00028733333333333334,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0118
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.001166,
+          "median": 0.0007,
+          "p95": 0.0013,
+          "max": 0.1101
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.016427833333333332,
+          "median": 0.0154,
+          "p95": 0.0235,
+          "max": 0.1873
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.0001955,
+          "median": 0.0002,
+          "p95": 0.0004,
+          "max": 0.0008
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.010762333333333334,
+          "median": 0.0101,
+          "p95": 0.0152,
+          "max": 0.0221
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.045907833333333335,
+          "median": 0.04215,
+          "p95": 0.066,
+          "max": 0.1388
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.06052283333333333,
+          "median": 0.05615,
+          "p95": 0.087,
+          "max": 0.1547
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.062996,
+          "median": 0.05845,
+          "p95": 0.0906,
+          "max": 0.1592
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.016329333333333335,
+          "median": 0.0153,
+          "p95": 0.0221,
+          "max": 0.1517
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.0295655,
+          "median": 0.0277,
+          "p95": 0.0402,
+          "max": 0.1685
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.0055735,
+          "median": 0.005,
+          "p95": 0.0084,
+          "max": 0.0202
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.044783666666666666,
+          "median": 0.0003,
+          "p95": 0.2612,
+          "max": 1.1605
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.000486,
+          "median": 0.0004,
+          "p95": 0.0008,
+          "max": 0.0017
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.000369,
+          "median": 0.0003,
+          "p95": 0.0007,
+          "max": 0.0013
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.033019,
+          "median": 0.028650000000000002,
+          "p95": 0.0594,
+          "max": 0.2654
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.14670516666666666,
+          "median": 0.10455,
+          "p95": 0.3964,
+          "max": 1.326
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.019517166666666665,
+          "median": 0.0164,
+          "p95": 0.03,
+          "max": 0.3057
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0006253333333333333,
+          "median": 0.0006,
+          "p95": 0.001,
+          "max": 0.0016
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.000352,
+          "median": 0.0003,
+          "p95": 0.0006,
+          "max": 0.0011
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 6.483333333333334e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0005
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.1103,
+          "median": 0.09834999999999999,
+          "p95": 0.1659,
+          "max": 0.3597
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.0108895,
+          "median": 0.0091,
+          "p95": 0.0161,
+          "max": 0.1532
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.125065,
+          "median": 0.11135,
+          "p95": 0.1872,
+          "max": 0.3766
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.002052333333333333,
+          "median": 0.0019,
+          "p95": 0.0032,
+          "max": 0.0052
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.683333333333334e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0004
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0011661666666666667,
+          "median": 0.0011,
+          "p95": 0.0019,
+          "max": 0.0086
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.3080771666666667,
+          "median": 0.2656,
+          "p95": 0.5072,
+          "max": 1.3176
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.31342333333333333,
+          "median": 0.27015,
+          "p95": 0.5142,
+          "max": 1.3247
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.7373125,
+          "median": 0.65525,
+          "p95": 1.2537,
+          "max": 2.238
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 15.917320166666666,
+          "median": 15.9995,
+          "p95": 16.1869,
+          "max": 16.2338
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "run": "new-present-profile-minimal-3-case",
+      "metrics_ms": {
+        "Readout": {
+          "count": 40,
+          "avg": 0.04634,
+          "median": 0.045,
+          "p95": 0.0519,
+          "max": 0.0528
+        },
+        "UiBuild": {
+          "count": 600,
+          "avg": 0.11634383333333333,
+          "median": 0.1064,
+          "p95": 0.1923,
+          "max": 0.5456
+        },
+        "SnapshotCopy": {
+          "count": 600,
+          "avg": 0.0015041666666666667,
+          "median": 0.0015,
+          "p95": 0.002,
+          "max": 0.0059
+        },
+        "Main": {
+          "count": 600,
+          "avg": 0.13011233333333333,
+          "median": 0.11665,
+          "p95": 0.2263,
+          "max": 0.5663
+        },
+        "Update": {
+          "count": 600,
+          "avg": 0.0002015,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "ImGuiEnterWait": {
+          "count": 600,
+          "avg": 0.0006081666666666667,
+          "median": 0.0006,
+          "p95": 0.0009,
+          "max": 0.0012
+        },
+        "TimestampFrequency": {
+          "count": 600,
+          "avg": 0.012221,
+          "median": 0.012,
+          "p95": 0.0154,
+          "max": 0.0278
+        },
+        "PoolAcquireLockWait": {
+          "count": 600,
+          "avg": 0.00017233333333333334,
+          "median": 0.0002,
+          "p95": 0.0003,
+          "max": 0.0006
+        },
+        "AllocatorReset": {
+          "count": 600,
+          "avg": 0.008033833333333334,
+          "median": 0.0085,
+          "p95": 0.0097,
+          "max": 0.0172
+        },
+        "ListReset": {
+          "count": 600,
+          "avg": 0.03462183333333333,
+          "median": 0.0359,
+          "p95": 0.0426,
+          "max": 0.0768
+        },
+        "PoolScan": {
+          "count": 600,
+          "avg": 0.04555716666666667,
+          "median": 0.0472,
+          "p95": 0.0563,
+          "max": 0.0907
+        },
+        "CommandAcquire": {
+          "count": 600,
+          "avg": 0.047642833333333336,
+          "median": 0.049,
+          "p95": 0.0606,
+          "max": 0.0926
+        },
+        "GpuReadback": {
+          "count": 600,
+          "avg": 0.012648666666666667,
+          "median": 0.0126,
+          "p95": 0.0149,
+          "max": 0.0216
+        },
+        "GraphPrepare": {
+          "count": 600,
+          "avg": 0.023079,
+          "median": 0.022949999999999998,
+          "p95": 0.0279,
+          "max": 0.0437
+        },
+        "NativePreparation": {
+          "count": 600,
+          "avg": 0.004037166666666666,
+          "median": 0.004,
+          "p95": 0.0051,
+          "max": 0.0081
+        },
+        "ImGuiRecordWait": {
+          "count": 600,
+          "avg": 0.017891666666666667,
+          "median": 0.0002,
+          "p95": 0.1027,
+          "max": 0.3829
+        },
+        "ImGuiDescriptorValidate": {
+          "count": 600,
+          "avg": 0.00038983333333333334,
+          "median": 0.0004,
+          "p95": 0.0006,
+          "max": 0.001
+        },
+        "ImGuiDescriptorMark": {
+          "count": 600,
+          "avg": 0.00025883333333333335,
+          "median": 0.0002,
+          "p95": 0.0005,
+          "max": 0.0007
+        },
+        "ImGuiRecord": {
+          "count": 600,
+          "avg": 0.025057833333333335,
+          "median": 0.021,
+          "p95": 0.049,
+          "max": 0.0655
+        },
+        "GraphRecord": {
+          "count": 600,
+          "avg": 0.09520366666666667,
+          "median": 0.0721,
+          "p95": 0.2024,
+          "max": 0.5385
+        },
+        "CommandClose": {
+          "count": 600,
+          "avg": 0.014939666666666667,
+          "median": 0.0137,
+          "p95": 0.0209,
+          "max": 0.181
+        },
+        "TokenCreate": {
+          "count": 600,
+          "avg": 0.0005336666666666667,
+          "median": 0.0005,
+          "p95": 0.0008,
+          "max": 0.0013
+        },
+        "QueueValidation": {
+          "count": 600,
+          "avg": 0.00031216666666666665,
+          "median": 0.0003,
+          "p95": 0.0004,
+          "max": 0.0007
+        },
+        "QueueLockWait": {
+          "count": 600,
+          "avg": 5.833333333333333e-05,
+          "median": 0.0001,
+          "p95": 0.0001,
+          "max": 0.0003
+        },
+        "ExecuteLists": {
+          "count": 600,
+          "avg": 0.08054516666666667,
+          "median": 0.07785,
+          "p95": 0.1002,
+          "max": 0.2086
+        },
+        "Signal": {
+          "count": 600,
+          "avg": 0.007722666666666667,
+          "median": 0.007549999999999999,
+          "p95": 0.0103,
+          "max": 0.0272
+        },
+        "CommandSubmit": {
+          "count": 600,
+          "avg": 0.09140316666666666,
+          "median": 0.08845,
+          "p95": 0.1152,
+          "max": 0.2182
+        },
+        "GraphMark": {
+          "count": 600,
+          "avg": 0.0015795,
+          "median": 0.0015,
+          "p95": 0.0022,
+          "max": 0.0031
+        },
+        "ImGuiResumeWait": {
+          "count": 600,
+          "avg": 4.016666666666667e-05,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "ImGuiFinish": {
+          "count": 600,
+          "avg": 0.0008733333333333334,
+          "median": 0.0008,
+          "p95": 0.0012,
+          "max": 0.0032
+        },
+        "PresentNative": {
+          "count": 600,
+          "avg": 0.22221366666666667,
+          "median": 0.21275,
+          "p95": 0.2886,
+          "max": 1.1212
+        },
+        "Present": {
+          "count": 600,
+          "avg": 0.22661133333333333,
+          "median": 0.21685,
+          "p95": 0.2945,
+          "max": 1.1253
+        },
+        "Render": {
+          "count": 600,
+          "avg": 0.5295618333333333,
+          "median": 0.49905,
+          "p95": 0.708,
+          "max": 1.4044
+        },
+        "FpsWait": {
+          "count": 600,
+          "avg": 16.127246333333332,
+          "median": 16.1575,
+          "p95": 16.2152,
+          "max": 16.2928
+        }
+      },
+      "status": 0,
+      "dropped": 0
+    }
+  ]
+}

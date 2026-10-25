@@ -17,7 +17,7 @@ class Runtime final
 public:
     /// @brief Frame設定とPlatform Serviceの借用先を固定する
   Runtime(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
-          SimulationConfig a_simulation = {});
+          SimulationConfig a_simulation = {}, Profiler *a_profiler = nullptr);
 
   /// @brief Workerを停止してから借用先を解放できる状態にする
   ~Runtime();
@@ -82,6 +82,7 @@ private:
     Clock& m_clock;
     Waiter& m_waiter;
     ThreadFactory& m_threadFactory;
+    Profiler *m_profiler = nullptr;
     std::thread::id m_ownerId;
     std::unique_ptr<FrameController> m_controller;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;

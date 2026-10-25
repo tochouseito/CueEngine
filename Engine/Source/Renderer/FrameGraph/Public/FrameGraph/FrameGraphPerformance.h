@@ -5,9 +5,9 @@
 #include <string>
 #include <vector>
 
-#include <Foundation/TimingSamples.h>
-#include <RHI/Queue.h>
+#include <Profiler/TimingSamples.h>
 #include <RHI/Presentation.h>
+#include <RHI/Queue.h>
 
 namespace cue
 {

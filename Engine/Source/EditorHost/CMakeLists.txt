@@ -12,7 +12,7 @@ add_library(Cue.EditorHost STATIC
 )
 
 target_include_directories(Cue.EditorHost PUBLIC Public)
-target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost PRIVATE imgui::imgui Cue.Platform.Windows Cue.Renderer.DX12)
+target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost Cue.Profiler PRIVATE imgui::imgui Cue.Platform.Windows Cue.Renderer.DX12)
 target_compile_features(Cue.EditorHost PUBLIC cxx_std_20)
 
 add_executable(CueEditorHost WIN32 Main.cpp)

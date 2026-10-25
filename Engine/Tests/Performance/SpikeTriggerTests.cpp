@@ -34,7 +34,7 @@ int main()
     cal.frequency = pass.frequency = 1000000000;
     cal.beginTick = 1792393187287185408;
     cal.cpuTick = 10000;
-    submit.qpcAfter = 10010;
+    submit.cpuAfter = 10010;
     pass.beginTick = cal.beginTick + 8000001;
     std::int64_t duration = 0;
     if (!cue::test::gpu_submit_lead(cal, submit, pass, 10000000, duration) || duration != 7999001)

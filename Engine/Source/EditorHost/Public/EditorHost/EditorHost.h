@@ -81,6 +81,9 @@ class EditorHost final
     /// @brief UI 構築前に取得した Graph / Present / GPU 計測を返す。Callback 内でも Graph Lock を取得しない
     [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
 
+    /// @brief 全計測の所有 Snapshot を取得する。Owner 専用で停止後も最終値を取得できる
+    [[nodiscard]] Result<ProfilerSnapshot> profiler_snapshot() const;
+
     /// @brief ゲームの公開範囲を検証して Main 境界での適用を要求する。UI Callback 内も可
     [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
     /// @brief 適用済み設定の所有値を返す。Owner Thread 専用

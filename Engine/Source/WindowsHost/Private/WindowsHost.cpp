@@ -1,6 +1,6 @@
 #include <WindowsHost/WindowsHost.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 #include <algorithm>
 #include <atomic>
@@ -102,6 +102,12 @@ Result<std::unique_ptr<Logger>> create_host_logger(IFileSystem &a_files, const S
 class WindowsHost::State final
 {
   public:
+    /// @brief 実行資源より長く生存する Host 所有の記録先を借用する
+    explicit State(Profiler &a_profiler) : profiler(a_profiler)
+    {
+    }
+
+    Profiler &profiler;
     // Backend、UI と Worker より長く生存させる
     std::unique_ptr<IFileSystem> files;
     StoragePaths paths;
@@ -126,24 +132,24 @@ class WindowsHost::State final
     bool hasWindowInitializationStarted = false;
     bool isSimulationPaused = false;
     mutable std::mutex timingMutex;
-    TimingSamples presentTimings;
+    ProfileMetric presentTimings = profiler.create_metric("Host.Present");
     std::unique_ptr<GpuFrameQueue> gpuFrames;
-    TimingSamples gpuQueueWaitTimings;
+    ProfileMetric gpuQueueWaitTimings = profiler.create_metric("Host.GpuQueueWait");
     std::uint32_t peakGpuFrames = 0;
     std::uint32_t gpuFrameCount = 2;
     std::uint32_t unfinishedGpuFrames = 0;
     bool isPredictionEnabled = false;
-    TimingSamples presentationReadyWaitTimings;
-    TimingSamples presentIntervalTimings;
-    TimingSamples displayIntervalTimings;
+    ProfileMetric presentationReadyWaitTimings = profiler.create_metric("Host.PresentationReady");
+    ProfileMetric presentIntervalTimings = profiler.create_metric("Host.PresentInterval");
+    ProfileMetric displayIntervalTimings = profiler.create_metric("Host.DisplayInterval");
     PresentationTiming presentationTiming;
-    TimingSamples presentApiTimings;
-    TimingSamples presentationStatisticsTimings;
-    TimingSamples admissionWaitTimings;
-    TimingSamples mainGpuWaitTimings;
-    TimingSamples mainPresentationWaitTimings;
-    TimingSamples mainResourceWaitTimings;
-    InputLatencySamples inputLatency;
+    ProfileMetric presentApiTimings = profiler.create_metric("Host.PresentApi");
+    ProfileMetric presentationStatisticsTimings = profiler.create_metric("Host.PresentationStatistics");
+    ProfileMetric admissionWaitTimings = profiler.create_metric("Host.AdmissionWait");
+    ProfileMetric mainGpuWaitTimings = profiler.create_metric("Host.MainGpuWait");
+    ProfileMetric mainPresentationWaitTimings = profiler.create_metric("Host.MainPresentationWait");
+    ProfileMetric mainResourceWaitTimings = profiler.create_metric("Host.MainResourceWait");
+    InputLatencySamples inputLatency{&profiler};
     struct FrameInput final
     {
         std::vector<InputEventTiming> events;
@@ -433,7 +439,8 @@ Result<void> WindowsHost::initialize()
     };
 
     // 機能をまとめたStateを構築
-    m_state = std::make_unique<State>();
+    m_profiler = std::make_unique<Profiler>();
+    m_state = std::make_unique<State>(*m_profiler);
 
     // FileSystemがなければWindowsFileSystemを作る
     auto files = m_config.fileSystem ? Result<std::unique_ptr<IFileSystem>>::success(std::move(m_config.fileSystem))
@@ -587,8 +594,8 @@ Result<void> WindowsHost::initialize()
     graphConfig.configure = m_config.graph.configure;
     graphConfig.displayPass = std::move(m_config.graph.displayPass);
     graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
-    auto graphResult =
-        dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
+    auto graphResult = dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(),
+                                                        std::move(graphConfig), &m_state->profiler);
     if (!graphResult.has_value())
     {
         return rollback(*graphResult.try_error());
@@ -603,8 +610,9 @@ Result<void> WindowsHost::initialize()
     }
     m_state->services = servicesResult.take_value();
 
-    m_state->runtime = std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
-                                                 *m_state->services.threadFactory, m_config.simulation);
+    m_state->runtime =
+        std::make_unique<Runtime>(m_config.frame, *m_state->services.clock, *m_state->services.waiter,
+                                  *m_state->services.threadFactory, m_config.simulation, &m_state->profiler);
     State *state = m_state.get();
     m_state->gpuFrameCount = m_config.gpu.resourceFrameCount;
     m_state->isPredictionEnabled = m_config.presentation.isVSyncEnabled;
@@ -1089,7 +1097,8 @@ Result<void> WindowsHost::apply_pending_settings()
         graphConfig.configure = m_config.graph.configure;
         graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
         auto graph = dx12::DX12MainFrameGraph::create(*m_state->dx12Backend->get_resource_context(),
-                                                     *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig));
+                                                      *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig),
+                                                      &m_state->profiler);
         if (!graph.has_value())
         {
             return Result<void>::failure(*graph.try_error());
@@ -1137,13 +1146,13 @@ Result<void> WindowsHost::apply_pending_settings()
     m_state->request_resize(m_state->requestedSize);
     {
         std::lock_guard lock(m_state->timingMutex);
-        m_state->presentTimings = {};
-        m_state->gpuQueueWaitTimings = {};
+        m_state->presentTimings.reset();
+        m_state->gpuQueueWaitTimings.reset();
         m_state->peakGpuFrames = 0;
         m_state->unfinishedGpuFrames = 0;
-        m_state->presentationReadyWaitTimings = {};
-        m_state->presentIntervalTimings = {};
-        m_state->displayIntervalTimings = {};
+        m_state->presentationReadyWaitTimings.reset();
+        m_state->presentIntervalTimings.reset();
+        m_state->displayIntervalTimings.reset();
         m_state->presentationTiming = {};
     }
     report_log("WindowsHost", "performance settings applied");
@@ -1178,6 +1187,26 @@ Result<FrameTimingInfo> WindowsHost::frame_timing_info() const
     return m_state->runtime->timing_info();
 }
 
+/// @brief Registry を初期化後から Host 破棄まで借用する。登録は Owner の Worker 停止中に行う
+Profiler *WindowsHost::profiler() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId ? m_profiler.get() : nullptr;
+}
+
+/// @brief 停止後も保持した計測値を所有 Snapshot へ複製する。外部出力は行わない
+Result<ProfilerSnapshot> WindowsHost::profiler_snapshot() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<ProfilerSnapshot>::failure({ErrorCategory::WrongThread, "WindowsHost.profiler_snapshot"});
+    }
+    if (!m_profiler)
+    {
+        return Result<ProfilerSnapshot>::failure({ErrorCategory::InvalidState, "WindowsHost.profiler_snapshot"});
+    }
+    return m_profiler->snapshot();
+}
+
 /// @brief Owner に入力イベントと反映済み CPU Frame の計測 Snapshot を返す
 Result<InputLatencyInfo> WindowsHost::input_latency_info() const
 {
@@ -1209,30 +1238,22 @@ Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
     try
     {
         auto performance = m_state->graph->performance();
-        TimingSamples present;
-        TimingSamples gpuQueue, ready, intervals, display;
-        {
-            std::lock_guard lock(m_state->timingMutex);
-            present = m_state->presentTimings;
-            gpuQueue = m_state->gpuQueueWaitTimings;
-            ready = m_state->presentationReadyWaitTimings;
-            intervals = m_state->presentIntervalTimings;
-            display = m_state->displayIntervalTimings;
-            performance.peakUnfinishedGpuFrames = m_state->peakGpuFrames;
-            performance.unfinishedGpuFrames = m_state->unfinishedGpuFrames;
-            performance.presentation = m_state->presentationTiming;
-            performance.presentApi = m_state->presentApiTimings.statistics();
-            performance.presentationStatistics = m_state->presentationStatisticsTimings.statistics();
-            performance.admissionWait = m_state->admissionWaitTimings.statistics();
-            performance.mainGpuWait = m_state->mainGpuWaitTimings.statistics();
-            performance.mainPresentationWait = m_state->mainPresentationWaitTimings.statistics();
-            performance.mainResourceWait = m_state->mainResourceWaitTimings.statistics();
-        }
-        performance.present = present.statistics();
-        performance.gpuQueueWait = gpuQueue.statistics();
-        performance.presentationReadyWait = ready.statistics();
-        performance.presentInterval = intervals.statistics();
-        performance.displayInterval = display.statistics();
+        // Graph Lock は解放済み。Host の値と Profiler の小さな集計結果を一緒に取得する
+        std::lock_guard lock(m_state->timingMutex);
+        performance.present = m_state->presentTimings.statistics();
+        performance.gpuQueueWait = m_state->gpuQueueWaitTimings.statistics();
+        performance.presentationReadyWait = m_state->presentationReadyWaitTimings.statistics();
+        performance.presentInterval = m_state->presentIntervalTimings.statistics();
+        performance.displayInterval = m_state->displayIntervalTimings.statistics();
+        performance.presentApi = m_state->presentApiTimings.statistics();
+        performance.presentationStatistics = m_state->presentationStatisticsTimings.statistics();
+        performance.admissionWait = m_state->admissionWaitTimings.statistics();
+        performance.mainGpuWait = m_state->mainGpuWaitTimings.statistics();
+        performance.mainPresentationWait = m_state->mainPresentationWaitTimings.statistics();
+        performance.mainResourceWait = m_state->mainResourceWaitTimings.statistics();
+        performance.peakUnfinishedGpuFrames = m_state->peakGpuFrames;
+        performance.unfinishedGpuFrames = m_state->unfinishedGpuFrames;
+        performance.presentation = m_state->presentationTiming;
         return Result<MainFrameGraphPerformance>::success(std::move(performance));
     }
     catch (const std::bad_alloc &)

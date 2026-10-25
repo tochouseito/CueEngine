@@ -55,9 +55,9 @@ Result<void> Runtime::resume(FrameControllerDesc a_desc, std::optional<Simulatio
 
 /// @brief 借用するPlatform Serviceと構築Threadを記録する
 Runtime::Runtime(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
-                 SimulationConfig a_simulation)
+                 SimulationConfig a_simulation, Profiler *a_profiler)
     : m_desc(a_desc), m_simulationConfig(a_simulation), m_clock(a_clock), m_waiter(a_waiter),
-      m_threadFactory(a_threadFactory), m_ownerId(std::this_thread::get_id())
+      m_threadFactory(a_threadFactory), m_profiler(a_profiler), m_ownerId(std::this_thread::get_id())
 {
 }
 
@@ -97,7 +97,8 @@ Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render,
     }
 
     // Service は借用し、Controller だけを Runtime が所有する
-    m_controller = std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory, m_simulationConfig);
+    m_controller =
+        std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory, m_simulationConfig, m_profiler);
     auto simulation = m_controller->register_simulation_callbacks(std::move(a_simulationUpdate), std::move(a_snapshot));
     if (!simulation.has_value())
     {

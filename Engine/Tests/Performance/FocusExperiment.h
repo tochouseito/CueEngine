@@ -10,7 +10,7 @@
 
 #include <Windows.h>
 
-#include <Foundation/TimingTrace.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::test
 {
