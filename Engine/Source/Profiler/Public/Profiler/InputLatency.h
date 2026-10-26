@@ -15,15 +15,25 @@ namespace cue
 /// CPU 完了は Host の Render Callback 終了点、Present は API 呼出前後。GPU / 表示遅延を含まない
 struct InputLatencyInfo final
 {
+    // 入力到達から Consumer の Frame 採取完了まで
     TimingStatistics toFrameCapture;
+    // 入力到達から、その Frame の Render 開始まで
     TimingStatistics toRenderStart;
+    // 入力到達から Present API の呼出し開始まで
     TimingStatistics toPresentStart;
+    // 入力到達から Present API の復帰まで
     TimingStatistics toPresentReturn;
+    // 入力到達から Host の CPU 描画 Callback の完了まで
     TimingStatistics toCpuComplete;
+    // Window に到達したイベントの累計
     std::uint64_t observedEvents = 0;
+    // Consumer が Frame へ割り当てたイベントの累計
     std::uint64_t assignedEvents = 0;
+    // 実際に描画・Present されたイベントの累計
     std::uint64_t presentedEvents = 0;
+    // 非表示・取消・描画失敗によって計測対象から外した件数
     std::uint64_t skippedEvents = 0;
+    // 時刻順序や ID が不正で分布へ加えなかった件数
     std::uint64_t invalidEvents = 0;
     std::uint64_t lastEventId = 0;
     std::uint64_t lastFrame = 0;
@@ -54,6 +64,7 @@ class InputLatencySamples final
     /// @brief Window で観測した件数と、この Frame に反映した件数を独立して数える
     void assigned(std::size_t a_observed, std::size_t a_assigned) noexcept
     {
+        // Window 到達数と Consumer が採用した数を独立して数える
         m_info.observedEvents += a_observed;
         m_info.assignedEvents += a_assigned;
     }
@@ -74,17 +85,20 @@ class InputLatencySamples final
     {
         for (const auto &event : a_events)
         {
+            // 入力 ID と各時刻の順序が崩れた標本を除外する
             if (event.eventId == 0 || event.received > a_captured || a_captured > a_renderStart ||
                 a_renderStart > a_presentStart || a_presentStart > a_presentReturn || a_presentReturn > a_cpuComplete)
             {
                 ++m_info.invalidEvents;
                 continue;
             }
+            // すべての区間を同じ入力到達時刻から測る
             m_capture.add(a_captured - event.received);
             m_render.add(a_renderStart - event.received);
             m_presentStart.add(a_presentStart - event.received);
             m_presentReturn.add(a_presentReturn - event.received);
             m_complete.add(a_cpuComplete - event.received);
+            // 標本の属する入力・Frame・Present の対応を保持する
             ++m_info.presentedEvents;
             m_info.lastEventId = event.eventId;
             m_info.lastFrame = a_frame;
@@ -95,6 +109,7 @@ class InputLatencySamples final
     /// @brief 追加済み全標本から正確に維持した最新の分布を返す
     [[nodiscard]] InputLatencyInfo info() const noexcept
     {
+        // 件数と各 Metric の分布を所有値へ複写する
         auto result = m_info;
         result.toFrameCapture = m_capture.statistics();
         result.toRenderStart = m_render.statistics();
@@ -107,6 +122,7 @@ class InputLatencySamples final
     /// @brief 登録系列を維持し、件数と有効標本だけを初期化する。外部排他の保持中に呼ぶ
     void reset() noexcept
     {
+        // 前回の件数と分布をまとめて初期状態へ戻す
         m_info = {};
         m_capture.reset();
         m_render.reset();

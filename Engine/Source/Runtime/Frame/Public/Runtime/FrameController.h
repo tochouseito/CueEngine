@@ -32,7 +32,9 @@ enum class FrameWaitMode
 /// @brief Frame の先行数、Worker 利用、開始頻度の上限を指定する
 struct FrameControllerDesc final
 {
+    // Main が公開できる CPU Snapshot の最大枠数
     std::uint32_t maxFramesInFlight = 2;
+    // Update と Render を専用 Worker に分離するか
     bool useWorkerThreads = true;
     /// Render / Present 後の周期待機に使う FPS 上限。0 は上限なし
     std::uint32_t maxFps = 60;
@@ -61,8 +63,11 @@ struct FrameControllerDesc final
 /// @brief Main Threadが進行状況を参照するためのSnapshot
 struct FrameProgress final
 {
+    // Main が受け付けた論理 Frame の累計
     std::uint64_t submittedFrames = 0;
+    // Update が完了した論理 Frame の累計
     std::uint64_t updatedFrames = 0;
+    // CPU Render Callback が完了した論理 Frame の累計
     std::uint64_t renderedFrames = 0;
     // CPU 完了を先に公開し、周期待機が終わった件数を独立して保持する
     std::uint64_t completedCycles = 0;
@@ -77,6 +82,7 @@ struct FrameProgress final
     std::chrono::nanoseconds lastFrameInterval{};
     std::chrono::nanoseconds lastLimitWaitDuration{};
     std::chrono::nanoseconds lastCycleInterval{};
+    // 要求ではなく、実際に採用された同期方式
     FrameSyncMode effectiveSyncMode = FrameSyncMode::FixedPeriod;
     FrameSyncFallback syncFallback = FrameSyncFallback::None;
     std::uint64_t simulationTicks = 0;

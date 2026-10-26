@@ -5,7 +5,6 @@
 #include <optional>
 
 #include <Foundation/Result.h>
-#include <Platform/FileSystem.h>
 #include <RHI/FrameExecution.h>
 #include <RHI/Presentation.h>
 #include <Runtime/FrameController.h>
@@ -16,8 +15,11 @@ namespace cue
 /// 利用者のバッファリング数は gpu.resourceFrameCount。CPU 容量・Worker・先行数はそこから導出する
 struct PerformanceSettings final
 {
+    // CPU Frame の投入と待機の要求値
     FrameControllerDesc frame;
+    // GPU 資源枠と未完了 Frame 上限の要求値
     GpuFrameConfig gpu;
+    // SwapChain と表示同期の要求値
     PresentationConfig presentation;
 
     /// @brief 設定要求の同一性を比較する
@@ -27,13 +29,16 @@ struct PerformanceSettings final
 /// @brief ゲームがユーザーへ公開する設定範囲。設定 File からは変更しない
 struct PerformanceSettingsPolicy final
 {
+    // 実行中の設定変更をゲーム側が許可するか
     bool usersMayEdit = true;
+    // ユーザーが指定できる有限 FPS 上限の最大値
     std::uint32_t maxFps = 1000;
     std::uint32_t maxCpuFrames = 8;
     std::uint32_t maxGpuFrames = 8;
     std::uint32_t maxUpdateLeadFrames = 7;
     std::uint32_t maxSwapChainBuffers = 16;
     std::uint32_t maxQueuedFrames = 16;
+    // maxFps = 0 の無制限指定を許可するか
     bool allowsUnlimitedFps = true;
 };
 
@@ -48,7 +53,7 @@ struct EffectivePresentationSettings final
     std::optional<std::uint32_t> maxQueuedFrames;
 };
 
-/// @brief 保存要求とは独立した、現在適用される設定の観測値
+/// @brief 設定要求とは独立した、現在適用される設定の観測値
 struct EffectivePerformanceSettings final
 {
     FrameControllerDesc frame;
@@ -56,9 +61,10 @@ struct EffectivePerformanceSettings final
     EffectivePresentationSettings presentation;
 };
 
-/// @brief 保存する要求値と Native 能力 / 実効同期による適用値を区別する
+/// @brief 要求値と Native 能力 / 実効同期による適用値を区別する
 struct PerformanceSettingsStatus final
 {
+    // 利用側が最後に要求した設定。実効値の補正とは分離して保持する
     PerformanceSettings requested;
     EffectivePerformanceSettings effective;
     FrameSyncFallback syncFallback = FrameSyncFallback::None;
@@ -92,12 +98,6 @@ enum class PerformancePreset
                                                        const PerformanceSettingsPolicy &a_policy);
 /// @brief 編集可能な設定値として Preset を返す。採用前にゲームの Policy を検証する
 [[nodiscard]] PerformanceSettings performance_preset(PerformancePreset a_preset);
-/// @brief Schema 付き設定を一時 File から原子的に置換する。Owner Thread 専用
-[[nodiscard]] Result<void> save_performance_settings(IFileSystem &a_files, const Path &a_path,
-                                                    const PerformanceSettings &a_settings);
-/// @brief File 上限と Schema を検証し、完全に有効な設定だけ返す。Owner Thread 専用
-[[nodiscard]] Result<PerformanceSettings> load_performance_settings(IFileSystem &a_files, const Path &a_path);
-
 /// @brief 型の範囲、先行数と容量を変更前に検証する。Thread-safe
 [[nodiscard]] Result<void> validate_performance_settings(const PerformanceSettings &a_settings);
 

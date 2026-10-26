@@ -21,7 +21,6 @@ int measure(cue::FrameSyncMode a_mode, bool a_vsync)
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.frame.syncMode = a_mode;
     config.presentation.isVSyncEnabled = a_vsync;
     config.buildUi = []()

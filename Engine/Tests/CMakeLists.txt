@@ -218,22 +218,7 @@ if(WIN32)
     target_link_libraries(CueSimulationTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
     add_test(NAME Cue.Runtime.Simulation COMMAND CueSimulationTests)
 
-    # 計測は手動の明示実行に限定し、CTest の通常 Gate へ長時間の性能比較を混ぜない
-    add_executable(CueM09FramePacingProbe Performance/M09FramePacingProbe.cpp)
-    target_link_libraries(CueM09FramePacingProbe PRIVATE Cue.EditorHost imgui::imgui)
-
-    # Trace は手動調査だけで使い、通常の CTest に長時間の性能条件を追加しない
-    add_executable(CueSpikeTimingProbe Performance/SpikeTimingProbe.cpp)
-    target_link_libraries(CueSpikeTimingProbe PRIVATE Cue.EditorHost Cue.Renderer.DX12 imgui::imgui user32 advapi32)
-
-    # ETL の QPC 時刻と対象 Thread の Scheduling を手動解析向けに取り出す
-    add_executable(CueSpikeEtwExport Performance/SpikeEtwExport.cpp)
-    target_link_libraries(CueSpikeEtwExport PRIVATE Cue.Foundation advapi32 tdh)
     set_tests_properties(Cue.Runtime.FrameController PROPERTIES TIMEOUT 5)
-
-    # 時間計測は環境依存のため CTest の速度判定に使わず、手動の比較用 Target とする
-    add_executable(CueFrameControllerTimingProbe Performance/FrameControllerTimingProbe.cpp)
-    target_link_libraries(CueFrameControllerTimingProbe PRIVATE Cue.Runtime.Frame Cue.Platform.Windows user32)
 
     add_executable(CueWindowsThreadServicesTests Platform/WindowsThreadServicesTests.cpp)
     target_link_libraries(CueWindowsThreadServicesTests PRIVATE Cue.Platform.Windows)
@@ -314,9 +299,17 @@ if(WIN32)
     set_tests_properties(Cue.EditorHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
 endif()
 
+if(CUE_BUILD_PERFORMANCE_TOOLS)
+    add_subdirectory(Performance)
+endif()
+
 if(WIN32)
-    cue_copy_shader_runtime(CueDX12PipelineManagerTests
+    set(taskShaderTests CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueM09FramePacingProbe CueInputLatencyTests CueSpikeTimingProbe
+        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueInputLatencyTests
     )
+    if(CUE_BUILD_PERFORMANCE_TOOLS)
+        list(APPEND taskShaderTests CueM09FramePacingProbe CueSpikeTimingProbe)
+    endif()
+    cue_copy_shader_runtime(${taskShaderTests})
 endif()

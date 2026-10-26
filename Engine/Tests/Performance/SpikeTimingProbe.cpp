@@ -110,11 +110,11 @@ class ProbeHost final
         config.logging = a_config.logging;
         config.gpu = a_config.gpu;
         config.performancePolicy = a_config.performancePolicy;
-        config.performanceSettingsFile = std::move(a_config.performanceSettingsFile);
         config.simulation = a_config.simulation;
         config.callbacks.simulationUpdate = std::move(a_config.simulationUpdate);
         config.callbacks.prepareFrame = std::move(a_config.prepareFrame);
         config.callbacks.createBackend = std::move(a_config.createBackend);
+        config.clock = a_config.clock;
         m_windows = std::make_unique<cue::WindowsHost>(std::move(config));
     }
 
@@ -673,7 +673,6 @@ int main(int a_argc, char **a_argv)
     config.window.title = "CueEngine Spike Investigation";
     config.window.clientSize = {static_cast<std::uint32_t>(clientWidth), static_cast<std::uint32_t>(clientHeight)};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     // 測定区間は Trace 配列だけを更新し、Host の File Log と Debug 出力を発生させない
     config.logging.isFileEnabled = false;
     config.logging.debugOutput = cue::DebugLogOutput::Disabled;
@@ -686,11 +685,12 @@ int main(int a_argc, char **a_argv)
     if (adapter != "auto")
     {
         // 優先順だけでは選択結果を保証しないため、実 Device の Vendor と Software Flag を検査する
-        config.createBackend = [adapter](cue::IFileSystem *a_files) -> cue::Result<std::unique_ptr<cue::IBackend>>
+        config.createBackend = [adapter](cue::IFileSystem *a_files,
+                                        cue::Clock &a_clock) -> cue::Result<std::unique_ptr<cue::IBackend>>
         {
             const auto selection = adapter == "intel" ? cue::dx12::AdapterSelection::HardwareMinimumPower
                                                       : cue::dx12::AdapterSelection::HardwarePreferred;
-            auto result = cue::dx12::DX12Backend::create(selection, {}, a_files);
+            auto result = cue::dx12::DX12Backend::create(selection, {}, a_files, &a_clock);
             if (!result.has_value())
             {
                 return cue::Result<std::unique_ptr<cue::IBackend>>::failure(*result.try_error());

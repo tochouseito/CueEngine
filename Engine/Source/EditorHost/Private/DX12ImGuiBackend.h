@@ -29,7 +29,8 @@ class DX12ImGuiBackend final
     [[nodiscard]] static Result<std::unique_ptr<DX12ImGuiBackend>> create(IBackend &a_backend, ImGuiContext &a_context,
                                                                           std::uint32_t a_frameCount,
                                                                           std::uint32_t a_capacity,
-                                                                          Profiler *a_profiler = nullptr);
+                                                                          Profiler *a_profiler = nullptr,
+                                                                          Clock &a_clock = get_default_clock());
     /// @brief GPU 完了を確認できない借用資源を暗黙破棄しない
     ~DX12ImGuiBackend();
     /// @brief 生成済み Device Objects の公式 Frame 開始処理を実行する

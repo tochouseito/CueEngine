@@ -35,7 +35,9 @@ class Logger final : public ILogger
     [[nodiscard]] Result<void> shutdown();
 
   private:
+    // 複数 Thread からの一行単位の配送と停止を直列化する
     std::mutex m_mutex;
+    // 出力先を一意所有し、停止時に Flush と Close をまとめて行う
     std::vector<std::unique_ptr<ILogSink>> m_sinks;
     LogLevel m_minimum;
     bool m_isStopped = false;

@@ -20,9 +20,9 @@
 #include <imgui_internal.h>
 
 #include <EditorHost/EditorHost.h>
-#include <Foundation/PerformanceStudy.h>
 #include <Profiler/TimingSamples.h>
 
+#include "PerformanceStudy.h"
 #include "PresentDispatchProbe.h"
 
 namespace

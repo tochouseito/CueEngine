@@ -36,6 +36,7 @@ bool is_valid_component(std::wstring_view a_name)
     {
         return false;
     }
+    // Windows で File 名に使えない文字を拒否する
     for (auto character : a_name)
     {
         if (character < 32 || std::wstring_view(L"<>:\"|?*").find(character) != std::wstring_view::npos)
@@ -43,6 +44,7 @@ bool is_valid_component(std::wstring_view a_name)
             return false;
         }
     }
+    // 拡張子を除いた名前で予約 Device 名との衝突を調べる
     auto base = std::wstring(a_name.substr(0, a_name.find('.')));
     for (auto &character : base)
     {
@@ -66,6 +68,7 @@ Result<std::wstring> native_path(const Path &a_path)
     {
         return Result<std::wstring>::failure({ErrorCategory::InvalidArgument, "WindowsFileSystem.path.empty"});
     }
+    // 共通 Path を Windows の文字列表現へ変換する
     auto converted = utf8_to_utf16(a_path.utf8());
     if (!converted.has_value())
     {
@@ -74,6 +77,7 @@ Result<std::wstring> native_path(const Path &a_path)
     auto text = converted.take_value();
     std::replace(text.begin(), text.end(), L'/', L'\\');
     const auto begin = text.size() >= 3 && text[1] == L':' ? 3u : text.starts_with(L"\\\\") ? 2u : 0u;
+    // 各 Path 要素を OS 固有の名前規則で再検証する
     for (std::size_t offset = begin; offset < text.size();)
     {
         const auto found = text.find(L'\\', offset);
@@ -85,6 +89,7 @@ Result<std::wstring> native_path(const Path &a_path)
         offset = end + 1;
     }
     std::wstring full(32768, L'\0');
+    // 相対要素を解決した絶対 Path を Native API に渡す
     const auto length = GetFullPathNameW(text.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
     if (!length || length >= full.size() - 8)
     {
@@ -138,7 +143,9 @@ class WindowsFile final : public IFile
             return Result<std::size_t>::failure({ErrorCategory::InvalidState, "WindowsFile.read.closed"});
         }
         DWORD count = 0;
+        // 一回の読取りを Windows API のサイズ上限へ収める
         const auto size = static_cast<DWORD>(std::min(a_destination.size(), std::size_t(MAXDWORD)));
+        // 呼出側の読取り領域へ File 内容を転送する
         if (!ReadFile(m_handle, a_destination.data(), size, &count, nullptr))
         {
             return Result<std::size_t>::failure(file_error("ReadFile"));
@@ -153,7 +160,9 @@ class WindowsFile final : public IFile
             return Result<std::size_t>::failure({ErrorCategory::InvalidState, "WindowsFile.write.closed"});
         }
         DWORD count = 0;
+        // 大きな書込み要求は一回分の Native サイズへ切り詰める
         const auto size = static_cast<DWORD>(std::min(a_source.size(), std::size_t(MAXDWORD)));
+        // 呼出側の書込み内容を File へ転送する
         if (!WriteFile(m_handle, a_source.data(), size, &count, nullptr))
         {
             return Result<std::size_t>::failure(file_error("WriteFile"));
@@ -185,6 +194,7 @@ class WindowsFile final : public IFile
         LARGE_INTEGER offset;
         offset.QuadPart = a_offset;
         LARGE_INTEGER position;
+        // 次の File 読み書きに使う位置を移動する
         if (!SetFilePointerEx(m_handle, offset, &position, origin))
         {
             return Result<std::uint64_t>::failure(file_error("SetFilePointerEx"));
@@ -204,6 +214,7 @@ class WindowsFile final : public IFile
             return Result<std::uint64_t>::failure({ErrorCategory::InvalidState, "WindowsFile.size.closed"});
         }
         LARGE_INTEGER size;
+        // Native File の長さを取得する
         if (!GetFileSizeEx(m_handle, &size))
         {
             return Result<std::uint64_t>::failure(file_error("GetFileSizeEx"));
@@ -217,6 +228,7 @@ class WindowsFile final : public IFile
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "WindowsFile.flush.closed"});
         }
+        // OS に保留されている File 書込みを Flush する
         return FlushFileBuffers(m_handle) ? Result<void>::success()
                                           : Result<void>::failure(file_error("FlushFileBuffers"));
     }
@@ -266,6 +278,7 @@ class WindowsFileSystem final : public IFileSystem
         PWSTR directory = nullptr;
         const auto hr = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &directory);
         // 変換の Allocation 失敗でも COM Task Memory を回収する
+        // OS が返した保存先の文字列を専用の解放関数で回収する
         const auto release = [](wchar_t *a_memory) { CoTaskMemFree(a_memory); };
         std::unique_ptr<wchar_t, decltype(release)> owned(directory, release);
         if (FAILED(hr))
@@ -296,6 +309,7 @@ class WindowsFileSystem final : public IFileSystem
                     : data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY   ? FileType::Directory
                                                                          : FileType::Regular;
         info.size = (std::uint64_t(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+        // Windows の File 時刻を共通の System Clock の基準へ変換する
         const auto ticks =
             (std::uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
         constexpr std::uint64_t k_epoch = 116444736000000000;
@@ -322,6 +336,7 @@ class WindowsFileSystem final : public IFileSystem
                 rootEnd = text.size();
             }
         }
+        // Root 自体は変更せず、子 Directory を親から順に生成する
         for (std::size_t offset = rootEnd; offset <= text.size(); ++offset)
         {
             if (offset != text.size() && text[offset] != L'\\')
@@ -352,6 +367,7 @@ class WindowsFileSystem final : public IFileSystem
         {
             return listResult::failure(*path.try_error());
         }
+        // 一覧取得の対象が存在する Directory であることを先に確認する
         auto info = stat(a_path);
         if (!info.has_value() || !*info.try_value() || (**info.try_value()).type != FileType::Directory)
         {
@@ -366,6 +382,7 @@ class WindowsFileSystem final : public IFileSystem
         }
         pattern += L'*';
         WIN32_FIND_DATAW data{};
+        // Directory の列挙を開始する
         const auto handle = FindFirstFileW(pattern.c_str(), &data);
         if (handle == INVALID_HANDLE_VALUE)
         {
@@ -390,6 +407,7 @@ class WindowsFileSystem final : public IFileSystem
             {
                 continue;
             }
+            // 列挙名を UTF-8 へ戻し、呼出元の Path に結合する
             auto text = utf16_to_utf8(name);
             if (!text.has_value())
             {
@@ -401,6 +419,7 @@ class WindowsFileSystem final : public IFileSystem
                 return listResult::failure(*child.try_error());
             }
             paths.push_back(child.take_value());
+        // 同じ列挙 Handle から次の項目を取得する
         } while (FindNextFileW(handle, &data));
         const auto error = GetLastError();
         return error == ERROR_NO_MORE_FILES ? listResult::success(std::move(paths))
@@ -441,6 +460,7 @@ class WindowsFileSystem final : public IFileSystem
         {
             return Result<void>::failure(!from.has_value() ? *from.try_error() : *to.try_error());
         }
+        // Native の移動条件に従って Path を変更する
         return MoveFileExW(from.try_value()->c_str(), to.try_value()->c_str(), 0)
                    ? Result<void>::success()
                    : Result<void>::failure(file_error("MoveFileExW.rename"));
@@ -511,8 +531,10 @@ class WindowsFileSystem final : public IFileSystem
                             (a_desc.isWriteShared ? FILE_SHARE_WRITE : 0) |
                             (a_desc.isDeleteShared ? FILE_SHARE_DELETE : 0);
         // Allocation を先に行い、Handle 取得後の Exception でリークさせない
+        // Handle を開く前に所有者を確保し、確保失敗時の漏れを防ぐ
         auto file = std::make_unique<WindowsFile>(INVALID_HANDLE_VALUE);
         const auto handle =
+            // 検証済み Path と Open 条件で Native File Handle を開く
             CreateFileW(path.try_value()->c_str(), access, share, nullptr, creation, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (handle == INVALID_HANDLE_VALUE)
         {
@@ -538,6 +560,7 @@ class WindowsFileSystem final : public IFileSystem
                                    : *target.try_error());
         }
         GUID guid{};
+        // 同じ Directory に置く一時 File の一意名を作る
         const auto hr = CoCreateGuid(&guid);
         if (FAILED(hr))
         {
@@ -563,6 +586,7 @@ class WindowsFileSystem final : public IFileSystem
         {
             return saveResult::failure(*nativeTemporary.try_error());
         }
+        // 一時 File は既存内容を上書きしない CreateNew で開く
         auto opened = open(*temporary.try_value(), {FileAccess::Write, FileCreation::CreateNew, false});
         if (!opened.has_value())
         {
@@ -584,6 +608,7 @@ class WindowsFileSystem final : public IFileSystem
         } cleanup{*nativeTemporary.try_value()};
         // File Owner を Cleanup より後に置き、Exception 時も Close してから削除する
         auto writing = std::move(file);
+        // 公開前の失敗では一時 File を閉じて回収し、旧正本を残す
         const auto fail = [&](Error a_error)
         {
             auto closed = writing->close();
@@ -600,6 +625,7 @@ class WindowsFileSystem final : public IFileSystem
             return saveResult::failure(std::move(a_error));
         };
         std::size_t offset = 0;
+        // 短い書込みが返っても残りの Byte 列を最後まで保存する
         while (offset < a_data.size())
         {
             auto written = writing->write(a_data.subspan(offset));
@@ -613,16 +639,19 @@ class WindowsFileSystem final : public IFileSystem
             }
             offset += *written.try_value();
         }
+        // 置換前に一時 File の内容を Flush する
         auto flushed = writing->flush();
         if (!flushed.has_value())
         {
             return fail(*flushed.try_error());
         }
+        // 一時 File の Handle を閉じてから正本へ切り替える
         auto closed = writing->close();
         if (!closed.has_value())
         {
             return fail(*closed.try_error());
         }
+        // Native の移動条件に従って Path を変更する
         if (!MoveFileExW(nativeTemporary.try_value()->c_str(), target.try_value()->c_str(),
                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         {

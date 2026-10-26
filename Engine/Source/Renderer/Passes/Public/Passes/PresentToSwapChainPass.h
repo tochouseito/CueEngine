@@ -30,6 +30,7 @@ public:
     /// @brief 表示元と描画先を取得し、Root、HLSL と Graphics Pipeline の生成を依頼する
     [[nodiscard]] Result<void> setup(FrameGraphBuilder& a_builder) override
     {
+        // 共有の最終色と外部 Back Buffer の論理 Handle を取得する
         auto colorResult = a_builder.get_texture("FinalColorTexture");
         auto backResult = a_builder.get_texture("BackBuffer");
         if (!colorResult.has_value() || !backResult.has_value())
@@ -43,6 +44,7 @@ public:
         {
             return Result<void>::failure(*targetDesc.try_error());
         }
+        // FinalColor 用 SRV と固定 Sampler を持つ Root Signature を要求する
         RootSignatureDesc rootDesc;
         rootDesc.name = "PresentToSwapChain.Root";
         rootDesc.parameters.push_back({RootParameterType::SrvTable, ShaderVisibility::Pixel, 0});
@@ -64,6 +66,7 @@ public:
         {
             return Result<void>::failure(*psResult.try_error());
         }
+        // 表示先の Format とコンパイル済み Shader から PSO を要求する
         GraphicsPipelineStateDesc pipelineDesc;
         pipelineDesc.name = "PresentToSwapChain.Pipeline";
         pipelineDesc.rootSignature = rootResult.take_value();
@@ -105,16 +108,19 @@ public:
         {
             return target;
         }
+        // FinalColor の SRV を Root Parameter 0 へ設定する
         auto binding = a_context.bind_texture2d(m_finalColor, 0);
         if (!binding.has_value())
         {
             return binding;
         }
+        // 描画範囲を Back Buffer の全寸法へ揃える
         auto viewport = a_context.set_viewport_scissor(a_context.width(), a_context.height());
         if (!viewport.has_value())
         {
             return viewport;
         }
+        // Vertex Buffer を使わず、Vertex ID から三頂点を生成する
         return a_context.draw_instanced(3, 1);
     }
 

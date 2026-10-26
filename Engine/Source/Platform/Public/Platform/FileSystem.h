@@ -46,8 +46,11 @@ enum class SeekOrigin
 };
 struct FileOpenDesc final
 {
+    // 読込み・書込みの許可を Open 時に固定する
     FileAccess access = FileAccess::Read;
+    // 既存 File の必須・新規作成・切詰めの扱いを指定する
     FileCreation creation = FileCreation::OpenExisting;
+    // 他の Handle に許可する共有アクセスを用途ごとに分ける
     bool isReadShared = true;
     bool isWriteShared = false;
     bool isDeleteShared = false;

@@ -15,8 +15,11 @@ namespace cue
 /// @brief Pool と Slot の世代を識別する非所有 Handle
 struct GpuResourceHandle final
 {
+    // Pool 内で資源を所有する Slot の位置
     std::uint32_t index = 0;
+    // 同じ Slot に再生成された別資源を区別する世代
     std::uint64_t generation = 0;
+    // 異なる Pool の Handle の混用を拒否する識別子
     std::uint64_t poolId = 0;
 
     /// @brief 初期値のままの Handle か判定する

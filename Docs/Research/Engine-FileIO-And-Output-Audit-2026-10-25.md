@@ -1,5 +1,7 @@
 # Engine の File I/O・ログ・診断出力の一覧
 
+> 2026-10-26 の配置更新: 過去の実験部品は [Legacy](../../Engine/Tests/Performance/Legacy/README.md) へ移設した。以下の処理内容は調査当時の記録で、移設対象への File Link は現在の保存先を指す。
+
 2026-10-25、`m06/issue144/gpu-waits-and-telemetry` の現在の Source と未 Commit の調査コードを静的確認した記録。
 
 対象は First-party `Engine/Source`、Engine が使う ImGui の経路、手動計測 Probe、Capture / 解析 Script、直近の比較 Harness。未呼出しの第三者 API 全般や、OS / Driver 内部の実 I/O を網羅した実行 Trace ではない。
@@ -119,7 +121,7 @@ First-party の Shader Bytecode / 外部PDB / PSO Cache のファイル保存は
 | 同:448 / 491 / 1006 | GPU / CPU区間CSVは計測停止・Shutdown後に保存。開始前と終了後にstdout / エラー時stderr |
 | 同:926 | Trigger時は計測停止後にfreeze.flagを書き、frozen.flagの存在を繰り返し確認 |
 | [FocusExperiment.h](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/FocusExperiment.h:250) | Focus履歴CSV。配置・起動・結果をstdoutへ出す |
-| [EditorTimingProbe.cpp](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/EditorTimingProbe.cpp:172) | CPU / Timeline / GPU readiness / Cycles CSV、Metadata JSON、Dispatch CSV等。測定・Host停止後の保存関数から出力 |
+| [EditorTimingProbe.cpp](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/Legacy/EditorTimingProbe.cpp:172) | CPU / Timeline / GPU readiness / Cycles CSV、Metadata JSON、Dispatch CSV等。測定・Host停止後の保存関数から出力 |
 | [PresentDispatchProbe.h](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/PresentDispatchProbe.h:184) | Dispatchの記録をCSVへ保存 |
 | [ImGuiDescriptorLookupProbe.cpp](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/ImGuiDescriptorLookupProbe.cpp:248) | 単独比較の結果CSV、エラーをstderrへ出力 |
 | [FrameControllerTimingProbe.cpp](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/FrameControllerTimingProbe.cpp:81) | 各条件の結果をstdout、失敗をstderr。File保存はリダイレクト先次第 |
@@ -127,10 +129,10 @@ First-party の Shader Bytecode / 外部PDB / PSO Cache のファイル保存は
 | [SpikeEtwExport.cpp](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/SpikeEtwExport.cpp:300) | ETLをOpenTrace / ProcessTraceで読み、CSVをfprintf。解析時の処理 |
 | [capture_spike_etw.ps1](C:/Users/sinse/source/repos/CueEngine/scripts/capture_spike_etw.ps1:90) | 通常モードはxperfのKernel.etl / UserGpu.etl / Markers.etlを保存。TriggerのKernel / UserGPUはBufferingで保持し、停止前にFlush保存。設定JSON、開始終了ログ、制御Flag、Merged.etl、Probeのstdoutログも保存 |
 | [RunPresentationPathStudy.ps1](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/RunPresentationPathStudy.ps1:78) | PresentMonの--output_fileで実行中のPresent CSV。stdout / stderrのFile Redirect、Environment / 結果JSONも保存 |
-| [RunEditorTimingStudy.ps1](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/RunEditorTimingStudy.ps1:28) | Environment JSON、Probeの結果、Summary CSV等を保存 |
+| [RunEditorTimingStudy.ps1](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/Legacy/RunEditorTimingStudy.ps1:28) | Environment JSON、Probeの結果、Summary CSV等を保存 |
 | scripts/analyze_*.py / validate_spike_capture.py | 保存済みCSV / Log / ETL変換結果を読み、JSON / CSV / JSONLとConsole結果を出す。解析時だけ |
 | Engine/Tests/Performance/AnalyzePixPresent.py / Summarize*.py | PIX等の出力や各比較結果を読み、集計結果を保存 / stdout出力。手動解析 |
-| [過去実験StudyImGuiRecorder.h](C:/Users/sinse/source/repos/CueEngine/Engine/Source/EditorHost/Private/StudyImGuiRecorder.h:76) | 未追跡の過去実験Source。D3DCompileFromFileでShaderを読む経路。現在の通常Engine経路とは分ける |
+| [過去実験StudyImGuiRecorder.h](C:/Users/sinse/source/repos/CueEngine/Engine/Tests/Performance/Legacy/StudyImGuiRecorder.h:76) | 過去実験Source。D3DCompileFromFileでShaderを読む経路。現在の通常Engine経路とは分ける |
 
 Capture Tool自身のI/Oと、対象Engine ProcessのI/Oは別Processの場合がある。外部Toolが書くETL / CSVをEngine自身のWriteFileと混同しない。
 

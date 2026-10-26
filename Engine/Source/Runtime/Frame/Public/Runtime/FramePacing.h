@@ -51,11 +51,14 @@ struct FramePacingPlan final
     std::chrono::steady_clock::time_point a_now, std::optional<std::chrono::steady_clock::time_point> a_nextDisplay,
     std::chrono::nanoseconds a_slack, bool a_hasPresentation)
 {
+    // FPS 上限の期限をすべての同期方式に共通の下限とする
     FramePacingPlan plan{a_fixedDeadline};
+    // 固定周期では表示統計や Waitable の状態を使わない
     if (a_requested == FrameSyncMode::FixedPeriod)
     {
         return plan;
     }
+    // 表示枠を待てない環境では固定周期へ戻す
     if (!a_hasPresentation)
     {
         plan.fallback = FrameSyncFallback::PresentationUnavailable;
@@ -63,13 +66,16 @@ struct FramePacingPlan final
     }
     if (a_requested == FrameSyncMode::DisplayPrediction)
     {
+        // 取得できない表示時刻や遠すぎる予測値を採用しない
         if (!a_nextDisplay || *a_nextDisplay <= a_now || *a_nextDisplay - a_now > std::chrono::milliseconds(250))
         {
             plan.fallback = FrameSyncFallback::DisplayTimingUnavailable;
             return plan;
         }
+        // 表示直前の余裕を確保しつつ、FPS 上限より早く開始しない
         plan.deadline = (std::max)(a_fixedDeadline, *a_nextDisplay - a_slack);
     }
+    // 利用可能な表示待機だけを実効計画へ反映する
     plan.effectiveMode = a_requested;
     plan.waitsForPresentation = true;
     return plan;

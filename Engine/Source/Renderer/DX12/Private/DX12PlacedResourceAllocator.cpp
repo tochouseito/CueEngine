@@ -66,6 +66,7 @@ struct DX12PlacedResourceAllocator::State final
     void release(const std::shared_ptr<Page>& a_page, std::uint64_t a_offset, std::uint64_t a_size) noexcept
     {
         std::lock_guard lock(mutex);
+        // 返却領域を Offset 順の空き一覧へ挿入する
         auto position = std::lower_bound(a_page->freeRanges.begin(), a_page->freeRanges.end(), a_offset,
                                          [](const Range& a_range, std::uint64_t a_value) {
                                              return a_range.offset < a_value;
@@ -73,6 +74,7 @@ struct DX12PlacedResourceAllocator::State final
         position = a_page->freeRanges.insert(position, {a_offset, a_size});
         if (position != a_page->freeRanges.begin())
         {
+            // 直前の空き領域と隣接していれば一つへ結合する
             auto previous = position - 1;
             if (previous->offset + previous->size == position->offset)
             {
@@ -81,6 +83,7 @@ struct DX12PlacedResourceAllocator::State final
                 position = previous;
             }
         }
+        // 後続の隣接領域もまとめ、断片化した空きを再利用する
         while (position + 1 != a_page->freeRanges.end() &&
                position->offset + position->size == (position + 1)->offset)
         {
@@ -194,6 +197,7 @@ Result<std::unique_ptr<DX12GpuResource>> DX12PlacedResourceAllocator::create_tex
     {
         return ResourceResult::failure(*descResult.try_error());
     }
+    // RT / DS 用と通常 Texture 用の Heap を混在させない
     const auto heapFlags = a_desc.isRenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
                                                  : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     return create_resource(*descResult.try_value(), GpuResourceKind::Texture2D, 0, heapFlags,
@@ -217,6 +221,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         std::vector<std::uint64_t> sizes;
         nativeDescs.reserve(a_descs.size());
         sizes.reserve(a_descs.size());
+        // Alias 対象の Buffer 群をすべて検証してから配置を始める
         for (const auto& desc : a_descs)
         {
             if (desc.memory != GpuMemoryUsage::Default)
@@ -263,6 +268,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         {
             clearColors.reserve(a_descs.size());
         }
+        // Alias Texture 群の形状と Heap 種類を揃える
         for (const auto& desc : a_descs)
         {
             if (desc.isRenderTarget != isRenderTarget)
@@ -342,8 +348,10 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
     }
     std::uint64_t requiredSize = 0;
     std::uint64_t requiredAlignment = 0;
+    // 全 Resource の最大サイズと Alignment を共有領域の条件にする
     for (const auto& desc : a_descs)
     {
+        // Device が要求する配置サイズと Alignment を取得する
         const D3D12_RESOURCE_ALLOCATION_INFO info = m_state->device->GetResourceAllocationInfo(0, 1, &desc);
         if (info.SizeInBytes == 0 || info.SizeInBytes == (std::numeric_limits<std::uint64_t>::max)() ||
             info.Alignment == 0 || (info.Alignment & (info.Alignment - 1)) != 0)
@@ -362,12 +370,14 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         std::size_t rangeIndex = 0;
         std::uint64_t offset = 0;
         bool isNewPage = false;
+        // 用途の合う既存 Heap から条件を満たす空き領域を探す
         for (const auto& page : m_state->pages)
         {
             if (page->flags != a_heapFlags || page->heapAlignment < requiredAlignment)
             {
                 continue;
             }
+            // Alignment 調整後も収まる空き区間を選ぶ
             for (std::size_t index = 0; index < page->freeRanges.size(); ++index)
             {
                 const State::Range& range = page->freeRanges[index];
@@ -418,6 +428,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             heapDesc.Properties.VisibleNodeMask = 1;
             heapDesc.Alignment = heapAlignment;
             heapDesc.Flags = a_heapFlags;
+            // Placed Resource の配置に使う GPU Heap を生成する
             const HRESULT heapResult = m_state->device->CreateHeap(&heapDesc, IID_PPV_ARGS(&selected->heap));
             if (FAILED(heapResult))
             {
@@ -442,9 +453,11 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             const std::size_t doubled = selected->freeRanges.capacity() * 2;
             selected->freeRanges.reserve(doubled > required ? doubled : required);
         }
+        // Alias 群が最後に解放されるまで共有する配置予約を保持する
         auto allocation = std::make_shared<Allocation>(m_state, selected, offset, requiredSize);
         std::vector<std::unique_ptr<DX12GpuResource>> resources;
         resources.reserve(a_descs.size());
+        // 同じ予約領域に各 Resource の Native 実体を生成する
         for (std::size_t index = 0; index < a_descs.size(); ++index)
         {
             const auto& desc = a_descs[index];
@@ -465,6 +478,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
                 }
                 optimizedClear = &clearValue;
             }
+            // 確保済み Heap の指定 Offset に GPU Resource を配置する
             const HRESULT resourceResult = m_state->device->CreatePlacedResource(
                 selected->heap.Get(), offset, &desc, D3D12_RESOURCE_STATE_COMMON, optimizedClear,
                 IID_PPV_ARGS(&resource->m_resource));
@@ -512,6 +526,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         ++selected->liveAllocations;
         selected->occupiedBytes += requiredSize;
         allocation->isActive = true;
+        // 全実体の生成成功後にだけ Heap の空き領域を消費する
         for (std::size_t index = 0; index < resources.size(); ++index)
         {
             auto& resource = resources[index];

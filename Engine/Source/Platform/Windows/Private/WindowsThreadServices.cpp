@@ -25,10 +25,12 @@ class ThreadTimer final
     /// @brief 高精度 Timer と取消 Event を所有し、未対応 OS では通常 Timer へ戻す
     ThreadTimer() noexcept
     {
+        // 待機に使う Thread 固有の Timer を生成する
         m_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                          TIMER_MODIFY_STATE | SYNCHRONIZE);
         if (!m_timer)
         {
+            // 待機に使う Thread 固有の Timer を生成する
             m_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
         }
         m_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -58,6 +60,7 @@ class ThreadTimer final
             return std::nullopt;
         }
         LARGE_INTEGER due{};
+        // Windows Timer 用の負の相対期限へ待機時間を換算する
         const auto count = a_duration.count();
         due.QuadPart = -(count / 100 + (count % 100 != 0));
         if (!SetWaitableTimer(m_timer, &due, 0, nullptr, nullptr, FALSE))
@@ -87,6 +90,7 @@ Result<void> wait_for_thread_with_messages(HANDLE a_thread)
     // DXGIの同期SendMessageをRender Workerから受けられるよう、join前にMessage Queueを回す
     bool hasQuitMessage = false;
     int quitCode = 0;
+    // Worker 終了待ちの間も Window Message の配送を止めない
     for (;;)
     {
         const DWORD waitStatus = MsgWaitForMultipleObjectsEx(1, &a_thread, INFINITE, QS_ALLINPUT,
@@ -116,6 +120,7 @@ Result<void> wait_for_thread_with_messages(HANDLE a_thread)
                 continue;
             }
             TranslateMessage(&message);
+            // 取得済み Message を対象 Window の Procedure へ配送する
             DispatchMessageW(&message);
         }
     }
@@ -125,16 +130,6 @@ Result<void> wait_for_thread_with_messages(HANDLE a_thread)
     }
     return Result<void>::success();
 }
-
-class WindowsClock final : public Clock
-{
-public:
-    /// @brief 単調時計の現在時刻を返す
-    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override
-    {
-        return std::chrono::steady_clock::now();
-    }
-};
 
 class WindowsWaiter final : public Waiter
 {
@@ -149,6 +144,7 @@ public:
     /// @brief 世代更新と通知を同じLock境界で同期する
     void notify_all() noexcept override
     {
+        // 状態変更の世代を進め、待機中の全 Thread に通知する
         {
             std::lock_guard lock(m_mutex);
             ++m_generation;
@@ -239,6 +235,7 @@ public:
         m_thread = std::jthread([this, routine = std::move(a_routine)](std::stop_token a_stopToken) mutable {
             try
             {
+                // Worker の通常失敗と例外を共通の終了結果へ保持する
                 auto result = routine(a_stopToken);
                 if (!result.has_value())
                 {
@@ -283,6 +280,7 @@ public:
             }
             try
             {
+                // Main Thread の join でも Message Pump を継続する
                 auto waitResult = wait_for_thread_with_messages(static_cast<HANDLE>(m_thread.native_handle()));
                 if (!waitResult.has_value())
                 {
@@ -357,11 +355,12 @@ public:
 /// @brief WindowsのFrame制御用Serviceを一括生成する
 Result<WindowsThreadServices> create_windows_thread_services()
 {
+    // 時計・待機点・Worker Factory を同じ所有単位で生成する
     try
     {
         // Service の寿命は返した構造体の Owner が管理する
         WindowsThreadServices services{};
-        services.clock = std::make_unique<WindowsClock>();
+        services.clock = create_clock();
         services.waiter = std::make_unique<WindowsWaiter>();
         services.threadFactory = std::make_unique<WindowsThreadFactory>();
         return Result<WindowsThreadServices>::success(std::move(services));

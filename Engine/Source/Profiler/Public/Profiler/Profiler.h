@@ -61,6 +61,7 @@ class ProfileMetric final
 /// @brief 表示・保存側へ渡す系列名と同時点の統計を所有する
 struct ProfilerMetricSnapshot final
 {
+    // 名前が再利用されても系列の同一性を区別する識別子
     std::uint64_t id = 0;
     std::string name;
     TimingStatistics statistics;
@@ -69,6 +70,7 @@ struct ProfilerMetricSnapshot final
 /// @brief 登録系列の最新統計を所有する。各系列間の厳密な原子的同時性は保証しない
 struct ProfilerSnapshot final
 {
+    // Snapshot 自身が名前と統計を所有し、登録先の寿命へ依存しない
     std::vector<ProfilerMetricSnapshot> metrics;
 };
 

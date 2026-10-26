@@ -17,6 +17,7 @@ void DX12ResourceLeakChecker::report_live_objects()
 {
 #if defined(_DEBUG) && !defined(CUE_SHIPPING)
     Microsoft::WRL::ComPtr<IDXGIDebug1> debug;
+    // Debug 用の診断 Interface が利用可能か確認する
     const HRESULT interfaceResult = DXGIGetDebugInterface1(0, IID_PPV_ARGS(&debug));
     if (FAILED(interfaceResult))
     {
@@ -27,6 +28,7 @@ void DX12ResourceLeakChecker::report_live_objects()
     }
 
     // ALL は DXGI と D3D12 を含み、内部参照だけで残る Object は除外する
+    // DXGI と D3D12 の残存 Object をまとめて診断出力する
     const HRESULT reportResult = debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
     if (FAILED(reportResult))
     {

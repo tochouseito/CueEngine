@@ -32,6 +32,8 @@ pwsh -NoProfile -File scripts/codex_build.ps1
 
 Build Tree、生成されたVisual Studio Project、Test Logは`out/build/windows-vs2026/`以下に置き、Git管理しない。Testは通常BuildのTargetに含まれるが、Buildだけでは自動実行されない。
 
+手動の性能調査 Tool は既定で Build しない。`CUE_BUILD_PERFORMANCE_TOOLS=ON` で明示的に追加する。通常の Profiler 統計は常設し、詳細 Trace は `CUE_ENABLE_TIMING_TRACE` で切り替える。Build / 再調査手順と過去の実験部品は [性能調査 Tool](Engine/Tests/Performance/README.md) を参照する。
+
 ## EditorHost（M05）
 
 File 操作は独自の Path / IFile / IFileSystem を使用する。Repository 起動時の保存先は `out/`、製品 Host の既定は `%LOCALAPPDATA%/<会社名>/<アプリ名>/`。所有権と保存契約、ポータブルモードは [File 操作基盤](Engine/Documents/FileSystem.md) を参照する。

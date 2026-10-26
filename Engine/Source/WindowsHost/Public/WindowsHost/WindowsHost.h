@@ -11,6 +11,7 @@
 
 #include <Foundation/Result.h>
 #include <Passes/MainFrameGraph.h>
+#include <Platform/Clock.h>
 #include <Platform/Window.h>
 #include <Profiler/Profiler.h>
 #include <RHI/FrameExecution.h>
@@ -57,28 +58,34 @@ struct WindowsHostCallbacks final
     // Render Callback 復帰後、その入力 Snapshot が描画されたか返す。未指定なら Host の描画を採用する
     std::function<Result<bool>(std::uint64_t)> isInputRendered;
     // 初期化 Thread で一度だけ呼び、Backend の一意所有権を Host へ渡す
-    // FileSystem は Host が所有し Backend の停止まで借用可能。未指定なら既定 Factory を使う
-    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *)> createBackend;
+    // FileSystem と Clock は Backend の停止まで借用可能。未指定なら既定 Factory を使う
+    // Factory は渡された Clock を Backend の CPU 計測にも接続する
+    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *, Clock &)> createBackend;
 };
 
-/// @brief 将来の設定 File 読込から Host へ渡す起動設定
+/// @brief 上位の起動処理から Host へ渡す起動設定の所有値
 struct WindowsHostConfig final
 {
+    // Window の初期 Title と Client 寸法
     WindowDescriptor window;
+    // Runtime の CPU Frame と待機の初期条件
     FrameControllerDesc frame;
     PresentationConfig presentation;
     // Editor 等の具体型を公開せず、追加描画と表示 Pass の所有権を受け取る
     MainFrameGraphConfig graph;
+    // 上位アプリの処理を Host の各段階へ接続する Callback 群
     WindowsHostCallbacks callbacks;
     StoragePathsConfig storage;
     // 未指定なら Windows 実装を生成する。指定された実装も Host が所有する
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
     GpuFrameConfig gpu;
+    // 実行中に受け付ける性能設定の公開範囲
     PerformanceSettingsPolicy performancePolicy;
-    // 空なら読込を行わない。保存 Root 相対の Schema 付き設定を初期化前に適用する
-    std::string performanceSettingsFile;
+    // 固定更新・可変更新と追い付き上限の指定
     SimulationConfig simulation;
+    // 未指定なら Host が時計を所有する。指定時は全利用 Thread と Host の停止完了まで借用する
+    Clock *clock = nullptr;
 };
 
 /// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
@@ -104,6 +111,8 @@ class WindowsHost final
     /// @brief 初期化 Callback から停止完了まで FileSystem を非所有で借用する
     /// 構築 Thread だけで取得する。停止後は nullptr を返す
     [[nodiscard]] IFileSystem *file_system() const noexcept;
+    /// @brief 入力・Frame・表示の共通時計を初期化中から停止まで Owner Thread へ借用する
+    [[nodiscard]] Clock *clock() const noexcept;
     /// @brief FileSystem と同じ借用期間の保存先を返す
     [[nodiscard]] const StoragePaths *storage_paths() const noexcept;
 
@@ -174,7 +183,9 @@ class WindowsHost final
     std::unique_ptr<State> m_state;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
     bool m_isStepping = false;
+    // 安全な Frame 境界まで保持する未適用の設定要求
     std::optional<PerformanceSettings> m_pendingSettings;
+    // 性能設定と同じ停止境界で反映する Simulation の変更要求
     std::optional<SimulationConfig> m_pendingSimulation;
     bool m_isGraphRebuildable = true;
 

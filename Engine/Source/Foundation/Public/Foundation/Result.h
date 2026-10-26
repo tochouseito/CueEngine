@@ -15,6 +15,7 @@ namespace cue
 template <typename T>
 class Result final
 {
+    // Error そのものと値型を区別し、成功・失敗の格納位置を固定する
     static_assert(std::is_object_v<T>);
     static_assert(!std::is_same_v<std::remove_cv_t<T>, Error>);
 
@@ -49,6 +50,7 @@ public:
     /// @brief 成功Valueを保持するか返す
     [[nodiscard]] bool has_value() const noexcept
     {
+        // 格納中の Variant の選択肢で成功を判定する
         return m_storage.index() == 0;
     }
 
@@ -64,6 +66,7 @@ public:
     /// @brief 成功Valueへの非所有Pointerを返し、失敗時はnullptrを返す
     [[nodiscard]] T* try_value() & noexcept
     {
+        // 失敗中は nullptr を返し、値への誤アクセスを避ける
         return std::get_if<0>(&m_storage);
     }
 
@@ -82,6 +85,7 @@ public:
     /// @brief Errorへの非所有Pointerを返し、成功時はnullptrを返す
     [[nodiscard]] Error* try_error() & noexcept
     {
+        // 成功中は nullptr を返し、Error を持たない状態を表す
         return std::get_if<1>(&m_storage);
     }
 
@@ -142,6 +146,7 @@ public:
     /// @brief 成功状態か返す
     [[nodiscard]] bool has_value() const noexcept
     {
+        // void の成功は Error を保持しない状態で表す
         return !m_error.has_value();
     }
 

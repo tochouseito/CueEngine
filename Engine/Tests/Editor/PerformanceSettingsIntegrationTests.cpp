@@ -3,11 +3,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <memory>
+#include <span>
+#include <string_view>
 #include <thread>
 #include <utility>
 
-#include <Platform/Windows/WindowsFileSystem.h>
-
+#include "../Support/FileSystemProbe.h"
 #include "../Support/TemporaryFiles.h"
 
 namespace
@@ -44,7 +46,6 @@ int test_reconfiguration()
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.frame.maxFps = 1;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value() || !advance_until(host, 0, std::chrono::seconds(3)))
@@ -122,39 +123,79 @@ int test_reconfiguration()
     return host.shutdown().has_value() ? 0 : 5;
 }
 
-/// @brief 保存値を次の起動で読み込み、現在の構成として公開する
-int test_saved_restart()
+/// @brief 旧設定 File を参照せず、起動値と明示的な変更だけを適用する
+int test_explicit_settings_without_persistence()
 {
     cue::tests::TemporaryFiles temporary;
     if (!temporary.isCreated)
     {
         return 1;
     }
-    const auto settings = cue::performance_preset(cue::PerformancePreset::LowLatency);
+    auto path = temporary.root.join("editor/Performance.cfg");
+    if (!path.has_value() || !temporary.files->create_directories(path.try_value()->parent()).has_value())
     {
+        return 2;
+    }
+    unsigned settingsReads = 0;
+    for (const std::string_view text :
+         {std::string_view("CuePerformance 2\n1 75 1 456000 0 1000000\n1\n3 0 1 0 2\n0.1 0.2 0.3 1\n"),
+          std::string_view("invalid legacy settings\n")})
+    {
+        const auto saved =
+            temporary.files->write_all(*path.try_value(), std::as_bytes(std::span(text.data(), text.size())));
+        if (!saved.has_value())
+        {
+            return 3;
+        }
         cue::EditorHostConfig config;
         config.window.clientSize = {320, 240};
         config.imgui.settingsFile.clear();
         config.storage.dataRootOverride = temporary.root;
-        cue::EditorHost host(std::move(config));
-        if (!host.initialize().has_value() || !host.request_performance_settings(settings).has_value() ||
-            host.save_performance_settings().has_value() || !advance_until(host, 0, std::chrono::seconds(3)) ||
-            !host.save_performance_settings().has_value() || !host.shutdown().has_value())
+        config.frame.maxFps = 73;
+        config.gpu = {2, 1};
+        const cue::PerformanceSettings initial{
+            cue::frame_config_for_buffering(config.frame, config.gpu.resourceFrameCount), config.gpu, config.presentation};
+        auto files = std::make_unique<cue::tests::FileSystemProbe>(*temporary.files);
+        files->failedFilename = "Performance.cfg";
+        files->onOpen = [&](const cue::Path &a_path)
         {
-            return 2;
+            if (a_path.filename() == "Performance.cfg")
+            {
+                ++settingsReads;
+            }
+        };
+        config.fileSystem = std::move(files);
+        cue::EditorHost host(std::move(config));
+        if (!host.initialize().has_value())
+        {
+            return 4;
+        }
+        auto applied = host.performance_settings();
+        const auto changed = cue::performance_preset(cue::PerformancePreset::LowLatency);
+        if (!applied.has_value() || *applied.try_value() != initial ||
+            !host.request_performance_settings(changed).has_value() ||
+            !advance_until(host, 0, std::chrono::seconds(3)))
+        {
+            return 5;
+        }
+        applied = host.performance_settings();
+        if (!applied.has_value() || *applied.try_value() != changed || !host.shutdown().has_value() || settingsReads != 0)
+        {
+            return 6;
+        }
+        auto bytes = temporary.files->read_all(*path.try_value(), 4096);
+        if (!bytes.has_value())
+        {
+            return 7;
+        }
+        const std::string_view remaining(reinterpret_cast<const char *>(bytes.try_value()->data()),
+                                         bytes.try_value()->size());
+        if (remaining != text)
+        {
+            return 8;
         }
     }
-    cue::EditorHostConfig config;
-    config.window.clientSize = {320, 240};
-    config.imgui.settingsFile.clear();
-    config.storage.dataRootOverride = temporary.root;
-    cue::EditorHost host(std::move(config));
-    if (!host.initialize().has_value())
-    {
-        return 3;
-    }
-    auto applied = host.performance_settings();
-    return applied.has_value() && *applied.try_value() == settings && host.shutdown().has_value() ? 0 : 4;
+    return 0;
 }
 
 /// @brief 再構成 Callback の失敗 / 例外後は旧実効値を公開せず、停止処理だけ許可する
@@ -198,7 +239,6 @@ int test_simulation_settings()
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.frame.maxFps = 120;
     config.simulation = {60, 4};
     std::atomic<std::uint64_t> lastTick = 0;
@@ -256,9 +296,9 @@ int main()
     {
         return configured;
     }
-    if (const auto saved = test_saved_restart(); saved != 0)
+    if (const auto explicitSettings = test_explicit_settings_without_persistence(); explicitSettings != 0)
     {
-        return 10 + saved;
+        return 10 + explicitSettings;
     }
     if (const auto failed = test_failed_reconfiguration(); failed != 0)
     {

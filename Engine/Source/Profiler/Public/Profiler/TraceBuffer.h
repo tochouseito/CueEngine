@@ -37,6 +37,7 @@ template <typename T> class TraceBuffer final
     /// @brief 記録停止中の所有権を移す
     TraceBuffer &operator=(TraceBuffer &&a_other) noexcept
     {
+        // 自己 Move 以外では配列と記録件数の所有権を移す
         if (this != &a_other)
         {
             m_storage = std::move(a_other.m_storage);
@@ -53,6 +54,7 @@ template <typename T> class TraceBuffer final
     /// @brief 容量を変更し、記録を初期化する。Allocation 失敗時は旧領域を維持する
     void resize(std::size_t a_capacity)
     {
+        // 先に新しい配列を確保し、失敗時は旧配列を残す
         auto storage = a_capacity ? std::make_unique<T[]>(a_capacity) : nullptr;
         m_storage = std::move(storage);
         m_capacity = a_capacity;
@@ -62,6 +64,7 @@ template <typename T> class TraceBuffer final
     /// @brief 容量と循環設定を維持し、件数だけを初期化する
     void reset() noexcept
     {
+        // 配列を再確保せず、記録範囲と欠落件数だけを初期化する
         m_accepted = 0;
         m_dropped = 0;
     }
@@ -77,11 +80,13 @@ template <typename T> class TraceBuffer final
     [[nodiscard]] bool append(const T &a_value) noexcept
     {
         static_assert(std::is_nothrow_copy_assignable_v<T>);
+        // 通常記録の満杯と容量 0 は欠落件数へ計上する
         if (!m_capacity || (!m_isCircular && m_accepted == m_capacity))
         {
             ++m_dropped;
             return false;
         }
+        // 循環記録では格納位置だけを折り返し、総採用件数は増やし続ける
         m_storage[m_accepted % m_capacity] = a_value;
         ++m_accepted;
         return true;
@@ -110,6 +115,7 @@ template <typename T> class TraceBuffer final
     /// @brief 現在参照可能な保持件数を返す
     [[nodiscard]] std::size_t retained_count() const noexcept
     {
+        // 採用済み総数から、今も配列内に残る件数を求める
         return (std::min)(m_accepted, m_capacity);
     }
     /// @brief 循環保存で上書きした古い記録数を返す
@@ -145,6 +151,7 @@ template <typename T> class TraceBuffer final
     /// @brief 保持記録を古い順で返す。index は retained_count 未満であること
     [[nodiscard]] const T &at_chronological(std::size_t a_index) const noexcept
     {
+        // 物理配列の折返しを隠し、最も古い標本から参照する
         return m_storage[(first_sequence() + a_index) % m_capacity];
     }
 

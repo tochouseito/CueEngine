@@ -64,6 +64,7 @@ class DX12ImGuiBackend::State final
         bool isRecorded = false;
     };
 
+    Clock *clock = nullptr;
     ImGuiContext *context = nullptr;
     ID3D12Device *device = nullptr;
     dx12::DX12GpuCommandQueue *queue = nullptr;
@@ -82,13 +83,14 @@ class DX12ImGuiBackend::State final
     [[nodiscard]] Result<void> wait_for_usage(std::uint64_t a_fence)
     {
         TimingTraceScope traceUsage("ImGui.GpuUsage", a_fence);
+        // 既に完了している利用点は待機時間へ加えない
         if (!a_fence || queue->is_fence_complete(a_fence))
         {
             return Result<void>::success();
         }
-        const auto started = std::chrono::steady_clock::now();
+        const auto started = clock->now();
         auto result = queue->wait_for_fence(a_fence);
-        gpuWaitTimes.add(std::chrono::steady_clock::now() - started);
+        gpuWaitTimes.add(clock->now() - started);
         return result;
     }
 
@@ -104,6 +106,7 @@ class DX12ImGuiBackend::State final
                          D3D12_GPU_DESCRIPTOR_HANDLE *a_gpu) noexcept
     {
         auto &state = *static_cast<State *>(a_info->UserData);
+        // 事前予約した SRV Slot を公式 Backend の生成 Callback へ渡す
         auto slot = std::find_if(state.descriptors.begin(), state.descriptors.end(),
                                  [](const Descriptor &a_slot) { return a_slot.isReserved; });
         if (slot == state.descriptors.end())
@@ -121,6 +124,7 @@ class DX12ImGuiBackend::State final
                         D3D12_GPU_DESCRIPTOR_HANDLE a_gpu) noexcept
     {
         auto &state = *static_cast<State *>(a_info->UserData);
+        // 公式 Backend が返した CPU Handle に対応する Slot を探す
         auto slot = std::find_if(state.descriptors.begin(), state.descriptors.end(),
                                  [a_cpu, a_gpu](const Descriptor &a_slot)
                                  {
@@ -140,6 +144,7 @@ class DX12ImGuiBackend::State final
     {
         for (std::size_t index = 0; index < a_count; ++index)
         {
+            // 空き Slot を先に確保し、公式 Callback 内の動的確保を避ける
             auto slot = std::find_if(descriptors.begin(), descriptors.end(),
                                      [](const Descriptor &a_slot) { return !a_slot.handle.is_valid(); });
             if (slot == descriptors.end())
@@ -155,6 +160,7 @@ class DX12ImGuiBackend::State final
             }
             slot->handle = allocated.take_value();
             slot->isReserved = true;
+            // 同じ Slot の CPU 書込み用と Shader 参照用 Handle を揃える
             auto cpu = allocator->cpu_handle(slot->handle);
             auto gpu = allocator->gpu_handle(slot->handle);
             if (!cpu.has_value() || !gpu.has_value())
@@ -174,6 +180,7 @@ class DX12ImGuiBackend::State final
     {
         for (auto &slot : descriptors)
         {
+            // 公式 Backend にまだ渡していない予約だけを返却する
             if (slot.isReserved)
             {
                 if (!allocator->release(slot.handle).has_value())
@@ -201,13 +208,14 @@ DX12ImGuiBackend::DX12ImGuiBackend(CreateToken) noexcept
 /// @brief SwapChain の Queue を借用し、Editor 専用 Heap を公式 Backend に接続する
 Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_backend, ImGuiContext &a_context,
                                                                    std::uint32_t a_frameCount, std::uint32_t a_capacity,
-                                                                   Profiler *a_profiler)
+                                                                   Profiler *a_profiler, Clock &a_clock)
 {
     using BackendResult = Result<std::unique_ptr<DX12ImGuiBackend>>;
     if (a_frameCount == 0 || a_frameCount > 8 || a_capacity == 0)
     {
         return BackendResult::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.config"});
     }
+    // Device・Queue・SwapChain の所有系列が一致するか検証する
     auto *backend = dynamic_cast<dx12::DX12Backend *>(&a_backend);
     auto *device = backend ? dynamic_cast<dx12::DX12RenderDevice *>(backend->get_render_device()) : nullptr;
     auto *swap = backend ? backend->get_swap_chain() : nullptr;
@@ -223,6 +231,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         return BackendResult::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.target_format"});
     }
     ContextScope current(&a_context);
+    // 同じ ImGui Context への Renderer の二重登録を拒否する
     if (ImGui::GetIO().BackendRendererUserData)
     {
         return BackendResult::failure({ErrorCategory::InvalidState, "ImGuiDX12.already_initialized"});
@@ -232,6 +241,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         auto result = std::make_unique<DX12ImGuiBackend>(CreateToken{});
         result->m_state = std::make_unique<State>();
         auto &state = *result->m_state;
+        state.clock = &a_clock;
         if (!a_profiler)
         {
             state.ownedProfiler = std::make_unique<Profiler>();
@@ -245,6 +255,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         state.ringFences.resize(a_frameCount, 0);
         state.info.descriptorCapacity = a_capacity;
         state.descriptors.resize(a_capacity);
+        // UI 専用の Shader-visible SRV Heap を生成する
         auto heap = dx12::DX12DescriptorAllocator::create(*state.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                                                           a_capacity, true);
         if (!heap.has_value())
@@ -267,6 +278,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         info.SrvDescriptorHeap = state.allocator->heap();
         info.SrvDescriptorAllocFn = &State::allocate;
         info.SrvDescriptorFreeFn = &State::release;
+        // 公式 DX12 Backend に描画条件と Descriptor Callback を登録する
         bool initialized = false;
         try
         {
@@ -283,6 +295,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         }
         state.isInitialized = true;
         // NewFrame の遅延作成 Assert へ進めず、生成失敗を初期化の Result で通知する
+        // 初回描画前に Shader と Pipeline 等の Device Object を用意する
         if (!ImGui_ImplDX12_CreateDeviceObjects())
         {
             return BackendResult::failure({ErrorCategory::PlatformFailure, "ImGui_ImplDX12_CreateDeviceObjects"});
@@ -332,6 +345,7 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
     }
     auto &state = *m_state;
     ContextScope current(state.context);
+    // 宣言済み RTV の形式と現在の描画条件を照合する
     auto target = context->validate_external_graphics(state.format);
     if (!target.has_value())
     {
@@ -345,6 +359,7 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
     }
     // 公式 Callback からの例外や未申告 Resource 利用を避け、公式 State 切替だけを許可する
     const auto &platform = ImGui::GetPlatformIO();
+    // 実行できないユーザー描画 Callback を Command 記録前に拒否する
     for (const auto *list : a_draw.CmdLists)
     {
         for (const auto &command : list->CmdBuffer)
@@ -356,11 +371,13 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
         }
     }
     // 直接記録では前回の同期 Graph 呼出が既に戻っているため、その提出点をここで回収する
+    // 前回の記録に対応する提出 Fence を Ring へ反映する
     auto finished = finish_submission();
     if (!finished.has_value())
     {
         return finished;
     }
+    // Texture の生成・更新・破棄要求を記録前に処理する
     auto prepared = prepare(a_draw);
     if (!prepared.has_value())
     {
@@ -379,9 +396,11 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
     // 公式 Backend の Ring は Graph 枠番号ではなく、DisplaySize が正の呼出だけで進む
     // Resize / Skip / 最小化で両者がずれても、再利用する VB/IB だけを待つ
     const bool advancesRing = a_draw.DisplaySize.x > 0.0f && a_draw.DisplaySize.y > 0.0f;
+    // 公式 Backend が次に更新する VB / IB の枠を選ぶ
     const auto ring = static_cast<std::size_t>(state.ringCalls % state.info.frameCount);
     if (advancesRing && state.ringFences[ring] != 0)
     {
+        // 同じ VB / IB 枠を GPU が参照している間は上書きしない
         auto waited = state.wait_for_usage(state.ringFences[ring]);
         if (!waited.has_value())
         {
@@ -394,6 +413,7 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
                                                  ID3D12DescriptorHeap *heaps[] = {state.allocator->heap()};
                                                  a_list.SetDescriptorHeaps(1, heaps);
                                                  // Texture 更新は予約付きで完了済みなので、公式描画では二重処理しない
+                                                 // Snapshot の Texture 更新を抑え、確定済み描画 Data だけを記録する
                                                  auto *textures = a_draw.Textures;
                                                  a_draw.Textures = nullptr;
                                                  ImGui_ImplDX12_RenderDrawData(&a_draw, &a_list);
@@ -402,6 +422,7 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
                                                  {
                                                      ++state.ringCalls;
                                                      state.recordedRing = ring;
+                                                     // 今回参照した Texture の最終利用 Fence を後で更新できるよう印を付ける
                                                      for (const auto *list : a_draw.CmdLists)
                                                      {
                                                          for (const auto &command : list->CmdBuffer)
@@ -438,6 +459,7 @@ Result<void> DX12ImGuiBackend::finish_submission()
     {
         return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.submission.unconfirmed"});
     }
+    // 実提出後の最新 Fence を、記録した VB / IB 枠に対応付ける
     const auto fence = state.queue->latest_fence_value();
     state.ringFences[*state.recordedRing] = fence;
     state.recordedRing.reset();
@@ -460,6 +482,7 @@ Result<bool> DX12ImGuiBackend::is_frame_ready() const
         return Result<bool>::failure({ErrorCategory::InvalidState, "ImGuiDX12.is_frame_ready"});
     }
     const auto &state = *m_state;
+    // Device 喪失や Queue 異常は未準備と区別して Error にする
     const auto removed = state.device->GetDeviceRemovedReason();
     if (FAILED(removed) || state.queue->is_poisoned())
     {
@@ -484,6 +507,7 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
         return Result<void>::failure({ErrorCategory::Fatal, "ImGuiDX12.prepare.poisoned"});
     }
     // 更新前に旧 Snapshot の CPU 参照が消えていることを Manager が保証する
+    // 別 Snapshot が保持する更新対象 Texture は今は書き換えない
     if (a_draw.Textures)
     {
         for (const auto *texture : *a_draw.Textures)
@@ -524,6 +548,7 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
                 {
                     if (slot.handle.is_valid() && slot.gpu.ptr == texture->GetTexID() && slot.lastFence)
                     {
+                        // Texture の最終利用が GPU で完了してから更新する
                         auto waited = state.wait_for_usage(slot.lastFence);
                         if (!waited.has_value())
                         {
@@ -547,11 +572,13 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
             creates += texture->Status == ImTextureStatus_WantCreate ? 1 : 0;
         }
     }
+    // 必要な新規 Texture 数の Descriptor をまとめて予約する
     auto reserved = state.reserve(creates);
     if (!reserved.has_value())
     {
         return reserved;
     }
+    // 予約済み Slot を使って公式 Backend の Texture 更新を進める
     if (a_draw.Textures)
     {
         for (auto *texture : *a_draw.Textures)
@@ -564,6 +591,7 @@ Result<void> DX12ImGuiBackend::prepare(ImDrawData &a_draw)
         }
     }
     state.release_reservations();
+    // Device 喪失を確認し、完了待ちを正常終了と混同しない
     const auto removed = state.device->GetDeviceRemovedReason();
     if (FAILED(removed))
     {
@@ -593,6 +621,7 @@ Result<void> DX12ImGuiBackend::shutdown()
     auto &state = *m_state;
     if (state.isInitialized)
     {
+        // 公式 Backend の GPU 資源を破棄する前に Queue を完了させる
         auto waited = state.queue->wait_idle();
         if (!waited.has_value())
         {

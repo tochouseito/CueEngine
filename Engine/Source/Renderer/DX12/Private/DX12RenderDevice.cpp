@@ -26,9 +26,11 @@ HRESULT create_device(IDXGIAdapter1* a_adapter, Microsoft::WRL::ComPtr<ID3D12Dev
                       D3D_FEATURE_LEVEL& a_featureLevel)
 {
     HRESULT result = E_FAIL;
+    // 高い機能レベルから順に試し、作成できた Device を採用する
     for (D3D_FEATURE_LEVEL level : k_featureLevels)
     {
         Microsoft::WRL::ComPtr<ID3D12Device> candidate;
+        // 選択した Adapter と機能レベルで D3D12 Device の生成を試す
         result = D3D12CreateDevice(a_adapter, level, IID_PPV_ARGS(&candidate));
         if (SUCCEEDED(result))
         {
@@ -64,12 +66,14 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
     Microsoft::WRL::ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
     {
+        // Device 生成前に D3D12 Debug Layer を有効化する
         debug->EnableDebugLayer();
         hasDebugLayer = true;
 
         Microsoft::WRL::ComPtr<ID3D12Debug1> gpuValidation;
         if (SUCCEEDED(debug.As(&gpuValidation)))
         {
+            // GPU 実行時の不正アクセスを検出する検証を有効化する
             gpuValidation->SetEnableGPUBasedValidation(true);
         }
     }
@@ -78,7 +82,9 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
     Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> deviceRemoved;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&deviceRemoved))))
     {
+        // Device 喪失時に実行済み Command の追跡情報を残す
         deviceRemoved->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        // Device 喪失時の GPU Page Fault 情報を残す
         deviceRemoved->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
     }
 #endif
@@ -88,6 +94,7 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
     HRESULT result = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&context->m_factory));
     if (result == DXGI_ERROR_SDK_COMPONENT_MISSING && factoryFlags != 0)
     {
+        // Adapter 列挙と SwapChain 生成に使う DXGI Factory を生成する
         result = CreateDXGIFactory2(0, IID_PPV_ARGS(&context->m_factory));
     }
     if (FAILED(result))
@@ -105,9 +112,11 @@ Result<std::unique_ptr<DX12RenderDevice>> DX12RenderDevice::create(AdapterSelect
     // 指定した優先順で調べ、Device を作れた Hardware だけ採用する
     if (a_selection != AdapterSelection::Warp)
     {
+        // 省電力または高性能の要求に合わせて Adapter の列挙順を選ぶ
         const auto preference = a_selection == AdapterSelection::HardwareMinimumPower
                                     ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
                                     : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+        // 利用可能な Hardware Adapter を列挙し、Device 生成を試す
         for (UINT index = 0;; ++index)
         {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;

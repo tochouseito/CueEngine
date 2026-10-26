@@ -147,6 +147,7 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     // 借用する Metric と描画枠より先に構築し、最後まで記録先を維持する
     std::unique_ptr<Profiler> m_ownedProfiler;
     Profiler *m_profiler = nullptr;
+    Clock *m_clock = nullptr;
     std::unique_ptr<FrameGraph> m_graph;
     FrameGraphResourceHandle m_backBuffer;
     std::unique_ptr<DX12FrameGraphFrames> m_frames;

@@ -48,6 +48,7 @@ struct FrameGraphComposition final
                                                                            MainFrameGraphConfig a_config = {})
 {
     using GraphResult = Result<FrameGraphComposition>;
+    // FinalColor の宣言と生成用 Context を持つ Builder を用意する
     auto builderResult = FrameGraphBuilder::create_main(a_colorDesc, &a_context);
     if (!builderResult.has_value())
     {
@@ -55,6 +56,7 @@ struct FrameGraphComposition final
     }
     auto builder = builderResult.take_value();
     const auto finalColor = builder->final_color();
+    // Back Buffer は生成せず、外部 Texture として Present 状態で借用する
     auto backResult = builder->import_texture2d("BackBuffer", a_colorDesc, FrameGraphResourceState::Present,
                                                 FrameGraphResourceState::Present);
     if (!backResult.has_value())
@@ -70,6 +72,7 @@ struct FrameGraphComposition final
     auto graph = graphResult.take_value();
     try
     {
+        // FinalColor の最初の書込みとして Clear Pass を先頭に置く
         auto clear = std::make_unique<ClearFinalColorPass>(a_colorDesc.clearColor);
         const auto *clearPass = clear.get();
         auto clearResult = graph->add_pass(std::move(clear));
@@ -78,6 +81,7 @@ struct FrameGraphComposition final
             return GraphResult::failure(*clearResult.try_error());
         }
         // Clear、呼出側の追加描画、選択した表示の順に一つの Graph へ所有権を移す
+        // 利用側が追加する描画 Pass を Clear と表示の間へ登録する
         if (a_config.configure)
         {
             auto configureResult = a_config.configure(*graph, finalColor);
@@ -86,6 +90,7 @@ struct FrameGraphComposition final
                 return GraphResult::failure(*configureResult.try_error());
             }
         }
+        // Resize で新しい Handle を取得できるよう表示 Pass を Factory から生成する
         if (!a_config.displayPass && a_config.displayPassFactory)
         {
             a_config.displayPass = a_config.displayPassFactory();
@@ -94,6 +99,7 @@ struct FrameGraphComposition final
                 return GraphResult::failure({ErrorCategory::InvalidState, "create_main_frame_graph.display_factory"});
             }
         }
+        // 指定がなければ標準の全画面表示 Pass を採用する
         if (!a_config.displayPass)
         {
             a_config.displayPass = std::make_unique<PresentToSwapChainPass>();
@@ -106,6 +112,7 @@ struct FrameGraphComposition final
             return GraphResult::failure(*presentResult.try_error());
         }
         auto buildResult = graph->build();
+        // 全 Pass の宣言後に論理実行計画を確定する
         if (!buildResult.has_value())
         {
             return GraphResult::failure(*buildResult.try_error());
@@ -118,6 +125,7 @@ struct FrameGraphComposition final
         }
         // 表示先は Graphics の BackBuffer 書込みとし、Present への復帰は Graph の終了 Barrier に任せる
         const auto &display = plan->passes().back();
+        // 最後の Pass が Graphics で Back Buffer に書くことを検証する
         bool writesBackBuffer = false;
         for (const auto &use : display.uses)
         {

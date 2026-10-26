@@ -16,9 +16,11 @@ enum class StorageMode
 /// @brief Build 構成と独立して保存先を選ぶ Host の所有設定
 struct StoragePathsConfig final
 {
+    // 開発・製品・Portable の保存先方針を選ぶ
     StorageMode mode = StorageMode::Product;
     std::string companyName = "CueEngine";
     std::string applicationName = "CueEngine";
+    // Development で基準にする絶対 Repository Root
     Path repositoryRoot;
     // 指定する場合は絶対 Path。未指定の用途は各 Mode の既定を使う
     Path dataRootOverride;
@@ -30,9 +32,13 @@ struct StoragePathsConfig final
 /// @brief 各利用者へ渡す絶対保存先を値で所有する
 struct StoragePaths final
 {
+    // アプリが生成するデータの基準 Directory
     Path dataRoot;
+    // ログ File の保存先
     Path logs;
+    // Shader の生成 Cache の保存先
     Path shaderCache;
+    // PSO の生成 Cache の保存先
     Path psoCache;
 };
 

@@ -90,11 +90,15 @@ private:
 
     // ComPtr より後に破棄し、Native Resource 解放後に Heap 領域を返す
     std::shared_ptr<void> m_placementLifetime;
+    // Native Resource の所有参照。Placement の予約より先に破棄する
     Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
+    // Placed 資源の場合だけ、配置先 Heap を予約の生存中に借用する
     ID3D12Heap* m_placementHeap = nullptr;
+    // 共有 Heap 内での配置開始 Byte 位置
     std::uint64_t m_placementOffset = 0;
     GpuResourceKind m_kind = GpuResourceKind::Buffer;
     GpuMemoryUsage m_memory = GpuMemoryUsage::Default;
+    // Buffer の CPU 読み書き範囲を検証する生成時の容量
     std::uint64_t m_bufferSize = 0;
 };
 } // namespace cue::dx12

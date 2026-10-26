@@ -28,6 +28,7 @@ std::atomic<std::uint64_t> g_nextResourcePoolId = 1;
 /// @brief Pool ごとに再利用しない識別子を発行する
 Result<std::uint64_t> next_pool_id()
 {
+    // 異なる Pool の Handle を混同しない識別子を割り当てる
     std::uint64_t id = g_nextResourcePoolId.load(std::memory_order_relaxed);
     while (id != (std::numeric_limits<std::uint64_t>::max)() &&
            !g_nextResourcePoolId.compare_exchange_weak(id, id + 1, std::memory_order_relaxed))
@@ -65,6 +66,7 @@ struct DX12GpuResourcePool::State final
     {
         for (Slot& slot : slots)
         {
+            // 未完了の GPU 利用を待ってから Slot の資源を破棄する
             for (PendingUse& use : slot.pending)
             {
                 auto result = use.completion->wait();
@@ -194,6 +196,7 @@ Result<std::unique_ptr<DX12GpuResourcePool>> DX12GpuResourcePool::create(DX12Ren
         pool->m_state = std::make_shared<State>();
         pool->m_state->device = a_device.device();
         pool->m_state->poolId = idResult.take_value();
+        // 一時資源と Alias 用の Placed Heap 管理を Pool に接続する
         auto allocatorResult = DX12PlacedResourceAllocator::create(a_device);
         if (!allocatorResult.has_value())
         {
@@ -231,6 +234,7 @@ Result<GpuResourceHandle> DX12GpuResourcePool::create_buffer(GpuBufferDesc a_des
     }
     try
     {
+        // 通常 Buffer を生成し、成功した実体だけを Slot へ登録する
         auto resourceResult = DX12GpuResource::create_buffer(*m_state->device.Get(), a_desc);
         if (!resourceResult.has_value())
         {
@@ -258,6 +262,7 @@ Result<GpuResourceHandle> DX12GpuResourcePool::create_texture2d(GpuTexture2DDesc
     }
     try
     {
+        // Texture の生成と所有登録を一つの成功結果へまとめる
         auto resourceResult = DX12GpuResource::create_texture2d(*m_state->device.Get(), a_desc);
         if (!resourceResult.has_value())
         {
@@ -283,6 +288,7 @@ Result<GpuResourceHandle> DX12GpuResourcePool::create_transient_buffer(GpuBuffer
                                                        "DX12GpuResourcePool.create_transient_buffer.closed"});
         }
     }
+    // 一時 Buffer の実体を共通 Heap の空き領域へ配置する
     auto resourceResult = m_placedAllocator->create_buffer(a_desc);
     if (!resourceResult.has_value())
     {
@@ -322,6 +328,7 @@ Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::create_alias_buffers
                 {ErrorCategory::InvalidState, "DX12GpuResourcePool.create_alias_buffers.closed"});
         }
     }
+    // 使用期間を共有する Buffer 群を一括生成する
     auto result = m_placedAllocator->create_alias_buffers(a_descs);
     if (!result.has_value())
     {
@@ -342,6 +349,7 @@ Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::create_alias_texture
                 {ErrorCategory::InvalidState, "DX12GpuResourcePool.create_alias_texture2ds.closed"});
         }
     }
+    // 使用期間を共有する Texture 群を一括生成する
     auto result = m_placedAllocator->create_alias_texture2ds(a_descs);
     if (!result.has_value())
     {
@@ -373,6 +381,7 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle
     {
         return LeaseResult::failure({ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire.active_conflict"});
     }
+    // CPU 借用に加えて、未完了の GPU 読み書きとの競合を確認する
     for (const State::PendingUse& use : slot.pending)
     {
         if (a_access == GpuResourceAccess::Write || use.access == GpuResourceAccess::Write)
@@ -385,6 +394,7 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle
     {
         // 同時借用の全員が提出後に一件ずつ追加できる容量を、提出前に確保する
         slot.pending.reserve(slot.pending.size() + slot.activeReaders + (slot.hasActiveWriter ? 1 : 0) + 1);
+        // Lease が生存する間は Slot の資源と共有状態を保持する
         auto lease = std::make_unique<Lease>(m_state, a_handle.index, slot.resource.get(), a_access);
         if (a_access == GpuResourceAccess::Read)
         {
@@ -418,6 +428,7 @@ Result<bool> DX12GpuResourcePool::can_acquire(GpuResourceHandle a_handle, GpuRes
     bool isAvailable = !slot.hasActiveWriter && (a_access != GpuResourceAccess::Write || slot.activeReaders == 0);
     for (const auto &use : slot.pending)
     {
+        // 完了点を非待機で確認し、今すぐ借用可能かだけを返す
         auto status = use.completion->completion_status();
         if (!status.has_value())
         {
@@ -437,6 +448,7 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire_wait(GpuResourceHandle a_h
     const auto state = m_state;
     for (;;)
     {
+        // まず通常の借用を試し、GPU 競合だけを完了待ちへ切り替える
         auto leaseResult = acquire(a_handle, a_access);
         if (leaseResult.has_value() || leaseResult.try_error()->operation != "DX12GpuResourcePool.acquire.gpu_conflict")
         {
@@ -470,6 +482,7 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire_wait(GpuResourceHandle a_h
         {
             continue;
         }
+        // 競合する GPU 完了点を Lock の外で待つ
         auto waitResult = pending->wait();
         if (!waitResult.has_value())
         {
@@ -506,6 +519,7 @@ Result<std::size_t> DX12GpuResourcePool::collect()
 {
     std::lock_guard lock(m_state->mutex);
     std::size_t released = 0;
+    // 退役済みで利用の終わった Slot を回収する
     for (std::size_t index = 0; index < m_state->slots.size(); ++index)
     {
         released += m_state->collect_slot_locked(static_cast<std::uint32_t>(index)) ? 1 : 0;
@@ -522,6 +536,7 @@ Result<void> DX12GpuResourcePool::shutdown()
     }
     std::lock_guard lock(m_state->mutex);
     m_state->isClosed = true;
+    // CPU Lease が残る場合は Pool の停止を拒否する
     for (const State::Slot& slot : m_state->slots)
     {
         if (slot.activeReaders != 0 || slot.hasActiveWriter)
@@ -533,6 +548,7 @@ Result<void> DX12GpuResourcePool::shutdown()
     {
         for (State::PendingUse& use : slot.pending)
         {
+            // 最後の GPU 利用が終わるまで Native 資源を保持する
             auto result = use.completion->wait();
             if (!result.has_value())
             {
@@ -610,10 +626,12 @@ Result<std::vector<GpuResourceHandle>> DX12GpuResourcePool::insert_resources(
     }
     for (auto& resource : a_resources)
     {
+        // 一括生成した実体を順に Handle へ変換する
         auto result = insert_resource(std::move(resource));
         if (!result.has_value())
         {
             const auto error = *result.try_error();
+            // 途中で登録に失敗した場合は、既に登録した分も退役させる
             for (const auto handle : handles)
             {
                 auto retireResult = retire(handle);

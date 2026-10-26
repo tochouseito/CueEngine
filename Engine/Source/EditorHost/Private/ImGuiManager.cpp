@@ -2,10 +2,6 @@
 
 #include <Profiler/TimingTrace.h>
 
-#if defined(CUE_DESKTOP_INVESTIGATION)
-#include <Foundation/DesktopInvestigation.h>
-#endif
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -101,13 +97,15 @@ class ImGuiManager::State final
 {
 public:
   /// @brief 初期化時に系列を登録し、Frame 内では Handle だけを使用する
-  explicit State(Profiler *a_profiler)
-      : profiler(a_profiler ? a_profiler : &ownedProfiler), uiBuildTimes(profiler->create_metric("ImGui.UiBuild")),
+  explicit State(Profiler *a_profiler, Clock &a_clock)
+      : clock(a_clock), profiler(a_profiler ? a_profiler : &ownedProfiler),
+        uiBuildTimes(profiler->create_metric("ImGui.UiBuild")),
         snapshotCopyTimes(profiler->create_metric("ImGui.SnapshotCopy")),
         contextWaitTimes(profiler->create_metric("ImGui.ContextWait"))
   {
   }
   // 外部 Registry 指定時も、単独利用時の所有先を先に構築して寿命を固定する
+  Clock &clock;
   Profiler ownedProfiler;
   Profiler *profiler;
   std::unique_ptr<IFileSystem> ownedFiles;
@@ -146,6 +144,7 @@ public:
   /// @brief 他の枠から借用中の Texture は残し、最後の CPU 参照だけ Queue Pin を解除する
   void release_snapshot(std::size_t a_slot)
   {
+      // 消費済み Snapshot の所有権を一旦取り出して参照を回収する
       auto snapshot = std::move(snapshots[a_slot]);
       if (!snapshot)
       {
@@ -154,6 +153,7 @@ public:
       for (auto *texture : snapshot->textures)
       {
           bool isReferenced = false;
+          // 他の未消費 Snapshot が同じ Texture を保持していないか調べる
           for (const auto &pending : snapshots)
           {
               isReferenced |= pending && std::find(pending->textures.begin(), pending->textures.end(), texture) !=
@@ -188,6 +188,7 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
     {
         return ManagerResult::failure({ErrorCategory::InvalidArgument, "ImGuiManager.config"});
     }
+    // Window の生存中だけ Native Handle を借りて ImGui 入力へ接続する
     auto handle = borrow_windows_window_handle(a_window);
     if (!handle.has_value())
     {
@@ -196,13 +197,15 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
     try
     {
         auto result = std::make_unique<ImGuiManager>(CreateToken{});
-        result->m_state = std::make_unique<State>(a_profiler);
+        result->m_clock = a_config.clock ? a_config.clock : &get_default_clock();
+        result->m_state = std::make_unique<State>(a_profiler, a_config.clock ? *a_config.clock : get_default_clock());
         auto& state = *result->m_state;
         state.window = &a_window;
         state.config = std::move(a_config);
         state.files = state.config.fileSystem;
         if (!state.files)
         {
+            // 外部 FileSystem 未指定時だけ Manager 内で実装を所有する
             auto files = create_windows_file_system();
             if (!files.has_value())
             {
@@ -227,6 +230,7 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
             }
             if (*exists.try_value())
             {
+                // Layout 設定の読込み容量を制限し、異常な File を拒否する
                 auto loaded = state.files->read_all(*path.try_value(), 4 * 1024 * 1024);
                 if (!loaded.has_value())
                 {
@@ -278,6 +282,7 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
 
         // 接続枠を先に確保し、二重生成失敗が既存 Backend の Window Property を変更しないようにする
         State* borrowed = &state;
+        // Window Message を ImGui の入力処理へ転送する Handler を登録する
         auto registered = register_windows_message_handler(
             a_window,
             [borrowed](const WindowsMessage &a_message)
@@ -291,6 +296,7 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
                 }
                 // 他の Context が Current の場合も、この Window の Context へ入力を配送する
                 ScopedContext active(borrowed->context);
+                // 今回の Native Message に対応する ImGui Event ID の範囲を記録する
                 const auto nextInput = borrowed->context->InputEventsNextEventId;
                 const auto value = ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(a_message.window),
                                                                 a_message.message, a_message.wParam, a_message.lParam);
@@ -368,8 +374,10 @@ Result<void> ImGuiManager::initialize_renderer(IBackend &a_backend, std::uint32_
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.initialize_renderer"});
     }
+    // UI 専用 GPU Backend へ同じ時計と計測先を渡す
     auto created = DX12ImGuiBackend::create(a_backend, *m_state->context, a_frameCount,
-                                            m_state->config.rendererDescriptorCapacity, m_state->profiler);
+                                            m_state->config.rendererDescriptorCapacity, m_state->profiler,
+                                            m_state->clock);
     if (!created.has_value())
     {
         return Result<void>::failure(*created.try_error());
@@ -397,6 +405,7 @@ Result<void> ImGuiManager::enable_frame_transfer(std::uint32_t a_cpuFrameCount)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.enable_frame_transfer"});
     }
+    // CPU Snapshot の枠数を決め、GPU の VB / IB 枠数とは分離する
     const auto frameCount = a_cpuFrameCount ? a_cpuFrameCount : m_state->renderer->info().frameCount;
     if (frameCount > 8)
         return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiManager.cpu_capacity"});
@@ -447,6 +456,7 @@ Result<void> ImGuiManager::reconfigure_renderer(IBackend &a_backend, std::uint32
     }
     if (m_state->renderer->info().frameCount != a_gpuFrames)
     {
+        // 旧 Backend の GPU 利用を完了してから枠数を変更する
         auto stopped = m_state->renderer->shutdown();
         if (!stopped.has_value())
         {
@@ -468,8 +478,10 @@ Result<void> ImGuiManager::reconfigure_renderer(IBackend &a_backend, std::uint32
             return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.reconfigure.win32"});
         }
         m_state->isWin32Initialized = true;
+        // Context を維持したまま新しい GPU Ring を用意する
         auto created = DX12ImGuiBackend::create(a_backend, *m_state->context, a_gpuFrames,
-                                                m_state->config.rendererDescriptorCapacity, m_state->profiler);
+                                                m_state->config.rendererDescriptorCapacity, m_state->profiler,
+                                            m_state->clock);
         if (!created.has_value())
         {
             return Result<void>::failure(*created.try_error());
@@ -490,7 +502,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.publish_frame"});
     }
-    const auto lockStarted = std::chrono::steady_clock::now();
+    const auto lockStarted = m_clock->now();
     TimingTraceScope traceLock("ImGui.Lock");
     std::unique_lock lock(imgui_context_mutex());
     traceLock.finish();
@@ -500,7 +512,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         return valid;
     }
     auto &state = *m_state;
-    state.contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+    state.contextWaitTimes.add(m_clock->now() - lockStarted);
     if (!state.frameCount || state.isFrameOpen || state.lastPublishedUi == state.info.frames ||
         a_frame != state.transfer.publishedFrames || state.snapshots[a_frame % state.frameCount])
     {
@@ -513,6 +525,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         [&state]()
         {
             ScopedContext current(state.context);
+            // 更新対象 Texture が古い Snapshot に固定されている間は公開を待つ
             const auto *draw = ImGui::GetDrawData();
             if (draw && draw->Textures)
             {
@@ -538,6 +551,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     }
     // CloneOutput が複製しない Callback UserData を Worker に持ち出さない
     const auto &platform = ImGui::GetPlatformIO();
+    // 転送できない描画 Callback を Snapshot 複製前に拒否する
     for (const auto *list : source->CmdLists)
     {
         for (const auto &command : list->CmdBuffer)
@@ -548,6 +562,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
             }
         }
     }
+    // Texture 更新を Main Thread で完了し、Snapshot の参照先を確定する
     auto prepared = state.renderer->prepare(*source);
     if (!prepared.has_value())
     {
@@ -555,8 +570,10 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
     }
     try
     {
-        const auto copyStarted = std::chrono::steady_clock::now();
+        const auto copyStarted = m_clock->now();
+        // 論理 Frame ID に対応する CPU Snapshot の循環枠を選ぶ
         const auto slot = static_cast<std::size_t>(a_frame % state.frameCount);
+        // 回収済み配列を再利用し、毎 Frame の確保を抑える
         auto snapshot = std::move(state.cachedSnapshots[slot]);
         if (!snapshot)
         {
@@ -575,6 +592,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         snapshot->draw.OwnerViewport = &snapshot->viewport;
         snapshot->lists.reserve(source->CmdLists.Size);
         std::size_t listIndex = 0;
+        // 各 DrawList の頂点・Index・Command を Snapshot へ複写する
         for (const auto *list : source->CmdLists)
         {
             if (listIndex == snapshot->lists.size())
@@ -606,6 +624,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
                 std::memcpy(clone->VtxBuffer.Data, list->VtxBuffer.Data, list->VtxBuffer.size_in_bytes());
             }
             clone->Flags = list->Flags;
+            // Command の Texture 参照を GPU 側で使える固定参照へ揃える
             for (auto &command : clone->CmdBuffer)
             {
                 auto *texture = command.TexRef._TexData;
@@ -639,6 +658,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
             snapshot->draw.CmdLists.push_back(clone);
         }
         snapshot->draw.CmdListsCount = snapshot->draw.CmdLists.Size;
+        // Snapshot が消費されるまで参照 Texture の更新を抑止する
         for (auto *texture : snapshot->textures)
         {
             texture->QueueUserData = &state;
@@ -647,7 +667,7 @@ Result<void> ImGuiManager::publish_frame(std::uint64_t a_frame, std::stop_token 
         state.lastPublishedUi = state.info.frames;
         ++state.transfer.publishedFrames;
         ++state.transfer.pendingFrames;
-        state.snapshotCopyTimes.add(std::chrono::steady_clock::now() - copyStarted);
+        state.snapshotCopyTimes.add(m_clock->now() - copyStarted);
         return Result<void>::success();
     }
     catch (const std::bad_alloc &)
@@ -681,7 +701,7 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     {
         *a_wasRecorded = false;
     }
-    const auto lockStarted = std::chrono::steady_clock::now();
+    const auto lockStarted = m_clock->now();
     TimingTraceScope traceLock("ImGui.RenderEnterWait");
     std::unique_lock lock(imgui_context_mutex());
     traceLock.finish();
@@ -690,12 +710,14 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.render_frame"});
     }
     auto &state = *m_state;
-    state.contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+    state.contextWaitTimes.add(m_clock->now() - lockStarted);
+    // 同じ Manager の Snapshot 描画を一つの Render Thread に限定する
     const auto thread = std::this_thread::get_id();
     if (state.transfer.renderThreadId != std::thread::id{} && state.transfer.renderThreadId != thread)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.render_frame"});
     }
+    // 公開順と同じ Frame ID の Snapshot だけを消費する
     const auto slot = a_frame % state.frameCount;
     if (!state.snapshots[slot] || state.snapshots[slot]->frame != a_frame || a_frame != state.transfer.consumedFrames)
     {
@@ -703,6 +725,7 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     }
     state.transfer.renderThreadId = thread;
     state.activeSnapshot = state.snapshots[slot].get();
+    // 記録中の Manager と Snapshot を Thread 固有の描画 Scope へ接続する
     const auto *previous = g_recordingManager;
     g_recordingManager = this;
     // Snapshot は枠に残して Main の再利用と Texture 更新を禁止する。通常 Pass は Context を借用しない
@@ -720,6 +743,7 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     TimingTraceScope traceReacquire("ImGui.Reacquire");
     lock.lock();
     traceReacquire.finish();
+    // Callback の成否にかかわらず、実提出した Fence を描画 Ring に反映する
     auto finished = state.renderer->finish_submission();
     if (result.has_value() && !finished.has_value())
     {
@@ -782,14 +806,14 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.record_draw_data"});
     }
-    const auto lockStarted = std::chrono::steady_clock::now();
+    const auto lockStarted = m_clock->now();
     TimingTraceScope traceLock("ImGui.RecordWait");
     std::lock_guard lock(imgui_context_mutex());
     traceLock.finish();
     TimingTraceScope traceBody("ImGui.RecordBody");
     if (m_state)
     {
-        m_state->contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
+        m_state->contextWaitTimes.add(m_clock->now() - lockStarted);
     }
     if (m_state && m_state->activeSnapshot && m_state->transfer.renderThreadId == std::this_thread::get_id())
     {
@@ -799,6 +823,7 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.record.duplicate"});
         }
+        // Worker 経路は Main の可変 DrawData ではなく Snapshot を記録する
         auto result = m_state->renderer->record(snapshot.draw, a_context);
         snapshot.wasRecorded = result.has_value();
         return result;
@@ -814,6 +839,7 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.record_draw_data"});
     }
     ScopedContext current(m_state->context);
+    // 直接描画の経路は Owner Thread で確定した DrawData を取得する
     auto *draw = ImGui::GetDrawData();
     if (!draw || !draw->Valid)
     {
@@ -855,7 +881,7 @@ Result<void> ImGuiManager::begin_frame()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.begin_frame"});
     }
-    const auto lockStarted = std::chrono::steady_clock::now();
+    const auto lockStarted = m_clock->now();
     TimingTraceScope traceLock("ImGui.BeginWait");
     std::unique_lock lock(imgui_context_mutex());
     traceLock.finish();
@@ -868,10 +894,11 @@ Result<void> ImGuiManager::begin_frame()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.begin_frame"});
     }
-    m_state->contextWaitTimes.add(std::chrono::steady_clock::now() - lockStarted);
-    m_state->frameStarted = std::chrono::steady_clock::now();
+    m_state->contextWaitTimes.add(m_clock->now() - lockStarted);
+    m_state->frameStarted = m_clock->now();
     if (m_state->renderer)
     {
+        // 公式 Renderer Backend の Frame 開始処理を進める
         auto renderer = m_state->renderer->new_frame();
         if (!renderer.has_value())
         {
@@ -911,6 +938,7 @@ Result<void> ImGuiManager::begin_frame()
         ImGui::NewFrame();
     }
     m_state->frameInput.clear();
+    // ImGui が今回処理し終えた入力だけを、この UI Frame に帰属させる
     for (auto input = m_state->pendingInput.begin(); input != m_state->pendingInput.end();)
     {
         const auto contains = [id = input->first](const auto &a_events)
@@ -949,16 +977,7 @@ Result<void> ImGuiManager::take_input_events(std::vector<InputEventTiming> &a_ev
         return Result<void>::failure({ErrorCategory::WrongThread, "ImGuiManager.take_input_events"});
     }
     TimingTraceScope traceLock("ImGui.InputTransferWait");
-#if defined(CUE_DESKTOP_INVESTIGATION)
-    // frameInput と Lifecycle Flag は Owner だけが書く。ImGui API / Render の共有値には触れない
-    std::unique_lock lock(imgui_context_mutex(), std::defer_lock);
-    if (!investigation::enabled(investigation::k_ownerInput))
-    {
-        lock.lock();
-    }
-#else
     std::lock_guard lock(imgui_context_mutex());
-#endif
     traceLock.finish();
     auto valid = validate("ImGuiManager.take_input_events");
     if (!valid.has_value())
@@ -1009,7 +1028,7 @@ Result<void> ImGuiManager::end_frame()
     ImGui::SetCurrentContext(m_state->previousFrameContext);
     m_state->previousFrameContext = nullptr;
     const bool wantsSave = io.WantSaveIniSettings;
-    m_state->uiBuildTimes.add(std::chrono::steady_clock::now() - m_state->frameStarted);
+    m_state->uiBuildTimes.add(m_clock->now() - m_state->frameStarted);
     m_state->frameLock.unlock();
     lock.unlock();
     return wantsSave ? save_settings() : Result<void>::success();
@@ -1019,6 +1038,7 @@ Result<void> ImGuiManager::end_frame()
 Result<void> ImGuiManager::build_frame(const editorUiCallback& a_buildUi)
 {
     TimingTraceScope traceScope("ImGui.Build");
+    // Frame 開始から終了までの Context を Manager が管理する
     auto started = begin_frame();
     if (!started.has_value())
     {
@@ -1122,6 +1142,7 @@ Result<void> ImGuiManager::save_settings()
             // ImGui の内部文字列は次の UI 更新で変更されるため、Lock 内で所有値へ複製する
             ScopedContext current(m_state->context);
             std::size_t size = 0;
+            // ImGui の設定をメモリへ書き出してから FileSystem へ保存する
             const auto *data = ImGui::SaveIniSettingsToMemory(&size);
             settings.assign(data, size);
         }
@@ -1132,6 +1153,7 @@ Result<void> ImGuiManager::save_settings()
         {
             return created;
         }
+        // 一時 File の置換で Layout 設定の途中書込みを防ぐ
         auto saved = m_state->files->replace_file(*path.try_value(), std::as_bytes(std::span(settings)));
         if (!saved.has_value())
         {
@@ -1167,6 +1189,7 @@ Result<void> ImGuiManager::shutdown()
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.shutdown"});
     }
     // 呼出側が Worker / Graph を停止した後に、未消費 Snapshot の Pin を先に回収する
+    // 未消費 Snapshot の Texture 固定をすべて解除する
     for (std::size_t slot = 0; slot < m_state->snapshots.size(); ++slot)
     {
         if (m_state->snapshots[slot])
@@ -1178,6 +1201,7 @@ Result<void> ImGuiManager::shutdown()
     // GPU 完了の証明に失敗した場合は Context、Heap と下位 Backend の借用を保全する
     if (m_state->renderer)
     {
+        // GPU 停止後に公式 Renderer の資源を解放する
         auto stopped = m_state->renderer->shutdown();
         if (!stopped.has_value())
         {
@@ -1187,6 +1211,7 @@ Result<void> ImGuiManager::shutdown()
     }
     if (m_state->handler.generation != 0)
     {
+        // Window が生存している間に入力 Handler を解除する
         auto removed = unregister_windows_message_handler(*m_state->window, m_state->handler);
         if (!removed.has_value())
         {
@@ -1197,6 +1222,7 @@ Result<void> ImGuiManager::shutdown()
     cancel_frame();
     // 保存失敗は通知するが、登録解除済みの Context と Win32 Backend の解放は続ける
     lock.unlock();
+    // Layout 保存の失敗は保持しつつ、Context の停止を続ける
     auto saved = m_state->isReady ? save_settings() : Result<void>::success();
     lock.lock();
     auto* previous = ImGui::GetCurrentContext();

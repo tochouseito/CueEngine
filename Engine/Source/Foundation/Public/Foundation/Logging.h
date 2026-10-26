@@ -27,8 +27,10 @@ struct LogRecord final
     LogLevel level = LogLevel::Info;
     std::string_view source;
     std::string_view message;
+    // 通常ログは Error 分類を持たず、失敗診断だけが値を持つ
     std::optional<ErrorCategory> errorCategory;
     std::optional<std::int64_t> nativeCode;
+    // 日時表示用の暦時刻。経過時間の単調時計とは別に扱う
     std::chrono::system_clock::time_point time = std::chrono::system_clock::now();
     std::thread::id threadId = std::this_thread::get_id();
     std::source_location location;
@@ -53,6 +55,7 @@ class ILogger
     [[nodiscard]] Result<void> log(LogLevel a_level, std::string_view a_source, std::string_view a_message,
                                    std::source_location a_location = std::source_location::current())
     {
+        // 同期配送中だけ source と message の文字列を借用する
         LogRecord record{a_level, a_source, a_message};
         record.location = a_location;
         return write(record);
@@ -61,6 +64,7 @@ class ILogger
     [[nodiscard]] Result<void> log_error(LogLevel a_level, std::string_view a_source, const Error &a_error,
                                          std::source_location a_location = std::source_location::current())
     {
+        // Error の操作名・分類・Native 値を同じ Record へまとめる
         LogRecord record{a_level, a_source, a_error.operation, a_error.category, a_error.nativeCode};
         record.location = a_location;
         return write(record);

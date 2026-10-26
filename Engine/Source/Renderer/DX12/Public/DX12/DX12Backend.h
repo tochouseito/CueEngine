@@ -42,10 +42,13 @@ enum class DX12DescriptorHeapRole
 /// @brief DX12 Backend が起動時に確保する Descriptor 数
 struct DX12DescriptorHeapConfig final
 {
+    // CPU 側で SRV 等を書き込む非 Shader-visible Heap の容量
     std::uint32_t cpuViewCapacity = 1024;
+    // Shader から直接参照する View Heap の容量
     std::uint32_t shaderViewCapacity = 1024;
     std::uint32_t cpuSamplerCapacity = 64;
     std::uint32_t shaderSamplerCapacity = 64;
+    // Back Buffer と一時 RenderTarget の RTV を保持する容量
     std::uint32_t rtvCapacity = 64;
     std::uint32_t dsvCapacity = 32;
 };
@@ -67,13 +70,15 @@ public:
   /// @brief Device、Descriptor Heap、各 Pool を生成し、成功時だけ Backend を公開する
   ///
   /// 容量 0 は拒否し、途中失敗時は生成済みの Heap と Device を解放する
+  /// Clock 指定時は Backend の停止まで借用する。未指定なら Platform の既定時計を使う
   [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create(
-      const DX12DescriptorHeapConfig &a_descriptorConfig = {}, IFileSystem *a_files = nullptr);
+      const DX12DescriptorHeapConfig &a_descriptorConfig = {}, IFileSystem *a_files = nullptr,
+      Clock *a_clock = nullptr);
 
   /// @brief Software 描画の検証等で Adapter 選択を明示して同じ Backend 所有経路を生成する
   [[nodiscard]] static Result<std::unique_ptr<DX12Backend>> create(
       AdapterSelection a_selection, const DX12DescriptorHeapConfig &a_descriptorConfig = {},
-      IFileSystem *a_files = nullptr);
+      IFileSystem *a_files = nullptr, Clock *a_clock = nullptr);
 
   /// @brief 明示停止されていない Queue の GPU 作業も待って解放する
   ~DX12Backend() override;
@@ -127,13 +132,16 @@ public:
 
 private:
     std::unique_ptr<DX12RenderDevice> m_device;
+    // Queue / Command の Lease が生存する間も Descriptor Heap を保持する
     std::shared_ptr<DX12DescriptorHeapState> m_descriptors;
     std::unique_ptr<DX12ViewManager> m_viewManager;
     std::unique_ptr<DX12PipelineManager> m_pipelineManager;
     std::unique_ptr<DX12QueuePool> m_queuePool;
     std::unique_ptr<DX12CommandPool> m_commandPool;
     std::unique_ptr<DX12GpuResourcePool> m_resourcePool;
+    // 資源生成に使う Device と各 Manager の非所有参照を束ねる
     std::optional<DX12ResourceContext> m_resourceContext;
+    // GPU 実行に使う CommandPool と QueuePool の非所有参照を束ねる
     std::optional<DX12ExecutionContext> m_executionContext;
     std::unique_ptr<DX12SwapChain> m_swapChain;
 };

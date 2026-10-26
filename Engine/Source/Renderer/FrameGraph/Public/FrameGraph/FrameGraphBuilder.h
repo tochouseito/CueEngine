@@ -20,6 +20,7 @@ namespace cue
 /// @brief 一つの Graph 内だけで有効な論理 Resource の非所有 Handle
 struct FrameGraphResourceHandle final
 {
+    // Graph が再生成されたときに古い論理 Handle を区別する識別子
     std::uint64_t graphId = 0;
     std::uint32_t index = 0;
 
@@ -70,8 +71,11 @@ enum class FrameGraphResourceState
 /// @brief 一つの Pass が Resource を使う契約
 struct FrameGraphUse final
 {
+    // この使用宣言が参照する論理 Resource
     FrameGraphResourceHandle resource;
+    // 読み書きの競合と Pass 間依存を決める Access
     FrameGraphAccess access = FrameGraphAccess::Read;
+    // Pass の実行中に必要な GPU Resource State
     FrameGraphResourceState state = FrameGraphResourceState::Common;
 };
 
@@ -98,8 +102,11 @@ struct FrameGraphPassPlan final
     std::string name;
     QueueType queue = QueueType::Graphics;
     std::vector<FrameGraphUse> uses;
+    // この Pass より先に完了すべき Pass の論理 Handle
     std::vector<FrameGraphPassHandle> dependencies;
+    // Pass 本体の前に記録する状態遷移
     std::vector<FrameGraphBarrierPlan> barriersBefore;
+    // 後続 Queue へ渡す前に記録する状態遷移
     std::vector<FrameGraphBarrierPlan> barriersAfter;
 };
 
@@ -111,10 +118,13 @@ struct FrameGraphResourcePlan final
     GpuResourceKind kind = GpuResourceKind::Buffer;
     GpuBufferDesc bufferDesc;
     GpuTexture2DDesc textureDesc;
+    // true の Resource は Graph 内で生成せず外部実体を借用する
     bool isImported = false;
     /// Pool と Resource は Plan と GPU 完了より長く生存させる。nullptr は Pool 外の Resource
     IGpuResourcePool *pool = nullptr;
+    // 外部 ResourcePool 内の実体を識別する世代付き Handle
     GpuResourceHandle poolHandle;
+    // 再利用する一時資源も Graph 終了時に初期条件へ戻すか
     bool restoreFinalState = false;
     /// Build で集約した用途。記録時に全 Pass を再走査しない
     bool isWritten = false;
@@ -125,7 +135,9 @@ struct FrameGraphResourcePlan final
     bool needsUnorderedAccess = false;
     FrameGraphResourceState initialState = FrameGraphResourceState::Common;
     FrameGraphResourceState finalState = FrameGraphResourceState::Common;
+    // 使用開始の実行順 Index。未使用 Resource は値を持たない
     std::optional<std::size_t> firstUse;
+    // 最後に参照する実行順 Index。Alias の再利用判定に使う
     std::optional<std::size_t> lastUse;
 };
 
@@ -133,6 +145,7 @@ struct FrameGraphResourcePlan final
 struct FrameGraphAliasSlotPlan final
 {
     GpuResourceKind kind = GpuResourceKind::Buffer;
+    // 同じ物理領域を順に使う Resource の一覧
     std::vector<FrameGraphResourceHandle> resources;
 };
 

@@ -2,10 +2,6 @@
 
 #include <Profiler/TimingTrace.h>
 
-#if defined(CUE_DESKTOP_INVESTIGATION)
-#include <Foundation/DesktopInvestigation.h>
-#endif
-
 #include <exception>
 #include <limits>
 #include <optional>
@@ -71,6 +67,7 @@ void trace_calibration(ID3D12CommandQueue &a_queue, std::uint64_t a_identity, Qu
         record.detail = a_fence;
         LARGE_INTEGER before{}, after{};
         QueryPerformanceCounter(&before);
+        // GPU Tick と CPU Tick の対応を校正情報として取得する
         record.status = a_queue.GetClockCalibration(&record.beginTick, &record.cpuTick);
         QueryPerformanceCounter(&after);
         // Clock ID は Windows Adapter 側の識別子。共通 DTO は Native の時計名を持たない
@@ -78,6 +75,7 @@ void trace_calibration(ID3D12CommandQueue &a_queue, std::uint64_t a_identity, Qu
         record.cpuFrequency = cpu_clock_frequency();
         record.cpuBefore = before.QuadPart;
         record.cpuAfter = after.QuadPart;
+        // GPU Timestamp の周波数を校正記録に含める
         const auto frequencyResult = a_queue.GetTimestampFrequency(&record.frequency);
         if (SUCCEEDED(record.status) && FAILED(frequencyResult))
         {
@@ -104,18 +102,21 @@ Result<std::unique_ptr<DX12GpuCommandQueue>> DX12GpuCommandQueue::create(ID3D12D
         return QueueResult::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.create.type"});
     }
 
+    // Queue と専用 Fence を同じ所有者へ生成する
     auto queue = std::make_unique<DX12GpuCommandQueue>(CreateToken{});
     queue->m_device = &a_device;
     queue->m_type = a_type;
 
     D3D12_COMMAND_QUEUE_DESC descriptor{};
     descriptor.Type = command_list_type(a_type);
+    // 指定種類と優先度の GPU Queue を生成する
     const HRESULT queueResult = a_device.CreateCommandQueue(&descriptor, IID_PPV_ARGS(&queue->m_queue));
     if (FAILED(queueResult))
     {
         return QueueResult::failure(queue_error("ID3D12Device.CreateCommandQueue", queueResult));
     }
 
+    // GPU 提出の完了値を保持する Fence を生成する
     const HRESULT fenceResult = a_device.CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&queue->m_fence));
     if (FAILED(fenceResult))
     {
@@ -229,6 +230,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
     {
         return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandQueue.submit.count"});
     }
+    // 空の CommandList や Device の異なる提出を拒否する
     for (ID3D12CommandList* list : a_lists)
     {
         if (!list || list->GetType() != command_list_type(m_type))
@@ -267,6 +269,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
     }
 #if defined(CUE_ENABLE_TIMING_TRACE)
     trace_calibration(*m_queue.Get(), identity(), m_type, m_fenceValue.load() + 1, "BeforeSubmit");
+    // GPU Trace の記録先がある場合だけ校正情報を採取する
     auto *traceSink = timing_trace_gpu_sink();
     LARGE_INTEGER submitBegin{}, submitEnd{};
     if (traceSink)
@@ -274,6 +277,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
         QueryPerformanceCounter(&submitBegin);
     }
 #endif
+    // 記録済み CommandList を GPU Queue の実行順へ追加する
     m_queue->ExecuteCommandLists(static_cast<UINT>(a_lists.size()), a_lists.data());
 #if defined(CUE_ENABLE_TIMING_TRACE)
     if (traceSink)
@@ -282,6 +286,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::submit(std::span<ID3D12CommandList *c
     }
 #endif
     // Signal 失敗時も作業自体は投入済みなので、呼出側は Resource を保持して停止する
+    // 実行後の Fence 値をこの提出の完了点として返す
     auto signalResult = signal_locked();
 #if defined(CUE_ENABLE_TIMING_TRACE)
     if (traceSink)
@@ -337,6 +342,7 @@ Result<std::uint64_t> DX12GpuCommandQueue::signal_locked()
 /// @brief 未発行値への無限待機を拒否してから完了通知を待つ
 Result<void> DX12GpuCommandQueue::wait_for_fence(std::uint64_t a_fenceValue)
 {
+    // 長い GPU 待機も一定時間ごとに Device の状態を再確認する
     while (true)
     {
         auto result = wait_for_fence_for(a_fenceValue, std::chrono::milliseconds(100));
@@ -377,6 +383,7 @@ Result<bool> DX12GpuCommandQueue::wait_for_fence_for(std::uint64_t a_fenceValue,
     if (completed == (std::numeric_limits<std::uint64_t>::max)())
     {
         return Result<bool>::failure(
+            // Device 喪失を確認し、完了待ちを正常終了と混同しない
             queue_error("ID3D12Device.GetDeviceRemovedReason", m_device->GetDeviceRemovedReason()));
     }
     if (completed >= a_fenceValue)
@@ -386,6 +393,7 @@ Result<bool> DX12GpuCommandQueue::wait_for_fence_for(std::uint64_t a_fenceValue,
 
     if (m_registeredFence != a_fenceValue)
     {
+        // Fence が指定値に達したときの通知先 Event を登録する
         const HRESULT result = m_fence->SetEventOnCompletion(a_fenceValue, m_fenceEvent);
         if (FAILED(result))
         {
@@ -415,6 +423,7 @@ Result<bool> DX12GpuCommandQueue::wait_for_fence_for(std::uint64_t a_fenceValue,
     if (m_fence->GetCompletedValue() == (std::numeric_limits<std::uint64_t>::max)())
     {
         return Result<bool>::failure(
+            // Device 喪失を確認し、完了待ちを正常終了と混同しない
             queue_error("ID3D12Device.GetDeviceRemovedReason", m_device->GetDeviceRemovedReason()));
     }
     return Result<bool>::success(is_fence_complete(a_fenceValue));
@@ -449,6 +458,7 @@ Result<void> DX12GpuCommandQueue::wait_for_queue(IQueueContext& a_queue, std::ui
     if (FAILED(result))
     {
         m_isPoisoned = true;
+        // Queue 間待機の失敗を保持し、以後の提出を正常扱いしない
         auto error = queue_error("ID3D12CommandQueue.Wait", result);
         error.category = ErrorCategory::Fatal;
         return Result<void>::failure(std::move(error));
@@ -461,28 +471,13 @@ Result<void> DX12GpuCommandQueue::wait_for_queue(IQueueContext& a_queue, std::ui
 Result<std::uint64_t> DX12GpuCommandQueue::get_timestamp_frequency() const
 {
     TimingTraceScope traceFrequency("Queue.TimestampFrequency");
-#if defined(CUE_DESKTOP_INVESTIGATION)
-    if (investigation::enabled(investigation::k_cacheFrequency))
-    {
-        const auto cached = m_studyFrequency.load(std::memory_order_relaxed);
-        if (cached != 0)
-        {
-            return Result<std::uint64_t>::success(cached);
-        }
-    }
-#endif
     std::uint64_t frequency = 0;
+    // この Queue の Timestamp を秒へ換算する周波数を取得する
     const HRESULT result = m_queue->GetTimestampFrequency(&frequency);
     if (FAILED(result))
     {
         return Result<std::uint64_t>::failure(queue_error("ID3D12CommandQueue.GetTimestampFrequency", result));
     }
-#if defined(CUE_DESKTOP_INVESTIGATION)
-    if (investigation::enabled(investigation::k_cacheFrequency))
-    {
-        m_studyFrequency.store(frequency, std::memory_order_relaxed);
-    }
-#endif
     return Result<std::uint64_t>::success(frequency);
 }
 
@@ -491,6 +486,7 @@ Result<void> DX12GpuCommandQueue::wait_idle()
 {
     // 致命的な提出後も、停止処理だけは後続 Signal で完了を証明できるようにする
     bool hadUnknownSubmission = false;
+    // Queue の現在位置に完了点を置いてから CPU で待つ
     Result<std::uint64_t> signalResult = [&] {
         std::lock_guard lock(m_mutex);
         hadUnknownSubmission = m_hasUnknownSubmission;
@@ -563,6 +559,7 @@ struct DX12QueuePool::State
             if (!result.has_value())
             {
                 report_log_error("DX12QueuePool.State", *result.try_error(), LogLevel::Error);
+                // すべての Queue の GPU 利用を回収してから実体を解放する
                 for (const auto& queue : queues)
                 {
                     if (queue && queue->has_unconfirmed_work())
@@ -627,6 +624,7 @@ Result<std::unique_ptr<DX12QueuePool>> DX12QueuePool::create(DX12RenderDevice& a
     auto pool = std::make_unique<DX12QueuePool>(CreateToken{});
     pool->m_state = std::make_shared<State>();
     pool->m_state->gpuLifetime = std::move(a_gpuLifetime);
+    // Graphics・Compute・Copy の各種類に設定数の Queue を用意する
     for (std::size_t index = 0; index < k_queueCount; ++index)
     {
         const QueueType type = index < k_graphicsCount ? QueueType::Graphics
@@ -659,6 +657,7 @@ Result<queueLease> DX12QueuePool::acquire(QueueType a_type)
     {
         return Result<queueLease>::failure({ErrorCategory::InvalidState, "DX12QueuePool.acquire.stopping"});
     }
+    // 指定種類の Queue のうち、貸出中でない実体を選ぶ
     for (std::size_t index = 0; index < k_queueCount; ++index)
     {
         if (!state->borrowed[index] && !state->queues[index]->is_poisoned() &&
@@ -685,6 +684,7 @@ Result<void> DX12QueuePool::wait_idle()
 {
     const auto state = m_state;
     std::lock_guard lock(state->mutex);
+    // 外部が借用中の Queue を所有者側から待機・回収しない
     for (bool borrowed : state->borrowed)
     {
         if (borrowed)

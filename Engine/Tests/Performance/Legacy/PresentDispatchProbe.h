@@ -11,7 +11,7 @@
 
 #include <Windows.h>
 
-#include <Foundation/PerformanceStudy.h>
+#include "PerformanceStudy.h"
 
 namespace cue::dispatch_probe
 {

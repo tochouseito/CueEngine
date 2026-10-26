@@ -128,6 +128,7 @@ Result<void> FrameGraph::build()
         return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraph.build"});
     }
     m_builder->m_isBuildingPipelines = true;
+    // Pass の setup と使用宣言を Build の一回限りの処理として実行する
     auto result = Result<void>::success();
     try
     {
@@ -140,6 +141,7 @@ Result<void> FrameGraph::build()
     m_builder->m_isBuildingPipelines = false;
     if (!result.has_value())
     {
+        // Build に失敗した場合は途中生成した Pipeline 類を退役させる
         auto cleanup = m_builder->release_build_pipelines();
         if (!cleanup.has_value())
         {
@@ -167,17 +169,20 @@ Result<void> FrameGraph::build_passes()
     }
     for (const auto &pass : m_passes)
     {
+        // Pass に共有資源の取得と生成仕様の宣言を依頼する
         auto setupResult = pass->setup(*m_builder);
         if (!setupResult.has_value())
         {
             return setupResult;
         }
+        // Pass の名前と Queue 種類を論理計画へ登録する
         auto handleResult = m_builder->add_pass(pass->name(), pass->type());
         if (!handleResult.has_value())
         {
             return Result<void>::failure(*handleResult.try_error());
         }
         m_builder->begin_pass(handleResult.take_value());
+        // 現在の Pass に読込み・書込み・要求状態を宣言させる
         auto describeResult = pass->describe_resources(*m_builder);
         m_builder->end_pass();
         if (!describeResult.has_value())
@@ -185,6 +190,7 @@ Result<void> FrameGraph::build_passes()
             return describeResult;
         }
     }
+    // 依存関係・寿命・Barrier の計画を確定する
     auto planResult = m_builder->build();
     if (!planResult.has_value())
     {
@@ -233,12 +239,14 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(std::uint32_t a_
             return CompletionResult::failure({ErrorCategory::InvalidState, "FrameGraph.execute.queue"});
         }
     }
+    // 実行対象の Queue 種類に対応する Command を借用する
     auto acquireResult = a_commandPool.acquire(a_queue.type());
     if (!acquireResult.has_value())
     {
         return CompletionResult::failure(*acquireResult.try_error());
     }
     auto command = acquireResult.take_value();
+    // Recorder に物理資源の解決と Pass の記録を委譲する
     auto recordResult = a_recorder.record(a_frameIndex, *command);
     if (!recordResult.has_value())
     {
@@ -250,6 +258,7 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(std::uint32_t a_
         a_recorder.discard_unsubmitted(a_frameIndex);
         return CompletionResult::success({});
     }
+    // 記録成功後に CommandList を閉じる
     auto closeResult = command->close();
     if (!closeResult.has_value())
     {
@@ -266,15 +275,18 @@ Result<std::shared_ptr<ICommandCompletion>> FrameGraph::execute(std::uint32_t a_
         a_recorder.discard_unsubmitted(a_frameIndex);
         return CompletionResult::failure({ErrorCategory::PlatformFailure, "FrameGraph.execute.allocation"});
     }
+    // 閉じた Command を Queue へ提出し、完了点の所有権を受け取る
     auto submitResult = a_commandPool.submit(a_queue, *command);
     if (!submitResult.has_value())
     {
         return CompletionResult::failure(*submitResult.try_error());
     }
     completion->set(submitResult.take_value());
+    // 提出済み資源の寿命を GPU 完了点へ結び付ける
     auto markResult = a_recorder.mark_submitted(a_frameIndex, completion);
     if (!markResult.has_value())
     {
+        // 寿命の登録に失敗しても GPU 完了前に資源を返さない
         auto waitResult = completion->wait();
         if (!waitResult.has_value())
         {

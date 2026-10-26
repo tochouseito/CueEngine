@@ -10,6 +10,7 @@ namespace cue
 /// @brief UI 内の変更要求でも Callback を取消さず、周期待機だけ解除する
 void Runtime::request_drain()
 {
+    // 所有 Thread からの要求だけを Controller の排出処理へ渡す
     if (std::this_thread::get_id() == m_ownerId && m_controller)
     {
         m_controller->request_drain();
@@ -23,6 +24,7 @@ Result<void> Runtime::pause()
     {
         return Result<void>::failure({ErrorCategory::WrongThread, "Runtime.pause"});
     }
+    // step 中や未起動の Runtime は一時停止できない
     if (m_isStepping || m_lifecycle != Lifecycle::Running)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.pause"});
@@ -41,6 +43,7 @@ Result<void> Runtime::resume(FrameControllerDesc a_desc, std::optional<Simulatio
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.resume"});
     }
+    // Controller の再開成功後に公開する構成を更新する
     auto result = m_controller->resume(a_desc, a_simulation);
     if (result.has_value())
     {
@@ -99,12 +102,14 @@ Result<void> Runtime::initialize(FrameCallback a_update, FrameCallback a_render,
     // Service は借用し、Controller だけを Runtime が所有する
     m_controller =
         std::make_unique<FrameController>(m_desc, m_clock, m_waiter, m_threadFactory, m_simulationConfig, m_profiler);
+    // 固定更新と描画 Snapshot の生成を Controller へ登録する
     auto simulation = m_controller->register_simulation_callbacks(std::move(a_simulationUpdate), std::move(a_snapshot));
     if (!simulation.has_value())
     {
         m_controller.reset();
         return simulation;
     }
+    // Host が所有する表示待機と予測時刻の取得先を接続する
     auto pacing = m_controller->register_pacing_source(std::move(a_pacing));
     if (!pacing.has_value())
     {
@@ -218,6 +223,7 @@ Result<void> Runtime::shutdown()
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "Runtime.shutdown"});
     }
+    // 以後の Frame 投入を止め、Controller の停止処理へ進む
     m_lifecycle = Lifecycle::Stopped;
     if (!m_controller)
     {
@@ -225,6 +231,7 @@ Result<void> Runtime::shutdown()
     }
     // Stop が失敗しても Controller は残さず、再度の Shutdown を安全にする
     auto stopResult = m_controller->stop();
+    // 停止結果を保持して Controller の所有権を回収する
     m_controller.reset();
     return stopResult;
 }
@@ -238,6 +245,7 @@ Result<FrameSimulationInfo> Runtime::simulation_info(std::uint64_t a_frame) cons
 /// @brief CPU 排出後の復帰で、時間の正本を更新 Thread に再設定させる
 void Runtime::reset_simulation_sample_time()
 {
+    // 構成変更の停止時間を次回の Simulation Delta に含めない
     if (std::this_thread::get_id() == m_ownerId && m_controller)
     {
         m_controller->reset_simulation_sample_time();

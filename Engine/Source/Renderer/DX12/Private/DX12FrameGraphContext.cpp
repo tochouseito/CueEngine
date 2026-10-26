@@ -49,6 +49,7 @@ Result<void> DX12FrameGraphContext::clear_render_target(FrameGraphResourceHandle
         return Result<void>::failure(
             {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.clear_render_target.color"});
     }
+    // 宣言した RenderTarget に対応する、この Frame の RTV を取得する
     auto rtvResult = m_frames->rtv(frame_index(), a_target);
     if (!rtvResult.has_value())
     {
@@ -72,6 +73,7 @@ Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a
     {
         return Result<void>::failure(*rtvResult.try_error());
     }
+    // 現在の PSO と描画先 Texture の Format を照合する
     const auto targetFormat = m_plan->resources()[a_target.index].textureDesc.format;
     if (m_pipelineFormat && *m_pipelineFormat != targetFormat)
     {
@@ -95,11 +97,13 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.bind_texture2d"});
     }
+    // 指定 Root Parameter が Texture Binding を受け付けるか検証する
     auto validation = m_pipelines->validate_texture_binding(m_pipeline, a_rootParameter);
     if (!validation.has_value())
     {
         return validation;
     }
+    // この Frame の Texture SRV を Shader の参照先にする
     auto srvResult = m_frames->srv(frame_index(), a_source);
     if (!srvResult.has_value())
     {
@@ -129,6 +133,7 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
 /// @brief Pipeline の Native 実体を Command に保持して Graphics Binding を初期化する
 Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_pipeline)
 {
+    // PSO を Command に保持させてから Graphics 状態を設定する
     auto result = m_pipelines->bind_graphics(*m_command, a_pipeline);
     if (!result.has_value())
     {
@@ -145,6 +150,7 @@ Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_
 /// @brief Graphics の Binding を引き継がず Compute Root と Pipeline を設定する
 Result<void> DX12FrameGraphContext::set_compute_pipeline(PipelineStateHandle a_pipeline)
 {
+    // Compute PSO の設定成功後に Context の状態を更新する
     auto result = m_pipelines->bind_compute(*m_command, a_pipeline);
     if (!result.has_value())
     {
@@ -186,6 +192,7 @@ Result<void> DX12FrameGraphContext::draw_instanced(std::uint32_t a_vertexCount, 
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.draw"});
     }
+    // Draw 前に必要な Root Binding の設定漏れを検出する
     auto validation = m_pipelines->validate_bindings(m_pipeline, m_boundParameters);
     if (!validation.has_value())
     {
@@ -203,6 +210,7 @@ Result<void> DX12FrameGraphContext::dispatch(std::uint32_t a_x, std::uint32_t a_
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.dispatch"});
     }
+    // Dispatch の前提となる Compute Pipeline と Binding を確認する
     auto validation = m_pipelines->validate_bindings(m_pipeline, {});
     if (!validation.has_value())
     {
@@ -226,6 +234,7 @@ Result<void> DX12FrameGraphContext::copy_texture2d(FrameGraphResourceHandle a_so
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.copy_texture2d"});
     }
+    // 全体 Copy を行えるよう、転送元と転送先の形状を照合する
     const auto sourceDesc = source->GetDesc();
     const auto destinationDesc = destination->GetDesc();
     if (sourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
@@ -258,6 +267,7 @@ Result<void> DX12FrameGraphContext::record_external_graphics(
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.external_graphics"});
     }
     // Callback が Context API を使っても、Native 状態を後から書き換えた Cache は残さない
+    // 外部描画が変更した Pipeline と Binding の追跡情報を無効化する
     const auto invalidate = [&]()
     {
         m_pipeline = {};

@@ -64,11 +64,15 @@ private:
     [[nodiscard]] Result<void> reset_for_recording();
 
     Microsoft::WRL::ComPtr<ID3D12Device> m_device;
+    // GPU の実行完了まで保持する Command の記録領域
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
+    // この Command の最終提出を覆う Fence の所有参照
     Microsoft::WRL::ComPtr<ID3D12Fence> m_submissionFence;
+    // GPU 完了まで保持する PSO と Root Signature の共有参照
     std::vector<std::shared_ptr<const void>> m_pipelineReferences;
     CommandState m_state = CommandState::Recording;
+    // Close や Device の致命的失敗を保持して再利用を禁止する
     bool m_isFatalFailure = false;
     std::uint64_t m_fenceValue = 0;
     QueueType m_type = QueueType::Graphics;

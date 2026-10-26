@@ -12,7 +12,9 @@ namespace cue
 /// @brief 作成時のTitleとClient Areaの要求Sizeを所有する
 struct WindowDescriptor final
 {
+    // OS の Window に表示する UTF-8 の Title
     std::string title;
+    // 装飾枠を含めない描画領域の初期寸法
     WindowSize clientSize;
 };
 

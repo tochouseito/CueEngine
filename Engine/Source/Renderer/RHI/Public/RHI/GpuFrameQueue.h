@@ -30,9 +30,11 @@ class GpuFrameQueue final
             return Result<bool>::failure({ErrorCategory::InvalidArgument, "GpuFrameQueue.config"});
         while (true)
         {
+            // 停止・最小化などの取消は空き枠を取得せずに戻す
             if (a_shouldCancel())
                 return Result<bool>::success(false);
             // 全 Token の検証が成功するまで所有参照の配置を変更しない
+            // すべての未完了提出を非待機で照会する
             std::array<bool, 8> completed{};
             for (std::uint32_t index = 0; index < m_count; ++index)
             {
@@ -41,6 +43,7 @@ class GpuFrameQueue final
                     return Result<bool>::failure(*status.try_error());
                 completed[index] = *status.try_value();
             }
+            // 未完了の提出だけを前へ詰め、完了した参照を回収する
             std::uint32_t remaining = 0;
             for (std::uint32_t index = 0; index < m_count; ++index)
             {
@@ -54,8 +57,10 @@ class GpuFrameQueue final
             for (auto index = remaining; index < m_count; ++index)
                 m_entries[index].reset();
             m_count = remaining;
+            // GPU 未完了数が上限未満なら次の Frame を受け付ける
             if (m_count < m_limit)
                 return Result<bool>::success(true);
+            // 満杯のときだけ利用側の待機処理へ委譲する
             a_wait();
         }
     }
@@ -65,6 +70,7 @@ class GpuFrameQueue final
     {
         if (!a_completion || m_count >= m_limit || m_count >= m_entries.size())
             return Result<void>::failure({ErrorCategory::InvalidState, "GpuFrameQueue.submitted"});
+        // 新しい提出の Completion を順序を保って保持する
         m_entries[m_count++] = std::move(a_completion);
         return Result<void>::success();
     }

@@ -1,5 +1,7 @@
 # M06-15 / Issue #144 作業・性能調査の統合記録
 
+> 2026-10-26 の構成整理: [調査コードの分離](InvestigationCodeSeparation-2026-10-26.md)で、本体の実験分岐を外し、過去の比較部品を `Engine/Tests/Performance/Legacy` へ移した。通常 Profiler と汎用 Trace は維持し、手動 Probe は `CUE_BUILD_PERFORMANCE_TOOLS=ON` の構成だけに追加する。以下の過去の配置・コマンドは測定当時の記録。
+
 > 別会話での再開用: [2026-10-23 引き継ぎ書](CueEngine-Handoff-2026-10-23.md)に、最新の比較結果・提出範囲・未解決の原因・Build / 再計測手順・ローカル証跡をまとめた。
 
 > 2026-10-23 の比較実測: [Intel 描画・表示と RTX 描画の比較](M06-15-Intel-Presentation-Comparison.md)を実施した。Double・Waitable ON・通常 UI の各 20 秒 3 回合算は Intel 約 1,439 FPS、RTX 約 1,174 FPS。Intel の GPU 最終 Timestamp → IndependentFlip は平均約 0.093 ms へ短縮したが、GPU 開始前と描画時間は増えた。2,000 FPS は未達。Intel の CPU Marker ETW 欠落と、全件 CSV / 欠落のない Kernel・GPU Session による照合を区別して報告している。

@@ -26,6 +26,7 @@ struct WindowsMessage final
 /// @brief 通常 Message の標準処理を省略するかと返却値を指定する
 struct WindowsMessageResult final
 {
+    // true の場合だけ、利用側の返却値を Native Message の処理結果とする
     bool isHandled = false;
     std::intptr_t result = 0;
 };
@@ -35,7 +36,9 @@ using windowsMessageHandler = std::function<WindowsMessageResult(const WindowsMe
 /// @brief Window の生存中だけ有効な Handler 登録の非所有 Token
 struct WindowsMessageHandlerToken final
 {
+    // 登録対象の Window を借用し、破棄後は Token を使わない
     const Window* window = nullptr;
+    // 同じ Window の古い Handler 登録との取り違えを防ぐ
     std::uint64_t generation = 0;
 };
 
@@ -56,6 +59,7 @@ struct WindowsMessageHandlerToken final
 /// @brief Windows用の時間・Thread実装を一括所有する
 struct WindowsThreadServices final
 {
+    // 各 Service は Host が所有し、Worker を join してから解放する
     std::unique_ptr<Clock> clock;
     std::unique_ptr<Waiter> waiter;
     std::unique_ptr<ThreadFactory> threadFactory;
@@ -69,8 +73,9 @@ struct WindowsThreadServices final
 /// @brief Windows用WindowSystemを生成して呼出側へ一意所有権を渡す
 ///
 /// 返却したSystemとWindowは呼出Threadで操作・破棄し、Windowを先に破棄する
-/// 生成失敗では部分的なSystemを公開しない
-[[nodiscard]] Result<std::unique_ptr<WindowSystem>> create_windows_window_system();
+/// 生成失敗では部分的なSystemを公開しない。Clock は System と Window の破棄まで借用する
+[[nodiscard]] Result<std::unique_ptr<WindowSystem>> create_windows_window_system(
+    Clock &a_clock = get_default_clock());
 
 /// @brief Windows WindowのNative HandleをWindow生存中だけ借用する
 ///

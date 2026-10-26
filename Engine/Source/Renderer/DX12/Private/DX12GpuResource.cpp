@@ -106,6 +106,7 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(
     ID3D12Device& a_device, GpuBufferDesc a_desc, std::wstring_view a_name)
 {
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
+    // 容量と Heap 用途を検証して Native の Buffer 定義へ変換する
     auto descResult = buffer_desc(a_desc);
     if (!descResult.has_value())
     {
@@ -131,7 +132,9 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(
         return ResourceResult::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.create_buffer"});
     }
 
+    // Native Resource を先に所有先へ収め、途中失敗時にも回収する
     auto resource = std::make_unique<DX12GpuResource>(CreateToken{});
+    // 専用 Heap と GPU Resource をまとめて生成する
     const HRESULT result = a_device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(),
                                                              initialState, nullptr,
                                                              IID_PPV_ARGS(&resource->m_resource));
@@ -151,6 +154,7 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(
     ID3D12Device& a_device, GpuTexture2DDesc a_desc, std::wstring_view a_name)
 {
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
+    // Texture の寸法・Format・用途を Native 定義へ変換する
     auto descResult = texture2d_desc(a_desc);
     if (!descResult.has_value())
     {
@@ -162,10 +166,12 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(
     auto resource = std::make_unique<DX12GpuResource>(CreateToken{});
     D3D12_CLEAR_VALUE clearValue{};
     clearValue.Format = descResult.try_value()->Format;
+    // RenderTarget の最適化 Clear 値を生成時の定義へ揃える
     for (std::size_t index = 0; index < a_desc.clearColor.size(); ++index)
     {
         clearValue.Color[index] = a_desc.clearColor[index];
     }
+    // 専用 Heap と GPU Resource をまとめて生成する
     const HRESULT result = a_device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(),
                                                              D3D12_RESOURCE_STATE_COMMON,
                                                              a_desc.isRenderTarget ? &clearValue : nullptr,
@@ -225,6 +231,7 @@ std::uint64_t DX12GpuResource::placement_offset() const noexcept
 /// @brief 指定した Upload Buffer の範囲だけを Map して書き込む
 Result<void> DX12GpuResource::write(std::uint64_t a_offset, std::span<const std::byte> a_data)
 {
+    // CPU 書込みは Upload Buffer の有効な範囲だけに許す
     if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Upload ||
         a_offset > m_bufferSize || a_data.size() > m_bufferSize - a_offset)
     {
@@ -250,6 +257,7 @@ Result<void> DX12GpuResource::write(std::uint64_t a_offset, std::span<const std:
 /// @brief 指定した Readback Buffer の範囲だけを Map して読み出す
 Result<void> DX12GpuResource::read(std::uint64_t a_offset, std::span<std::byte> a_data)
 {
+    // CPU 読取りは Readback Buffer の有効な範囲だけに許す
     if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Readback ||
         a_offset > m_bufferSize || a_data.size() > m_bufferSize - a_offset)
     {

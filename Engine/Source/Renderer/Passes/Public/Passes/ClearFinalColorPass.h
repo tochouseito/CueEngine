@@ -32,6 +32,7 @@ public:
     /// @brief 名前付き FinalColorTexture を取得する
     [[nodiscard]] Result<void> setup(FrameGraphBuilder& a_builder) override
     {
+        // Graph が先に宣言した FinalColor を名前で取得する
         auto result = a_builder.get_texture("FinalColorTexture");
         if (!result.has_value())
         {
@@ -44,6 +45,7 @@ public:
     /// @brief Clear 対象の Write と State を宣言する
     [[nodiscard]] Result<void> describe_resources(FrameGraphBuilder& a_builder) override
     {
+        // Clear を Write / RenderTarget と宣言して初期遷移を計画させる
         return a_builder.use(m_finalColor, FrameGraphAccess::Write,
                              FrameGraphResourceState::RenderTarget);
     }
@@ -51,6 +53,7 @@ public:
     /// @brief Backend Context に Clear を記録する
     [[nodiscard]] Result<void> execute(FrameGraphContext& a_context) override
     {
+        // この Frame の実体と RTV の解決は描画 Context に任せる
         return a_context.clear_render_target(m_finalColor, m_clearColor);
     }
 

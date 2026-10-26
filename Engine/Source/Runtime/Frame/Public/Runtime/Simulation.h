@@ -15,6 +15,7 @@ struct SimulationConfig final
 {
     // 0 は可変周期。固定周期ではゲームロジックを SimulationCallback に登録する
     std::uint32_t frequencyHz = 0;
+    // 一回の Frame で追い付く固定 Tick 数の上限
     std::uint32_t maxCatchUpSteps = 4;
     std::chrono::nanoseconds maxElapsed = std::chrono::milliseconds(250);
 
@@ -25,7 +26,9 @@ struct SimulationConfig final
 /// @brief Render Frame ID と独立したゲーム更新の一回分
 struct SimulationStep final
 {
+    // 今回の更新後に到達する論理 Tick
     std::uint64_t tick = 0;
+    // ゲーム更新に渡す時間幅。描画 FPS とは独立する
     std::chrono::duration<double> deltaTime{};
     std::chrono::duration<double> simulationTime{};
 };
@@ -33,12 +36,17 @@ struct SimulationStep final
 /// @brief 一つの描画 Snapshot に属する不変の補間・過負荷情報
 struct FrameSimulationInfo final
 {
+    // 描画 Snapshot に対応する論理 Frame ID
     std::uint64_t frameIndex = 0;
+    // 描画補間の始点となる更新 Tick
     std::uint64_t previousTick = 0;
+    // 描画補間の終点となる更新 Tick
     std::uint64_t currentTick = 0;
     std::uint32_t updateSteps = 0;
+    // 固定 Tick 間の補間率。可変更新時は補間しない
     double interpolationAlpha = 1.0;
     std::chrono::nanoseconds frameElapsed{};
+    // 時間上限や追い付き上限によって捨てた経過時間
     std::chrono::nanoseconds droppedElapsed{};
     bool isFixed = false;
     bool wasCanceled = false;

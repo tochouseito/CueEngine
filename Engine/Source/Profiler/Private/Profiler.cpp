@@ -41,6 +41,7 @@ void ProfileMetric::add(std::chrono::nanoseconds a_duration) const noexcept
 {
     if (m_state)
     {
+        // 同じ Metric の標本更新を排他し、別 Metric の更新は妨げない
         std::lock_guard lock(m_state->mutex);
         m_state->samples.add(a_duration);
     }
@@ -93,6 +94,7 @@ ProfileMetric Profiler::create_metric(std::string_view a_name)
     {
         throw std::overflow_error("Profiler metric ID exhausted");
     }
+    // 利用者のいなくなった同名の系列だけを空の状態から再利用する
     for (auto &existing : m_state->metrics)
     {
         // Registry だけが所有する領域は、停止済み Producer のものである
@@ -105,6 +107,7 @@ ProfileMetric Profiler::create_metric(std::string_view a_name)
             return ProfileMetric(existing);
         }
     }
+    // 新しい系列の Record を共有所有し、Handle の寿命を Registry から独立させる
     auto metric = std::make_shared<profiler_detail::MetricState>(a_name);
     metric->id = m_state->nextId;
     // Registry の追加失敗時は ID を消費せず、部分生成した系列も公開しない
@@ -121,10 +124,12 @@ Result<ProfilerSnapshot> Profiler::snapshot() const
         {
             // 借用中の系列を延命して再利用を防ぎ、集計中は Registry の登録を妨げない
             std::lock_guard registryLock(m_state->mutex);
+            // Registry の Lock 内では参照一覧だけを複写する
             metrics = m_state->metrics;
         }
         ProfilerSnapshot result;
         result.metrics.reserve(metrics.size());
+        // 名前と統計を取得結果が所有する Snapshot へまとめる
         for (const auto &metric : metrics)
         {
             ProfilerMetricSnapshot entry;
@@ -132,6 +137,7 @@ Result<ProfilerSnapshot> Profiler::snapshot() const
             entry.name = metric->name;
             {
                 // 名前の複写や返却配列の操作中に Producer の系列 Mutex を保持しない
+                // 各 Metric の分布を個別に排他取得する
                 std::lock_guard metricLock(metric->mutex);
                 entry.statistics = metric->samples.statistics();
             }

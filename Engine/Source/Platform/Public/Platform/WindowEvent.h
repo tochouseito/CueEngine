@@ -24,7 +24,9 @@ enum class WindowEventType
 /// @brief Window ProcedureからHostへ渡す所有値のEvent
 struct WindowEvent final
 {
+    // Close・寸法変更・最小化・破棄の通知を識別する
     WindowEventType type;
+    // Event が通知した時点の Client 領域の寸法
     WindowSize clientSize;
 };
 } // namespace cue

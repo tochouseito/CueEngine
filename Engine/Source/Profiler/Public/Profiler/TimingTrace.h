@@ -12,9 +12,11 @@ inline constexpr auto k_unknownTimingFrame = (std::numeric_limits<std::uint64_t>
 /// @brief Sink が同じ単調 Clock と単位で取得する時刻と任意の Thread Cycle を保持する
 struct TimingTracePoint final
 {
+    // Sink が定める共通の単調時間軸上の採取時刻
     std::chrono::nanoseconds time{};
     std::uint64_t threadCycles = 0;
     std::uint32_t processor = 0;
+    // Thread Cycle を取得できない Sink では値を推測しない
     bool hasThreadCycles = false;
 };
 
@@ -22,6 +24,7 @@ struct TimingTracePoint final
 struct TimingTraceSpan final
 {
     const char *name = nullptr;
+    // 同じ入力 Snapshot に属する区間を関連付ける論理 Frame ID
     std::uint64_t frame = k_unknownTimingFrame;
     std::uint64_t detail = 0;
     std::uint32_t outcome = (std::numeric_limits<std::uint32_t>::max)();
@@ -37,6 +40,7 @@ struct TimingTraceGpuRecord final
     std::uint64_t frame = k_unknownTimingFrame;
     std::uint64_t queue = 0;
     std::uint64_t detail = 0;
+    // GPU API が返した Native Tick を変換せず保持する
     std::uint64_t beginTick = 0;
     std::uint64_t endTick = 0;
     std::uint64_t frequency = 0;
@@ -45,6 +49,7 @@ struct TimingTraceGpuRecord final
     std::int64_t cpuAfter = 0;
     // 0 は未指定。Domain の識別と Native Tick の換算は Platform Adapter が所有する
     std::uint64_t cpuClockId = 0;
+    // CPU Native Tick を実時間へ換算するための周波数
     std::uint64_t cpuFrequency = 0;
     std::int64_t status = 0;
     std::uint32_t kind = 0;
@@ -58,6 +63,7 @@ struct TimingTraceGpuRecord final
 struct TimingTraceSink final
 {
     void *context = nullptr;
+    // 同じ Clock Domain の CPU 時刻を採取する Callback
     TimingTracePoint (*capture)(void *) noexcept = nullptr;
     void (*record)(void *, const TimingTraceSpan &) noexcept = nullptr;
     void (*recordGpu)(void *, const TimingTraceGpuRecord &) noexcept = nullptr;
@@ -85,6 +91,7 @@ inline std::uint64_t timing_trace_frame() noexcept
 inline TimingTraceSink *timing_trace_gpu_sink() noexcept
 {
 #if defined(CUE_ENABLE_TIMING_TRACE)
+    // 登録済みでも GPU 記録 Callback がなければ校正を行わない
     auto *sink = timing_trace_detail::sink.load(std::memory_order_acquire);
     return sink && sink->recordGpu ? sink : nullptr;
 #else
@@ -96,6 +103,7 @@ inline TimingTraceSink *timing_trace_gpu_sink() noexcept
 inline void set_timing_trace_sink(TimingTraceSink *a_sink) noexcept
 {
 #if defined(CUE_ENABLE_TIMING_TRACE)
+    // Worker 開始前に用意した Sink を公開する
     timing_trace_detail::sink.store(a_sink, std::memory_order_release);
 #else
     (void)a_sink;
@@ -110,6 +118,7 @@ class TimingTraceFrame final
     explicit TimingTraceFrame(std::uint64_t a_frame) noexcept
     {
 #if defined(CUE_ENABLE_TIMING_TRACE)
+        // 入れ子の Frame Scope へ入る前の論理 ID を退避する
         m_previous = timing_trace_detail::frame;
         timing_trace_detail::frame = a_frame;
 #else
@@ -121,6 +130,7 @@ class TimingTraceFrame final
     ~TimingTraceFrame()
     {
 #if defined(CUE_ENABLE_TIMING_TRACE)
+        // Scope 終了時に外側の論理 Frame ID へ戻す
         timing_trace_detail::frame = m_previous;
 #endif
     }
@@ -142,6 +152,7 @@ class TimingTraceScope final
     {
 #if defined(CUE_ENABLE_TIMING_TRACE)
         m_sink = timing_trace_detail::sink.load(std::memory_order_acquire);
+        // 時刻取得と記録の両 Callback が揃う場合だけ区間を開始する
         if (m_sink && m_sink->capture && m_sink->record)
         {
             m_span.name = a_name;
@@ -172,6 +183,7 @@ class TimingTraceScope final
         if (m_sink)
         {
             m_span.outcome = a_outcome;
+            // 終了時刻と結果を一度だけ記録し、Destructor との重複を避ける
             m_span.end = m_sink->capture(m_sink->context);
             m_sink->record(m_sink->context, m_span);
             m_sink = nullptr;

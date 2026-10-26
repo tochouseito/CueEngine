@@ -30,6 +30,7 @@ Result<std::unique_ptr<FileLogSink>> FileLogSink::create(IFileSystem &a_files, c
     }
     if (!a_path.parent().is_empty())
     {
+        // ログ File の親 Directory を必要に応じて生成する
         auto parents = a_files.create_directories(a_path.parent());
         if (!parents.has_value())
         {
@@ -38,6 +39,7 @@ Result<std::unique_ptr<FileLogSink>> FileLogSink::create(IFileSystem &a_files, c
     }
     // Handle を得た後の Allocation 失敗で公開前の File を残さないよう Owner を先に確保する
     auto sink = std::make_unique<FileLogSink>(CreateToken{}, nullptr);
+    // 追記か新規作成かに応じた Open 条件で File を所有する
     auto opened =
         a_files.open(a_path, {FileAccess::Write, a_append ? FileCreation::OpenAlways : FileCreation::CreateNew});
     if (!opened.has_value())
@@ -47,6 +49,7 @@ Result<std::unique_ptr<FileLogSink>> FileLogSink::create(IFileSystem &a_files, c
     sink->m_file = opened.take_value();
     if (a_append)
     {
+        // 追記時だけ書込み位置を既存 File の末尾へ移す
         auto moved = sink->m_file->seek(0, SeekOrigin::End);
         if (!moved.has_value())
         {
@@ -65,6 +68,7 @@ Result<void> FileLogSink::write(std::string_view a_line)
     try
     {
         auto bytes = std::as_bytes(std::span(a_line.data(), a_line.size()));
+        // 部分書込みの場合も行の残りを最後まで出力する
         while (!bytes.empty())
         {
             auto written = m_file->write(bytes);
@@ -73,6 +77,7 @@ Result<void> FileLogSink::write(std::string_view a_line)
                 m_hasWriteFailure = true;
                 return Result<void>::failure(*written.try_error());
             }
+            // 書込み 0 や過大な返却値で Loop が進まなくなる状態を拒否する
             const auto count = *written.try_value();
             if (count == 0 || count > bytes.size())
             {
@@ -105,6 +110,7 @@ Result<void> FileLogSink::close()
     std::optional<Error> failure;
     try
     {
+        // 閉じる前に保留内容を Flush し、失敗は Close 結果と別に保持する
         auto flushed = m_file->flush();
         if (!flushed.has_value())
         {
@@ -117,6 +123,7 @@ Result<void> FileLogSink::close()
     }
     try
     {
+        // Close に失敗した Handle は保持して再試行に備える
         auto closed = m_file->close();
         if (closed.has_value())
         {

@@ -1,6 +1,7 @@
 #include <EditorHost/EditorHost.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <limits>
@@ -19,6 +20,20 @@
 
 namespace
 {
+/// @brief 時刻取得の迂回を検出するため、実時計と異なる時間軸を全 Thread へ返す
+class OffsetClock final : public cue::Clock
+{
+  public:
+    /// @brief 経過速度を維持したまま原点を一日ずらす
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept override
+    {
+        samples.fetch_add(1, std::memory_order_relaxed);
+        return cue::get_default_clock().now() + std::chrono::hours(24);
+    }
+
+    mutable std::atomic<std::uint64_t> samples = 0;
+};
+
 /// @brief 実 Clock に依存せず入力イベント単位の分布、無効値と非表示 Frame を検証する
 int test_samples()
 {
@@ -124,15 +139,16 @@ int test_trickled_input()
 /// @brief 実 EditorHost の各 Buffering / Waitable 経路で入力を反映した Frame と Present を確認する
 int test_host(std::uint32_t a_buffers, bool a_waitable, bool a_rendersUi = true)
 {
+    OffsetClock clock;
     cue::tests::TemporaryFiles temporary;
     if (!temporary.isCreated)
     {
         return __LINE__;
     }
     cue::EditorHostConfig config;
+    config.clock = &clock;
     config.window = {"Cue Input Latency Host Test", {320, 240}};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.storage.dataRootOverride = temporary.root;
     config.frame.maxFps = 0;
     config.gpu = {a_buffers, a_buffers};
@@ -201,7 +217,8 @@ int test_host(std::uint32_t a_buffers, bool a_waitable, bool a_rendersUi = true)
         {
             if (value.invalidEvents != 0 || value.toPresentStart.sampleCount < 2 ||
                 value.toPresentStart.lastDuration > value.toPresentReturn.lastDuration ||
-                value.toPresentReturn.lastDuration > value.toCpuComplete.lastDuration || value.lastPresent == 0)
+                value.toPresentReturn.lastDuration > value.toCpuComplete.lastDuration || value.lastPresent == 0 ||
+                value.toCpuComplete.lastDuration >= std::chrono::seconds(5) || clock.samples.load() == 0)
             {
                 return __LINE__;
             }

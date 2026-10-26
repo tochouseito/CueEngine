@@ -34,6 +34,7 @@ void emergency_output(const LogRecord &a_record) noexcept
                   a_record.message.empty() ? "" : a_record.message.data(),
                   static_cast<long long>(a_record.nativeCode.value_or(0)));
     wchar_t wide[1024]{};
+    // UTF-8 を UTF-16 へ変換し、不正な入力を拒否する
     if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, 1024) != 0)
     {
         OutputDebugStringW(wide);
@@ -62,6 +63,7 @@ class ReportingScope final
 /// @brief 登録解除との競合中も Logger を借用し、失敗後は緊急出力へ戻る
 void dispatch(const LogRecord &a_record) noexcept
 {
+    // 登録 Logger への同期配送を再入と例外から保護する
     if (g_isReporting)
     {
         emergency_output(a_record);
@@ -73,11 +75,13 @@ void dispatch(const LogRecord &a_record) noexcept
         std::shared_lock lock(g_routeMutex);
         if (g_logger)
         {
+            // 呼出中だけ借用する Record を登録先へ渡す
             auto result = g_logger->write(a_record);
             if (result.has_value())
             {
                 if (a_record.level == LogLevel::Fatal)
                 {
+                    // Fatal の記録はその場で Flush する
                     auto flushed = g_logger->flush();
                     if (!flushed.has_value())
                     {
@@ -144,6 +148,7 @@ Result<std::unique_ptr<DiagnosticRegistration>> register_diagnostic_logger(ILogg
     {
         return registrationResult::failure({ErrorCategory::InvalidState, "Diagnostics.register.reentry"});
     }
+    // 登録 Token の所有権と Logger の非所有参照を分離する
     auto registration = std::make_unique<DiagnosticRegistration>(DiagnosticRegistration::CreateToken{}, a_logger);
     std::unique_lock lock(g_routeMutex);
     if (g_logger)
@@ -157,6 +162,7 @@ Result<std::unique_ptr<DiagnosticRegistration>> register_diagnostic_logger(ILogg
 
 void report_log(const char *a_source, const char *a_message, LogLevel a_level, std::source_location a_location) noexcept
 {
+    // 通常メッセージを発生位置付きの Record へまとめる
     if (a_source && a_message)
     {
         LogRecord record{a_level, a_source, a_message};
@@ -168,6 +174,7 @@ void report_log(const char *a_source, const char *a_message, LogLevel a_level, s
 void report_log_error(const char *a_source, const Error &a_error, LogLevel a_level,
                       std::source_location a_location) noexcept
 {
+    // Result の伝播とは別に Error の診断情報を配送する
     if (a_source)
     {
         LogRecord record{a_level, a_source, a_error.operation, a_error.category, a_error.nativeCode};

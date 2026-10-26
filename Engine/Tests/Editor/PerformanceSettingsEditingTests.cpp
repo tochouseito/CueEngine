@@ -5,8 +5,6 @@
 #include <chrono>
 #include <cstdint>
 
-#include "../Support/TemporaryFiles.h"
-
 namespace
 {
 /// @brief 共通の枠数から導出される実行構成を検証する
@@ -17,22 +15,12 @@ bool has_buffering(const cue::PerformanceSettings &a_settings, std::uint32_t a_c
            cue::update_lead_frames(a_settings.frame) == a_count - 1;
 }
 
-/// @brief バッファリング切替、上限補正、保存読込と不正値の無変更を確認する
+/// @brief バッファリング切替、上限補正と不正値の無変更を確認する
 bool test_buffering()
 {
     auto settings = cue::performance_preset(cue::PerformancePreset::Throughput);
     const auto timing = settings.frame;
     const auto presentation = settings.presentation;
-    cue::tests::TemporaryFiles temporary;
-    if (!temporary.isCreated)
-    {
-        return false;
-    }
-    auto path = temporary.root.join("Performance.cfg");
-    if (!path.has_value())
-    {
-        return false;
-    }
     for (const std::uint32_t count : {3u, 1u, 2u, 3u, 8u, 1u})
     {
         const auto oldLimit = settings.gpu.maxFramesInFlight;
@@ -40,13 +28,7 @@ bool test_buffering()
             settings.gpu.maxFramesInFlight != (std::min)(oldLimit, count) || settings.frame.maxFps != timing.maxFps ||
             settings.frame.waitMode != timing.waitMode || settings.frame.spinDuration != timing.spinDuration ||
             settings.frame.syncMode != timing.syncMode || settings.frame.predictionSlack != timing.predictionSlack ||
-            settings.presentation != presentation || !cue::validate_performance_settings(settings).has_value() ||
-            !cue::save_performance_settings(*temporary.files, *path.try_value(), settings).has_value())
-        {
-            return false;
-        }
-        auto loaded = cue::load_performance_settings(*temporary.files, *path.try_value());
-        if (!loaded.has_value() || *loaded.try_value() != settings)
+            settings.presentation != presentation || !cue::validate_performance_settings(settings).has_value())
         {
             return false;
         }

@@ -33,7 +33,9 @@ class FileLogSink final : public ILogSink
     [[nodiscard]] Result<void> close() override;
 
   private:
+    // Close に失敗した場合も Handle の所有先を残して再試行する
     std::unique_ptr<IFile> m_file;
+    // 途中の行の書込み失敗を、後続処理で正常扱いしないために保持する
     bool m_hasWriteFailure = false;
 };
 } // namespace cue

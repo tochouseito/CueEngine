@@ -203,7 +203,7 @@ if ($Collector)
     exit
 }
 
-if (!(Test-Path -LiteralPath $probe)) { throw 'Trace ON の Development Probe を Build してください。' }
+if (!(Test-Path -LiteralPath $probe)) { throw 'CUE_BUILD_PERFORMANCE_TOOLS=ON、CUE_ENABLE_TIMING_TRACE=ON の Development Probe を Build してください。' }
 if (Test-Path -LiteralPath $outputPath)
 {
     if (@(Get-ChildItem -LiteralPath $outputPath -Force).Count -ne 0) { throw '既存記録を保全するため空の出力先を指定してください。' }

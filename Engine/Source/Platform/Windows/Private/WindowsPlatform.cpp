@@ -25,10 +25,16 @@ class WindowsWindowSystem final : public WindowSystem
 {
 public:
     /// @brief 呼出Threadと固有Window Class名を記録する
-    WindowsWindowSystem();
+    explicit WindowsWindowSystem(Clock &a_clock);
 
     /// @brief Window破棄後にWindow Classを解除する
     ~WindowsWindowSystem() override;
+
+    /// @brief 入力の時計を System と Window の生存中だけ借用する
+    [[nodiscard]] Clock &clock() const noexcept
+    {
+        return m_clock;
+    }
 
     /// @brief 単一Main Windowを検証・生成する
     [[nodiscard]] Result<std::unique_ptr<Window>> create_window(const WindowDescriptor& a_descriptor) override;
@@ -52,6 +58,7 @@ private:
     /// @brief Window Classを必要なら登録する
     [[nodiscard]] Result<void> register_class();
 
+    Clock &m_clock;
     DWORD m_threadId;
     HINSTANCE m_instance;
     std::wstring m_className;
@@ -224,6 +231,7 @@ public:
     /// @brief UI 構築前に入力の全観測値を Frame へ移し、Window 側を次の入力受付へ戻す
     void take_input_events(std::vector<InputEventTiming> &a_events) noexcept override
     {
+        // 到達済み入力の所有配列を渡し、Window 側の保留一覧を空にする
         a_events.clear();
         a_events.swap(m_inputEvents);
     }
@@ -237,6 +245,7 @@ public:
             const auto* create = reinterpret_cast<const CREATESTRUCTW*>(a_lParam);
             auto* window = static_cast<WindowsWindow*>(create->lpCreateParams);
             SetLastError(0);
+            // Native Window と利用側の状態を関連付ける
             if (SetWindowLongPtrW(a_handle, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(window)) == 0 &&
                 GetLastError() != 0)
             {
@@ -264,7 +273,7 @@ public:
                 }
                 else
                 {
-                    inputTiming = {++window->m_inputSequence, std::chrono::steady_clock::now()};
+                    inputTiming = {++window->m_inputSequence, window->m_system.clock().now()};
                     window->m_inputEvents.push_back(inputTiming);
                 }
             }
@@ -318,9 +327,11 @@ public:
                 RECT clientRect{};
                 if (GetClientRect(a_handle, &clientRect))
                 {
+                    // WM_SIZE の外形値ではなく現在の Client 領域を採用する
                     const auto width = static_cast<std::uint32_t>(clientRect.right - clientRect.left);
                     const auto height = static_cast<std::uint32_t>(clientRect.bottom - clientRect.top);
                     window->m_clientSize = {width, height};
+                    // 最小化からの復帰と通常 Resize を Event の種類で区別する
                     const auto type = window->m_isMinimized ? WindowEventType::Restored : WindowEventType::Resized;
                     window->m_isMinimized = false;
                     window->queue_event({type, window->m_clientSize});
@@ -357,6 +368,7 @@ private:
     /// @brief Win32 Callback内のAllocation失敗をPump側へ渡す
     void queue_event(WindowEvent a_event) noexcept
     {
+        // Window Procedure 内の Event 確保失敗を次の Pump へ伝える
         // Win32 Callback から例外を出さず、後続の Pump で失敗を返す
         try
         {
@@ -384,8 +396,8 @@ private:
 };
 
 /// @brief Thread固有のWindow Class名を作る
-WindowsWindowSystem::WindowsWindowSystem()
-    : m_threadId(GetCurrentThreadId()),
+WindowsWindowSystem::WindowsWindowSystem(Clock &a_clock)
+    : m_clock(a_clock), m_threadId(GetCurrentThreadId()),
       m_instance(GetModuleHandleW(nullptr)),
       m_className(L"CueEngineWindow_" + std::to_wstring(reinterpret_cast<std::uintptr_t>(this)))
 {
@@ -421,6 +433,7 @@ Result<void> WindowsWindowSystem::register_class()
     windowClass.hInstance = m_instance;
     windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     windowClass.lpszClassName = m_className.c_str();
+    // Window Procedure と Class 名を OS へ登録する
     if (!RegisterClassExW(&windowClass))
     {
         return Result<void>::failure({ErrorCategory::PlatformFailure, "RegisterClassExW", GetLastError()});
@@ -455,6 +468,7 @@ Result<std::unique_ptr<Window>> WindowsWindowSystem::create_window(const WindowD
     }
 
     // タイトルをUTF-16に変換する
+    // Window Title を Win32 が要求する UTF-16 へ変換する
     auto titleResult = utf8_to_utf16(a_descriptor.title);
     if (!titleResult.has_value())
     {
@@ -470,6 +484,7 @@ Result<std::unique_ptr<Window>> WindowsWindowSystem::create_window(const WindowD
     {
         return WindowResult::failure({ErrorCategory::PlatformFailure, "AdjustWindowRectEx", GetLastError()});
     }
+    // 装飾枠を含む寸法が Native の座標範囲へ収まるか確認する
     const auto outerWidth = static_cast<std::int64_t>(outerRect.right) - outerRect.left;
     const auto outerHeight = static_cast<std::int64_t>(outerRect.bottom) - outerRect.top;
     if (outerWidth <= 0 || outerHeight <= 0 || outerWidth > std::numeric_limits<int>::max() ||
@@ -486,6 +501,7 @@ Result<std::unique_ptr<Window>> WindowsWindowSystem::create_window(const WindowD
     }
 
     // ウィンドウを作成する
+    // Native Window の生成前に C++ 側の所有者を確保する
     auto window = std::make_unique<WindowsWindow>(*this, m_threadId);
     const auto handle = CreateWindowExW(0, m_className.c_str(), title.c_str(), k_windowStyle,
                                        CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(outerWidth),
@@ -504,6 +520,7 @@ Result<std::unique_ptr<Window>> WindowsWindowSystem::create_window(const WindowD
     {
         // Size を確定できなければ公開前の Window を破棄する
         const auto nativeCode = GetLastError();
+        // 生成後の公開に失敗した Window も同じ所有先から破棄する
         auto rollback = window->destroy();
         if (!rollback.has_value())
         {
@@ -532,6 +549,7 @@ Result<PumpStatus> WindowsWindowSystem::pump_events()
 
     // WM_QUIT は Dispatch せず終了状態として保持する
     MSG message{};
+    // Quit を含む保留 Message を処理し、Callback の失敗を Result へ集約する
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
     {
         if (message.message == WM_QUIT)
@@ -540,6 +558,7 @@ Result<PumpStatus> WindowsWindowSystem::pump_events()
             continue;
         }
         TranslateMessage(&message);
+        // 取得済み Message を対象 Window の Procedure へ配送する
         DispatchMessageW(&message);
     }
 
@@ -585,9 +604,9 @@ void WindowsWindowSystem::mark_quit_requested() noexcept
 } // namespace
 
 /// @brief Windows用WindowSystemを生成する
-Result<std::unique_ptr<WindowSystem>> create_windows_window_system()
+Result<std::unique_ptr<WindowSystem>> create_windows_window_system(Clock &a_clock)
 {
-    return Result<std::unique_ptr<WindowSystem>>::success(std::make_unique<WindowsWindowSystem>());
+    return Result<std::unique_ptr<WindowSystem>>::success(std::make_unique<WindowsWindowSystem>(a_clock));
 }
 
 /// @brief Windows実装のWindowから有効なHWNDを借用する

@@ -119,6 +119,7 @@ private:
   /// @brief 不連続と Monitor 変更で予測履歴を無効化し、取得できた DXGI 統計だけ保持する
   void update_timing();
 
+  Clock *m_clock = nullptr;
   DX12ViewManager *m_viewManager = nullptr;
   queueLease m_queue;
   Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
