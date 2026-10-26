@@ -68,6 +68,7 @@ std::shared_ptr<T> find_record(const std::vector<Slot<T>> &a_slots, H a_handle, 
 template <typename H, typename T>
 Result<H> insert_record(std::vector<Slot<T>> &a_slots, std::shared_ptr<T> a_record, std::uint64_t a_id)
 {
+    // 再利用可能な Slot を探し、世代付き Handle を返す
     for (std::size_t index = 0; index < a_slots.size(); ++index)
     {
         auto &slot = a_slots[index];
@@ -137,6 +138,7 @@ Result<void> name_object(ID3D12Object &a_object, const std::string &a_name)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.name"});
     }
+    // 表示名を Native Object が要求する UTF-16 に変換する
     auto converted = utf8_to_utf16(a_name.empty() ? "Cue.PipelineObject" : a_name);
     if (!converted.has_value())
     {
@@ -183,6 +185,7 @@ Result<std::unique_ptr<DX12PipelineManager>> DX12PipelineManager::create(DX12Ren
     {
         return managerResult::failure({ErrorCategory::Fatal, "DX12PipelineManager.id_exhausted"});
     }
+    // Shader コンパイラを Manager の寿命で所有する
     auto compilerResult = DX12ShaderCompiler::create(a_files);
     if (!compilerResult.has_value())
     {
@@ -216,6 +219,7 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
         std::vector<D3D12_ROOT_PARAMETER> parameters(a_desc.parameters.size());
         std::vector<D3D12_DESCRIPTOR_RANGE> ranges(a_desc.parameters.size());
         std::vector<D3D12_STATIC_SAMPLER_DESC> samplers(a_desc.samplers.size());
+        // 抽象 Root Parameter を Native の定義へ変換する
         for (std::size_t index = 0; index < parameters.size(); ++index)
         {
             const auto &source = a_desc.parameters[index];
@@ -264,6 +268,7 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
                 return rootResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.type"});
             }
         }
+        // 固定 Sampler の設定を Root Signature の定義へ移す
         for (std::size_t index = 0; index < samplers.size(); ++index)
         {
             const auto &source = a_desc.samplers[index];
@@ -298,7 +303,9 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
         {
             return rootResult::failure(pipeline_error("D3D12SerializeRootSignature", hr));
         }
+        // Root の設定と Native 実体を同じ共有 Record へ保持する
         auto record = std::make_shared<RootRecord>();
+        // 直列化した定義から GPU の Root Signature を生成する
         hr = device()->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
                                            IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
@@ -323,6 +330,7 @@ Result<RootSignatureHandle> DX12PipelineManager::create_root_signature(RootSigna
 Result<ShaderBlobHandle> DX12PipelineManager::create_shader_blob(ShaderCompileDesc a_desc)
 {
     using shaderResult = Result<ShaderBlobHandle>;
+    // FileSystem 経由で読んだ HLSL を DXC でコンパイルする
     auto compiled = m_state->compiler->compile(a_desc);
     if (!compiled.has_value())
     {
@@ -345,6 +353,7 @@ Result<ShaderBlobHandle> DX12PipelineManager::create_shader_blob(ShaderCompileDe
 Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(GraphicsPipelineStateDesc a_desc)
 {
     using pipelineResult = Result<PipelineStateHandle>;
+    // PSO が参照する Root・VS・PS の Handle と世代を照合する
     auto root = find_record(m_state->roots, a_desc.rootSignature, m_state->id);
     auto vs = find_record(m_state->shaders, a_desc.vertexShader, m_state->id);
     auto ps = find_record(m_state->shaders, a_desc.pixelShader, m_state->id);
@@ -358,6 +367,7 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
     }
     try
     {
+        // PSO の生存中は参照する Root と Shader の Record も保持する
         auto record = std::make_shared<PipelineRecord>();
         record->root = std::move(root);
         record->format = a_desc.renderTargetFormat;
@@ -389,6 +399,7 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
         native.NumRenderTargets = 1;
         native.RTVFormats[0] = texture_format(a_desc.renderTargetFormat);
         native.SampleDesc.Count = 1;
+        // 検証済みの描画条件から Graphics PSO を生成する
         const HRESULT hr = device()->CreateGraphicsPipelineState(&native, IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
         {
@@ -411,6 +422,7 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
 Result<PipelineStateHandle> DX12PipelineManager::create_compute_pipeline(ComputePipelineStateDesc a_desc)
 {
     using pipelineResult = Result<PipelineStateHandle>;
+    // Compute 用 Root と Shader の種類・所有系列を検証する
     auto root = find_record(m_state->roots, a_desc.rootSignature, m_state->id);
     auto shader = find_record(m_state->shaders, a_desc.computeShader, m_state->id);
     if (!root || !shader || shader->desc.stage != ShaderStage::Compute)
@@ -425,6 +437,7 @@ Result<PipelineStateHandle> DX12PipelineManager::create_compute_pipeline(Compute
         D3D12_COMPUTE_PIPELINE_STATE_DESC native{};
         native.pRootSignature = record->root->native.Get();
         native.CS = {shader->native->GetBufferPointer(), shader->native->GetBufferSize()};
+        // Compute Shader の実行条件から PSO を生成する
         const HRESULT hr = device()->CreateComputePipelineState(&native, IID_PPV_ARGS(&record->native));
         if (FAILED(hr))
         {
@@ -469,11 +482,13 @@ Result<GpuTextureFormat> DX12PipelineManager::bind_graphics(DX12GpuCommandContex
     {
         return Result<GpuTextureFormat>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_graphics"});
     }
+    // Command の GPU 利用終了まで Pipeline Record を保持する
     auto retained = a_command.retain_pipeline(record);
     if (!retained.has_value())
     {
         return Result<GpuTextureFormat>::failure(*retained.try_error());
     }
+    // Graphics PSO と Root Signature を同じ CommandList に設定する
     auto *list = a_command.command_list();
     list->SetGraphicsRootSignature(record->root->native.Get());
     list->SetPipelineState(record->native.Get());
@@ -492,6 +507,7 @@ Result<void> DX12PipelineManager::bind_compute(DX12GpuCommandContext &a_command,
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_compute"});
     }
+    // Compute Pipeline も提出完了まで Command に所有を預ける
     auto retained = a_command.retain_pipeline(record);
     if (!retained.has_value())
     {
@@ -527,6 +543,7 @@ Result<void> DX12PipelineManager::validate_bindings(PipelineStateHandle a_handle
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bindings.handle"});
     }
+    // Draw / Dispatch 前に必須の Root Parameter が設定済みか確認する
     for (std::size_t index = 0; index < record->root->desc.parameters.size(); ++index)
     {
         const auto &parameter = record->root->desc.parameters[index];

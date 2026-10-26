@@ -13,6 +13,7 @@
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12RenderDevice.h>
 #include <Platform/Diagnostics.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::dx12
 {
@@ -57,7 +58,8 @@ DX12FrameGraphFrames::DX12FrameGraphFrames(CreateToken) noexcept
 /// @brief 一時 Texture の View を作り、外部 Texture の View Slot を枠ごとに予約する
 Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const DX12ResourceContext &a_resources,
                                                                            const FrameGraphPlan &a_plan,
-                                                                           DX12FrameGraphFramesConfig a_config)
+                                                                           DX12FrameGraphFramesConfig a_config,
+                                                                           Profiler *a_profiler)
 {
     using FramesResult = Result<std::unique_ptr<DX12FrameGraphFrames>>;
     auto &device = a_resources.get_render_device();
@@ -77,6 +79,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
     {
         std::vector<bool> needsRtv(a_plan.resources().size(), false);
         std::vector<bool> needsSrv(a_plan.resources().size(), false);
+        // Shader から読む一時 Texture に SRV が必要かを先に集める
         for (const auto &planned : a_plan.resources())
         {
             if (!planned.isImported && planned.kind == GpuResourceKind::Texture2D &&
@@ -85,6 +88,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                 needsSrv[planned.handle.index] = true;
             }
         }
+        // 各 Pass の使用宣言から RTV / SRV の必要性を決める
         for (const auto &pass : a_plan.passes())
         {
             for (const auto &use : pass.uses)
@@ -107,17 +111,28 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
             }
         }
         auto frames = std::make_unique<DX12FrameGraphFrames>(CreateToken{});
+        if (!a_profiler)
+        {
+            frames->m_ownedProfiler = std::make_unique<Profiler>();
+            a_profiler = frames->m_ownedProfiler.get();
+        }
         frames->m_viewManager = &viewManager;
         frames->m_device = &device;
         frames->m_borrowedRtvResource = borrowedRtvResource;
         frames->m_graphId = a_plan.resources().empty() ? 0 : a_plan.resources().front().handle.graphId;
         frames->m_frames.resize(frameCount);
-        frames->m_passTimings.resize(a_plan.passes().size());
+        frames->m_passTimings.reserve(a_plan.passes().size());
+        for (const auto &pass : a_plan.passes())
+        {
+            // Pass ごとの独立した履歴を登録し、GPU 完了後の標本だけを Profiler へ渡す
+            frames->m_passTimings.push_back(a_profiler->create_metric("GPU." + pass.name));
+        }
         D3D12_FEATURE_DATA_D3D12_OPTIONS3 options{};
         if (SUCCEEDED(device.device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options, sizeof(options))))
             frames->m_timestampSupported[2] = options.CopyQueueTimestampQueriesSupported != FALSE;
         if (a_plan.passes().size() > (std::numeric_limits<UINT>::max)() / 2)
             return FramesResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.query_count"});
+        // GPU が同時に参照できる各枠へ物理資源と計測領域を用意する
         for (auto &frame : frames->m_frames)
         {
             frame.views.resize(a_plan.resources().size());
@@ -127,6 +142,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
             if (!a_plan.passes().empty())
             {
                 const UINT queryCount = static_cast<UINT>(a_plan.passes().size() * 2);
+                // 実際に使う Queue 種類ごとに Timestamp Query Heap を作る
                 for (std::size_t type = 0; type < frame.queries.size(); ++type)
                 {
                     if (!frames->m_timestampSupported[type] ||
@@ -138,6 +154,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                     queryDesc.Type =
                         type == 2 ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
                     const auto created =
+                        // GPU Timestamp の Query 格納領域を生成する
                         device.device()->CreateQueryHeap(&queryDesc, IID_PPV_ARGS(&frame.queries[type]));
                     if (FAILED(created))
                         return FramesResult::failure(
@@ -158,10 +175,12 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                 readback.MipLevels = 1;
                 readback.SampleDesc.Count = 1;
                 readback.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                // 各 Queue の計測結果を CPU へ戻す Readback Buffer を用意する
                 for (std::size_t type = 0; type < frame.timestampReadbacks.size(); ++type)
                 {
                     if (!frame.queries[type])
                         continue;
+                    // 専用 Heap と GPU Resource をまとめて生成する
                     const auto created = device.device()->CreateCommittedResource(
                         &heap, D3D12_HEAP_FLAG_NONE, &readback, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                         IID_PPV_ARGS(&frame.timestampReadbacks[type]));
@@ -175,12 +194,14 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                             {ErrorCategory::PlatformFailure, "ID3D12Resource.SetTimestampName", named});
                 }
             }
+            // 確定した Alias Slot の配置から、この枠の一時資源を実体化する
             auto graphResult = DX12FrameGraphResources::create(device, a_plan);
             if (!graphResult.has_value())
             {
                 return FramesResult::failure(*graphResult.try_error());
             }
             frame.graph = graphResult.take_value();
+            // 論理 Resource の Index と各枠の Native View を対応付ける
             for (const auto &planned : a_plan.resources())
             {
                 auto &views = frame.views[planned.handle.index];
@@ -212,6 +233,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                         return FramesResult::failure(
                             {ErrorCategory::InvalidState, "DX12FrameGraphFrames.create.flags"});
                     }
+                    // RenderTarget として使う Texture に RTV を割り当てる
                     auto rtvResult =
                         native ? viewManager.create_rtv(*native) : viewManager.reserve(DX12ViewType::RenderTarget);
                     if (!rtvResult.has_value())
@@ -227,6 +249,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                     continue;
                 }
                 // ShaderRead 用の View を同じ論理 Handle に結び付ける
+                // ShaderRead として使う Texture に Shader-visible SRV を割り当てる
                 auto srvResult =
                     native ? viewManager.create_srv(*native) : viewManager.reserve(DX12ViewType::ShaderResource);
                 if (!srvResult.has_value())
@@ -278,12 +301,14 @@ Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
     frame.hasGpuSample = false;
     if (frame.completion)
     {
+        // 前回の提出完了後にだけ、この枠の計測値と View を再利用する
         auto waitResult = frame.completion->wait();
         if (!waitResult.has_value())
         {
             return waitResult;
         }
         // Queue ごとに独立した Readback を持ち、並列 Resolve が同じ Resource へ書き込まない
+        // Queue ごとの Readback から回収済みの Timestamp を読む
         for (std::size_t type = 0; type < frame.timestampReadbacks.size(); ++type)
         {
             auto &readback = frame.timestampReadbacks[type];
@@ -299,6 +324,7 @@ Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
             const auto byteSize = frame.timings.size() * 2 * sizeof(std::uint64_t);
             const D3D12_RANGE range{0, byteSize};
             void *mapped = nullptr;
+            // GPU 完了済み領域を CPU へ Map し、Tick の組を取り出す
             const auto mappedResult = readback->Map(0, &range, &mapped);
             if (FAILED(mappedResult))
                 return Result<void>::failure(
@@ -309,6 +335,7 @@ Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
                 auto &timing = frame.timings[index];
                 if (static_cast<std::size_t>(timing.queue) != type)
                     continue;
+                // Queue 固有の周波数を使って Tick 差を時間へ変換する
                 const auto frequency = frame.frequencies[type];
                 timing.isAvailable =
                     frame.recordedPasses[index] && frequency != 0 && ticks[index * 2 + 1] >= ticks[index * 2];
@@ -322,7 +349,28 @@ Result<void> DX12FrameGraphFrames::begin_frame(std::uint32_t a_frameIndex)
                     else
                         timing.isAvailable = false;
                 }
+#if defined(CUE_ENABLE_TIMING_TRACE)
+                if (frame.recordedPasses[index])
+                {
+                    if (auto *sink = timing_trace_gpu_sink())
+                    {
+                        TimingTraceGpuRecord sample;
+                        sample.kind = 2;
+                        sample.name = timing.name.c_str();
+                        sample.frame = frame.logicalFrame;
+                        sample.queue = frame.queueIdentities[type];
+                        sample.queueType = static_cast<std::uint32_t>(type);
+                        sample.detail = index;
+                        sample.beginTick = ticks[index * 2];
+                        sample.endTick = ticks[index * 2 + 1];
+                        sample.frequency = frequency;
+                        sample.status = timing.isAvailable ? 0 : -1;
+                        sink->recordGpu(sink->context, sample);
+                    }
+                }
+#endif
             }
+            // 確定した GPU 計測を各 Pass の Metric に追加する
             for (std::size_t index = 0; index < frame.timings.size(); ++index)
             {
                 auto &timing = frame.timings[index];
@@ -361,11 +409,18 @@ bool DX12FrameGraphFrames::timestamp_supported(QueueType a_type) const noexcept
 
 /// @brief 当該 Queue の周波数を Tick の経過時間変換に使う
 void DX12FrameGraphFrames::set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type,
-                                                   std::uint64_t a_frequency) noexcept
+                                                   std::uint64_t a_frequency, std::uint64_t a_queueIdentity) noexcept
 {
     const auto type = static_cast<std::size_t>(a_type);
     if (a_frameIndex < m_frames.size() && type < 3)
+    {
         m_frames[a_frameIndex].frequencies[type] = a_frequency;
+#if defined(CUE_ENABLE_TIMING_TRACE)
+        m_frames[a_frameIndex].queueIdentities[type] = a_queueIdentity;
+#else
+        (void)a_queueIdentity;
+#endif
+    }
 }
 
 /// @brief Pass Payload の開始時刻を記録する
@@ -392,6 +447,7 @@ void DX12FrameGraphFrames::end_pass(std::uint32_t a_frameIndex, std::size_t a_pa
         return;
     const UINT first = static_cast<UINT>(a_passIndex * 2);
     a_list.EndQuery(frame.queries[type].Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + 1);
+    // 計測済み Query を CPU 読取り用 Buffer へ書き出す
     a_list.ResolveQueryData(frame.queries[type].Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, 2,
                             frame.timestampReadbacks[type].Get(), first * sizeof(std::uint64_t));
     frame.recordedPasses[a_passIndex] = true;
@@ -429,6 +485,7 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
             {ErrorCategory::InvalidState, "DX12FrameGraphFrames.prepare_imported_views.active_frame"});
     }
     // Descriptor の一部だけを書き換えてから検証失敗しないよう、先に全実体を調べる
+    // 外部 Binding の不足や形状の不一致を View 更新前に検証する
     for (const auto &planned : a_plan.resources())
     {
         const auto &views = frame.views[planned.handle.index];
@@ -456,6 +513,7 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
             {
                 continue;
             }
+            // 必要な View を作れる Texture か Native 条件を確認する
             auto validation = m_viewManager->validate_texture2d(*binding->resource, type);
             if (!validation.has_value())
             {
@@ -469,6 +527,7 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
                 {ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.prepare_imported_views.borrowed_rtv"});
         }
     }
+    // 検証済みの外部 Texture へ、今回の枠の Descriptor を書き直す
     for (const auto &planned : a_plan.resources())
     {
         auto &views = frame.views[planned.handle.index];
@@ -522,12 +581,16 @@ Result<void> DX12FrameGraphFrames::mark_submitted(std::uint32_t a_frameIndex,
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphFrames.mark_submitted"});
     }
     auto &frame = m_frames[a_frameIndex];
+    // 一時資源の所有者へ今回の提出完了点を通知する
     auto markResult = frame.graph->mark_submitted(a_completion);
     if (!markResult.has_value())
     {
         return markResult;
     }
     frame.completion = std::move(a_completion);
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    frame.logicalFrame = timing_trace_frame();
+#endif
     return Result<void>::success();
 }
 
@@ -607,6 +670,21 @@ Result<void> DX12FrameGraphFrames::shutdown()
     {
         return Result<void>::success();
     }
+#if defined(CUE_ENABLE_TIMING_TRACE)
+    // 最後の枠も完了後に回収し、終了直前の GPU 標本を取りこぼさない
+    if (timing_trace_gpu_sink())
+    {
+        // 全枠の GPU 完了を回収してから Descriptor を返す
+        for (std::uint32_t index = 0; index < m_frames.size(); ++index)
+        {
+            auto result = begin_frame(index);
+            if (!result.has_value())
+            {
+                return result;
+            }
+        }
+    }
+#endif
     for (auto &frame : m_frames)
     {
         if (frame.graph)
@@ -624,6 +702,7 @@ Result<void> DX12FrameGraphFrames::shutdown()
         {
             if (views.rtv.is_valid())
             {
+                // 割り当てた RTV Slot を ViewManager へ返却する
                 auto result = m_viewManager->release(views.rtv);
                 if (!result.has_value())
                 {
@@ -633,6 +712,7 @@ Result<void> DX12FrameGraphFrames::shutdown()
             }
             if (views.srv.is_valid())
             {
+                // 割り当てた SRV Slot も同じ所有先へ返却する
                 auto result = m_viewManager->release(views.srv);
                 if (!result.has_value())
                 {

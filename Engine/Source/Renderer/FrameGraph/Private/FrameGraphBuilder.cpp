@@ -187,6 +187,7 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create()
 {
     using BuilderResult = Result<std::unique_ptr<FrameGraphBuilder>>;
     std::uint64_t id = g_nextGraphId.load(std::memory_order_relaxed);
+    // 別の Graph の Handle を区別する識別子を一度だけ採番する
     while (id != (std::numeric_limits<std::uint64_t>::max)() &&
            !g_nextGraphId.compare_exchange_weak(id, id + 1, std::memory_order_relaxed))
     {
@@ -234,6 +235,7 @@ Result<void> FrameGraphBuilder::release_build_pipelines()
     {
         return Result<void>::success();
     }
+    // PSO から先に退役させ、参照元をなくしてから Shader と Root を返す
     while (!m_createdPipelines.empty())
     {
         auto result = m_pipelineManager->retire(m_createdPipelines.back());
@@ -275,6 +277,7 @@ Result<RootSignatureHandle> FrameGraphBuilder::create_root_signature(RootSignatu
     try
     {
         m_createdRoots.reserve(m_createdRoots.size() + 1);
+        // Root Signature の生成成功後に Graph の回収対象へ登録する
         auto result = m_pipelineManager->create_root_signature(std::move(a_desc));
         if (result.has_value())
         {
@@ -300,6 +303,7 @@ Result<ShaderBlobHandle> FrameGraphBuilder::create_shader_blob(ShaderCompileDesc
     try
     {
         m_createdShaders.reserve(m_createdShaders.size() + 1);
+        // コンパイル済み Shader の Handle を Build の所有物として保持する
         auto result = m_pipelineManager->create_shader_blob(std::move(a_desc));
         if (result.has_value())
         {
@@ -325,6 +329,7 @@ Result<PipelineStateHandle> FrameGraphBuilder::create_graphics_pipeline(Graphics
     try
     {
         m_createdPipelines.reserve(m_createdPipelines.size() + 1);
+        // Pass の要求から PSO を生成し、Graph の寿命へ結び付ける
         auto result = m_pipelineManager->create_graphics_pipeline(std::move(a_desc));
         if (result.has_value())
         {
@@ -386,6 +391,7 @@ Result<std::unique_ptr<FrameGraphBuilder>> FrameGraphBuilder::create_main(GpuTex
     auto builder = builderResult.take_value();
     a_finalColor.isRenderTarget = true;
     a_finalColor.isShaderReadable = true;
+    // Graph 全体で共有する FinalColor を名前付き一時 Texture として宣言する
     auto colorResult = builder->create_transient_texture2d("FinalColorTexture", a_finalColor);
     if (!colorResult.has_value())
     {
@@ -520,6 +526,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_buffer(std::stri
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_pool_buffer.handle"});
     }
+    // 外部 Buffer の論理宣言と ResourcePool の Handle を対応付ける
     auto result = import_buffer(std::move(a_name), a_desc, a_initial, a_final);
     if (result.has_value())
     {
@@ -542,6 +549,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_pool_texture2d(std::s
         return Result<FrameGraphResourceHandle>::failure(
             {ErrorCategory::InvalidArgument, "FrameGraphBuilder.import_pool_texture2d.handle"});
     }
+    // 外部 Texture も Graph には借用する形で登録する
     auto result = import_texture2d(std::move(a_name), a_desc, a_initial, a_final);
     if (result.has_value())
     {
@@ -698,6 +706,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
     {
         const std::size_t passCount = m_passes.size();
         std::vector<std::vector<bool>> edges(passCount, std::vector<bool>(passCount, false));
+        // 利用側が明示した Pass 間の依存を有向辺へ反映する
         for (const auto &[before, after] : m_dependencies)
         {
             edges[before][after] = true;
@@ -711,6 +720,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             FrameGraphResourceState state = FrameGraphResourceState::Common;
         };
         std::vector<std::vector<AccessRecord>> accesses(m_resources.size());
+        // Resource ごとに、宣言順の読込み・書込み一覧を集める
         for (const auto &pass : m_passes)
         {
             for (const auto &use : pass.uses)
@@ -726,6 +736,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 {
                     const auto &first = resourceAccesses[earlier];
                     const auto &second = resourceAccesses[later];
+                    // 書込み・状態変更・並行不可の読込みに順序依存を追加する
                     if (first.access == FrameGraphAccess::Write || second.access == FrameGraphAccess::Write ||
                         first.state != second.state ||
                         !can_parallel_read(m_passes[first.passIndex].queue, m_passes[second.passIndex].queue,
@@ -737,6 +748,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             }
         }
 
+        // 各 Pass の未解決の先行依存数を数える
         std::vector<std::size_t> indegree(passCount, 0);
         for (std::size_t before = 0; before < passCount; ++before)
         {
@@ -748,6 +760,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         std::vector<bool> emitted(passCount, false);
         std::vector<FrameGraphPassPlan> ordered;
         ordered.reserve(passCount);
+        // 先行依存がなくなった Pass を宣言順に取り出す
         for (std::size_t order = 0; order < passCount; ++order)
         {
             std::size_t next = passCount;
@@ -759,12 +772,14 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                     break;
                 }
             }
+            // 取り出せる Pass がない場合は依存の循環として拒否する
             if (next == passCount)
             {
                 return PlanResult::failure({ErrorCategory::InvalidState, "FrameGraphBuilder.build.cycle"});
             }
             emitted[next] = true;
             FrameGraphPassPlan pass = m_passes[next];
+            // 確定した依存を Plan に残し、後続の未解決数を減らす
             for (std::size_t before = 0; before < passCount; ++before)
             {
                 if (edges[before][next])
@@ -779,6 +794,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             ordered.push_back(std::move(pass));
         }
 
+        // 実行順を基準に Resource の初回使用と最終使用を計算する
         auto resources = m_resources;
         for (std::size_t order = 0; order < ordered.size(); ++order)
         {
@@ -809,6 +825,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         // Pass 開始前に State を合わせ、同じ UAV State の依存する Access だけを同期する
         std::vector<FrameGraphResourceState> currentStates;
         currentStates.reserve(resources.size());
+        // 各 Resource の初期状態から状態追跡を開始する
         for (const auto &resource : resources)
         {
             currentStates.push_back(resource.initialState);
@@ -818,6 +835,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         for (std::size_t order = 0; order < ordered.size(); ++order)
         {
             auto &pass = ordered[order];
+            // Pass が要求する状態と直前の状態を Resource ごとに照合する
             for (const auto &use : pass.uses)
             {
                 const std::size_t index = use.resource.index;
@@ -830,6 +848,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                     bool hasParallelReader = false;
                     if (use.access == FrameGraphAccess::Read)
                     {
+                        // 後続 Queue に同じ状態で読む Pass があるかを探す
                         for (std::size_t later = order + 1; later < ordered.size(); ++later)
                         {
                             const auto next = std::find_if(ordered[later].uses.begin(), ordered[later].uses.end(),
@@ -842,6 +861,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                             hasParallelReader = hasParallelReader || ordered[later].queue != pass.queue;
                         }
                     }
+                    // 遷移内容を作り、実行可能な Queue と依存位置へ配置する
                     const auto barrier =
                         FrameGraphBarrierPlan{FrameGraphBarrierKind::Transition, use.resource, before, use.state};
                     if (resource.firstUse == order && (hasParallelReader || !supports_queue_state(pass.queue, before)))
@@ -974,6 +994,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             }
         }
         std::vector<FrameGraphBarrierPlan> finalBarriers;
+        // Graph 終了時に外部資源と再利用する資源を指定の最終状態へ戻す
         for (std::size_t index = 0; index < resources.size(); ++index)
         {
             const auto &resource = resources[index];
@@ -1003,6 +1024,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
 
         // 初回使用順に処理し、最後の使用が次の初回使用より前の Slot だけを再利用する
         std::vector<std::uint32_t> transientIndices;
+        // 未使用資源と外部資源を除き、一時配置の対象だけを集める
         for (std::uint32_t index = 0; index < resources.size(); ++index)
         {
             if (!resources[index].isImported && resources[index].firstUse)
@@ -1010,6 +1032,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 transientIndices.push_back(index);
             }
         }
+        // 初回使用が早い Resource から Heap の共有候補を選ぶ
         std::stable_sort(transientIndices.begin(), transientIndices.end(),
                          [&resources](std::uint32_t a_left, std::uint32_t a_right)
                          { return resources[a_left].firstUse < resources[a_right].firstUse; });
@@ -1017,6 +1040,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         for (std::uint32_t index : transientIndices)
         {
             const auto &resource = resources[index];
+            // 複数 Queue にまたがる利用は途中の Alias 再利用から除外する
             const auto usesMultipleQueues = [&ordered](const FrameGraphResourcePlan &a_resource)
             {
                 std::optional<QueueType> firstQueue;
@@ -1032,6 +1056,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                 }
                 return false;
             };
+            // 同じ Heap 種類で使用期間の重ならない Slot を探す
             auto available =
                 std::find_if(slots.begin(), slots.end(),
                              [&resources, &resource, &usesMultipleQueues](const auto &a_slot)
@@ -1045,6 +1070,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                                         a_slot.kind == resource.kind && isSameTextureHeap &&
                                         *last.lastUse < *resource.firstUse;
                              });
+            // 共有できる Slot がなければ専用の配置単位を追加する
             if (available == slots.end())
             {
                 slots.push_back({resource.kind, {resource.handle}});
@@ -1055,6 +1081,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
             }
         }
         // Alias Slot の再利用は Resource Hazard がなくても GPU の実行順を要求する
+        // 同じ領域の再利用にも、旧利用者の GPU 完了を保証する依存を付ける
         for (const auto &slot : slots)
         {
             for (std::size_t index = 1; index < slot.resources.size(); ++index)
@@ -1090,6 +1117,7 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
         {
             return PlanResult::failure({ErrorCategory::Fatal, "FrameGraphBuilder.plan_id_exhausted"});
         }
+        // 実行順・Resource 寿命・配置共有・遷移を一つの不変 Plan として返す
         return PlanResult::success(FrameGraphPlan(std::move(ordered), std::move(resources), std::move(slots),
                                                   std::move(finalBarriers), std::move(initialBarriers), planId));
     }

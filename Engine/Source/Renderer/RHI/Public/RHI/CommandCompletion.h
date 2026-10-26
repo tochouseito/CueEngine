@@ -63,6 +63,7 @@ class SharedCommandCompletion final : public ICommandCompletion
     }
 
   private:
+    // Move で受け取った完了点を所有し、複数の資源から共有できる形へ包む
     commandCompletion m_completion;
 };
 } // namespace cue

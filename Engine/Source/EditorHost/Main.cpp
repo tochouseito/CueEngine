@@ -12,6 +12,7 @@ namespace
 /// @brief 実行失敗を保持して停止し、Cleanup の失敗も診断する
 int stop_after_failure(cue::EditorHost &a_host, const cue::Error &a_error)
 {
+    // 元の実行失敗を診断し、後始末の失敗と区別して残す
     cue::report_log_error("CueEditorHost", a_error, cue::LogLevel::Fatal);
     auto stopResult = a_host.shutdown();
     if (!stopResult.has_value())
@@ -44,25 +45,30 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
         // EditorHost を生成し、Window と Renderer を初期化する
         cue::EditorHost host(std::move(config));
+        // UI・Window・Renderer・Runtime を順に初期化する
         auto initResult = host.initialize();
         if (!initResult.has_value())
         {
             return stop_after_failure(host, *initResult.try_error());
         }
 
+        // メインループ。Close 要求が来るまで step() を繰り返す
         while (true)
         {
+            // Message Pump と採用 Frame の処理を一周期進める
             auto stepResult = host.step();
             if (!stepResult.has_value())
             {
                 return stop_after_failure(host, *stepResult.try_error());
             }
+            // 通常の Close 要求は失敗とせず Main Loop を終了する
             if (!*stepResult.try_value())
             {
                 break;
             }
         }
 
+        // GPU と Worker の停止を明示し、停止失敗も終了 Code に反映する
         auto stopResult = host.shutdown();
         if (!stopResult.has_value())
         {
@@ -73,6 +79,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     }
     catch (const std::exception &)
     {
+        // Result に変換されなかった C++ 例外を最上位で診断する
         cue::report_log("CueEditorHost", "unexpected C++ exception", cue::LogLevel::Fatal);
         return 2;
     }

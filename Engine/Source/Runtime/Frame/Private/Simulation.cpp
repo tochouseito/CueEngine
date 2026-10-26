@@ -25,6 +25,7 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
                                                        std::chrono::steady_clock::time_point a_sample,
                                                        const simulationCallback &a_update, std::stop_token a_token)
 {
+    // Callback 失敗後の状態を次の更新で再利用しない
     if (m_isFailed)
     {
         return Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "SimulationStepper.failed"});
@@ -34,6 +35,7 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
     {
         return Result<FrameSimulationInfo>::failure(*valid.try_error());
     }
+    // 時計の逆行と固定更新 Callback の欠落を拒否する
     if ((m_previousSample && a_sample < *m_previousSample) || (m_config.frequencyHz != 0 && !a_update))
     {
         return Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "SimulationStepper.advance"});
@@ -41,23 +43,29 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
     FrameSimulationInfo info;
     info.frameIndex = a_frame;
     info.isFixed = m_config.frequencyHz != 0;
+    // 初回だけ経過 0 とし、以後は前回採取時刻との差を使う
     info.frameElapsed = m_previousSample
                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(a_sample - *m_previousSample)
                             : std::chrono::nanoseconds::zero();
     m_previousSample = a_sample;
+    // 長時間停止による Delta の急増を上限で切り詰める
     const auto elapsed = (std::min)(info.frameElapsed, m_config.maxElapsed);
     info.droppedElapsed = info.frameElapsed - elapsed;
     std::uint64_t steps = 1;
     if (info.isFixed)
     {
+        // 周波数との整数積で蓄積し、Tick ごとの丸め誤差を避ける
         m_phaseUnits += static_cast<std::uint64_t>(elapsed.count()) * m_config.frequencyHz;
+        // 蓄積 Tick 数を追い付き回数の上限へ収める
         steps = (std::min<std::uint64_t>)(m_phaseUnits / 1'000'000'000ULL,
                                           static_cast<std::uint64_t>(m_config.maxCatchUpSteps));
     }
+    // 固定更新は一定 Delta、可変更新は今回の実経過を渡す
     const auto delta = info.isFixed ? std::chrono::duration<double>(1.0 / m_config.frequencyHz)
                                     : std::chrono::duration<double>(elapsed);
     for (std::uint64_t index = 0; index < steps; ++index)
     {
+        // 停止要求が届いたら残りの更新を実行しない
         if (a_token.stop_requested())
         {
             info.wasCanceled = true;
@@ -67,6 +75,7 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
         {
             try
             {
+                // 次の Tick と更新後の Simulation 時刻を Callback に渡す
                 auto updated = a_update({m_tick + 1, delta, m_simulationTime + delta}, a_token);
                 if (!updated.has_value())
                 {
@@ -81,6 +90,7 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
                     {ErrorCategory::InvalidState, "SimulationStepper.callback.exception"});
             }
         }
+        // 更新に成功した分だけ Tick と進行時間を確定する
         ++m_tick;
         ++info.updateSteps;
         m_simulationTime += delta;
@@ -95,6 +105,7 @@ Result<FrameSimulationInfo> SimulationStepper::advance(std::uint64_t a_frame,
         const auto discarded = m_phaseUnits / 1'000'000'000ULL;
         info.droppedElapsed += std::chrono::nanoseconds(discarded * 1'000'000'000ULL / m_config.frequencyHz);
         m_phaseUnits %= 1'000'000'000ULL;
+        // 残った一 Tick 未満の時間を描画補間率へ変換する
         info.interpolationAlpha = static_cast<double>(m_phaseUnits) / 1'000'000'000.0;
     }
     info.currentTick = m_tick;
@@ -114,6 +125,7 @@ Result<void> SimulationStepper::configure(SimulationConfig a_config)
     {
         return valid;
     }
+    // 新しい更新条件を適用し、旧周期の余りを捨てる
     m_config = a_config;
     m_phaseUnits = 0;
     m_previousSample.reset();

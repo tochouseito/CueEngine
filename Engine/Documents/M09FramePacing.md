@@ -47,9 +47,9 @@ Waitable SwapChain は最初の Frame を含め記録前に表示枠を取得す
 
 ImGui Context と入力 Handler は維持する。GPU Backend の再生成は MainViewport の Platform データも破棄するため、Win32 Backend も再接続する。SwapChain の Graphics Queue は Backend の QueuePool が継続所有する
 
-不正な要求と読込失敗は既存設定を維持する。Native 再構築の途中失敗 / 例外は Result と停止状態へ確定し、shutdown のみ許可する。Factory のない一回限りの表示 Pass は再構築が必要な変更を事前に拒否する
+不正な要求は既存設定を維持する。Native 再構築の途中失敗 / 例外は Result と停止状態へ確定し、shutdown のみ許可する。Factory のない一回限りの表示 Pass は再構築が必要な変更を事前に拒否する
 
-Editor の Test 内「Performance settings」で編集 / Preset / Apply / Apply and save / Load saved を提供する。保存は Schema 付き File を FileSystem.replace_file で置換し、次回起動時にもゲームの Policy を検証する。既定保存先は Product dataRoot/editor/Performance.cfg。Policy 自体は保存値から変更しない
+Editor の Test 内「Performance settings」で編集 / Preset / Apply を提供する。性能設定の固定 File と保存 / 自動読込は廃止した。起動値は上位から HostConfig へ渡し、実行中の変更は設定適用 API を使う。将来の Project / ゲーム設定の保存形式と読込は上位層で扱い、Policy は開発者が指定する
 
 ## #121 同期と計測
 

@@ -102,6 +102,7 @@ bool supports_state(const D3D12_RESOURCE_DESC &a_desc, FrameGraphResourceState a
 /// @brief 誤った Native Resource を Binding しないよう形状と必要 Flag を調べる
 bool matches_resource(const FrameGraphResourcePlan &a_planned, ID3D12Resource &a_resource) noexcept
 {
+    // 外部 Resource の Native 形状を論理宣言と照合する
     const auto desc = a_resource.GetDesc();
     if (!supports_state(desc, a_planned.initialState) || !supports_state(desc, a_planned.finalState))
     {
@@ -230,6 +231,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
     {
         a_prepared.resources.assign(a_plan.resources().size(), nullptr);
         a_prepared.hasBinding.assign(a_plan.resources().size(), false);
+        // 論理 Resource の順序で Native Pointer の参照表を作る
         for (std::size_t index = 0; index < a_plan.resources().size(); ++index)
         {
             const auto &planned = a_plan.resources()[index];
@@ -239,6 +241,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
             }
             if (!planned.isImported && planned.firstUse)
             {
+                // Graph が所有する一時 Resource の実体を参照表へ登録する
                 auto *transient = a_resources.resource(planned.handle);
                 if (!transient)
                 {
@@ -255,6 +258,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
                 a_prepared.resources[index] = transient->resource();
             }
         }
+        // 外部 Binding の重複や Graph 所属の不一致を拒否する
         for (const auto &binding : a_external)
         {
             if (binding.handle.graphId != graphId || binding.handle.index >= a_plan.resources().size() ||
@@ -283,6 +287,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
             a_prepared.resources[binding.handle.index] = binding.resource;
             a_prepared.hasBinding[binding.handle.index] = true;
         }
+        // 前回と参照先が変わった Resource に合わせて準備情報を更新する
         for (std::size_t index = 0; index < a_plan.resources().size(); ++index)
         {
             if (a_plan.resources()[index].isImported && !a_prepared.hasBinding[index])
@@ -296,10 +301,12 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
         a_prepared.after.resize(a_plan.passes().size());
         a_prepared.initial.clear();
         a_prepared.final.clear();
+        // 確保済みの Barrier 配列を再利用し、今回の内容へ置き換える
         for (auto &barriers : a_prepared.before)
             barriers.clear();
         for (auto &barriers : a_prepared.after)
             barriers.clear();
+        // 各 Pass の前後に必要な遷移を Native Barrier へ変換する
         for (std::size_t index = 0; index < a_plan.passes().size(); ++index)
         {
             if (a_plan.passes()[index].handle.graphId != graphId ||
@@ -335,6 +342,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
             return RecordResult::failure(
                 {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.final_barrier_count"});
         }
+        // 外部資源の復帰と Present に必要な最終 Barrier を変換する
         for (const auto &barrier : a_plan.final_barriers())
         {
             D3D12_RESOURCE_BARRIER native{};
@@ -346,6 +354,7 @@ Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12F
             a_prepared.final.push_back(native);
         }
 
+        // Graph 開始前に必要な初期遷移も同じ形式へ変換する
         for (const auto &barrier : a_plan.initial_barriers())
         {
             D3D12_RESOURCE_BARRIER native{};
@@ -375,6 +384,7 @@ bool supports_barrier_queue(const D3D12_RESOURCE_BARRIER &a_barrier, QueueType a
     {
         return true;
     }
+    // 対象 Queue が扱えない Resource State を記録前に拒否する
     const auto states = a_barrier.Transition.StateBefore | a_barrier.Transition.StateAfter;
     const auto allowed = a_queue == QueueType::Copy
                              ? D3D12_RESOURCE_STATE_COPY_SOURCE | D3D12_RESOURCE_STATE_COPY_DEST
@@ -409,6 +419,7 @@ Result<void> DX12FrameGraphExecutor::record_prepared(const FrameGraphPlan &a_pla
         commandDevice.Get() != a_prepared.device)
         return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.device"});
     // Barrier の Queue 適合性は記録前に確認し、失敗時に途中の Callback を呼ばない
+    // 指定範囲の Barrier を対象 Queue に記録できるか先に検証する
     for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
     {
         if (!a_callbacks[index - a_firstPass] || a_plan.passes()[index].queue != a_context.type())
@@ -430,6 +441,7 @@ Result<void> DX12FrameGraphExecutor::record_prepared(const FrameGraphPlan &a_pla
     auto &list = *a_context.command_list();
     if (a_includeInitial && !a_prepared.initial.empty())
         list.ResourceBarrier(static_cast<UINT>(a_prepared.initial.size()), a_prepared.initial.data());
+    // Pass ごとに Alias 有効化・状態遷移・本体・終了遷移を順に記録する
     for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
     {
         const auto aliasing = a_resources.barriers_before_pass(index);
@@ -441,6 +453,7 @@ Result<void> DX12FrameGraphExecutor::record_prepared(const FrameGraphPlan &a_pla
         // Native Event 名を Plan の Pass 名へ揃え、Timestamp の区間と同じ範囲を Capture で識別する
         const auto &name = a_plan.passes()[index].name;
         PIXBeginEvent(&list, PIX_COLOR_DEFAULT, "%s", name.c_str());
+        // 抽象 Pass の実行結果を受け取り、失敗時は後続を記録しない
         auto callback = a_callbacks[index - a_firstPass](list, passContext);
         PIXEndEvent(&list);
         if (!callback.has_value())
@@ -465,6 +478,7 @@ Result<void> DX12FrameGraphExecutor::record_range(const FrameGraphPlan &a_plan, 
         a_passCount > a_callbacks.size() - a_firstPass)
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_range.callbacks"});
     DX12FrameGraphPrepared prepared;
+    // 参照表と Barrier の準備を済ませてから範囲記録へ進む
     auto preparation = prepare(a_plan, a_resources, a_external, a_context, prepared);
     if (!preparation.has_value())
         return preparation;

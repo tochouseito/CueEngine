@@ -62,6 +62,7 @@ class FileIncludeHandler final
         *a_source = nullptr;
         try
         {
+            // DXC が要求した Include 名を Engine の UTF-8 Path へ変換する
             auto text = utf16_to_utf8(a_filename);
             if (!text.has_value())
             {
@@ -74,6 +75,7 @@ class FileIncludeHandler final
                 m_lastError = *path.try_error();
                 return E_INVALIDARG;
             }
+            // Include の内容も共通 FileSystem から読み込む
             auto bytes = m_files->read_all(*path.try_value());
             if (!bytes.has_value())
             {
@@ -86,6 +88,7 @@ class FileIncludeHandler final
             Microsoft::WRL::ComPtr<IDxcBlobEncoding> blob;
             const auto &data = *bytes.try_value();
             const char emptySource = '\0';
+            // 読み込んだ Byte 列を DXC が保持する Blob へ複写する
             const auto hr = m_utils->CreateBlob(data.empty() ? static_cast<const void *>(&emptySource) : data.data(),
                                                 static_cast<UINT32>(data.size()), DXC_CP_UTF8, &blob);
             if (SUCCEEDED(hr))
@@ -152,6 +155,7 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         auto &state = *result->m_state;
         if (!a_files)
         {
+            // FileSystem 未指定の単体利用だけ、コンパイラ内で実装を所有する
             auto files = create_windows_file_system();
             if (!files.has_value())
             {
@@ -166,6 +170,7 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         {
             return compilerResult::failure(*directory.try_error());
         }
+        // 実行 File と同じ Directory の DXC DLL を使用する
         auto library = directory.try_value()->join("dxcompiler.dll");
         if (!library.has_value())
         {
@@ -191,6 +196,7 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         {
             return compilerResult::failure(compiler_error("DXC.LoadLibraryExW", HRESULT_FROM_WIN32(GetLastError())));
         }
+        // 読込み済み DLL から DXC の生成関数を取得する
         const auto createInstance =
             reinterpret_cast<DxcCreateInstanceProc>(GetProcAddress(state.module, "DxcCreateInstance"));
         if (!createInstance)
@@ -212,6 +218,7 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
             return compilerResult::failure(compiler_error("DXC.IncludeHandler", E_OUTOFMEMORY));
         }
         state.includes->initialize(*state.files, *state.utils.Get());
+        // 配布された Shader Directory を優先して参照する
         auto shaderDirectory = directory.try_value()->join("EngineResources/Shader");
         if (!shaderDirectory.has_value())
         {
@@ -224,6 +231,7 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         }
         if (!*shaderExists.try_value())
         {
+            // 開発時だけ Repository の Shader Source を参照候補にする
             auto sourceDirectory = utf16_to_utf8(k_shaderSourceDirectory);
             if (!sourceDirectory.has_value())
             {
@@ -269,6 +277,7 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
     }
     try
     {
+        // File 名・Entry Point・Shader Profile を DXC の文字列形式へ変換する
         auto pathResult = utf8_to_utf16(a_desc.filePath);
         auto entryResult = utf8_to_utf16(a_desc.entryPoint);
         auto profileResult =
@@ -290,6 +299,7 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
         {
             return blobResult::failure(*path.try_error());
         }
+        // HLSL の内容を FileSystem から読み込んでコンパイル入力にする
         auto source = m_state->files->read_all(*path.try_value());
         if (!source.has_value())
         {
@@ -307,6 +317,7 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
         std::vector<std::wstring> arguments{fullPath.take_value(),      L"-E",  entryResult.take_value(), L"-T",
                                             profileResult.take_value(), L"-I",  parentPath.take_value(),  L"-I",
                                             shaderPath.take_value(),    L"-Ges"};
+        // 呼出側の Define をコンパイル引数へ追加する
         for (const auto &define : a_desc.defines)
         {
             if (!is_valid_text(define))
@@ -329,6 +340,7 @@ Result<Microsoft::WRL::ComPtr<IDxcBlob>> DX12ShaderCompiler::compile(const Shade
         arguments.push_back(L"-O3");
 #endif
         std::vector<LPCWSTR> pointers;
+        // 所有文字列の寿命を保持したまま DXC に渡す Pointer 配列を作る
         for (const auto &argument : arguments)
         {
             pointers.push_back(argument.c_str());

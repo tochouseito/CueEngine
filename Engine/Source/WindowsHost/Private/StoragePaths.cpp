@@ -16,6 +16,7 @@ bool is_valid_name(const std::string &a_name)
     {
         return false;
     }
+    // 会社名とアプリ名を単一の安全な Path 要素として検証する
     auto path = Path::create(a_name);
     if (!path.has_value())
     {
@@ -64,6 +65,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
         }
         const std::array overrides{&a_config.dataRootOverride, &a_config.logsOverride, &a_config.shaderCacheOverride,
                                    &a_config.psoCacheOverride};
+        // 個別上書き Path はすべて絶対 Path で受け付ける
         for (const auto *path : overrides)
         {
             if (!path->is_empty() && !is_absolute_storage(*path))
@@ -87,6 +89,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
             {
                 return pathsResult::failure({ErrorCategory::InvalidArgument, "StoragePaths.repository_root"});
             }
+            // 開発時の生成物は Repository の out 以下へ集める
             auto joined = a_config.repositoryRoot.join("out");
             if (!joined.has_value())
             {
@@ -96,6 +99,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
         }
         else
         {
+            // 製品時はユーザー保存領域、Portable は実行 File の隣を基準にする
             auto directory =
                 a_config.mode == StorageMode::Product ? a_files.local_data_directory() : a_files.executable_directory();
             if (!directory.has_value())
@@ -105,6 +109,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
             root = directory.take_value();
             if (a_config.mode == StorageMode::Product)
             {
+                // 製品ごとの保存先を会社名とアプリ名で分離する
                 auto product = root.join(a_config.companyName + '/' + a_config.applicationName);
                 if (!product.has_value())
                 {
@@ -117,6 +122,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
         {
             return pathsResult::failure({ErrorCategory::InvalidArgument, "StoragePaths.root.absolute"});
         }
+        // 基準 Root からログと各 Cache の保存先を導出する
         auto logs = a_config.logsOverride.is_empty() ? root.join("logs") : Result<Path>::success(a_config.logsOverride);
         auto shader = a_config.shaderCacheOverride.is_empty() ? root.join("cache/shaders")
                                                               : Result<Path>::success(a_config.shaderCacheOverride);
@@ -138,6 +144,7 @@ Result<StoragePaths> resolve_storage_paths(IFileSystem &a_files, const StoragePa
 
 Result<void> create_storage_directories(IFileSystem &a_files, const StoragePaths &a_paths)
 {
+    // Directory を作る前にすべての保存先の形式を検証する
     for (const auto *path : {&a_paths.dataRoot, &a_paths.logs, &a_paths.shaderCache, &a_paths.psoCache})
     {
         if (!is_absolute_storage(*path))
@@ -147,6 +154,7 @@ Result<void> create_storage_directories(IFileSystem &a_files, const StoragePaths
     }
     for (const auto *path : {&a_paths.dataRoot, &a_paths.logs, &a_paths.shaderCache, &a_paths.psoCache})
     {
+        // 検証済みの保存先を親 Directory も含めて作成する
         auto created = a_files.create_directories(*path);
         if (!created.has_value())
         {

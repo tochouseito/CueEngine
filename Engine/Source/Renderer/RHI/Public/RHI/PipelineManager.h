@@ -106,10 +106,15 @@ enum class SamplerAddressMode
 /// @brief Backend に依存しない一つの Root Binding
 struct RootParameterDesc final
 {
+    // Root に直接置く値か、Descriptor Table かを指定する
     RootParameterType type = RootParameterType::SrvTable;
+    // この Parameter を参照できる Shader Stage
     ShaderVisibility visibility = ShaderVisibility::All;
+    // HLSL の Register 番号と対応付ける
     std::uint32_t shaderRegister = 0;
+    // 同じ Register 番号を別の空間として分離する
     std::uint32_t registerSpace = 0;
+    // Descriptor または定数の要素数
     std::uint32_t count = 1;
 };
 
@@ -127,7 +132,9 @@ struct StaticSamplerDesc final
 struct RootSignatureDesc final
 {
     std::string name;
+    // Pass が指定する順番を Root Parameter の Index とする
     std::vector<RootParameterDesc> parameters;
+    // Root に固定して通常の Binding を不要にする Sampler 群
     std::vector<StaticSamplerDesc> samplers;
 };
 

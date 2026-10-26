@@ -32,7 +32,9 @@ enum class GpuTextureFormat
 /// @brief Buffer の容量と Heap 用途を指定する
 struct GpuBufferDesc final
 {
+    // Buffer が保持できる Byte 数。0 は生成時に拒否する
     std::uint64_t byteSize = 0;
+    // CPU アクセスと GPU 利用に応じた Heap の用途
     GpuMemoryUsage memory = GpuMemoryUsage::Default;
 };
 
@@ -43,9 +45,12 @@ struct GpuTexture2DDesc final
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    // Texture が持つ Mip Level の数
     std::uint16_t mipLevels = 1;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
+    // RenderTarget としての生成と RTV の利用を許可する
     bool isRenderTarget = false;
+    // Shader からの読取りと SRV の利用を許可する
     bool isShaderReadable = false;
     std::array<float, 4> clearColor{0.0f, 0.0f, 0.0f, 1.0f};
 };

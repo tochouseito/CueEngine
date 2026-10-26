@@ -1,0 +1,10 @@
+case,metric,count,avg_ms,p95_ms,max_ms
+new-borderless,MsBetweenPresents,598,16.667095986622073,16.7954,17.2538
+new-borderless,MsInPresentAPI,598,0.2878530100334448,0.4074,0.7422
+new-borderless,MsUntilDisplayed,598,7.476479431438126,13.4218,16.3864
+new-borderless-swap-none,MsBetweenPresents,1794,16.66735189520624,16.827,17.4748
+new-borderless-swap-none,MsInPresentAPI,1794,0.2901320512820513,0.4023,0.7919
+new-borderless-swap-none,MsUntilDisplayed,1794,7.597101393534002,13.5264,16.6141
+new-borderless-swap-none-tearing,MsBetweenPresents,1794,16.667392474916387,16.8152,17.426
+new-borderless-swap-none-tearing,MsInPresentAPI,1794,0.29454403567447046,0.4452,0.8059
+new-borderless-swap-none-tearing,MsUntilDisplayed,1794,3.569519955406912,13.8474,17.5895

@@ -42,6 +42,7 @@ bool is_valid_level(LogLevel a_level) noexcept
 /// @brief 改行や NUL が一行の構造を壊さないよう、文字列を可逆な表記へ変換する
 void append_text(std::string &a_output, std::string_view a_text)
 {
+    // 改行や制御文字をエスケープし、一つの Record を一行へ収める
     for (const char value : a_text)
     {
         switch (value)
@@ -69,6 +70,7 @@ void append_text(std::string &a_output, std::string_view a_text)
 std::string format_record(const LogRecord &a_record)
 {
     constexpr std::array names{"Trace", "Debug", "Info", "Warning", "Error", "Fatal"};
+    // UTC の日付と時刻を同じミリ秒精度の基準から分解する
     const auto milliseconds = std::chrono::floor<std::chrono::milliseconds>(a_record.time);
     const auto day = std::chrono::floor<std::chrono::days>(milliseconds);
     const std::chrono::year_month_day date(day);
@@ -126,6 +128,7 @@ Result<std::unique_ptr<Logger>> Logger::create(std::vector<std::unique_ptr<ILogS
     {
         return Result<std::unique_ptr<Logger>>::failure({ErrorCategory::InvalidArgument, "Logger.create"});
     }
+    // 空の出力先を含む構成を公開前に拒否する
     for (const auto &sink : a_sinks)
     {
         if (!sink)
@@ -154,8 +157,10 @@ Result<void> Logger::write(const LogRecord &a_record)
     {
         return Result<void>::success();
     }
+    // Record の文字列が有効な同期呼出し中に整形を完了する
     const auto line = format_record(a_record);
     std::optional<Error> failure;
+    // 一つの出力先が失敗しても残りの Sink への配送を続ける
     for (const auto &sink : m_sinks)
     {
         try
@@ -190,6 +195,7 @@ Result<void> Logger::flush()
         return Result<void>::failure({ErrorCategory::InvalidState, "Logger.flush.stopped"});
     }
     std::optional<Error> failure;
+    // 全 Sink の Flush を試し、最初の失敗を呼出側へ返す
     for (const auto &sink : m_sinks)
     {
         try
@@ -222,6 +228,7 @@ Result<void> Logger::shutdown()
     std::optional<Error> failure;
     if (!m_isStopped)
     {
+        // 停止時もすべての Sink の Buffer を先に Flush する
         for (const auto &sink : m_sinks)
         {
             try
@@ -242,6 +249,7 @@ Result<void> Logger::shutdown()
         }
     }
     m_isStopped = true;
+    // Flush 結果を保持したまま出力先を順に閉じる
     for (const auto &sink : m_sinks)
     {
         try

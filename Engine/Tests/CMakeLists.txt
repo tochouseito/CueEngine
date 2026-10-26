@@ -4,6 +4,15 @@ if(MSVC)
 endif()
 
 # Foundation と公開 Header は Platform 実装なしで単独検証する
+find_package(Threads REQUIRED)
+add_executable(CueTimingTraceTests Foundation/TimingTraceTests.cpp)
+target_link_libraries(CueTimingTraceTests PRIVATE Cue.Profiler Threads::Threads)
+add_test(NAME Cue.Foundation.TimingTrace COMMAND CueTimingTraceTests)
+
+add_executable(CueSpikeTriggerTests Performance/SpikeTriggerTests.cpp)
+target_link_libraries(CueSpikeTriggerTests PRIVATE Cue.Profiler Threads::Threads)
+add_test(NAME Cue.Performance.SpikeTrigger COMMAND CueSpikeTriggerTests)
+
 add_executable(CueFoundationResultTests Foundation/ResultTests.cpp)
 target_link_libraries(CueFoundationResultTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
@@ -14,14 +23,31 @@ add_test(NAME Cue.Foundation.Path COMMAND CueFoundationPathTests)
 
 # 計測分布の p95、固定容量、Overflow と入れ子 Guard を確認する
 add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
-target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Foundation)
+target_link_libraries(CueFoundationTimingTests PRIVATE Cue.Profiler)
 add_test(NAME Cue.Foundation.TimingSamples COMMAND CueFoundationTimingTests)
+
+# 共通 Profiler の全標本集計、終了後保持、並行記録、容量超過と循環履歴を検証する
+add_executable(CueProfilerTests Profiler/ProfilerTests.cpp)
+target_link_libraries(CueProfilerTests PRIVATE Cue.Profiler Threads::Threads)
+add_test(NAME Cue.Profiler.Core COMMAND CueProfilerTests)
+
+# Windows 調査 Tool の File 出力を、Platform 非依存の Profiler 本体から分離して検証する
+if(WIN32)
+    add_executable(CueSpikeTraceExportTests Performance/SpikeTraceExportTests.cpp)
+    target_link_libraries(CueSpikeTraceExportTests PRIVATE Cue.Profiler Threads::Threads)
+    add_test(NAME Cue.Profiler.TraceExport COMMAND CueSpikeTraceExportTests)
+endif()
 
 add_executable(CueLoggingHeaderCompile Logging/PublicHeaderCompile.cpp)
 target_link_libraries(CueLoggingHeaderCompile PRIVATE Cue.Logging)
 add_test(NAME Cue.Logging.PublicHeaders COMMAND CueLoggingHeaderCompile)
 
 if(WIN32)
+    add_executable(CueInputLatencyTests Editor/InputLatencyTests.cpp)
+    target_link_libraries(CueInputLatencyTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows imgui::imgui)
+    add_test(NAME Cue.Editor.InputLatency COMMAND CueInputLatencyTests)
+    set_tests_properties(Cue.Editor.InputLatency PROPERTIES TIMEOUT 45)
+
     add_executable(CueLoggerTests Logging/LoggerTests.cpp)
     target_link_libraries(CueLoggerTests PRIVATE Cue.Logging Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Logging.Logger COMMAND CueLoggerTests)
@@ -192,14 +218,7 @@ if(WIN32)
     target_link_libraries(CueSimulationTests PRIVATE Cue.Runtime.Frame Cue.Platform.Windows)
     add_test(NAME Cue.Runtime.Simulation COMMAND CueSimulationTests)
 
-    # 計測は手動の明示実行に限定し、CTest の通常 Gate へ長時間の性能比較を混ぜない
-    add_executable(CueM09FramePacingProbe Performance/M09FramePacingProbe.cpp)
-    target_link_libraries(CueM09FramePacingProbe PRIVATE Cue.EditorHost imgui::imgui)
     set_tests_properties(Cue.Runtime.FrameController PROPERTIES TIMEOUT 5)
-
-    # 時間計測は環境依存のため CTest の速度判定に使わず、手動の比較用 Target とする
-    add_executable(CueFrameControllerTimingProbe Performance/FrameControllerTimingProbe.cpp)
-    target_link_libraries(CueFrameControllerTimingProbe PRIVATE Cue.Runtime.Frame Cue.Platform.Windows user32)
 
     add_executable(CueWindowsThreadServicesTests Platform/WindowsThreadServicesTests.cpp)
     target_link_libraries(CueWindowsThreadServicesTests PRIVATE Cue.Platform.Windows)
@@ -280,9 +299,17 @@ if(WIN32)
     set_tests_properties(Cue.EditorHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
 endif()
 
+if(CUE_BUILD_PERFORMANCE_TOOLS)
+    add_subdirectory(Performance)
+endif()
+
 if(WIN32)
-    cue_copy_shader_runtime(CueDX12PipelineManagerTests
+    set(taskShaderTests CueDX12PipelineManagerTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueM09FramePacingProbe
+        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueInputLatencyTests
     )
+    if(CUE_BUILD_PERFORMANCE_TOOLS)
+        list(APPEND taskShaderTests CueM09FramePacingProbe CueSpikeTimingProbe)
+    endif()
+    cue_copy_shader_runtime(${taskShaderTests})
 endif()

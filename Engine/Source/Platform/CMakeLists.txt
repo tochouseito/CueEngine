@@ -1,5 +1,5 @@
-# File I/O の共通処理には Win32 の実装を含めない
-add_library(Cue.Platform STATIC Private/FileSystem.cpp)
+# 時計と File I/O の共通処理には Win32 の実装を含めない
+add_library(Cue.Platform STATIC Private/Clock.cpp Private/FileSystem.cpp)
 
 target_include_directories(Cue.Platform PUBLIC
     Public

@@ -11,6 +11,7 @@
 #include <DX12/DX12FrameGraphExecutor.h>
 #include <Foundation/Result.h>
 #include <Passes/MainFrameGraph.h>
+#include <Profiler/Profiler.h>
 #include <RHI/GpuResourcePool.h>
 
 namespace cue
@@ -60,9 +61,11 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     ///
     /// 参照先と SwapChain は shutdown より長く生存させる。途中失敗は部分生成物を回収する
     /// configure / displayPassFactory は初回の呼出 Thread で実行し、Resize 時はその呼出 Thread で再実行する
+    /// a_profiler は Graph の停止まで借用する。未指定なら Graph 内で記録先を所有する
     [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create(const DX12ResourceContext &a_resources,
                                                                             DX12SwapChain &a_swapChain,
-                                                                            DX12MainFrameGraphConfig a_config = {});
+                                                                            DX12MainFrameGraphConfig a_config = {},
+                                                                            Profiler *a_profiler = nullptr);
 
     /// @brief GPU 完了後に資源を解放する
     ~DX12MainFrameGraph() override;
@@ -119,6 +122,11 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
                                       std::uint32_t a_height);
 
   private:
+    /// @brief 初回は CPU 系列を登録し、Resize では既存 Handle の履歴を共有して Graph を再生成する
+    [[nodiscard]] static Result<std::unique_ptr<DX12MainFrameGraph>> create_internal(
+        const DX12ResourceContext &a_resources, DX12SwapChain &a_swapChain, DX12MainFrameGraphConfig a_config,
+        Profiler *a_profiler, ProfileMetric a_recordTimings = {}, ProfileMetric a_frameWaitTimings = {});
+
     /// @brief 全 Pass が Graphics の場合は単一 Queue に記録して提出する
     [[nodiscard]] Result<bool> execute_graphics(std::uint32_t a_frameIndex, ICommandPool &a_commandPool,
                                                 std::function<bool()> a_shouldCancel);
@@ -136,6 +144,10 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     /// @brief Build 済み Pass を直接参照する Callback と描画枠の作業容量を構築する
     [[nodiscard]] Result<void> build_execution_cache();
 
+    // 借用する Metric と描画枠より先に構築し、最後まで記録先を維持する
+    std::unique_ptr<Profiler> m_ownedProfiler;
+    Profiler *m_profiler = nullptr;
+    Clock *m_clock = nullptr;
     std::unique_ptr<FrameGraph> m_graph;
     FrameGraphResourceHandle m_backBuffer;
     std::unique_ptr<DX12FrameGraphFrames> m_frames;
@@ -152,8 +164,8 @@ class DX12MainFrameGraph final : public IFrameGraphRecorder
     std::vector<std::vector<IQueueContext *>> m_queueByPass;
     std::vector<std::vector<std::uint64_t>> m_fenceByPass;
     mutable std::mutex m_performanceMutex;
-    TimingSamples m_recordTimings;
-    TimingSamples m_frameWaitTimings;
+    ProfileMetric m_recordTimings;
+    ProfileMetric m_frameWaitTimings;
     std::vector<GpuPassTiming> m_gpuPasses;
     std::uint64_t m_completedGpuFrames = 0;
     DX12SwapChain *m_swapChain = nullptr;

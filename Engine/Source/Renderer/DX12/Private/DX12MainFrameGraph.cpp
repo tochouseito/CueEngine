@@ -1,5 +1,7 @@
 #include <DX12/DX12MainFrameGraph.h>
 
+#include <Profiler/TimingTrace.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -34,12 +36,22 @@ DX12MainFrameGraph::DX12MainFrameGraph(CreateToken) noexcept
 /// @brief 旧 Pass 契約に従って Clear、追加 Pass、表示 Pass を組み立てる
 Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX12ResourceContext &a_resources,
                                                                        DX12SwapChain &a_swapChain,
-                                                                       DX12MainFrameGraphConfig a_config)
+                                                                       DX12MainFrameGraphConfig a_config,
+                                                                       Profiler *a_profiler)
+{
+    return create_internal(a_resources, a_swapChain, std::move(a_config), a_profiler);
+}
+
+/// @brief 再生成時に CPU 系列を再登録せず、既存の履歴と記録先を引き継ぐ
+Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create_internal(
+    const DX12ResourceContext &a_resources, DX12SwapChain &a_swapChain, DX12MainFrameGraphConfig a_config,
+    Profiler *a_profiler, ProfileMetric a_recordTimings, ProfileMetric a_frameWaitTimings)
 {
     using GraphResult = Result<std::unique_ptr<DX12MainFrameGraph>>;
     // Backend の生成基盤を借用し、描画に必要な Device、Queue と枠数を検証する
     auto &device = a_resources.get_render_device();
     // 0 番の Back Buffer は形状と Format の取得に使い、実際の描画先は Frame ごとに選ぶ
+    // SwapChain の実寸法と形式を FinalColor の生成条件に使う
     auto *backBuffer = a_swapChain.back_buffer(0);
     if (!device.device() || !backBuffer || !a_swapChain.graphics_queue() || a_config.frameCount == 0)
     {
@@ -72,12 +84,26 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
     }
     try
     {
+        auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
+        if (!a_profiler)
+        {
+            result->m_ownedProfiler = std::make_unique<Profiler>();
+            a_profiler = result->m_ownedProfiler.get();
+        }
+        result->m_profiler = a_profiler;
+        result->m_clock = &a_resources.get_clock();
+        // Resize は同じ系列の Handle を共有し、初回生成時だけ Registry へ登録する
+        result->m_recordTimings =
+            a_recordTimings.is_valid() ? std::move(a_recordTimings) : a_profiler->create_metric("Graph.Record");
+        result->m_frameWaitTimings = a_frameWaitTimings.is_valid() ? std::move(a_frameWaitTimings)
+                                                                   : a_profiler->create_metric("Graph.FrameFenceWait");
         // Graph が消費する設定とは別に、Resize で再実行する Callback と Factory を保持する
         const bool hasOneShotDisplayPass = a_config.displayPass != nullptr;
         MainFrameGraphConfig compositionConfig;
         compositionConfig.configure = a_config.configure;
         compositionConfig.displayPass = std::move(a_config.displayPass);
         compositionConfig.displayPassFactory = a_config.displayPassFactory;
+        // 抽象 Pass の組立てと論理 Plan の Build を先に完了させる
         auto compositionResult = create_main_frame_graph(colorDesc, {pipelines}, std::move(compositionConfig));
         if (!compositionResult.has_value())
         {
@@ -87,13 +113,12 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
         // Plan に従って枠ごとの一時 Resource と RTV／SRV を生成する
         // BackBuffer の RTV は SwapChain から借用するため、Graph 側で重複生成しない
         auto framesResult = DX12FrameGraphFrames::create(a_resources, *composition.graph->plan(),
-                                                         {a_config.frameCount, composition.backBuffer});
+                                                         {a_config.frameCount, composition.backBuffer}, a_profiler);
         if (!framesResult.has_value())
         {
             return GraphResult::failure(*framesResult.try_error());
         }
         // 配列確保を先に完了させ、確保失敗時に不完全な管理状態へ Resource の所有権を移さない
-        auto result = std::make_unique<DX12MainFrameGraph>(CreateToken{});
         result->m_poolLeases.resize(a_config.frameCount);
         result->m_externalBindings.resize(a_config.frameCount);
         result->m_isPrepared.resize(a_config.frameCount, false);
@@ -108,6 +133,7 @@ Result<std::unique_ptr<DX12MainFrameGraph>> DX12MainFrameGraph::create(const DX1
         result->m_clearColor = a_config.clearColor;
         result->m_frameCount = a_config.frameCount;
         result->m_hasOneShotDisplayPass = hasOneShotDisplayPass;
+        // Frame ごとの Callback 配列を先に確保し、記録時の生成を避ける
         auto cacheResult = result->build_execution_cache();
         if (!cacheResult.has_value())
             return GraphResult::failure(*cacheResult.try_error());
@@ -169,6 +195,7 @@ Result<bool> DX12MainFrameGraph::is_frame_ready(std::uint32_t a_frameIndex) cons
     {
         return ready;
     }
+    // 外部 ResourcePool から借りる資源の競合も非待機で確認する
     for (const auto index : m_poolResourceIndices)
     {
         const auto &resource = m_graph->plan()->resources()[index];
@@ -186,25 +213,31 @@ Result<bool> DX12MainFrameGraph::is_frame_ready(std::uint32_t a_frameIndex) cons
 /// @brief 複数 Queue へ分ける前に枠の物理 Resource を一度だけ借用する
 Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
 {
+    TimingTraceScope traceScope("Graph.Prepare");
     if (!m_graph || !m_graph->plan() || !m_frames || !m_swapChain || a_frameIndex >= m_frames->frame_count() ||
         m_isPrepared[a_frameIndex] || !m_poolLeases[a_frameIndex].empty())
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.prepare_frame"});
     }
+    // 今回の Present 対象 Back Buffer を Graph の外部 Binding に接続する
     auto *backBuffer = m_swapChain->back_buffer(m_swapChain->current_index());
     if (!backBuffer || !m_frames->graph_resources(a_frameIndex))
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.prepare_frame.resources"});
     }
-    const auto waitStart = std::chrono::steady_clock::now();
+    const auto waitStart = m_clock->now();
+    TimingTraceScope traceReuse("Graph.FrameReuse");
+    // 同じ GPU 枠の以前の提出を完了させて再利用する
     auto beginResult = m_frames->begin_frame(a_frameIndex);
+    traceReuse.finish();
     {
         std::lock_guard lock(m_performanceMutex);
-        m_frameWaitTimings.add(std::chrono::steady_clock::now() - waitStart);
+        m_frameWaitTimings.add(m_clock->now() - waitStart);
         if (beginResult.has_value() && m_frames->has_gpu_sample(a_frameIndex))
         {
             try
             {
+                // 再利用前に回収できた GPU Timestamp を Profiler の系列へ反映する
                 const auto timings = m_frames->gpu_timings(a_frameIndex);
                 m_gpuPasses.assign(timings.begin(), timings.end());
                 ++m_completedGpuFrames;
@@ -238,6 +271,7 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
         {
             const auto &plannedResource = m_graph->plan()->resources()[index];
             const bool needsExclusive = plannedResource.isWritten || plannedResource.needsExclusiveStateAccess;
+            // Plan が要求する Access に合わせて外部資源の Lease を保持する
             auto leaseResult = plannedResource.pool->acquire_wait(
                 plannedResource.poolHandle, needsExclusive ? GpuResourceAccess::Write : GpuResourceAccess::Read);
             if (!leaseResult.has_value())
@@ -253,11 +287,13 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
             external.push_back({plannedResource.handle, resource->resource()});
             leases.push_back(std::move(lease));
         }
+        // SwapChain が所有する RTV を借用し、Graph 側で重複生成しない
         auto backRtvResult = m_swapChain->rtv(m_swapChain->current_index());
         if (!backRtvResult.has_value())
         {
             return fail(*backRtvResult.try_error());
         }
+        // 一時 Texture と外部 Binding の RTV / SRV を今回の枠へ揃える
         auto viewsResult =
             m_frames->prepare_imported_views(a_frameIndex, *m_graph->plan(), external, *backRtvResult.try_value());
         if (!viewsResult.has_value())
@@ -278,6 +314,7 @@ Result<void> DX12MainFrameGraph::prepare_frame(std::uint32_t a_frameIndex)
 Result<void> DX12MainFrameGraph::record_range(std::uint32_t a_frameIndex, DX12GpuCommandContext &a_context,
                                               std::size_t a_firstPass, std::size_t a_passCount, bool a_includeFinal)
 {
+    TimingTraceScope traceRecord("Graph.Record");
     if (!m_graph || !m_graph->plan() || !m_frames || a_frameIndex >= m_isPrepared.size() ||
         !m_isPrepared[a_frameIndex] || a_context.state() != CommandState::Recording ||
         a_firstPass > m_graph->plan()->passes().size() || a_passCount > m_graph->plan()->passes().size() - a_firstPass)
@@ -287,10 +324,11 @@ Result<void> DX12MainFrameGraph::record_range(std::uint32_t a_frameIndex, DX12Gp
     auto *resources = m_frames->graph_resources(a_frameIndex);
     if (!resources)
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.record_range.resources"});
-    const auto start = std::chrono::steady_clock::now();
+    const auto start = m_clock->now();
     auto &prepared = m_prepared[a_frameIndex];
     if (prepared.planId == 0)
     {
+        // Native Resource と必要な状態遷移を、記録開始前に解決する
         auto preparation = DX12FrameGraphExecutor::prepare(*m_graph->plan(), *resources,
                                                            m_externalBindings[a_frameIndex], a_context, prepared);
         if (!preparation.has_value())
@@ -298,6 +336,7 @@ Result<void> DX12MainFrameGraph::record_range(std::uint32_t a_frameIndex, DX12Gp
     }
     m_recordingContexts[a_frameIndex] = &a_context;
     const auto callbacks = std::span<const dx12FrameGraphPassCallback>(m_callbacks[a_frameIndex]);
+    // 確保済み Callback を使い、指定範囲の Pass と Barrier を記録する
     auto result = DX12FrameGraphExecutor::record_prepared(
         *m_graph->plan(), *resources, prepared, callbacks.subspan(a_firstPass, a_passCount), a_context, a_firstPass,
         a_passCount, a_includeFinal,
@@ -305,7 +344,7 @@ Result<void> DX12MainFrameGraph::record_range(std::uint32_t a_frameIndex, DX12Gp
     m_recordingContexts[a_frameIndex] = nullptr;
     if (result.has_value() && a_firstPass == 0 && a_context.type() == QueueType::Graphics)
         m_initialRecorded[a_frameIndex] = true;
-    m_frameRecordDurations[a_frameIndex] += std::chrono::steady_clock::now() - start;
+    m_frameRecordDurations[a_frameIndex] += m_clock->now() - start;
     return result;
 }
 
@@ -315,6 +354,7 @@ Result<void> DX12MainFrameGraph::build_execution_cache()
     try
     {
         m_poolResourceIndices.clear();
+        // 外部 Pool に属する Resource の Index を事前に絞る
         for (const auto &resource : m_graph->plan()->resources())
             if (resource.pool)
                 m_poolResourceIndices.push_back(resource.handle.index);
@@ -326,6 +366,7 @@ Result<void> DX12MainFrameGraph::build_execution_cache()
         m_frameRecordDurations.resize(m_frameCount);
         m_queueByPass.resize(m_frameCount);
         m_fenceByPass.resize(m_frameCount);
+        // GPU 枠ごとの作業配列を実行前に確保する
         for (std::uint32_t frame = 0; frame < m_frameCount; ++frame)
         {
             m_externalBindings[frame].reserve(m_poolResourceIndices.size() + 1);
@@ -335,6 +376,7 @@ Result<void> DX12MainFrameGraph::build_execution_cache()
             auto &callbacks = m_callbacks[frame];
             callbacks.clear();
             callbacks.reserve(passes.size());
+            // Plan の Pass と抽象 Pass の実体を一度だけ対応付ける
             for (std::size_t index = 0; index < passes.size(); ++index)
             {
                 auto *pass = m_graph->pass(passes[index].handle);
@@ -358,6 +400,7 @@ Result<void> DX12MainFrameGraph::build_execution_cache()
                                                        .frames = *m_frames,
                                                        .pipelines = *m_pipelineManager});
                         m_frames->begin_pass(frame, index, a_list);
+                        // Pass 本体の前後を GPU Timestamp の計測区間にする
                         auto result = pass->execute(context);
                         m_frames->end_pass(frame, index, a_list);
                         return result;
@@ -410,7 +453,8 @@ Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, IC
     auto frequency = m_swapChain->graphics_queue()->get_timestamp_frequency();
     if (!frequency.has_value())
         return Result<bool>::failure(*frequency.try_error());
-    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *frequency.try_value());
+    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *frequency.try_value(),
+                                      m_swapChain->graphics_queue()->identity());
     auto result =
         m_graph->execute(a_frameIndex, a_commandPool, *m_swapChain->graphics_queue(), *this, std::move(a_shouldCancel));
     if (!result.has_value())
@@ -424,6 +468,7 @@ Result<bool> DX12MainFrameGraph::execute_graphics(std::uint32_t a_frameIndex, IC
 Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12ExecutionContext &a_execution,
                                          std::function<bool()> a_shouldCancel)
 {
+    TimingTraceScope traceScope("Graph.Execute");
     // Skip / 失敗時に前回の提出を今回の Frame として扱わせない
     m_latestCompletion.reset();
     auto &commandPool = a_execution.get_command_pool();
@@ -463,6 +508,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     {
         return Result<bool>::failure({ErrorCategory::PlatformFailure, "DX12MainFrameGraph.execute_queues.allocation"});
     }
+    // 提出前に外部 Lease と描画先の Binding を確定する
     auto prepareResult = prepare_frame(a_frameIndex);
     if (!prepareResult.has_value())
     {
@@ -470,6 +516,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     }
     auto fail = [this, a_frameIndex, &submissions](Error a_error) -> Result<bool>
     {
+        // 途中まで提出した失敗でも、GPU 完了前に Lease を解放しない
         for (auto &submission : submissions)
         {
             auto waitResult = submission->wait();
@@ -489,10 +536,12 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     auto graphicsFrequency = graphicsQueue->get_timestamp_frequency();
     if (!graphicsFrequency.has_value())
         return fail(*graphicsFrequency.try_error());
-    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *graphicsFrequency.try_value());
+    m_frames->set_timestamp_frequency(a_frameIndex, QueueType::Graphics, *graphicsFrequency.try_value(),
+                                      graphicsQueue->identity());
     std::uint64_t initialFence = 0;
     if (!m_graph->plan()->initial_barriers().empty())
     {
+        // 複数 Queue の Pass より先に必要な初期 Barrier を Graphics へ提出する
         auto initialCommandResult = commandPool.acquire(QueueType::Graphics);
         if (!initialCommandResult.has_value())
             return fail(*initialCommandResult.try_error());
@@ -516,6 +565,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
         if (initialFence == 0 || initialIdentity != graphicsQueue->identity())
             return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.initial_fence"});
     }
+    // 同じ Queue 種類で連続する Pass を一つの提出範囲へまとめる
     for (std::size_t index = 0; index < passes.size();)
     {
         const auto type = passes[index].queue;
@@ -554,14 +604,16 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
             auto frequency = queue->get_timestamp_frequency();
             if (!frequency.has_value())
                 return fail(*frequency.try_error());
-            m_frames->set_timestamp_frequency(a_frameIndex, type, *frequency.try_value());
+            m_frames->set_timestamp_frequency(a_frameIndex, type, *frequency.try_value(), queue->identity());
         }
         if (initialFence != 0 && queue != graphicsQueue)
         {
+            // 初期 Barrier を持つ Graphics 提出の完了を Queue 側で待つ
             auto waitResult = queue->wait_for_queue(*graphicsQueue, initialFence);
             if (!waitResult.has_value())
                 return fail(*waitResult.try_error());
         }
+        // 別 Queue の依存 Pass が発行した Fence を範囲ごとに確認する
         for (std::size_t passIndex = index; passIndex < end; ++passIndex)
             for (const auto dependency : passes[passIndex].dependencies)
             {
@@ -578,6 +630,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
                 auto *producerQueue = queueByPass[dependency.index];
                 if (producerQueue != queue)
                 {
+                    // 依存元の実提出 Fence を待ち、資源の使用順を保つ
                     auto waitResult = queue->wait_for_queue(*producerQueue, fenceByPass[dependency.index]);
                     if (!waitResult.has_value())
                     {
@@ -585,6 +638,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
                     }
                 }
             }
+        // この範囲の Queue 種類に対応する Command を借りる
         auto commandResult = commandPool.acquire(type);
         if (!commandResult.has_value())
         {
@@ -596,6 +650,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
         {
             return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues.context"});
         }
+        // 範囲内の Pass だけを記録し、最終 Barrier は後段へ残す
         auto recordResult = record_range(a_frameIndex, *context, index, end - index, false);
         if (!recordResult.has_value())
         {
@@ -606,6 +661,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
         {
             return fail(*closeResult.try_error());
         }
+        // 記録と Close が成功した Command だけを Queue へ提出する
         auto submitResult = commandPool.submit(*queue, *command);
         if (!submitResult.has_value())
         {
@@ -620,6 +676,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
             return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.submit_fence"});
         }
         submissions.push_back(std::move(token));
+        // 各 Pass が属した Queue と Fence を後続依存のために保持する
         for (std::size_t passIndex = index; passIndex < end; ++passIndex)
         {
             queueByPass[passes[passIndex].handle.index] = queue;
@@ -633,6 +690,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     }
     if (latestComputeFence != 0)
     {
+        // Compute の最後の提出を Graphics の終了処理へ合流させる
         auto waitResult = graphicsQueue->wait_for_queue(*computeQueue, latestComputeFence);
         if (!waitResult.has_value())
         {
@@ -641,6 +699,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     }
     if (latestCopyFence != 0)
     {
+        // Copy の最後の提出も同じ終了処理へ合流させる
         auto waitResult = graphicsQueue->wait_for_queue(*copyQueue, latestCopyFence);
         if (!waitResult.has_value())
         {
@@ -658,6 +717,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
     {
         return fail({ErrorCategory::InvalidState, "DX12MainFrameGraph.execute_queues.final_context"});
     }
+    // 合流後に外部資源の最終状態と Present 状態への遷移を記録する
     auto finalRecordResult = record_range(a_frameIndex, *finalContext, passes.size(), 0, true);
     if (!finalRecordResult.has_value())
     {
@@ -674,6 +734,7 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
         return Result<bool>::failure(*finalSubmitResult.try_error());
     }
     completion->set(finalSubmitResult.take_value());
+    // 全提出を覆う Completion を Frame と Resource Lease に登録する
     auto markResult = mark_submitted(a_frameIndex, completion);
     if (!markResult.has_value())
     {
@@ -686,10 +747,12 @@ Result<bool> DX12MainFrameGraph::execute(std::uint32_t a_frameIndex, const DX12E
 Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
                                                 std::shared_ptr<ICommandCompletion> a_completion)
 {
+    TimingTraceScope traceSubmitted("Graph.MarkSubmitted");
     if (!m_frames || a_frameIndex >= m_poolLeases.size() || !a_completion)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12MainFrameGraph.mark_submitted"});
     }
+    // 一時資源の枠を、今回の GPU 完了点まで再利用禁止にする
     auto frameResult = m_frames->mark_submitted(a_frameIndex, a_completion);
     if (!frameResult.has_value())
     {
@@ -703,6 +766,7 @@ Result<void> DX12MainFrameGraph::mark_submitted(std::uint32_t a_frameIndex,
     }
     for (auto &lease : m_poolLeases[a_frameIndex])
     {
+        // 外部資源の最終利用も同じ GPU 完了点に結び付ける
         auto markResult = lease->mark_submitted(a_completion);
         if (!markResult.has_value())
         {
@@ -744,7 +808,8 @@ Result<void> DX12MainFrameGraph::resize(const DX12ResourceContext &a_resources, 
                                         std::uint32_t a_height)
 {
     if (a_width == 0 || a_height == 0 || !m_swapChain || m_frameCount == 0 ||
-        (m_pipelineManager && m_pipelineManager != &a_resources.get_pipeline_manager()))
+        (m_pipelineManager && m_pipelineManager != &a_resources.get_pipeline_manager()) ||
+        (m_clock && m_clock != &a_resources.get_clock()))
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12MainFrameGraph.resize"});
     }
@@ -791,16 +856,20 @@ Result<void> DX12MainFrameGraph::resize(const DX12ResourceContext &a_resources, 
         m_swapChain = swapChain;
     }
     // SwapChain 自身が同一サイズの完成状態を省略し、途中取得失敗の部分状態は再試行する
+    // 旧 Graph の GPU 利用終了後に Back Buffer を再取得する
     auto resized = swapChain->resize(a_width, a_height);
     if (!resized.has_value())
     {
         return resized;
     }
-    auto rebuiltResult = create(a_resources, *swapChain, std::move(rebuildConfig));
+    // 再構築後も Host の同じ記録先を使い、Graph の CPU 統計は既存の Metric に保持する
+    auto rebuiltResult = create_internal(a_resources, *swapChain, std::move(rebuildConfig), m_profiler, m_recordTimings,
+                                         m_frameWaitTimings);
     if (!rebuiltResult.has_value())
     {
         return Result<void>::failure(*rebuiltResult.try_error());
     }
+    // 新しい Graph の所有資源を既存の実行オブジェクトへ移す
     auto rebuilt = rebuiltResult.take_value();
     m_graph = std::move(rebuilt->m_graph);
     m_backBuffer = rebuilt->m_backBuffer;
@@ -829,6 +898,7 @@ Result<void> DX12MainFrameGraph::shutdown()
                 {ErrorCategory::InvalidState, "DX12MainFrameGraph.shutdown.pending_submission"});
         }
     }
+    // 記録中・提出済みの参照がなくなってから全描画枠を破棄する
     auto result = m_frames->shutdown();
     if (!result.has_value())
     {

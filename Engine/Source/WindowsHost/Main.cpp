@@ -21,6 +21,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             cue::report_log_error("CueWindowsHost storage", *root.try_error(), cue::LogLevel::Fatal);
             return 1;
         }
+        // Repository 起動時の生成物を開発用保存先へ揃える
         config.storage.mode = cue::StorageMode::Development;
         config.storage.repositoryRoot = root.take_value();
         cue::WindowsHost host(std::move(config));
@@ -30,6 +31,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!initResult.has_value())
         {
             cue::report_log_error("CueWindowsHost", *initResult.try_error(), cue::LogLevel::Fatal);
+            // 初期化途中の資源も Host の停止経路で回収する
             auto stopResult = host.shutdown();
             if (!stopResult.has_value())
             {
@@ -41,10 +43,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         // Window の終了要求まで Message と Frame を同じ Main Loop で進める
         while (true)
         {
+            // Window の Event と Runtime の Frame 処理を進める
             auto stepResult = host.step();
             if (!stepResult.has_value())
             {
                 cue::report_log_error("CueWindowsHost", *stepResult.try_error(), cue::LogLevel::Fatal);
+                // Frame 実行失敗後も Worker と GPU の停止を試す
                 auto stopResult = host.shutdown();
                 if (!stopResult.has_value())
                 {
@@ -52,6 +56,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                 }
                 return 1;
             }
+            // Close 要求を受けたら新しい Frame の投入をやめる
             if (!*stepResult.try_value())
             {
                 break;
@@ -59,6 +64,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         }
 
         // Window の破棄結果を Process の終了 Code へ反映する
+        // 通常終了でも明示停止の結果を確認する
         auto shutdownResult = host.shutdown();
         if (!shutdownResult.has_value())
         {

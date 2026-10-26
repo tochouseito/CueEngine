@@ -25,10 +25,12 @@ class Path final
     /// @brief UTF-8 と Root を検証し、区切りと . / .. を字句的に正規化する
     [[nodiscard]] static Result<Path> create(std::string_view a_text)
     {
+        // 空文字・NUL・不正な UTF-8 を正規化前に拒否する
         if (a_text.empty() || !is_valid_utf8(a_text))
         {
             return Result<Path>::failure({ErrorCategory::InvalidArgument, "Path.create.text"});
         }
+        // 呼出元の文字列を所有し、区切り文字を '/' に統一する
         std::string text(a_text);
         for (auto &character : text)
         {
@@ -39,6 +41,7 @@ class Path final
         }
         std::string root;
         std::size_t offset = 0;
+        // UNC は Server と Share までを越えられない Root とする
         if (text.starts_with("//"))
         {
             const auto serverEnd = text.find('/', 2);
@@ -54,6 +57,7 @@ class Path final
             root = text.substr(0, end) + '/';
             offset = end;
         }
+        // Drive 相対の曖昧な形式を拒否し、絶対 Drive Root だけを扱う
         else if (text.size() >= 2 && text[1] == ':')
         {
             if (!((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z')) || text.size() < 3 ||
@@ -69,6 +73,7 @@ class Path final
             root = "/";
             offset = 1;
         }
+        // Root より後ろの要素を分解し、親参照を順に解決する
         std::vector<std::string_view> parts;
         while (offset < text.size())
         {
@@ -80,25 +85,30 @@ class Path final
             const std::string_view part(text.data() + offset, end - offset);
             if (part == "..")
             {
+                // 通常の直前要素があれば親参照で取り除く
                 if (!parts.empty() && parts.back() != "..")
                 {
                     parts.pop_back();
                 }
+                // 絶対 Path では Root の外へ出る親参照を拒否する
                 else if (!root.empty())
                 {
                     return Result<Path>::failure({ErrorCategory::InvalidArgument, "Path.create.above_root"});
                 }
                 else
                 {
+                    // 相対 Path の未解決の親参照はそのまま保持する
                     parts.push_back(part);
                 }
             }
+            // 空要素と現在 Directory の指定を取り除く
             else if (!part.empty() && part != ".")
             {
                 parts.push_back(part);
             }
             offset = end + 1;
         }
+        // 残った要素を Root に連結し、正規化した文字列を所有する
         std::string normalized = root;
         for (const auto part : parts)
         {
@@ -108,6 +118,7 @@ class Path final
             }
             normalized += part;
         }
+        // 相対 Path の全要素が消えた場合は現在 Directory を表す
         if (normalized.empty())
         {
             normalized = ".";
@@ -133,6 +144,7 @@ class Path final
     /// @brief Root はそのまま、相対単一要素は . として親を返す
     [[nodiscard]] Path parent() const
     {
+        // 空 Path と Root 自体には、それ以上の親を作らない
         if (m_text.empty() || m_text.size() == m_rootSize)
         {
             return *this;
@@ -153,6 +165,7 @@ class Path final
     [[nodiscard]] std::string extension() const
     {
         const auto name = filename();
+        // 先頭の '.' だけを拡張子の開始とは扱わない
         const auto dot = name.rfind('.');
         return dot == std::string::npos || dot == 0 ? std::string{} : name.substr(dot);
     }
@@ -169,6 +182,7 @@ class Path final
         {
             return Result<Path>::failure({ErrorCategory::InvalidArgument, "Path.join.empty"});
         }
+        // 右辺が絶対 Path なら置換し、相対なら連結後に再検証する
         return a_right.is_absolute() || is_empty() ? Result<Path>::success(a_right)
                                                    : create(m_text + '/' + a_right.m_text);
     }
@@ -190,6 +204,7 @@ class Path final
         for (std::size_t offset = 0; offset < a_text.size();)
         {
             const auto first = static_cast<unsigned char>(a_text[offset++]);
+            // 埋込み NUL は OS API で文字列が途切れるため拒否する
             if (first == 0)
             {
                 return false;
@@ -198,6 +213,7 @@ class Path final
             {
                 continue;
             }
+            // 先頭 Byte から必要な継続 Byte 数を決める
             const unsigned count = first >= 0xc2 && first <= 0xdf   ? 1
                                    : first >= 0xe0 && first <= 0xef ? 2
                                    : first >= 0xf0 && first <= 0xf4 ? 3
@@ -207,6 +223,7 @@ class Path final
                 return false;
             }
             std::uint32_t code = first & (0x7f >> (count + 1));
+            // 継続 Byte を検証しながら Unicode Code Point を復元する
             for (unsigned index = 0; index < count; ++index)
             {
                 const auto next = static_cast<unsigned char>(a_text[offset++]);
@@ -216,6 +233,7 @@ class Path final
                 }
                 code = (code << 6) | (next & 0x3f);
             }
+            // 最短でない表現・代理符号・Unicode 範囲外を拒否する
             if ((count == 1 && code < 0x80) || (count == 2 && code < 0x800) || (count == 3 && code < 0x10000) ||
                 code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff))
             {

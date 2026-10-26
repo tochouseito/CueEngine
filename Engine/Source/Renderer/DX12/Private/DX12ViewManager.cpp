@@ -61,6 +61,7 @@ Result<DX12TextureViewDesc> DX12ViewManager::resolve_desc(ID3D12Resource &a_reso
                                                           DX12TextureViewDesc a_desc) const
 {
     using DescResult = Result<DX12TextureViewDesc>;
+    // Resource 自体の Format と用途を View の要求へ照合する
     const auto native = a_resource.GetDesc();
     Microsoft::WRL::ComPtr<ID3D12Device> resourceDevice;
     if (!allocator(a_type) || !device() || native.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
@@ -101,6 +102,7 @@ Result<DX12TextureViewDesc> DX12ViewManager::resolve_desc(ID3D12Resource &a_reso
 /// @brief Resource の Binding が決まるまで Native Descriptor を書き込まない
 Result<DX12ViewHandle> DX12ViewManager::reserve(DX12ViewType a_type)
 {
+    // View の種類に対応する Descriptor Allocator を選ぶ
     auto *target = allocator(a_type);
     if (!target)
     {
@@ -135,15 +137,18 @@ Result<DX12ViewHandle> DX12ViewManager::create_view(ID3D12Resource &a_resource, 
     {
         return Result<DX12ViewHandle>::failure(*validation.try_error());
     }
+    // 形状の検証後にだけ Descriptor Slot を確保する
     auto result = reserve(a_type);
     if (!result.has_value())
     {
         return result;
     }
     const auto handle = result.take_value();
+    // 予約した Slot に Native View の内容を書き込む
     auto write = write_texture2d(handle, a_resource, a_desc);
     if (!write.has_value())
     {
+        // View 書込み失敗時は確保した Slot を返却する
         auto rollback = release(handle);
         return Result<DX12ViewHandle>::failure(rollback.has_value() ? *write.try_error() : *rollback.try_error());
     }
@@ -167,11 +172,13 @@ Result<void> DX12ViewManager::write_texture2d(DX12ViewHandle a_handle, ID3D12Res
     {
         return Result<void>::failure(*result.try_error());
     }
+    // 世代が有効な Slot の CPU Handle を取得する
     auto cpu = cpu_handle(a_handle);
     if (!cpu.has_value())
     {
         return Result<void>::failure(*cpu.try_error());
     }
+    // 解決済みの Format と Mip 範囲で RTV または SRV を生成する
     const auto desc = result.take_value();
     if (a_handle.type == DX12ViewType::RenderTarget)
     {

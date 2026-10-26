@@ -17,6 +17,7 @@
 #include <Foundation/Result.h>
 #include <FrameGraph/FrameGraphBuilder.h>
 #include <FrameGraph/FrameGraphPerformance.h>
+#include <Profiler/Profiler.h>
 #include <RHI/Command.h>
 
 namespace cue::dx12
@@ -49,9 +50,11 @@ class DX12FrameGraphFrames final
     /// @brief 同じ Plan から枠ごとに独立した Resource と必要な View を作る
     ///
     /// 途中失敗では生成済みの枠と Descriptor を回収し、部分生成物を公開しない
+    /// a_profiler は描画枠の停止まで借用する。未指定なら内部に記録先を所有する
     [[nodiscard]] static Result<std::unique_ptr<DX12FrameGraphFrames>> create(const DX12ResourceContext &a_resources,
                                                                               const FrameGraphPlan &a_plan,
-                                                                              DX12FrameGraphFramesConfig a_config = {});
+                                                                              DX12FrameGraphFramesConfig a_config = {},
+                                                                              Profiler *a_profiler = nullptr);
 
     /// @brief GPU 完了後に枠の Resource と Descriptor を回収する
     ~DX12FrameGraphFrames();
@@ -69,7 +72,8 @@ class DX12FrameGraphFrames final
     [[nodiscard]] bool timestamp_supported(QueueType a_type) const noexcept;
 
     /// @brief 今回の記録 Queue の Timestamp 周波数を描画枠に保存する
-    void set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type, std::uint64_t a_frequency) noexcept;
+    void set_timestamp_frequency(std::uint32_t a_frameIndex, QueueType a_type, std::uint64_t a_frequency,
+                                 std::uint64_t a_queueIdentity = 0) noexcept;
 
     /// @brief Pass 本体の前後で Query を記録する。未対応 Queue では計測しない
     void begin_pass(std::uint32_t a_frameIndex, std::size_t a_passIndex, ID3D12GraphicsCommandList &a_list) noexcept;
@@ -138,6 +142,10 @@ class DX12FrameGraphFrames final
         std::array<Microsoft::WRL::ComPtr<ID3D12QueryHeap>, 3> queries;
         std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 3> timestampReadbacks;
         std::array<std::uint64_t, 3> frequencies{};
+#if defined(CUE_ENABLE_TIMING_TRACE)
+        std::array<std::uint64_t, 3> queueIdentities{};
+        std::uint64_t logicalFrame = 0;
+#endif
         std::vector<bool> recordedPasses;
         std::vector<GpuPassTiming> timings;
         bool hasGpuSample = false;
@@ -146,13 +154,14 @@ class DX12FrameGraphFrames final
     /// @brief 同じ Graph の一時 Resource Handle か確認する
     [[nodiscard]] bool owns(std::uint32_t a_frameIndex, FrameGraphResourceHandle a_handle) const noexcept;
 
+    std::unique_ptr<Profiler> m_ownedProfiler;
     std::vector<Frame> m_frames;
     DX12ViewManager *m_viewManager = nullptr;
     DX12RenderDevice *m_device = nullptr;
     FrameGraphResourceHandle m_borrowedRtvResource;
     std::uint64_t m_graphId = 0;
     bool m_isClosed = false;
-    std::vector<TimingSamples> m_passTimings;
+    std::vector<ProfileMetric> m_passTimings;
     std::array<bool, 3> m_timestampSupported{true, true, false};
 };
 } // namespace cue::dx12

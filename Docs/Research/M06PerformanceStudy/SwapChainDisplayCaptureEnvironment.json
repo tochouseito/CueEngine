@@ -1,0 +1,16 @@
+{
+  "timestamp_utc": "2026-10-09T00:17:33.7870147Z",
+  "executable": "C:\\Users\\sinse\\source\\repos\\CueEngine\\out\\build\\windows-vs2026-performance\\Study\\Development\\CueEditorTimingProbe.exe",
+  "executable_sha256": "8F4C34085A90617E7D5523A750E2B358B7ED646307AA0186091D7DF1FB8D921B",
+  "presentmon": "C:\\Users\\sinse\\source\\repos\\CueEngine\\out\\tools\\PresentMon\\PresentMon-2.6.0-x64.exe",
+  "presentmon_sha256": "B2A706BC6AD475749E3B7E3409263AA1E6906D45BDCF993F6DBC0F660188F1AF",
+  "repeats": 1,
+  "warmup": 120,
+  "frames": 600,
+  "cases": [
+    "new-borderless",
+    "new-borderless-swap-none",
+    "new-borderless-swap-none-tearing"
+  ],
+  "note": "Each PresentMon CSV includes startup and warmup. ETW measurement overhead is present; no input latency instrumentation. Capture contains only CueEditorTimingProbe output."
+}

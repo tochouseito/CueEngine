@@ -16,6 +16,7 @@
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
 #include <Platform/Diagnostics.h>
+#include <Profiler/TimingTrace.h>
 
 namespace cue::dx12
 {
@@ -88,6 +89,7 @@ Result<void> wait_for_fence(ID3D12Fence* a_fence, ID3D12Device* a_device, std::u
         return Result<void>::failure({ErrorCategory::PlatformFailure, "CreateEventW",
                                       static_cast<std::int64_t>(GetLastError())});
     }
+    // Fence が指定値に達したときの通知先 Event を登録する
     const HRESULT result = a_fence->SetEventOnCompletion(a_value, event);
     if (FAILED(result))
     {
@@ -105,6 +107,7 @@ Result<void> wait_for_fence(ID3D12Fence* a_fence, ID3D12Device* a_device, std::u
     if (!is_fence_complete(a_fence, a_value))
     {
         return Result<void>::failure(command_error("ID3D12Device.GetDeviceRemovedReason",
+                                                   // Device 喪失を確認し、完了待ちを正常終了と混同しない
                                                    a_device->GetDeviceRemovedReason()));
     }
     return Result<void>::success();
@@ -155,9 +158,11 @@ public:
     /// @brief この Token が保持する Fence の完了を待つ
     [[nodiscard]] Result<bool> completion_status() const override
     {
+        // Fence の完了値から Command の GPU 利用終了を確認する
         const auto completed = m_fence->GetCompletedValue();
         if (completed == (std::numeric_limits<std::uint64_t>::max)())
             return Result<bool>::failure(command_error("DX12CommandCompletion.status.device",
+                                                        // Device 喪失を確認し、完了待ちを正常終了と混同しない
                                                         m_device->GetDeviceRemovedReason()));
         return Result<bool>::success(m_value != 0 && completed >= m_value);
     }
@@ -191,15 +196,18 @@ Result<std::unique_ptr<DX12GpuCommandContext>> DX12GpuCommandContext::create(ID3
         return ContextResult::failure({ErrorCategory::InvalidArgument, "DX12GpuCommandContext.create.type"});
     }
 
+    // Allocator と CommandList の所有先を部分生成状態から用意する
     auto context = std::make_unique<DX12GpuCommandContext>(CreateToken{});
     context->m_device = &a_device;
     context->m_type = a_type;
     const D3D12_COMMAND_LIST_TYPE nativeType = command_list_type(a_type);
+    // GPU 完了まで記録領域を保持する Command Allocator を生成する
     const HRESULT allocatorResult = a_device.CreateCommandAllocator(nativeType, IID_PPV_ARGS(&context->m_allocator));
     if (FAILED(allocatorResult))
     {
         return ContextResult::failure(command_error("ID3D12Device.CreateCommandAllocator", allocatorResult));
     }
+    // Queue 種類に対応する CommandList を生成する
     const HRESULT listResult = a_device.CreateCommandList(0, nativeType, context->m_allocator.Get(), nullptr,
                                                            IID_PPV_ARGS(&context->m_list));
     if (FAILED(listResult))
@@ -255,6 +263,7 @@ Result<void> DX12GpuCommandContext::close()
     {
         m_state = CommandState::Failed;
         m_isFatalFailure = true;
+        // Close の失敗を Context に保持し、壊れた記録状態の再利用を防ぐ
         auto error = command_error("ID3D12GraphicsCommandList.Close", result);
         // 記録内容の不正は Slot の再生成では直せないため、呼出側の処理は止める
         error.category = ErrorCategory::Fatal;
@@ -370,6 +379,7 @@ struct DX12CommandPool::State
         }
         for (const auto& typeSlots : slots)
         {
+            // 貸出中の Slot がある間は所有する記録資源を停止しない
             for (const auto& slot : typeSlots)
             {
                 if (slot.context->m_state == CommandState::Submitted &&
@@ -408,6 +418,7 @@ struct DX12CommandPool::State
             {
                 if (slot.context->m_state == CommandState::Submitted)
                 {
+                    // 提出済み Command の GPU 完了を確認してから所有権を回収する
                     auto waitResult = wait_for_submission(*slot.context);
                     if (!waitResult.has_value() && !firstError)
                     {
@@ -473,6 +484,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
     }
     auto &slots = state->slots[*typeIndex];
     std::size_t slotIndex = slots.size();
+    // 再利用可能な Slot を探し、必要な場合だけ生成または完了待ちへ進む
     for (;;)
     {
         std::optional<std::size_t> oldestPending;
@@ -496,6 +508,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
             {
                 if (slot.context->m_state == CommandState::Submitted && !State::is_submission_complete(*slot.context))
                 {
+                    // Device 喪失を確認し、完了待ちを正常終了と混同しない
                     const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                     if (FAILED(deviceStatus))
                     {
@@ -511,6 +524,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                     }
                     continue;
                 }
+                // GPU 完了済みの Context を新しい記録用に Reset する
                 auto resetResult = slot.context->reset_for_recording();
                 if (!resetResult.has_value())
                 {
@@ -521,6 +535,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
             }
             if (shouldRebuild)
             {
+                // Device 喪失を確認し、完了待ちを正常終了と混同しない
                 const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                 if (FAILED(deviceStatus))
                 {
@@ -529,10 +544,12 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                     error.category = ErrorCategory::Fatal;
                     return Result<commandLease>::failure(std::move(error));
                 }
+                // 再利用できない Context を、同じ Queue 種類の新しい実体へ交換する
                 auto replacementResult =
                     DX12GpuCommandContext::create(*state->device.Get(), a_type, static_cast<std::uint32_t>(index));
                 if (!replacementResult.has_value())
                 {
+                    // Device 喪失を確認し、完了待ちを正常終了と混同しない
                     const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                     if (FAILED(deviceStatus))
                     {
@@ -564,6 +581,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                 auto *pendingContext = pendingSlot.context.get();
                 // Slot を予約してから Mutex を解放し、他の提出や Lease 返却を GPU 待機で止めない
                 lock.unlock();
+                // GPU 待機中は Slot の Lock を外し、他の貸出を妨げない
                 auto waitResult = state->wait_for_submission(*pendingContext);
                 lock.lock();
                 slots[pendingIndex].isBorrowed = false;
@@ -582,10 +600,12 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                 }
                 continue;
             }
+            // 空き Slot がなければ新しい Command Context を生成する
             auto contextResult =
                 DX12GpuCommandContext::create(*state->device.Get(), a_type, static_cast<std::uint32_t>(slots.size()));
             if (!contextResult.has_value())
             {
+                // Device 喪失を確認し、完了待ちを正常終了と混同しない
                 const HRESULT deviceStatus = state->device->GetDeviceRemovedReason();
                 if (FAILED(deviceStatus))
                 {
@@ -611,6 +631,7 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
                                auto &returned = state->slots[typeIndex][slotIndex];
                                if (returned.context->m_state == CommandState::Recording)
                                {
+                                   // 未提出の貸出を返す際も、開いた CommandList を閉じる
                                    auto closeResult = returned.context->close();
                                    if (!closeResult.has_value())
                                    {
@@ -631,14 +652,17 @@ Result<commandLease> DX12CommandPool::acquire(QueueType a_type)
 /// @brief 提出と同じ排他区間で Context に Queue の Fence 値を紐づける
 Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, ICommandContext& a_context)
 {
+    TimingTraceScope traceSubmit("CommandPool.Submit");
     const auto state = m_state;
+    TimingTraceScope traceLock("CommandPool.SubmitLock");
     std::lock_guard lock(state->mutex);
+    traceLock.finish();
     if (state->isStopping || state->isFatal)
     {
         return Result<commandCompletion>::failure({state->isFatal ? ErrorCategory::Fatal : ErrorCategory::InvalidState,
                                                    "DX12CommandPool.submit.unavailable"});
     }
-    auto* queue = dynamic_cast<DX12GpuCommandQueue*>(&a_queue);
+    auto *queue = dynamic_cast<DX12GpuCommandQueue *>(&a_queue);
     auto* context = dynamic_cast<DX12GpuCommandContext*>(&a_context);
     if (!context || context->m_device.Get() != state->device.Get())
     {
@@ -671,10 +695,12 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
         return Result<commandCompletion>::failure({ErrorCategory::Fatal, "DX12CommandPool.submit.order_exhausted"});
     }
     // ExecuteCommandLists の後に Allocation 失敗を起こさないよう Token を先に生成する
+    // 提出前に Completion の所有先を確保し、提出後の確保失敗を避ける
     auto completion = std::make_unique<DX12CommandCompletion>(state->device, queue->completion_fence(),
                                                               context->m_type);
     ID3D12CommandList* lists[] = {context->m_list.Get()};
     bool mayHaveExecuted = false;
+    // CommandList の実行と完了通知用 Fence の発行をまとめて行う
     auto result = queue->submit(lists, &mayHaveExecuted);
     if (!result.has_value())
     {
@@ -686,6 +712,7 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
             state->isFatal = true;
             auto error = *result.try_error();
             error.category = ErrorCategory::Fatal;
+            // 実行済みの可能性がある失敗では GPU を待って資源を保護する
             auto idleResult = queue->wait_idle();
             if (!idleResult.has_value())
             {
@@ -710,6 +737,7 @@ Result<commandCompletion> DX12CommandPool::submit(IQueueContext& a_queue, IComma
     context->m_submissionFence = queue->completion_fence();
     context->m_fenceValue = *result.try_value();
     context->m_state = CommandState::Submitted;
+    // 提出に対応する Fence を Slot に保持し、再利用まで待てるようにする
     for (auto& slot : state->slots[*typeIndex])
     {
         if (slot.context.get() == context)
@@ -733,6 +761,7 @@ Result<void> DX12CommandPool::shutdown()
     }
     std::lock_guard lock(state->mutex);
     state->isStopping = true;
+    // 貸出が残る停止要求は拒否し、利用側で返却できる状態を保つ
     for (const auto& slots : state->slots)
     {
         for (const auto& slot : slots)

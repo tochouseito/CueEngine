@@ -46,6 +46,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             }
         }
     }
+    // Graph の一時資源を所有する専用の ResourcePool を用意する
     auto poolResult = DX12GpuResourcePool::create(a_device);
     if (!poolResult.has_value())
     {
@@ -64,6 +65,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             graph->m_graphId = a_plan.resources().front().handle.graphId;
         }
 
+        // Plan の Alias Slot ごとに同じ配置領域の実体群を生成する
         for (const auto& slot : a_plan.alias_slots())
         {
             Result<std::vector<GpuResourceHandle>> createdResult =
@@ -73,6 +75,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             {
                 std::vector<GpuBufferDesc> descs;
                 descs.reserve(slot.resources.size());
+                // 論理 Buffer の生成仕様を Slot 内の順序で集める
                 for (const auto handle : slot.resources)
                 {
                     descs.push_back(a_plan.resources()[handle.index].bufferDesc);
@@ -83,6 +86,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             {
                 std::vector<GpuTexture2DDesc> descs;
                 descs.reserve(slot.resources.size());
+                // Texture の生成仕様も Slot の使用順に揃える
                 for (const auto handle : slot.resources)
                 {
                     descs.push_back(a_plan.resources()[handle.index].textureDesc);
@@ -102,6 +106,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             {
                 const auto handle = slot.resources[index];
                 const auto& planned = a_plan.resources()[handle.index];
+                // Graph の生存中に Native 実体を参照する Lease を保持する
                 auto leaseResult = graph->m_pool->acquire(created[index], GpuResourceAccess::Write);
                 if (!leaseResult.has_value())
                 {
@@ -191,6 +196,7 @@ Result<void> DX12FrameGraphResources::shutdown()
     }
     if (m_completion)
     {
+        // 最後の提出が終わるまで一時 Resource の所有を解除しない
         auto result = m_completion->wait();
         if (!result.has_value())
         {
@@ -202,6 +208,7 @@ Result<void> DX12FrameGraphResources::shutdown()
     m_poolLeases.clear();
     if (m_pool)
     {
+        // Lease の返却後に Pool の資源をまとめて停止する
         auto result = m_pool->shutdown();
         if (!result.has_value())
         {

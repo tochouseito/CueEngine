@@ -17,7 +17,7 @@ class Runtime final
 public:
     /// @brief Frame設定とPlatform Serviceの借用先を固定する
   Runtime(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter, ThreadFactory &a_threadFactory,
-          SimulationConfig a_simulation = {});
+          SimulationConfig a_simulation = {}, Profiler *a_profiler = nullptr);
 
   /// @brief Workerを停止してから借用先を解放できる状態にする
   ~Runtime();
@@ -79,12 +79,16 @@ private:
 
     FrameControllerDesc m_desc;
     SimulationConfig m_simulationConfig;
+    // Controller と Worker の停止まで Platform の時計を借用する
     Clock& m_clock;
     Waiter& m_waiter;
     ThreadFactory& m_threadFactory;
+    Profiler *m_profiler = nullptr;
     std::thread::id m_ownerId;
+    // Frame 進行の実体は Runtime が一意所有し、Service より先に回収する
     std::unique_ptr<FrameController> m_controller;
     Lifecycle m_lifecycle = Lifecycle::Uninitialized;
+    // Callback からの step / 停止の再入を拒否するための実行中 Flag
     bool m_isStepping = false;
 };
 } // namespace cue

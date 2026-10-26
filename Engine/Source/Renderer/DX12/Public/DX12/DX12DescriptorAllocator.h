@@ -15,8 +15,11 @@ namespace cue::dx12
 /// @brief Allocator と Slot の世代を識別する非所有 Handle
 struct DX12DescriptorHandle final
 {
+    // Heap 内での Descriptor の位置
     std::uint32_t index = 0;
+    // 同じ Slot の再割当てで古い Handle を区別する世代
     std::uint64_t generation = 0;
+    // 異なる Allocator の Slot を取り違えない識別子
     std::uint64_t allocatorId = 0;
 
     /// @brief 初期値のままの Handle か判定する

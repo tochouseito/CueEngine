@@ -1,16 +1,20 @@
 #pragma once
 
 #include <Foundation/Result.h>
+#include <Platform/InputEventTiming.h>
 #include <Platform/WindowEvent.h>
 
 #include <string>
+#include <vector>
 
 namespace cue
 {
 /// @brief 作成時のTitleとClient Areaの要求Sizeを所有する
 struct WindowDescriptor final
 {
+    // OS の Window に表示する UTF-8 の Title
     std::string title;
+    // 装飾枠を含めない描画領域の初期寸法
     WindowSize clientSize;
 };
 
@@ -47,5 +51,12 @@ public:
 
     /// @brief FIFOの次のEventを取り出し、空なら出力値を変更しない
     [[nodiscard]] virtual bool try_pop_event(WindowEvent& a_event) noexcept = 0;
+
+    /// @brief Frame が採用する入力観測値を移し、出力側の空き容量を次の観測へ再利用する
+    /// Owner Thread 専用。入力のない実装は空を返す。出力の旧標本は消費済みであること
+    virtual void take_input_events(std::vector<InputEventTiming> &a_events) noexcept
+    {
+        a_events.clear();
+    }
 };
 } // namespace cue

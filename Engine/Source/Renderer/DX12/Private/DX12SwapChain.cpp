@@ -1,5 +1,7 @@
 #include <DX12/DX12SwapChain.h>
 
+#include <Profiler/TimingTrace.h>
+
 #include <exception>
 #include <memory>
 #include <new>
@@ -67,6 +69,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
     {
         // SwapChain 生成
         auto result = std::make_unique<DX12SwapChain>(CreateToken{});
+        result->m_clock = &a_resources.get_clock();
         result->m_viewManager = &viewManager;
         result->m_queue = std::move(a_queue);
         result->m_config = a_config;
@@ -109,11 +112,13 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
 
         if (a_config.isWaitableEnabled)
         {
+            // 表示側で待機できる未完了 Frame 数を設定する
             const HRESULT latencyResult = result->m_swapChain->SetMaximumFrameLatency(a_config.maxQueuedFrames);
             if (FAILED(latencyResult))
             {
                 return SwapResult::failure(swap_chain_error("IDXGISwapChain.SetMaximumFrameLatency", latencyResult));
             }
+            // 次の表示枠の準備を通知する待機 Handle を借用する
             result->m_frameLatencyEvent = result->m_swapChain->GetFrameLatencyWaitableObject();
             if (!result->m_frameLatencyEvent)
             {
@@ -139,6 +144,7 @@ Result<std::unique_ptr<DX12SwapChain>> DX12SwapChain::create(const DX12ResourceC
         }
 
         // 初回生成と Resize で同じ取得経路を使い、Object 名と RTV の所有を揃える
+        // SwapChain の全 Back Buffer と RTV を所有先へ取得する
         auto buffersResult = result->acquire_buffers();
         if (!buffersResult.has_value())
         {
@@ -201,38 +207,57 @@ Result<void> DX12SwapChain::present()
     }
     const UINT syncInterval = m_config.isVSyncEnabled ? 1u : 0u;
     const UINT flags = !m_config.isVSyncEnabled && m_isTearingEnabled ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    // Present API 本体の開始と復帰を共通時計で測る
+    const auto started = m_clock->now();
+    TimingTraceScope tracePresent("DXGI.Present");
     const HRESULT result = m_swapChain->Present(syncInterval, flags);
+    tracePresent.finish();
+    const auto returned = m_clock->now();
     if (SUCCEEDED(result))
     {
         m_hasFramePermit = false;
         ++m_timing.presentCount;
-        m_timing.lastPresent = std::chrono::steady_clock::now();
+        m_timing.lastPresent = returned;
+        m_timing.presentStarted = started;
+        m_timing.presentReturned = returned;
         update_timing();
+        m_timing.statisticsDuration = m_clock->now() - returned;
     }
     return FAILED(result) ? Result<void>::failure(swap_chain_error("IDXGISwapChain.Present", result))
                           : Result<void>::success();
 }
 
 /// @brief 最初の Frame も表示枠を取得し、Message Pump を所有する Main を待機させない
-Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
-                                         const std::function<bool()> &a_shouldCancel, bool a_isNonBlocking)
+Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken, const std::function<bool()> &a_shouldCancel,
+                                           bool a_isNonBlocking, bool a_wakesForMessages)
 {
+    TimingTraceScope traceScope("DXGI.Ready");
     if (!m_swapChain)
     {
         return Result<bool>::failure({ErrorCategory::InvalidState, "DX12SwapChain.wait_for_frame"});
     }
+    // 停止と取消を確認しながら、次の表示枠の通知を待つ
     while (!a_stopToken.stop_requested() && !(a_shouldCancel && a_shouldCancel()))
     {
         if (!m_frameLatencyEvent || m_hasFramePermit)
         {
             return Result<bool>::success(true);
         }
-        const DWORD status = WaitForSingleObject(m_frameLatencyEvent, a_isNonBlocking ? 0 : 1);
+        const HANDLE event = m_frameLatencyEvent;
+        TimingTraceScope traceEvent("DXGI.Event", a_isNonBlocking ? 0 : 1);
+        const DWORD status = a_wakesForMessages ? MsgWaitForMultipleObjectsEx(1, &event, a_isNonBlocking ? 0 : 1,
+                                                                              QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+                                                : WaitForSingleObject(event, a_isNonBlocking ? 0 : 1);
+        traceEvent.finish(status);
         if (status == WAIT_OBJECT_0)
         {
             // 最小化などで Present を省略しても、消費した通知を次回へ持ち越す
             m_hasFramePermit = true;
             return Result<bool>::success(true);
+        }
+        if (a_wakesForMessages && status == WAIT_OBJECT_0 + 1)
+        {
+            return Result<bool>::success(false);
         }
         if (status != WAIT_TIMEOUT)
         {
@@ -240,12 +265,13 @@ Result<bool> DX12SwapChain::wait_for_frame(std::stop_token a_stopToken,
                                           static_cast<std::int64_t>(GetLastError())});
         }
         auto *queue = dynamic_cast<DX12GpuCommandQueue *>(m_queue.get());
+        // Device 喪失を確認し、完了待ちを正常終了と混同しない
         const HRESULT removed = queue->device()->GetDeviceRemovedReason();
         if (FAILED(removed))
         {
             return Result<bool>::failure(swap_chain_error("DX12SwapChain.wait_for_frame.device", removed));
         }
-        if (a_isNonBlocking)
+        if (a_isNonBlocking || a_wakesForMessages)
         {
             return Result<bool>::success(false);
         }
@@ -274,6 +300,8 @@ PresentationTiming DX12SwapChain::timing() const noexcept
 /// @brief 二つの Refresh 標本から周期を求め、表示時刻の推定と QPC 標本を区別する
 void DX12SwapChain::update_timing()
 {
+    TimingTraceScope traceScope("DXGI.Statistics");
+    // 表示 Monitor が変わったら旧 Refresh の予測を引き継がない
     const auto monitor = MonitorFromWindow(m_window, MONITOR_DEFAULTTONEAREST);
     if (monitor != m_monitor)
     {
@@ -285,6 +313,7 @@ void DX12SwapChain::update_timing()
     m_timing.hasRefreshTiming = false;
     m_timing.hasDisplayTiming = false;
     DXGI_FRAME_STATISTICS statistics{};
+    // DXGI が観測した Refresh と Present の統計を取得する
     if (FAILED(m_swapChain->GetFrameStatistics(&statistics)) || statistics.SyncQPCTime.QuadPart <= 0)
     {
         // Disjoint / 未対応を成功した表示時刻として扱わず、予測器の履歴も捨てる
@@ -298,7 +327,8 @@ void DX12SwapChain::update_timing()
     {
         return;
     }
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = m_clock->now();
+    // Native QPC 標本の古さを共通時計の時間軸へ対応付ける
     const auto age = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<long double>(
         static_cast<long double>(nowTicks.QuadPart - statistics.SyncQPCTime.QuadPart) / frequency.QuadPart));
     if (age < std::chrono::nanoseconds::zero() || age > std::chrono::milliseconds(250))
@@ -313,6 +343,7 @@ void DX12SwapChain::update_timing()
         if (statistics.SyncRefreshCount > previous.SyncRefreshCount &&
             statistics.SyncQPCTime.QuadPart > previous.SyncQPCTime.QuadPart)
         {
+            // Refresh 回数の差から一周期あたりの表示間隔を求める
             const auto refreshes = statistics.SyncRefreshCount - previous.SyncRefreshCount;
             const auto interval = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::duration<long double>(static_cast<long double>(statistics.SyncQPCTime.QuadPart -
@@ -340,6 +371,7 @@ void DX12SwapChain::update_timing()
     m_timing.displayedPresentCount = statistics.PresentCount;
     if (m_timing.hasRefreshTiming && statistics.PresentCount != 0)
     {
+        // Present と Refresh の回数差で表示時刻を推定する
         const auto refreshOffset = static_cast<std::int64_t>(statistics.PresentRefreshCount) -
                                    static_cast<std::int64_t>(statistics.SyncRefreshCount);
         // 同じ VBlank の場合だけ直接標本。同じでない場合は一定 Refresh の推定であることを公開する
@@ -373,11 +405,13 @@ Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height
         return Result<void>::success();
     }
     // Present を含む同一 Queue の処理完了まで、旧 RTV と BackBuffer を残す
+    // 旧 Back Buffer を参照する GPU 作業が終わるまで待つ
     auto idleResult = queue->wait_idle();
     if (!idleResult.has_value())
     {
         return idleResult;
     }
+    // Native Back Buffer を作り直す前に RTV と参照を返す
     auto releaseResult = release_buffers();
     if (!releaseResult.has_value())
     {
@@ -387,6 +421,7 @@ Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height
     const UINT flags = (m_isTearingEnabled ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u) |
                        (m_frameLatencyEvent ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0u);
     const HRESULT resizeResult =
+        // GPU 利用終了後の Back Buffer を新しい寸法で再生成する
         m_swapChain->ResizeBuffers(m_config.bufferCount, a_width, a_height, m_config.format, flags);
     if (FAILED(resizeResult))
     {
@@ -414,6 +449,7 @@ Result<void> DX12SwapChain::resize(std::uint32_t a_width, std::uint32_t a_height
 /// @brief 全 BackBuffer を再取得し、同じ命名と View 生成規則を適用する
 Result<void> DX12SwapChain::acquire_buffers()
 {
+    // SwapChain が所有する各 Back Buffer を順に借用する
     for (std::uint32_t index = 0; index < m_config.bufferCount; ++index)
     {
         // Native Resource は RTV 生成の成功まで Local の COM 所有で保護する
@@ -430,6 +466,7 @@ Result<void> DX12SwapChain::acquire_buffers()
             report_log_error("DX12SwapChain", swap_chain_error("ID3D12Resource.SetName", nameResult),
                          LogLevel::Warning);
         }
+        // 取得した Back Buffer に対応する RTV を生成する
         auto viewResult = m_viewManager->create_rtv(*buffer.Get());
         if (!viewResult.has_value())
         {
@@ -445,6 +482,7 @@ Result<void> DX12SwapChain::acquire_buffers()
 /// @brief 解放済み Handle を残さず、途中失敗後の再試行で二重返却しない
 Result<void> DX12SwapChain::release_buffers()
 {
+    // 返却に失敗した Slot は残し、停止の再試行に備える
     while (!m_rtvHandles.empty())
     {
         auto releaseResult = m_viewManager->release(m_rtvHandles.back());
@@ -479,6 +517,7 @@ Result<void> DX12SwapChain::shutdown()
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "DX12SwapChain.shutdown.queue"});
         }
+        // Queue の GPU 利用を完了してから表示資源を解放する
         auto idleResult = queue->wait_idle();
         if (!idleResult.has_value())
         {

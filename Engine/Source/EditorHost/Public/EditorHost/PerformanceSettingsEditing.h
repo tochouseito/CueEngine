@@ -7,9 +7,13 @@ namespace cue
 /// @brief 編集中の要求値から判定する条件付き Control の利用可否
 struct PerformanceSettingsControls final
 {
+    // FPS 制限が機能している場合だけ待機方式を編集可能にする
     bool canEditWaitMode = false;
+    // Hybrid 待機の短い Spin 区間を編集できるか
     bool canEditSpin = false;
+    // 有効な Waitable に対して表示 Queue 上限を編集できるか
     bool canEditQueuedPresents = false;
+    // 表示予測の前提が揃っている場合だけ余裕時間を編集可能にする
     bool canEditPredictionSlack = false;
 };
 

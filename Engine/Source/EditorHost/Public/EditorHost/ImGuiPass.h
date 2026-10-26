@@ -54,11 +54,13 @@ class ImGuiPass final : public FrameGraphPass
         {
             return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiPass.renderer"});
         }
+        // Editor 用の表示先である外部 Back Buffer を取得する
         auto buffer = a_builder.get_texture("BackBuffer");
         if (!buffer.has_value())
         {
             return Result<void>::failure(*buffer.try_error());
         }
+        // Back Buffer の宣言から Clear 色を引き継ぐ
         auto desc = a_builder.texture_desc(*buffer.try_value());
         if (!desc.has_value())
         {
@@ -72,6 +74,7 @@ class ImGuiPass final : public FrameGraphPass
     /// @brief UI 描画と Clear に必要な Write / RenderTarget を Graph へ宣言する
     [[nodiscard]] Result<void> describe_resources(FrameGraphBuilder &a_builder) override
     {
+        // ImGui が直接描く Back Buffer の書込みを Graph へ宣言する
         return a_builder.use(m_backBuffer, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
     }
 
@@ -82,16 +85,19 @@ class ImGuiPass final : public FrameGraphPass
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiPass.execute"});
         }
+        // ImGui の描画前に Back Buffer を所定の色でクリアする
         auto clear = a_context.clear_render_target(m_backBuffer, m_clearColor);
         if (!clear.has_value())
         {
             return clear;
         }
+        // 同じ Back Buffer の RTV を描画先へ設定する
         auto target = a_context.set_render_target(m_backBuffer);
         if (!target.has_value())
         {
             return target;
         }
+        // 上位 Editor が所有する実装へ UI の Command 記録を委譲する
         return m_renderer->record_draw_data(a_context);
     }
 

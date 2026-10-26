@@ -36,12 +36,14 @@ class WindowsDebugLogSink final : public ILogSink
             return Result<void>::failure({ErrorCategory::InvalidArgument, "DebugLogSink.input"});
         }
         const auto size = static_cast<int>(a_line.size());
+        // UTF-8 を UTF-16 へ変換し、不正な入力を拒否する
         const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a_line.data(), size, nullptr, 0);
         if (count == 0)
         {
             return Result<void>::failure({ErrorCategory::InvalidArgument, "DebugLogSink.utf8", GetLastError()});
         }
         std::wstring wide(static_cast<std::size_t>(count), L'\0');
+        // UTF-8 を UTF-16 へ変換し、不正な入力を拒否する
         if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a_line.data(), size, wide.data(), count) != count)
         {
             return Result<void>::failure({ErrorCategory::PlatformFailure, "DebugLogSink.convert", GetLastError()});

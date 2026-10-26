@@ -6,10 +6,12 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <Foundation/Result.h>
-#include <Foundation/TimingSamples.h>
+#include <Platform/Clock.h>
 #include <Platform/Window.h>
+#include <Profiler/Profiler.h>
 #include <Runtime/FrameController.h>
 
 namespace cue
@@ -24,19 +26,25 @@ struct ImGuiManagerConfig final
     // 空なら保存しない。EditorHost は相対 Path を保存 Root へ解決する
     // Manager を直接生成する利用者は絶対 Path を渡すことを推奨する
     std::string settingsFile = "editor/imgui.ini";
+    // 初期 Font の画面上の大きさ
     float fontSize = 18.0f;
+    // Docking 対応 ImGui の Window 結合機能を有効にする
     bool isDockingEnabled = true;
     // Renderer 共有 Heap と分離した UI 専用 SRV Heap の容量
     std::uint32_t rendererDescriptorCapacity = 64;
     // Manager の停止・破棄まで借用する。未指定なら Windows FileSystem を内部所有する
     IFileSystem *fileSystem = nullptr;
+    // 停止・破棄まで全 Thread から借用する。未指定なら Platform の既定時計を使う
+    Clock *clock = nullptr;
 };
 
 /// @brief 具体 GPU 型を公開せず UI Backend の所有と利用状況を返す
 struct ImGuiRendererInfo final
 {
+    // 公式 Renderer が再利用する GPU の VB / IB 枠数
     std::uint32_t frameCount = 0;
     std::uint32_t descriptorCapacity = 0;
+    // 現在利用中の Texture Descriptor 数
     std::uint32_t activeDescriptors = 0;
     std::uint64_t recordedFrames = 0;
     TimingStatistics gpuWait;
@@ -48,6 +56,7 @@ struct ImGuiFrameInfo final
     std::uint64_t frames = 0;
     std::uint32_t vertexCount = 0;
     std::uint32_t indexCount = 0;
+    // 今回の UI がゲーム側の Mouse 入力より優先して扱うか
     bool wantsMouse = false;
     bool wantsKeyboard = false;
     bool wantsTextInput = false;
@@ -58,9 +67,12 @@ using editorUiCallback = std::function<Result<void>()>;
 /// @brief CPU 描画 Snapshot の受渡しと回収数を所有値で返す
 struct ImGuiTransferInfo final
 {
+    // Main が公開した CPU Snapshot の累計
     std::uint64_t publishedFrames = 0;
+    // Render が消費した CPU Snapshot の累計
     std::uint64_t consumedFrames = 0;
     std::uint64_t discardedFrames = 0;
+    // 公開済みで Render がまだ回収していない Snapshot 数
     std::uint32_t pendingFrames = 0;
     std::thread::id renderThreadId;
     // 同じ容量の UI なら初期枠確保後に増加しない出力配列の確保回数
@@ -95,8 +107,9 @@ public:
     /// @brief Context と入力接続を確保して Win32 Backend を作成する
     ///
     /// 途中失敗時は部分生成物を回収し、成功時だけ所有権を返す
-    [[nodiscard]] static Result<std::unique_ptr<ImGuiManager>> create(Window& a_window,
-                                                                    ImGuiManagerConfig a_config = {});
+    [[nodiscard]] static Result<std::unique_ptr<ImGuiManager>> create(Window &a_window,
+                                                                      ImGuiManagerConfig a_config = {},
+                                                                      Profiler *a_profiler = nullptr);
 
     /// @brief 明示停止がない場合も Handler を解除してから Context を解放する
     ~ImGuiManager();
@@ -127,8 +140,9 @@ public:
     /// @brief 固定 RenderThread で Graph の記録・提出を囲み、成功・取消・失敗でも Snapshot を回収する
     ///
     /// a_record は同期呼出し限定。Present は戻った後に行う。同一 Thread の構成も利用できる
+    /// a_wasRecorded は呼出中だけ借用する。成功時に実記録の有無を返し、失敗時は false を残す
     [[nodiscard]] Result<void> render_frame(std::uint64_t a_frame, std::stop_token a_token,
-                                            const FrameCallback &a_record);
+                                            const FrameCallback &a_record, bool *a_wasRecorded = nullptr);
 
     /// @brief Owner Thread へ転送状態を返す
     [[nodiscard]] Result<ImGuiTransferInfo> transfer_info() const;
@@ -166,6 +180,10 @@ public:
     /// Capture は Gameplay 側へ渡す入力の抑制に使い、Window Lifecycle は抑制しない
     [[nodiscard]] Result<ImGuiFrameInfo> frame_info() const;
 
+    /// @brief 最後の NewFrame が実際に処理した入力だけを Frame へ移す。Owner Thread 専用
+    /// UI 構築成功後に一度呼ぶ。転送時は publish 成功後に使い、持越し入力は次の Frame へ残す
+    [[nodiscard]] Result<void> take_input_events(std::vector<InputEventTiming> &a_events);
+
     /// @brief Layout を指定先へ保存する。空の保存先は成功として何もしない
     [[nodiscard]] Result<void> save_settings();
 
@@ -184,6 +202,8 @@ private:
     void cancel_frame() noexcept;
 
     std::thread::id m_ownerId;
+    // State の回収後も API の無効状態を検証できるよう、Manager の破棄まで借用する
+    Clock *m_clock = &get_default_clock();
     std::unique_ptr<State> m_state;
 };
 } // namespace cue

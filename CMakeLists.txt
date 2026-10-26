@@ -13,6 +13,12 @@ endif()
 # Test の有無を BUILD_TESTING で切り替え、Source の構成は共通に保つ
 include(CTest)
 
+# 手動の性能調査 Tool は通常 Build から分離し、明示した構成だけに追加する
+option(CUE_BUILD_PERFORMANCE_TOOLS "Build manual performance investigation tools" OFF)
+if(CUE_BUILD_PERFORMANCE_TOOLS AND NOT BUILD_TESTING)
+    message(FATAL_ERROR "CUE_BUILD_PERFORMANCE_TOOLS requires BUILD_TESTING=ON")
+endif()
+
 add_subdirectory(Engine/Source)
 
 if(BUILD_TESTING)

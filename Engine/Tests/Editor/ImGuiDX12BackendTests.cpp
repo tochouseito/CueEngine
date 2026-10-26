@@ -593,6 +593,7 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
             renderThreadId = std::this_thread::get_id();
             for (std::uint64_t frame = 0; frame < colors.size(); ++frame)
             {
+                bool wasRecorded = false;
                 auto rendered = manager->render_frame(
                     frame, {},
                     [&](std::uint64_t a_frame, std::stop_token a_token)
@@ -624,11 +625,13 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
                         return *executed.try_value() ? cue::Result<void>::success()
                                                      : cue::Result<void>::failure(
                                                            {cue::ErrorCategory::InvalidState, "Test.transfer.skip"});
-                    });
-                if (!rendered.has_value())
+                    },
+                    &wasRecorded);
+                if (!rendered.has_value() || !wasRecorded)
                 {
                     std::fprintf(stderr, "transfer frame %llu: %s\n", static_cast<unsigned long long>(frame),
-                                 rendered.try_error()->operation.c_str());
+                                 rendered.has_value() ? "Test.transfer.not_recorded"
+                                                      : rendered.try_error()->operation.c_str());
                     workerFailure = 8;
                     finish_first_batch();
                     return;
@@ -659,20 +662,23 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
             // 停止 Token による Skip でも Callback を呼び、GPU 未提出のまま Snapshot を回収する
             std::stop_source cancelled;
             cancelled.request_stop();
-            auto skipped =
-                manager->render_frame(2, cancelled.get_token(),
-                                      [&](std::uint64_t a_frame, std::stop_token a_token)
-                                      {
-                                          return a_frame == 2 && a_token.stop_requested()
-                                                     ? cue::Result<void>::success()
-                                                     : cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
-                                                                                   "Test.transfer.cancel_token"});
-                                      });
-            if (!skipped.has_value() || texture.QueueUserData == nullptr)
+            bool wasRecorded = true;
+            auto skipped = manager->render_frame(
+                2, cancelled.get_token(),
+                [&](std::uint64_t a_frame, std::stop_token a_token)
+                {
+                    return a_frame == 2 && a_token.stop_requested()
+                               ? cue::Result<void>::success()
+                               : cue::Result<void>::failure(
+                                     {cue::ErrorCategory::InvalidState, "Test.transfer.cancel_token"});
+                },
+                &wasRecorded);
+            if (!skipped.has_value() || wasRecorded || texture.QueueUserData == nullptr)
             {
                 workerFailure = 15;
                 return;
             }
+            wasRecorded = true;
             auto failed = manager->render_frame(
                 3, {},
                 [&](std::uint64_t, std::stop_token)
@@ -682,8 +688,10 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
                     return rejected.has_value() ? cue::Result<void>::failure({cue::ErrorCategory::InvalidState,
                                                                               "Test.transfer.expected_graph_failure"})
                                                 : cue::Result<void>::failure(*rejected.try_error());
-                });
-            if (failed.has_value() || failed.try_error()->operation != "DX12MainFrameGraph.execute_queues" ||
+                },
+                &wasRecorded);
+            if (failed.has_value() || wasRecorded ||
+                failed.try_error()->operation != "DX12MainFrameGraph.execute_queues" ||
                 texture.QueueUserData != nullptr)
             {
                 workerFailure = 16;

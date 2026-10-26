@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stop_token>
 #include <thread>
@@ -16,22 +17,29 @@ struct EditorHostConfig final
     WindowDescriptor window{"CueEngine Editor", {1280, 720}};
     // FPS / 待機 / 同期を指定する。CPU 枠、Worker と先行数は gpu.resourceFrameCount から導出する
     FrameControllerDesc frame{2, true, 60};
+    // SwapChain の Buffer 数、表示同期、Clear 色の起動設定
     PresentationConfig presentation;
     // Editor が生成した表示 Pass は抽象型で Windows 実行基盤へ渡す
     MainFrameGraphConfig graph;
     ImGuiManagerConfig imgui;
     // Callback は ImGui Context が Current の Owner Thread 上で実行する。未指定なら Test / TEST と FrameController FPS を表示する
     editorUiCallback buildUi;
+    // Editor が生成する設定・ログ・Cache の保存先
     StoragePathsConfig storage;
     std::unique_ptr<IFileSystem> fileSystem;
     HostLoggingConfig logging;
+    // GPU 資源の枠数と、未完了提出数の上限
     GpuFrameConfig gpu;
+    // 設定 UI と実行時要求で受け付ける変更範囲
     PerformanceSettingsPolicy performancePolicy;
-    // 空なら性能設定の保存 / 自動読込を無効にする
-    std::string performanceSettingsFile = "editor/Performance.cfg";
+    // FPS 上限とは独立したゲーム更新の周期設定
     SimulationConfig simulation;
     simulationCallback simulationUpdate;
     frameSnapshotCallback prepareFrame;
+    // Adapter 比較などで Backend の生成だけを差し替える。所有権と FileSystem の借用は WindowsHost と同じ
+    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *, Clock &)> createBackend;
+    // 未指定なら下位 Host が所有する。指定時は Host の停止完了まで借用する
+    Clock *clock = nullptr;
 };
 
 /// @brief Editor の起動入口として Windows の表示・Frame 実行基盤を一意所有する
@@ -71,10 +79,15 @@ class EditorHost final
     [[nodiscard]] Result<FrameProgress> frame_progress() const;
     /// @brief Main / Update / Render / FPS 待機の直近 120 回の CPU 集計を返す
     [[nodiscard]] Result<FrameTimingInfo> frame_timing_info() const;
+    /// @brief Window 入力到達から実際に UI へ反映した Frame の Present / CPU 完了までを返す
+    [[nodiscard]] Result<InputLatencyInfo> input_latency_info() const;
     /// @brief UI 構築・Snapshot Copy・Context Lock 待機の CPU 集計を返す
     [[nodiscard]] Result<ImGuiTimingInfo> ui_timing_info() const;
     /// @brief UI 構築前に取得した Graph / Present / GPU 計測を返す。Callback 内でも Graph Lock を取得しない
     [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
+
+    /// @brief 全計測の所有 Snapshot を取得する。Owner 専用で停止後も最終値を取得できる
+    [[nodiscard]] Result<ProfilerSnapshot> profiler_snapshot() const;
 
     /// @brief ゲームの公開範囲を検証して Main 境界での適用を要求する。UI Callback 内も可
     [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
@@ -82,10 +95,6 @@ class EditorHost final
     [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
     /// @brief 要求と Native の実効値、表示統計不足による Fallback を取得する
     [[nodiscard]] Result<PerformanceSettingsStatus> performance_settings_status() const;
-    /// @brief 実行中に適用済みの構成だけを保存する。適用待ちの間は拒否する
-    [[nodiscard]] Result<void> save_performance_settings();
-    /// @brief 保存値を検証して適用要求を出す。読込失敗では実行中の設定を維持する
-    [[nodiscard]] Result<void> load_performance_settings();
     /// @brief 要求の適用待ちを Owner Thread へ返す
     [[nodiscard]] bool has_pending_performance_settings() const noexcept;
     /// @brief 開発者の固定 / 可変更新方針を安全な Frame 境界で変更する
@@ -127,12 +136,16 @@ class EditorHost final
     // Graph Lock と ImGui Context Lock の取得順を逆転させず、Main の UI 構築前に更新する
     MainFrameGraphPerformance m_graphPerformance;
     FrameTimingInfo m_frameTiming;
+    InputLatencyInfo m_inputLatency;
     ImGuiTimingInfo m_uiTiming;
     PerformanceSettingsPolicy m_performancePolicy;
-    std::string m_performanceSettingsFile;
+    // 実行値と分離して UI の未適用の編集内容を保持する
     std::optional<PerformanceSettings> m_settingsDraft;
     std::string m_settingsError;
-    bool m_savesAfterApply = false;
+    // Render の記録 Scope と Present 後の入力計測だけが同じ Thread で読み書きする
+    // Worker の再構築は Join 後に行い、Main の ImGui Context Lock を再取得しない
+    std::uint64_t m_inputRenderFrame = 0;
+    bool m_wasInputRendered = false;
     // WindowsHost を先に破棄し、Callback と Pass の参照先を最後まで生存させる
     std::unique_ptr<ImGuiManager> m_imgui;
     WindowsHost m_windows;

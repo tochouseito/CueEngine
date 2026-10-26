@@ -11,9 +11,54 @@
 #include <windows.h>
 
 #include <Passes/PresentToSwapChainPass.h>
+#include <RHI/Backend.h>
 
 namespace
 {
+/// @brief 共通 Snapshot と既存 API の全統計項目が一致するかを確認する
+[[nodiscard]] bool matches_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name,
+                                  const cue::TimingStatistics &a_expected)
+{
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        const auto &actual = metric.statistics;
+        if (metric.name == a_name)
+        {
+            return actual.sampleCount == a_expected.sampleCount && actual.lastDuration == a_expected.lastDuration &&
+                   actual.averageDuration == a_expected.averageDuration &&
+                   actual.p95Duration == a_expected.p95Duration && actual.maxDuration == a_expected.maxDuration;
+        }
+    }
+    return false;
+}
+
+/// @brief 計測項目が未記録でも登録され、停止後にも保持されることを確認する
+[[nodiscard]] bool has_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name)
+{
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        if (metric.name == a_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Resize が継続中の CPU 系列を二重登録しないことを確認する
+[[nodiscard]] bool has_single_metric(const cue::ProfilerSnapshot &a_snapshot, const char *a_name)
+{
+    std::size_t count = 0;
+    for (const auto &metric : a_snapshot.metrics)
+    {
+        if (metric.name == a_name)
+        {
+            ++count;
+        }
+    }
+    return count == 1;
+}
+
 /// @brief 後続の ImGuiPass と同じ注入経路で実 GPU 表示と解放順を検査する
 class EditorDisplayPass final : public cue::FrameGraphPass
 {
@@ -135,7 +180,6 @@ int test_failed_initialization()
     cue::EditorHostConfig config;
     config.window.title.clear();
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed);
     cue::EditorHost host(std::move(config));
     auto result = host.initialize();
@@ -166,7 +210,6 @@ int test_owner_thread_frames()
     config.frame.maxFps = 0;
     config.gpu = {1, 1};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.buildUi = [&]()
     {
         ++uiFrames;
@@ -228,6 +271,20 @@ int test_owner_thread_frames()
         return 9;
     }
 
+    // 単一 Thread の静止点で取得し、既存 API と共通 Profiler の全統計値を比較する
+    auto snapshot = host.profiler_snapshot();
+    if (!snapshot.has_value() || !matches_metric(*snapshot.try_value(), "Frame.Main", frameTiming.try_value()->main) ||
+        !matches_metric(*snapshot.try_value(), "Frame.Update", frameTiming.try_value()->update) ||
+        !matches_metric(*snapshot.try_value(), "Frame.Render", frameTiming.try_value()->render) ||
+        !matches_metric(*snapshot.try_value(), "ImGui.UiBuild", uiTiming.try_value()->uiBuild) ||
+        !matches_metric(*snapshot.try_value(), "ImGui.SnapshotCopy", uiTiming.try_value()->snapshotCopy) ||
+        !has_metric(*snapshot.try_value(), "Graph.Record") || !has_metric(*snapshot.try_value(), "Host.Present") ||
+        !has_metric(*snapshot.try_value(), "Input.ToCpuComplete") ||
+        !has_metric(*snapshot.try_value(), "GPU.EditorDisplay"))
+    {
+        return 10;
+    }
+
     bool rejectedOtherThread = false;
     std::thread worker(
         [&]()
@@ -239,10 +296,12 @@ int test_owner_thread_frames()
             auto frameTiming = host.frame_timing_info();
             auto uiTiming = host.ui_timing_info();
             auto graphTiming = host.graph_performance();
+            auto snapshot = host.profiler_snapshot();
             auto stop = host.shutdown();
             rejectedOtherThread = !initialize.has_value() && !step.has_value() && !progress.has_value() &&
                                   !stop.has_value() && !ui.has_value() && !frameTiming.has_value() &&
-                                  !uiTiming.has_value() && !graphTiming.has_value() &&
+                                  !uiTiming.has_value() && !graphTiming.has_value() && !snapshot.has_value() &&
+                                  snapshot.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   initialize.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   step.try_error()->category == cue::ErrorCategory::WrongThread &&
                                   progress.try_error()->category == cue::ErrorCategory::WrongThread &&
@@ -265,6 +324,15 @@ int test_owner_thread_frames()
     {
         return 8;
     }
+    // Producer と Native 資源を破棄した後も CPU の最終値と回収済み GPU 結果が残る
+    auto finalSnapshot = host.profiler_snapshot();
+    if (!finalSnapshot.has_value() ||
+        !matches_metric(*finalSnapshot.try_value(), "Frame.Render", frameTiming.try_value()->render) ||
+        !matches_metric(*finalSnapshot.try_value(), "ImGui.UiBuild", uiTiming.try_value()->uiBuild) ||
+        !has_metric(*finalSnapshot.try_value(), "GPU.EditorDisplay"))
+    {
+        return 11;
+    }
     return 0;
 }
 
@@ -278,7 +346,6 @@ int test_failed_display()
         cue::EditorHostConfig config;
         config.window.clientSize = {320, 240};
         config.imgui.settingsFile.clear();
-        config.performanceSettingsFile.clear();
         config.graph.displayPass = std::make_unique<EditorDisplayPass>(recorded, destroyed, true);
         if (failsConfig)
         {
@@ -303,7 +370,6 @@ int test_invalid_ui_config()
     {
         cue::EditorHostConfig config;
         config.imgui.settingsFile.clear();
-        config.performanceSettingsFile.clear();
         config.gpu = kind == 1 ? cue::GpuFrameConfig{2, 2} : cue::GpuFrameConfig{1, 1};
         if (kind == 1)
         {
@@ -336,7 +402,6 @@ int test_failed_ui_callback()
     bool rejectedReentry = false;
     cue::EditorHostConfig config;
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.frame.maxFps = 0;
     config.buildUi = [&]()
     {
@@ -369,7 +434,6 @@ int test_default_ui_display(std::uint32_t a_frameCount)
     cue::EditorHostConfig config;
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     config.frame.maxFps = 0;
     config.gpu = {a_frameCount, a_frameCount};
     // 旧 CPU 指定を上書きし、GPU 資源枠数から Worker と先行数を導出する
@@ -424,7 +488,6 @@ int test_resize_ui_display(bool a_usesWorkers)
     config.frame.maxFramesInFlight = a_usesWorkers ? 2 : 1;
     config.gpu = a_usesWorkers ? cue::GpuFrameConfig{2, 2} : cue::GpuFrameConfig{1, 1};
     config.imgui.settingsFile.clear();
-    config.performanceSettingsFile.clear();
     const auto frameCount = config.frame.maxFramesInFlight;
     cue::EditorHost host(std::move(config));
     if (!host.initialize().has_value() || !wait_for_editor_progress(host, 0, 0, 0, 0, frameCount, a_usesWorkers))
@@ -513,6 +576,48 @@ int test_resize_ui_display(bool a_usesWorkers)
     {
         return 7;
     }
+    // Resize を越えて CPU 集計を継続し、停止後にも一つの系列として取得できる
+    auto snapshot = host.profiler_snapshot();
+    if (!snapshot.has_value() || !has_single_metric(*snapshot.try_value(), "Graph.Record") ||
+        !has_single_metric(*snapshot.try_value(), "Graph.FrameFenceWait"))
+    {
+        return 8;
+    }
+    return 0;
+}
+/// @brief 注入した Factory の失敗と空の成功値でも初期化を拒否し、Window / UI を回収する
+int test_backend_factory_failure()
+{
+    for (const bool returnsNull : {false, true})
+    {
+        int calls = 0;
+        cue::EditorHostConfig config;
+        config.imgui.settingsFile.clear();
+        config.createBackend = [&](cue::IFileSystem *a_files,
+                                   cue::Clock &) -> cue::Result<std::unique_ptr<cue::IBackend>>
+        {
+            ++calls;
+            if (!a_files)
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                    {cue::ErrorCategory::InvalidArgument, "Test.missing_files"});
+            }
+            if (returnsNull)
+            {
+                return cue::Result<std::unique_ptr<cue::IBackend>>::success(nullptr);
+            }
+            return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
+                {cue::ErrorCategory::InvalidState, "Test.backend_factory"});
+        };
+        cue::EditorHost host(std::move(config));
+        auto initialized = host.initialize();
+        const auto expected = returnsNull ? "WindowsHost.backend" : "Test.backend_factory";
+        if (initialized.has_value() || initialized.try_error()->operation != expected || calls != 1 ||
+            !host.shutdown().has_value() || host.step().has_value())
+        {
+            return 1;
+        }
+    }
     return 0;
 }
 } // namespace
@@ -520,6 +625,10 @@ int test_resize_ui_display(bool a_usesWorkers)
 /// @brief Editor 用の Host 基盤の異常系と実 Window 上の Frame 進行を確認する
 int main()
 {
+    if (const int result = test_backend_factory_failure(); result != 0)
+    {
+        return 80 + result;
+    }
     for (const auto frames : {1u, 2u, 3u})
     {
         if (const int result = test_default_ui_display(frames); result != 0)

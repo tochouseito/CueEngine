@@ -65,17 +65,20 @@ Result<std::unique_ptr<DX12DescriptorAllocator>> DX12DescriptorAllocator::create
         return AllocatorResult::failure({ErrorCategory::InvalidArgument, "DX12DescriptorAllocator.create"});
     }
 
+    // Heap と Slot 管理を一つの Allocator の所有下に生成する
     auto allocator = std::make_unique<DX12DescriptorAllocator>(CreateToken{});
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
     desc.Type = a_type;
     desc.NumDescriptors = a_capacity;
     desc.Flags = a_isShaderVisible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    // 指定用途と容量の Descriptor Heap を生成する
     const HRESULT createResult = a_device.CreateDescriptorHeap(&desc, IID_PPV_ARGS(&allocator->m_heap));
     if (FAILED(createResult))
     {
         return AllocatorResult::failure(descriptor_error("ID3D12Device.CreateDescriptorHeap", createResult));
     }
 
+    // Descriptor 一件分の Native Handle の間隔を取得する
     allocator->m_incrementSize = a_device.GetDescriptorHandleIncrementSize(a_type);
     if (allocator->m_incrementSize == 0)
     {
@@ -83,6 +86,7 @@ Result<std::unique_ptr<DX12DescriptorAllocator>> DX12DescriptorAllocator::create
     }
 
     std::uint64_t allocatorId = g_nextAllocatorId.load(std::memory_order_relaxed);
+    // 別 Allocator の Handle を混同しない識別子を採番する
     while (allocatorId != (std::numeric_limits<std::uint64_t>::max)() &&
            !g_nextAllocatorId.compare_exchange_weak(allocatorId, allocatorId + 1, std::memory_order_relaxed))
     {
@@ -109,6 +113,7 @@ Result<std::unique_ptr<DX12DescriptorAllocator>> DX12DescriptorAllocator::create
 /// @brief 未使用 Slot または返却済み Slot から新しい世代の Handle を作る
 Result<DX12DescriptorHandle> DX12DescriptorAllocator::allocate()
 {
+    // 空き Slot の貸出しを使用中一覧へ反映して返す
     std::lock_guard lock(m_mutex);
     std::uint32_t index = 0;
     if (!m_freeSlots.empty())
@@ -133,6 +138,7 @@ Result<DX12DescriptorHandle> DX12DescriptorAllocator::allocate()
 /// @brief GPU 完了を呼出側が保証した Slot のみ再利用可能にする
 Result<void> DX12DescriptorAllocator::release(DX12DescriptorHandle a_handle)
 {
+    // 所有者・Index・世代を検証し、正しい Slot だけを空き一覧へ戻す
     std::lock_guard lock(m_mutex);
     if (!is_allocated_locked(a_handle))
     {
@@ -154,6 +160,7 @@ Result<void> DX12DescriptorAllocator::release(DX12DescriptorHandle a_handle)
 /// @brief 所属と世代が一致する Slot の CPU Handle を計算する
 Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12DescriptorAllocator::cpu_handle(DX12DescriptorHandle a_handle) const
 {
+    // Heap の先頭から Slot 番号分進めた CPU Handle を求める
     std::lock_guard lock(m_mutex);
     if (!is_allocated_locked(a_handle))
     {
@@ -168,6 +175,7 @@ Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12DescriptorAllocator::cpu_handle(DX12Desc
 /// @brief Shader 可視 Heap に限り GPU Handle を計算する
 Result<D3D12_GPU_DESCRIPTOR_HANDLE> DX12DescriptorAllocator::gpu_handle(DX12DescriptorHandle a_handle) const
 {
+    // Shader-visible Heap だけに GPU Handle の取得を許す
     std::lock_guard lock(m_mutex);
     if (!m_isShaderVisible || !is_allocated_locked(a_handle))
     {
