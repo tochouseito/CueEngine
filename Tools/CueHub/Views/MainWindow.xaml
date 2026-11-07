@@ -1,0 +1,62 @@
+<Window x:Class="Cue.Hub.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CueEngine Hub" Width="1120" Height="800" MinWidth="850" MinHeight="620"
+        Background="#F3F5F8" FontFamily="Yu Gothic UI" FontSize="14" Closing="on_closing">
+    <DockPanel Margin="22">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,15">
+            <TextBlock Text="CueEngine Hub" FontSize="27" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Version, StringFormat=Version {0}}" Foreground="#586273" />
+            <TextBlock Text="使用する Engine" Margin="0,15,0,0" />
+            <ComboBox ItemsSource="{Binding Engines}" SelectedItem="{Binding SelectedEngine}" DisplayMemberPath="Display" />
+        </StackPanel>
+        <Border DockPanel.Dock="Bottom" Background="White" Padding="12" Margin="0,14,0,0">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="取消" Command="{Binding Cancel}" Margin="14,0,0,0" />
+                <StackPanel>
+                    <TextBlock Text="{Binding Status}" TextWrapping="Wrap" AutomationProperties.Name="操作結果" />
+                    <ProgressBar Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="5" Margin="0,8,0,0" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <TabControl Background="White" Padding="15">
+            <TabItem Header="Projects">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <WrapPanel><Button Content="既存 Project を登録" Command="{Binding RegisterProject}" /><Button Content="Editor で開く" Command="{Binding OpenProject}" /><Button Content="一覧から外す" Command="{Binding RemoveProject}" /></WrapPanel>
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Display" MinHeight="90" />
+                    <GroupBox Grid.Row="2" Header="新規 Project" Margin="0,16,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="20" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel><TextBlock Text="表示名" /><TextBox Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 表示名" /></StackPanel>
+                            <StackPanel Grid.Column="2"><TextBlock Text="アプリ識別名" /><TextBox Text="{Binding ApplicationName, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="アプリ識別名" /></StackPanel>
+                            <StackPanel Grid.Row="1"><TextBlock Text="作成先（新しいフォルダ）" /><TextBox Text="{Binding ProjectDirectory, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 作成先" /></StackPanel>
+                            <StackPanel Grid.Row="1" Grid.Column="2"><TextBlock Text="テンプレート" /><ComboBox ItemsSource="{Binding Templates}" SelectedItem="{Binding Template}" /></StackPanel>
+                            <WrapPanel Grid.Row="2" Grid.ColumnSpan="3"><Button Content="保存先を選択" Command="{Binding ChooseProjectDirectory}" /><Button Content="Project を作成" Command="{Binding CreateProject}" /></WrapPanel>
+                        </Grid>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Engines">
+                <DockPanel Margin="8">
+                    <WrapPanel DockPanel.Dock="Top"><Button Content="ローカル Engine 登録" Command="{Binding RegisterEngine}" /><Button Content="パッケージから導入" Command="{Binding ImportEngine}" /><Button Content="修復" Command="{Binding RepairEngine}" /><Button Content="削除・登録解除" Command="{Binding RemoveEngine}" /></WrapPanel>
+                    <WrapPanel DockPanel.Dock="Top"><Button Content="公開版を取得" Command="{Binding RefreshCatalog}" /><Button Content="選択した版を導入" Command="{Binding InstallEngine}" /><Button Content="GitHub の過去版" Command="{Binding OpenArchive}" /></WrapPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="正式版・Preview 合計の最新 10 世代。旧版は GitHub から取得して登録できます。" Margin="0,6,0,12" TextWrapping="Wrap" />
+                    <ListBox ItemsSource="{Binding Releases}" SelectedItem="{Binding SelectedRelease}" DisplayMemberPath="Display" />
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Settings">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <GroupBox Header="Engine の保存先"><StackPanel><TextBox Text="{Binding EngineDirectory, UpdateSourceTrigger=PropertyChanged}" /><Button Content="フォルダを選択" Command="{Binding ChooseEngineDirectory}" HorizontalAlignment="Left" /></StackPanel></GroupBox>
+                        <GroupBox Header="配布物を検証する発行者公開鍵"><StackPanel><TextBlock Text="配布元から確認した公開鍵だけを指定してください。ダウンロードしたパッケージ内の鍵は自動登録しません。" TextWrapping="Wrap" /><TextBox Text="{Binding KeyFile, UpdateSourceTrigger=PropertyChanged}" /><Button Content="公開鍵を選択" Command="{Binding ChooseKeyFile}" HorizontalAlignment="Left" /></StackPanel></GroupBox>
+                        <CheckBox Content="Preview を表示・更新候補に含める" IsChecked="{Binding IncludePreview}" Margin="0,0,0,15" />
+                        <GroupBox Header="Hub 自身の更新"><StackPanel><TextBlock Text="通常は空欄で GitHub から取得します。オフライン更新では署名済み Feed のフォルダを指定できます。" TextWrapping="Wrap" /><TextBox Text="{Binding LocalFeed, UpdateSourceTrigger=PropertyChanged}" /><WrapPanel><Button Content="ローカル Feed を選択" Command="{Binding ChooseLocalFeed}" /><Button Content="Hub 更新を確認・準備" Command="{Binding UpdateHub}" /></WrapPanel></StackPanel></GroupBox>
+                        <Button Content="設定を保存" Command="{Binding SaveSettings}" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

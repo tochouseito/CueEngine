@@ -27,6 +27,7 @@ enum class GpuTextureFormat
     Bgra8Unorm,
     Rgba16Float,
     R32Float,
+    D32Float,
 };
 
 /// @brief Buffer の容量と Heap 用途を指定する
@@ -53,6 +54,9 @@ struct GpuTexture2DDesc final
     // Shader からの読取りと SRV の利用を許可する
     bool isShaderReadable = false;
     std::array<float, 4> clearColor{0.0f, 0.0f, 0.0f, 1.0f};
+    // Depth 専用 Texture は Color / ShaderRead と混用せず D32Float を使う
+    bool isDepthStencil = false;
+    float clearDepth = 1.0f;
 };
 
 /// @brief Backend が所有する GPU Resource の共通契約
@@ -60,12 +64,12 @@ struct GpuTexture2DDesc final
 /// 生成と破棄は呼出側で同期する。GPU 提出後は最終参照の Fence 完了まで所有を維持する
 class IGpuResource
 {
-public:
+  public:
     /// @brief 派生 Resource を基底 Pointer から安全に破棄する
     virtual ~IGpuResource() = default;
 
-    IGpuResource(const IGpuResource&) = delete;
-    IGpuResource& operator=(const IGpuResource&) = delete;
+    IGpuResource(const IGpuResource &) = delete;
+    IGpuResource &operator=(const IGpuResource &) = delete;
 
     /// @brief 作成時に固定した Resource の形状を返す
     [[nodiscard]] virtual GpuResourceKind kind() const noexcept = 0;
@@ -73,7 +77,7 @@ public:
     /// @brief 作成時に固定した Heap 用途を返す
     [[nodiscard]] virtual GpuMemoryUsage memory_usage() const noexcept = 0;
 
-protected:
+  protected:
     /// @brief Backend 固有の生成経路だけが基底契約を構築する
     IGpuResource() = default;
 };

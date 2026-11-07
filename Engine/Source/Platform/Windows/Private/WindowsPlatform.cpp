@@ -203,6 +203,26 @@ public:
         return Result<void>::success();
     }
 
+    /// @brief Host が拒否した Close 要求を要求前の状態へ戻す
+    [[nodiscard]] Result<void> cancel_close_request() override
+    {
+        // Event の消費と状態復帰を Window の生成 Thread に限定する
+        if (GetCurrentThreadId() != m_threadId)
+        {
+            return Result<void>::failure({ErrorCategory::WrongThread, "Window.cancel_close_request"});
+        }
+        if (!m_handle || m_state == WindowState::Destroyed || m_handlerDepth != 0)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "Window.cancel_close_request"});
+        }
+        // 表示前の Window も正しく復元し、以後の Close 要求を再び通知可能にする
+        if (m_state == WindowState::CloseRequested)
+        {
+            m_state = m_stateBeforeClose;
+        }
+        return Result<void>::success();
+    }
+
     /// @brief 現在のWindow状態を返す
     [[nodiscard]] WindowState state() const noexcept override
     {
@@ -306,6 +326,7 @@ public:
             // Close 要求を通知し、破棄するかどうかは Host に任せる
             if (window->m_state != WindowState::CloseRequested && window->m_state != WindowState::Destroyed)
             {
+                window->m_stateBeforeClose = window->m_state;
                 window->m_state = WindowState::CloseRequested;
                 window->queue_event({WindowEventType::CloseRequested, {}});
             }
@@ -385,6 +406,7 @@ private:
     HWND m_handle = nullptr;
     WindowSize m_clientSize{};
     WindowState m_state = WindowState::Created;
+    WindowState m_stateBeforeClose = WindowState::Created;
     std::deque<WindowEvent> m_events;
     std::vector<InputEventTiming> m_inputEvents;
     std::uint64_t m_inputSequence = 0;

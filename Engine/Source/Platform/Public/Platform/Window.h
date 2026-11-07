@@ -43,6 +43,14 @@ public:
     /// @brief Windowを明示的に破棄する。二度目以降は成功とする
     [[nodiscard]] virtual Result<void> destroy() = 0;
 
+    /// @brief 保留中の Close 要求を取り消し、要求前の生存状態へ戻す
+    /// Owner Thread 専用。Host が Close Event を消費した後に呼ぶ。生存状態なら何もしない
+    /// 非対応実装と破棄済み Window は失敗し、状態を変更しない
+    [[nodiscard]] virtual Result<void> cancel_close_request()
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "Window.cancel_close_request.unsupported"});
+    }
+
     /// @brief 現在のLifecycle状態を返す
     [[nodiscard]] virtual WindowState state() const noexcept = 0;
 

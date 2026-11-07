@@ -187,6 +187,24 @@ int test_imgui_pass()
     {
         return 5;
     }
+    cue::MainFrameGraphConfig sceneConfig;
+    fails = false;
+    sceneConfig.displayPass =
+        std::make_unique<cue::ImGuiPass>(std::make_unique<TestImGuiRenderer>(destroyed, fails), true);
+    auto sceneBuilt = cue::create_main_frame_graph(color, {pipelines}, std::move(sceneConfig));
+    if (!sceneBuilt.has_value())
+        return 6;
+    auto sceneGraph = sceneBuilt.take_value();
+    const auto &scenePass = sceneGraph.graph->plan()->passes().back();
+    bool hasSceneRead = false;
+    for (const auto &use : scenePass.uses)
+        hasSceneRead |=
+            use.access == cue::FrameGraphAccess::Read && use.state == cue::FrameGraphResourceState::ShaderRead;
+    if (scenePass.uses.size() != 2 || !hasSceneRead)
+        return 7;
+    TestContext sceneContext(command);
+    if (!sceneGraph.graph->pass(scenePass.handle)->execute(sceneContext).has_value())
+        return 8;
     return 0;
 }
 } // namespace

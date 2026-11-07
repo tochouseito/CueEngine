@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 4.2.0)
 
 project(CueEngine LANGUAGES CXX)
 
+include("${PROJECT_SOURCE_DIR}/cmake/CueVersion.cmake")
+
 # Debug は Debug Runtime、Development と Release は Release Runtime を使う
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")

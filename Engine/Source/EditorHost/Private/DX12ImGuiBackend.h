@@ -38,7 +38,8 @@ class DX12ImGuiBackend final
     /// @brief MainThread 上で Texture 更新を完了し、Snapshot が固定 ID を参照できる状態にする
     [[nodiscard]] Result<void> prepare(ImDrawData &a_draw);
     /// @brief 必要な VB/IB 枠の GPU 完了後に Texture 更新と描画を記録する
-    [[nodiscard]] Result<void> record(ImDrawData &a_draw, FrameGraphContext &a_context);
+    [[nodiscard]] Result<void> record(ImDrawData &a_draw, FrameGraphContext &a_context,
+                                      FrameGraphResourceHandle a_sceneSource = {});
     /// @brief 同期 Graph Callback の提出済 Fence を VB/IB Ring と Texture の最終利用へ接続する
     /// 失敗 Callback でも呼ぶ。Queue の致命的な提出失敗では Resource を保全して失敗する
     [[nodiscard]] Result<void> finish_submission();

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -24,12 +25,18 @@ bool is_valid_texture(GpuTexture2DDesc a_desc) noexcept
     {
         return false;
     }
+    if (a_desc.isDepthStencil != (a_desc.format == GpuTextureFormat::D32Float) ||
+        (a_desc.isDepthStencil &&
+         (a_desc.isRenderTarget || a_desc.isShaderReadable || a_desc.mipLevels != 1 ||
+          !std::isfinite(a_desc.clearDepth) || a_desc.clearDepth < 0 || a_desc.clearDepth > 1)))
+        return false;
     switch (a_desc.format)
     {
     case GpuTextureFormat::Rgba8Unorm:
     case GpuTextureFormat::Bgra8Unorm:
     case GpuTextureFormat::Rgba16Float:
     case GpuTextureFormat::R32Float:
+    case GpuTextureFormat::D32Float:
         return true;
     }
     return false;
@@ -635,6 +642,14 @@ Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResou
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.handle"});
     }
+    const auto &resource = m_resources[a_resource.index];
+    if (resource.kind == GpuResourceKind::Texture2D &&
+        (((a_state == FrameGraphResourceState::DepthRead || a_state == FrameGraphResourceState::DepthWrite) &&
+          !resource.textureDesc.isDepthStencil) ||
+         (resource.textureDesc.isDepthStencil && a_state != FrameGraphResourceState::DepthRead &&
+          a_state != FrameGraphResourceState::DepthWrite && a_state != FrameGraphResourceState::CopySource &&
+          a_state != FrameGraphResourceState::CopyDestination && a_state != FrameGraphResourceState::Common)))
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.depth"});
     auto &uses = m_passes[a_pass.index].uses;
     if (std::any_of(uses.begin(), uses.end(),
                     [a_resource](const FrameGraphUse &a_use) { return a_use.resource.index == a_resource.index; }))
@@ -1064,7 +1079,8 @@ Result<FrameGraphPlan> FrameGraphBuilder::build() const
                                  const auto &last = resources[a_slot.resources.back().index];
                                  const bool isSameTextureHeap =
                                      resource.kind != GpuResourceKind::Texture2D ||
-                                     last.textureDesc.isRenderTarget == resource.textureDesc.isRenderTarget;
+                                     last.textureDesc.isRenderTarget == resource.textureDesc.isRenderTarget &&
+                                         last.textureDesc.isDepthStencil == resource.textureDesc.isDepthStencil;
                                  // Queue を跨ぐ Resource の終了遷移は最終合流に置くため、途中 Alias 再利用を行わない
                                  return !usesMultipleQueues(resource) && !usesMultipleQueues(last) &&
                                         a_slot.kind == resource.kind && isSameTextureHeap &&

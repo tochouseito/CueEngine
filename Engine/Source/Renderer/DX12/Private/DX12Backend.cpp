@@ -8,6 +8,7 @@
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12DescriptorAllocator.h>
 #include <DX12/DX12GpuResourcePool.h>
+#include <DX12/DX12MeshPool.h>
 #include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12QueuePool.h>
 #include <DX12/DX12RenderDevice.h>
@@ -112,6 +113,12 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_sele
         return BackendResult::failure(*resourcePoolResult.try_error());
     }
 
+    // Mesh は必要時だけ Page を確保し、Copy Queue の転送完了後に描画へ公開する
+    auto meshPoolResult = DX12MeshPool::create(**deviceResult.try_value(), **commandPoolResult.try_value(),
+                                              **queuePoolResult.try_value());
+    if (!meshPoolResult.has_value())
+        return BackendResult::failure(*meshPoolResult.try_error());
+
     // Shader・Root Signature・PSO を保持する Manager を生成する
     auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value(), a_files);
     if (!pipelineResult.has_value())
@@ -122,7 +129,8 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_sele
     // 生成済み Heap を借用して ViewManager を構築する
     auto viewResult = DX12ViewManager::create(
         **deviceResult.try_value(), *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Rtv)],
-        *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)]);
+        *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)],
+        descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Dsv)].get());
     if (!viewResult.has_value())
     {
         return BackendResult::failure(*viewResult.try_error());
@@ -138,6 +146,7 @@ Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_sele
         backend->m_queuePool = queuePoolResult.take_value();
         backend->m_commandPool = commandPoolResult.take_value();
         backend->m_resourcePool = resourcePoolResult.take_value();
+        backend->m_meshPool = meshPoolResult.take_value();
         backend->m_resourceContext.emplace(
             DX12ResourceContext{*backend->m_device, *backend->m_viewManager, *backend->m_pipelineManager,
                                 a_clock ? *a_clock : get_default_clock()});
@@ -178,9 +187,17 @@ Result<void> DX12Backend::shutdown()
     // Graph と SwapChain の停止後に借用入口を閉じ、Manager は Heap より先に破棄する
     m_resourceContext.reset();
     m_executionContext.reset();
+    if (m_meshPool)
+    {
+        // Mesh の全参照を待ってから、転送に使う Command / Queue の入口を閉じる
+        stopResult = m_meshPool->shutdown();
+        m_meshPool.reset();
+    }
     if (m_resourcePool)
     {
-        stopResult = m_resourcePool->shutdown();
+        auto resourceStopResult = m_resourcePool->shutdown();
+        if (stopResult.has_value())
+            stopResult = std::move(resourceStopResult);
         m_resourcePool.reset();
     }
     if (m_commandPool)
@@ -238,6 +255,12 @@ ICommandPool* DX12Backend::get_command_pool() noexcept
 IGpuResourcePool* DX12Backend::get_resource_pool() noexcept
 {
     return m_resourcePool.get();
+}
+
+/// @brief Backend 稼働中の MeshPool の借用 Pointer を返す
+IMeshPool* DX12Backend::get_mesh_pool() noexcept
+{
+    return m_meshPool.get();
 }
 
 /// @brief 用途に対応する Heap の Allocator を Backend 稼働中だけ貸す

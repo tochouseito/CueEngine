@@ -362,6 +362,13 @@ MigrationBackup/
 # Local CMake configuration
 CMakeUserPresets.json
 
+# Serena の PC ごとの設定とキャッシュ
+/.serena/
+
+# Project ごとの生成されたゲーム成果物と CMake 中間生成物
+[Bb]uild/
+[Ii]ntermediate/
+
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 

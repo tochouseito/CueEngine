@@ -21,28 +21,29 @@ DX12FrameGraphResources::DX12FrameGraphResources(CreateToken) noexcept
 }
 
 /// @brief Plan の Alias Slot を実体化し、全 Placed Resource の Activation を計画する
-Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create(
-    DX12RenderDevice& a_device, const FrameGraphPlan& a_plan)
+Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create(DX12RenderDevice &a_device,
+                                                                                 const FrameGraphPlan &a_plan)
 {
     using GraphResult = Result<std::unique_ptr<DX12FrameGraphResources>>;
     // RenderTarget は明示された Texture だけに許可し、未対応の DS／UAV を拒否する
-    for (const auto& pass : a_plan.passes())
+    for (const auto &pass : a_plan.passes())
     {
-        for (const auto& use : pass.uses)
+        for (const auto &use : pass.uses)
         {
             if (a_plan.resources()[use.resource.index].isImported)
             {
                 continue;
             }
-            const auto& resource = a_plan.resources()[use.resource.index];
+            const auto &resource = a_plan.resources()[use.resource.index];
             if ((use.state == FrameGraphResourceState::RenderTarget &&
                  (resource.kind != GpuResourceKind::Texture2D || !resource.textureDesc.isRenderTarget)) ||
-                use.state == FrameGraphResourceState::DepthRead ||
-                use.state == FrameGraphResourceState::DepthWrite ||
+                ((use.state == FrameGraphResourceState::DepthRead ||
+                  use.state == FrameGraphResourceState::DepthWrite) &&
+                 (resource.kind != GpuResourceKind::Texture2D || !resource.textureDesc.isDepthStencil)) ||
                 use.state == FrameGraphResourceState::UnorderedAccess)
             {
-                return GraphResult::failure({ErrorCategory::InvalidArgument,
-                                             "DX12FrameGraphResources.create.unsupported_state"});
+                return GraphResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphResources.create.unsupported_state"});
             }
         }
     }
@@ -66,11 +67,10 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
         }
 
         // Plan の Alias Slot ごとに同じ配置領域の実体群を生成する
-        for (const auto& slot : a_plan.alias_slots())
+        for (const auto &slot : a_plan.alias_slots())
         {
-            Result<std::vector<GpuResourceHandle>> createdResult =
-                Result<std::vector<GpuResourceHandle>>::failure(
-                    {ErrorCategory::InvalidState, "DX12FrameGraphResources.create.slot"});
+            Result<std::vector<GpuResourceHandle>> createdResult = Result<std::vector<GpuResourceHandle>>::failure(
+                {ErrorCategory::InvalidState, "DX12FrameGraphResources.create.slot"});
             if (slot.kind == GpuResourceKind::Buffer)
             {
                 std::vector<GpuBufferDesc> descs;
@@ -95,17 +95,18 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
             }
             if (!createdResult.has_value() || createdResult.try_value()->size() != slot.resources.size())
             {
-                return GraphResult::failure(createdResult.has_value()
-                    ? Error{ErrorCategory::InvalidState, "DX12FrameGraphResources.create.group_size"}
-                    : *createdResult.try_error());
+                return GraphResult::failure(
+                    createdResult.has_value()
+                        ? Error{ErrorCategory::InvalidState, "DX12FrameGraphResources.create.group_size"}
+                        : *createdResult.try_error());
             }
             auto created = createdResult.take_value();
 
-            ID3D12Resource* previous = nullptr;
+            ID3D12Resource *previous = nullptr;
             for (std::size_t index = 0; index < slot.resources.size(); ++index)
             {
                 const auto handle = slot.resources[index];
-                const auto& planned = a_plan.resources()[handle.index];
+                const auto &planned = a_plan.resources()[handle.index];
                 // Graph の生存中に Native 実体を参照する Lease を保持する
                 auto leaseResult = graph->m_pool->acquire(created[index], GpuResourceAccess::Write);
                 if (!leaseResult.has_value())
@@ -113,11 +114,11 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
                     return GraphResult::failure(*leaseResult.try_error());
                 }
                 auto lease = leaseResult.take_value();
-                auto* resource = dynamic_cast<DX12GpuResource*>(lease->resource());
+                auto *resource = dynamic_cast<DX12GpuResource *>(lease->resource());
                 if (!resource || !resource->resource())
                 {
-                    return GraphResult::failure({ErrorCategory::InvalidState,
-                                                 "DX12FrameGraphResources.create.pool_resource"});
+                    return GraphResult::failure(
+                        {ErrorCategory::InvalidState, "DX12FrameGraphResources.create.pool_resource"});
                 }
                 graph->m_poolResources[handle.index] = resource;
                 graph->m_poolLeases.push_back(std::move(lease));
@@ -131,7 +132,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
         }
         return GraphResult::success(std::move(graph));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return GraphResult::failure({ErrorCategory::PlatformFailure, "DX12FrameGraphResources.create.allocation"});
     }
@@ -149,7 +150,7 @@ DX12FrameGraphResources::~DX12FrameGraphResources()
 }
 
 /// @brief Graph ID と Index を検証して所有する一時 Resource を貸す
-DX12GpuResource* DX12FrameGraphResources::resource(FrameGraphResourceHandle a_handle) const noexcept
+DX12GpuResource *DX12FrameGraphResources::resource(FrameGraphResourceHandle a_handle) const noexcept
 {
     if (m_isClosed || a_handle.graphId != m_graphId || a_handle.graphId == 0 ||
         a_handle.index >= m_poolResources.size())
@@ -171,7 +172,7 @@ std::span<const D3D12_RESOURCE_BARRIER> DX12FrameGraphResources::barriers_before
 }
 
 /// @brief 別の Build 結果から作られた Alias Barrier の混入を防ぐ
-bool DX12FrameGraphResources::matches_plan(const FrameGraphPlan& a_plan) const noexcept
+bool DX12FrameGraphResources::matches_plan(const FrameGraphPlan &a_plan) const noexcept
 {
     return !m_isClosed && a_plan.id() != 0 && a_plan.id() == m_planId;
 }

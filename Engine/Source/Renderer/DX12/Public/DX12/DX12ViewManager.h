@@ -15,6 +15,7 @@ enum class DX12ViewType
 {
     RenderTarget,
     ShaderResource,
+    DepthStencil,
 };
 
 /// @brief View の用途と世代付き Slot を識別する非所有 Handle
@@ -52,14 +53,15 @@ class DX12ViewManager final
   public:
     /// @brief 検証済みの生成基盤を非所有で保持する
     DX12ViewManager(CreateToken, DX12RenderDevice &a_device, DX12DescriptorAllocator &a_rtv,
-                    DX12DescriptorAllocator &a_srv) noexcept;
+                    DX12DescriptorAllocator &a_srv, DX12DescriptorAllocator *a_dsv = nullptr) noexcept;
 
     /// @brief 同一 Device の RTV Heap と Shader 可視 SRV Heap を借用する
     ///
     /// 失敗時は Slot を割り当てず、部分生成物を公開しない
     [[nodiscard]] static Result<std::unique_ptr<DX12ViewManager>> create(DX12RenderDevice &a_device,
                                                                          DX12DescriptorAllocator &a_rtv,
-                                                                         DX12DescriptorAllocator &a_srv);
+                                                                         DX12DescriptorAllocator &a_srv,
+                                                                         DX12DescriptorAllocator *a_dsv = nullptr);
 
     /// @brief Slot の所有者が全 View を返却してから Manager を破棄する
     ~DX12ViewManager() = default;
@@ -78,6 +80,9 @@ class DX12ViewManager final
 
     /// @brief Resource と View 範囲を検証して SRV を生成する
     [[nodiscard]] Result<DX12ViewHandle> create_srv(ID3D12Resource &a_resource, DX12TextureViewDesc a_desc = {});
+
+    /// @brief Depth 専用 Texture に DSV を生成する
+    [[nodiscard]] Result<DX12ViewHandle> create_dsv(ID3D12Resource &a_resource, DX12TextureViewDesc a_desc = {});
 
     /// @brief Slot を変更せず Resource、Device、Format と Mip 範囲を検証する
     [[nodiscard]] Result<void> validate_texture2d(ID3D12Resource &a_resource, DX12ViewType a_type,
@@ -119,5 +124,6 @@ class DX12ViewManager final
     DX12RenderDevice &m_device;
     DX12DescriptorAllocator &m_rtv;
     DX12DescriptorAllocator &m_srv;
+    DX12DescriptorAllocator *m_dsv = nullptr;
 };
 } // namespace cue::dx12

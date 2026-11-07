@@ -44,6 +44,8 @@ struct ShaderRecord final
 struct PipelineRecord final
 {
     bool isCompute = false;
+    bool isDepthEnabled = false;
+    GpuTextureFormat depthFormat = GpuTextureFormat::D32Float;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
     PrimitiveTopology topology = PrimitiveTopology::Triangle;
     std::shared_ptr<RootRecord> root;
@@ -359,6 +361,7 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
     auto ps = find_record(m_state->shaders, a_desc.pixelShader, m_state->id);
     if (!root || !vs || !ps || vs->desc.stage != ShaderStage::Vertex || ps->desc.stage != ShaderStage::Pixel ||
         texture_format(a_desc.renderTargetFormat) == DXGI_FORMAT_UNKNOWN ||
+        (a_desc.isDepthEnabled && a_desc.depthFormat != GpuTextureFormat::D32Float) ||
         (a_desc.topology != PrimitiveTopology::Triangle && a_desc.topology != PrimitiveTopology::Line &&
          a_desc.topology != PrimitiveTopology::Point) ||
         (a_desc.cullMode != CullMode::None && a_desc.cullMode != CullMode::Front && a_desc.cullMode != CullMode::Back))
@@ -371,6 +374,8 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
         auto record = std::make_shared<PipelineRecord>();
         record->root = std::move(root);
         record->format = a_desc.renderTargetFormat;
+        record->isDepthEnabled = a_desc.isDepthEnabled;
+        record->depthFormat = a_desc.depthFormat;
         record->topology = a_desc.topology;
         D3D12_GRAPHICS_PIPELINE_STATE_DESC native{};
         native.pRootSignature = record->root->native.Get();
@@ -391,6 +396,44 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
                                           : a_desc.cullMode == CullMode::Back ? D3D12_CULL_MODE_BACK
                                                                               : D3D12_CULL_MODE_FRONT;
         native.RasterizerState.DepthClipEnable = true;
+        native.RasterizerState.FrontCounterClockwise = a_desc.isFrontCounterClockwise;
+        native.DepthStencilState.DepthEnable = a_desc.isDepthEnabled;
+        native.DepthStencilState.DepthWriteMask =
+            a_desc.isDepthEnabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+        native.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        native.DepthStencilState.StencilEnable = false;
+        native.DepthStencilState.FrontFace = {D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                              D3D12_COMPARISON_FUNC_ALWAYS};
+        native.DepthStencilState.BackFace = native.DepthStencilState.FrontFace;
+        native.DSVFormat = a_desc.isDepthEnabled ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_UNKNOWN;
+        std::vector<D3D12_INPUT_ELEMENT_DESC> inputs;
+        if (a_desc.inputElements.size() > D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT)
+            return pipelineResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.graphics.inputs"});
+        inputs.reserve(a_desc.inputElements.size());
+        for (const auto &element : a_desc.inputElements)
+        {
+            DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+            switch (element.format)
+            {
+            case VertexElementFormat::Float2:
+                format = DXGI_FORMAT_R32G32_FLOAT;
+                break;
+            case VertexElementFormat::Float3:
+                format = DXGI_FORMAT_R32G32B32_FLOAT;
+                break;
+            case VertexElementFormat::Float4:
+                format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+                break;
+            }
+            if (format == DXGI_FORMAT_UNKNOWN || element.semantic.empty() ||
+                element.semantic.find('\0') != std::string::npos ||
+                element.inputSlot >= D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT ||
+                element.byteOffset > D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES)
+                return pipelineResult::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.graphics.input"});
+            inputs.push_back({element.semantic.c_str(), element.semanticIndex, format, element.inputSlot,
+                              element.byteOffset, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+        }
+        native.InputLayout = {inputs.data(), static_cast<UINT>(inputs.size())};
         native.SampleMask = (std::numeric_limits<UINT>::max)();
         native.PrimitiveTopologyType =
             a_desc.topology == PrimitiveTopology::Triangle ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE
@@ -416,6 +459,52 @@ Result<PipelineStateHandle> DX12PipelineManager::create_graphics_pipeline(Graphi
     {
         return pipelineResult::failure({ErrorCategory::PlatformFailure, "DX12PipelineManager.graphics.allocation"});
     }
+}
+
+/// @brief 描画記録前に PSO と Depth Attachment の組合せを検証する
+Result<void> DX12PipelineManager::validate_depth_target(PipelineStateHandle a_pipeline,
+                                                        std::optional<GpuTextureFormat> a_depth) const
+{
+    auto pipeline = find_record(m_state->pipelines, a_pipeline, m_state->id);
+    if (!pipeline || pipeline->isCompute || pipeline->isDepthEnabled != a_depth.has_value() ||
+        (a_depth && pipeline->depthFormat != *a_depth))
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.depth_target"});
+    return Result<void>::success();
+}
+
+/// @brief 同じ PSO の Root 定数へ Draw Index を書く Indexed Draw Signature を作る
+Result<Microsoft::WRL::ComPtr<ID3D12CommandSignature>> DX12PipelineManager::create_mesh_command_signature(
+    PipelineStateHandle a_pipeline, std::uint32_t a_drawIndexRootParameter)
+{
+    using SignatureResult = Result<Microsoft::WRL::ComPtr<ID3D12CommandSignature>>;
+    auto pipeline = find_record(m_state->pipelines, a_pipeline, m_state->id);
+    if (!pipeline || pipeline->isCompute || a_drawIndexRootParameter >= pipeline->root->desc.parameters.size())
+        return SignatureResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12PipelineManager.mesh_signature.pipeline"});
+    const auto &parameter = pipeline->root->desc.parameters[a_drawIndexRootParameter];
+    if (parameter.type != RootParameterType::Constants || parameter.count < 1)
+        return SignatureResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12PipelineManager.mesh_signature.parameter"});
+    D3D12_INDIRECT_ARGUMENT_DESC arguments[2]{};
+    arguments[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    arguments[0].Constant.RootParameterIndex = a_drawIndexRootParameter;
+    arguments[0].Constant.DestOffsetIn32BitValues = 0;
+    arguments[0].Constant.Num32BitValuesToSet = 1;
+    arguments[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    D3D12_COMMAND_SIGNATURE_DESC desc{};
+    desc.ByteStride = sizeof(std::uint32_t) + sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+    static_assert(sizeof(std::uint32_t) + sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) == 24);
+    desc.NumArgumentDescs = 2;
+    desc.pArgumentDescs = arguments;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> signature;
+    const auto created =
+        device()->CreateCommandSignature(&desc, pipeline->root->native.Get(), IID_PPV_ARGS(&signature));
+    if (FAILED(created))
+        return SignatureResult::failure(pipeline_error("ID3D12Device.CreateCommandSignature", created));
+    auto named = name_object(*signature.Get(), "CueEngine Mesh Indexed Signature");
+    if (!named.has_value())
+        return SignatureResult::failure(*named.try_error());
+    return SignatureResult::success(std::move(signature));
 }
 
 /// @brief Root と Compute Shader の組合せから Compute PSO を生成する

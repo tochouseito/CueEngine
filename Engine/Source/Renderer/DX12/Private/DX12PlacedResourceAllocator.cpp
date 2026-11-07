@@ -24,7 +24,7 @@ namespace
 constexpr std::uint64_t k_heapAlignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
 
 /// @brief Overflow を検証しながら値を Alignment へ切り上げる
-bool align_up(std::uint64_t a_value, std::uint64_t a_alignment, std::uint64_t& a_result) noexcept
+bool align_up(std::uint64_t a_value, std::uint64_t a_alignment, std::uint64_t &a_result) noexcept
 {
     if (a_alignment == 0 || (a_alignment & (a_alignment - 1)) != 0 ||
         a_value > (std::numeric_limits<std::uint64_t>::max)() - (a_alignment - 1))
@@ -36,7 +36,7 @@ bool align_up(std::uint64_t a_value, std::uint64_t a_alignment, std::uint64_t& a
 }
 
 /// @brief Native HRESULT と操作名を共通 Error に変換する
-Error placed_error(const char* a_operation, HRESULT a_result)
+Error placed_error(const char *a_operation, HRESULT a_result)
 {
     return {ErrorCategory::PlatformFailure, a_operation, static_cast<std::int64_t>(a_result)};
 }
@@ -63,14 +63,13 @@ struct DX12PlacedResourceAllocator::State final
     };
 
     /// @brief Resource 解放後に領域を戻し、隣接する空き区間を結合する
-    void release(const std::shared_ptr<Page>& a_page, std::uint64_t a_offset, std::uint64_t a_size) noexcept
+    void release(const std::shared_ptr<Page> &a_page, std::uint64_t a_offset, std::uint64_t a_size) noexcept
     {
         std::lock_guard lock(mutex);
         // 返却領域を Offset 順の空き一覧へ挿入する
-        auto position = std::lower_bound(a_page->freeRanges.begin(), a_page->freeRanges.end(), a_offset,
-                                         [](const Range& a_range, std::uint64_t a_value) {
-                                             return a_range.offset < a_value;
-                                         });
+        auto position =
+            std::lower_bound(a_page->freeRanges.begin(), a_page->freeRanges.end(), a_offset,
+                             [](const Range &a_range, std::uint64_t a_value) { return a_range.offset < a_value; });
         position = a_page->freeRanges.insert(position, {a_offset, a_size});
         if (position != a_page->freeRanges.begin())
         {
@@ -84,8 +83,7 @@ struct DX12PlacedResourceAllocator::State final
             }
         }
         // 後続の隣接領域もまとめ、断片化した空きを再利用する
-        while (position + 1 != a_page->freeRanges.end() &&
-               position->offset + position->size == (position + 1)->offset)
+        while (position + 1 != a_page->freeRanges.end() && position->offset + position->size == (position + 1)->offset)
         {
             position->size += (position + 1)->size;
             a_page->freeRanges.erase(position + 1);
@@ -97,13 +95,13 @@ struct DX12PlacedResourceAllocator::State final
         if (a_page->liveAllocations == 0)
         {
             std::size_t sameKindPages = 0;
-            for (const auto& page : pages)
+            for (const auto &page : pages)
             {
                 sameKindPages += page->flags == a_page->flags ? 1 : 0;
             }
             if (a_page->size > pageSize || sameKindPages > 1)
             {
-                std::erase_if(pages, [&a_page](const auto& a_candidate) { return a_candidate == a_page; });
+                std::erase_if(pages, [&a_page](const auto &a_candidate) { return a_candidate == a_page; });
             }
         }
     }
@@ -118,8 +116,8 @@ struct DX12PlacedResourceAllocator::State final
 struct DX12PlacedResourceAllocator::Allocation final
 {
     /// @brief 配置先 Page と回収先 State を保持する
-    Allocation(std::shared_ptr<State> a_state, std::shared_ptr<State::Page> a_page,
-               std::uint64_t a_offset, std::uint64_t a_size) noexcept
+    Allocation(std::shared_ptr<State> a_state, std::shared_ptr<State::Page> a_page, std::uint64_t a_offset,
+               std::uint64_t a_size) noexcept
         : state(std::move(a_state)), page(std::move(a_page)), offset(a_offset), size(a_size)
     {
     }
@@ -146,8 +144,8 @@ DX12PlacedResourceAllocator::DX12PlacedResourceAllocator(CreateToken) noexcept
 }
 
 /// @brief Device と整列済み Page Size を持つ Allocator を構築する
-Result<std::unique_ptr<DX12PlacedResourceAllocator>> DX12PlacedResourceAllocator::create(
-    DX12RenderDevice& a_device, std::uint64_t a_pageSize)
+Result<std::unique_ptr<DX12PlacedResourceAllocator>> DX12PlacedResourceAllocator::create(DX12RenderDevice &a_device,
+                                                                                         std::uint64_t a_pageSize)
 {
     using AllocatorResult = Result<std::unique_ptr<DX12PlacedResourceAllocator>>;
     std::uint64_t alignedSize = 0;
@@ -163,10 +161,10 @@ Result<std::unique_ptr<DX12PlacedResourceAllocator>> DX12PlacedResourceAllocator
         allocator->m_state->pageSize = alignedSize;
         return AllocatorResult::success(std::move(allocator));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
-        return AllocatorResult::failure({ErrorCategory::PlatformFailure,
-                                         "DX12PlacedResourceAllocator.create.allocation"});
+        return AllocatorResult::failure(
+            {ErrorCategory::PlatformFailure, "DX12PlacedResourceAllocator.create.allocation"});
     }
 }
 
@@ -176,8 +174,8 @@ Result<std::unique_ptr<DX12GpuResource>> DX12PlacedResourceAllocator::create_buf
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
     if (a_desc.memory != GpuMemoryUsage::Default)
     {
-        return ResourceResult::failure({ErrorCategory::InvalidArgument,
-                                        "DX12PlacedResourceAllocator.create_buffer.memory"});
+        return ResourceResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.create_buffer.memory"});
     }
     auto descResult = DX12GpuResource::buffer_desc(a_desc);
     if (!descResult.has_value())
@@ -198,11 +196,14 @@ Result<std::unique_ptr<DX12GpuResource>> DX12PlacedResourceAllocator::create_tex
         return ResourceResult::failure(*descResult.try_error());
     }
     // RT / DS 用と通常 Texture 用の Heap を混在させない
-    const auto heapFlags = a_desc.isRenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
-                                                 : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+    const auto heapFlags = (a_desc.isRenderTarget || a_desc.isDepthStencil)
+                               ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
+                               : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+    const std::array<float, 4> clear =
+        a_desc.isDepthStencil ? std::array<float, 4>{a_desc.clearDepth, 0, 0, 0} : a_desc.clearColor;
     return create_resource(*descResult.try_value(), GpuResourceKind::Texture2D, 0, heapFlags,
                            L"CueEngine DX12 Placed Texture2D",
-                           a_desc.isRenderTarget ? &a_desc.clearColor : nullptr);
+                           (a_desc.isRenderTarget || a_desc.isDepthStencil) ? &clear : nullptr);
 }
 
 /// @brief 同時使用しない Default Buffer 群の Native 定義を検証して一領域へ作る
@@ -212,8 +213,8 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
     using GroupResult = Result<std::vector<std::unique_ptr<DX12GpuResource>>>;
     if (a_descs.empty())
     {
-        return GroupResult::failure({ErrorCategory::InvalidArgument,
-                                     "DX12PlacedResourceAllocator.alias_buffers.empty"});
+        return GroupResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.alias_buffers.empty"});
     }
     try
     {
@@ -222,7 +223,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         nativeDescs.reserve(a_descs.size());
         sizes.reserve(a_descs.size());
         // Alias 対象の Buffer 群をすべて検証してから配置を始める
-        for (const auto& desc : a_descs)
+        for (const auto &desc : a_descs)
         {
             if (desc.memory != GpuMemoryUsage::Default)
             {
@@ -237,10 +238,10 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             nativeDescs.push_back(nativeResult.take_value());
             sizes.push_back(desc.byteSize);
         }
-        return create_resources(nativeDescs, GpuResourceKind::Buffer, sizes,
-                                D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, L"CueEngine DX12 Alias Buffer");
+        return create_resources(nativeDescs, GpuResourceKind::Buffer, sizes, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS,
+                                L"CueEngine DX12 Alias Buffer");
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return GroupResult::failure(
             {ErrorCategory::PlatformFailure, "DX12PlacedResourceAllocator.alias_buffers.allocation"});
@@ -259,7 +260,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
     }
     try
     {
-        const bool isRenderTarget = a_descs.front().isRenderTarget;
+        const bool isRenderTarget = a_descs.front().isRenderTarget || a_descs.front().isDepthStencil;
         std::vector<D3D12_RESOURCE_DESC> nativeDescs;
         nativeDescs.reserve(a_descs.size());
         std::vector<std::uint64_t> sizes(a_descs.size(), 0);
@@ -269,12 +270,12 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             clearColors.reserve(a_descs.size());
         }
         // Alias Texture 群の形状と Heap 種類を揃える
-        for (const auto& desc : a_descs)
+        for (const auto &desc : a_descs)
         {
-            if (desc.isRenderTarget != isRenderTarget)
+            if ((desc.isRenderTarget || desc.isDepthStencil) != isRenderTarget)
             {
-                return GroupResult::failure({ErrorCategory::InvalidArgument,
-                                             "DX12PlacedResourceAllocator.alias_texture2ds.heap_type"});
+                return GroupResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.alias_texture2ds.heap_type"});
             }
             auto nativeResult = DX12GpuResource::texture2d_desc(desc);
             if (!nativeResult.has_value())
@@ -284,15 +285,16 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             nativeDescs.push_back(nativeResult.take_value());
             if (isRenderTarget)
             {
-                clearColors.push_back(desc.clearColor);
+                clearColors.push_back(desc.isDepthStencil ? std::array<float, 4>{desc.clearDepth, 0, 0, 0}
+                                                          : desc.clearColor);
             }
         }
-        const auto heapFlags = isRenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
-                                              : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+        const auto heapFlags =
+            isRenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
         return create_resources(nativeDescs, GpuResourceKind::Texture2D, sizes, heapFlags,
                                 L"CueEngine DX12 Alias Texture2D", clearColors);
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
         return GroupResult::failure(
             {ErrorCategory::PlatformFailure, "DX12PlacedResourceAllocator.alias_texture2ds.allocation"});
@@ -305,7 +307,7 @@ DX12PlacedAllocatorStats DX12PlacedResourceAllocator::stats() const noexcept
     std::lock_guard lock(m_state->mutex);
     DX12PlacedAllocatorStats result{};
     result.heapCount = static_cast<std::uint32_t>(m_state->pages.size());
-    for (const auto& page : m_state->pages)
+    for (const auto &page : m_state->pages)
     {
         result.reservedBytes += page->size;
         result.occupiedBytes += page->occupiedBytes;
@@ -315,9 +317,8 @@ DX12PlacedAllocatorStats DX12PlacedResourceAllocator::stats() const noexcept
 
 /// @brief Adapter 固有の配置要件を調べ、適合する Heap の空き区間に Resource を生成する
 Result<std::unique_ptr<DX12GpuResource>> DX12PlacedResourceAllocator::create_resource(
-    const D3D12_RESOURCE_DESC& a_desc, GpuResourceKind a_kind, std::uint64_t a_bufferSize,
-    D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name,
-    const std::array<float, 4>* a_clearColor)
+    const D3D12_RESOURCE_DESC &a_desc, GpuResourceKind a_kind, std::uint64_t a_bufferSize, D3D12_HEAP_FLAGS a_heapFlags,
+    const wchar_t *a_name, const std::array<float, 4> *a_clearColor)
 {
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
     const std::array descs{a_desc};
@@ -335,29 +336,27 @@ Result<std::unique_ptr<DX12GpuResource>> DX12PlacedResourceAllocator::create_res
 
 /// @brief Group の最大配置要件で領域を一度予約し、全 Native Resource を重複生成する
 Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocator::create_resources(
-    std::span<const D3D12_RESOURCE_DESC> a_descs, GpuResourceKind a_kind,
-    std::span<const std::uint64_t> a_bufferSizes, D3D12_HEAP_FLAGS a_heapFlags, const wchar_t* a_name,
-    std::span<const std::array<float, 4>> a_clearColors)
+    std::span<const D3D12_RESOURCE_DESC> a_descs, GpuResourceKind a_kind, std::span<const std::uint64_t> a_bufferSizes,
+    D3D12_HEAP_FLAGS a_heapFlags, const wchar_t *a_name, std::span<const std::array<float, 4>> a_clearColors)
 {
     using GroupResult = Result<std::vector<std::unique_ptr<DX12GpuResource>>>;
     if (a_descs.empty() || a_descs.size() != a_bufferSizes.size() ||
         (!a_clearColors.empty() && a_clearColors.size() != a_descs.size()))
     {
-        return GroupResult::failure({ErrorCategory::InvalidArgument,
-                                     "DX12PlacedResourceAllocator.create_resources.descs"});
+        return GroupResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.create_resources.descs"});
     }
     std::uint64_t requiredSize = 0;
     std::uint64_t requiredAlignment = 0;
     // 全 Resource の最大サイズと Alignment を共有領域の条件にする
-    for (const auto& desc : a_descs)
+    for (const auto &desc : a_descs)
     {
         // Device が要求する配置サイズと Alignment を取得する
         const D3D12_RESOURCE_ALLOCATION_INFO info = m_state->device->GetResourceAllocationInfo(0, 1, &desc);
         if (info.SizeInBytes == 0 || info.SizeInBytes == (std::numeric_limits<std::uint64_t>::max)() ||
             info.Alignment == 0 || (info.Alignment & (info.Alignment - 1)) != 0)
         {
-            return GroupResult::failure({ErrorCategory::PlatformFailure,
-                                         "ID3D12Device.GetResourceAllocationInfo"});
+            return GroupResult::failure({ErrorCategory::PlatformFailure, "ID3D12Device.GetResourceAllocationInfo"});
         }
         requiredSize = (std::max)(requiredSize, info.SizeInBytes);
         requiredAlignment = (std::max)(requiredAlignment, info.Alignment);
@@ -371,7 +370,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         std::uint64_t offset = 0;
         bool isNewPage = false;
         // 用途の合う既存 Heap から条件を満たす空き領域を探す
-        for (const auto& page : m_state->pages)
+        for (const auto &page : m_state->pages)
         {
             if (page->flags != a_heapFlags || page->heapAlignment < requiredAlignment)
             {
@@ -380,10 +379,9 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             // Alignment 調整後も収まる空き区間を選ぶ
             for (std::size_t index = 0; index < page->freeRanges.size(); ++index)
             {
-                const State::Range& range = page->freeRanges[index];
+                const State::Range &range = page->freeRanges[index];
                 std::uint64_t aligned = 0;
-                if (align_up(range.offset, requiredAlignment, aligned) &&
-                    aligned <= range.offset + range.size &&
+                if (align_up(range.offset, requiredAlignment, aligned) && aligned <= range.offset + range.size &&
                     requiredSize <= range.offset + range.size - aligned)
                 {
                     selected = page;
@@ -405,8 +403,8 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             std::uint64_t heapSize = 0;
             if (!align_up(desiredSize, heapAlignment, heapSize))
             {
-                return GroupResult::failure({ErrorCategory::InvalidArgument,
-                                             "DX12PlacedResourceAllocator.create_resources.heap_size"});
+                return GroupResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.create_resources.heap_size"});
             }
             // 新 Page は Resource 生成が成功するまで公開しない
             const std::size_t requiredPages = m_state->pages.size() + 1;
@@ -434,14 +432,13 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             {
                 return GroupResult::failure(placed_error("ID3D12Device.CreateHeap", heapResult));
             }
-            const wchar_t* heapName = a_kind == GpuResourceKind::Buffer
-                                          ? L"CueEngine DX12 Transient Buffer Heap"
-                                          : L"CueEngine DX12 Transient Texture Heap";
+            const wchar_t *heapName = a_kind == GpuResourceKind::Buffer ? L"CueEngine DX12 Transient Buffer Heap"
+                                                                        : L"CueEngine DX12 Transient Texture Heap";
             const HRESULT nameResult = selected->heap->SetName(heapName);
             if (FAILED(nameResult))
             {
-                report_log_error("DX12PlacedResourceAllocator",
-                             placed_error("ID3D12Heap.SetName", nameResult), LogLevel::Warning);
+                report_log_error("DX12PlacedResourceAllocator", placed_error("ID3D12Heap.SetName", nameResult),
+                                 LogLevel::Warning);
             }
             isNewPage = true;
         }
@@ -460,28 +457,30 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         // 同じ予約領域に各 Resource の Native 実体を生成する
         for (std::size_t index = 0; index < a_descs.size(); ++index)
         {
-            const auto& desc = a_descs[index];
+            const auto &desc = a_descs[index];
             auto resource = std::make_unique<DX12GpuResource>(DX12GpuResource::CreateToken{});
             D3D12_CLEAR_VALUE clearValue{};
-            const D3D12_CLEAR_VALUE* optimizedClear = nullptr;
-            if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0)
+            const D3D12_CLEAR_VALUE *optimizedClear = nullptr;
+            if ((desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0)
             {
                 if (a_clearColors.empty())
                 {
-                    return GroupResult::failure({ErrorCategory::InvalidArgument,
-                                                 "DX12PlacedResourceAllocator.create_resources.clear_color"});
+                    return GroupResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12PlacedResourceAllocator.create_resources.clear_color"});
                 }
                 clearValue.Format = desc.Format;
                 for (std::size_t channel = 0; channel < 4; ++channel)
                 {
                     clearValue.Color[channel] = a_clearColors[index][channel];
                 }
+                if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0)
+                    clearValue.DepthStencil = {a_clearColors[index][0], 0};
                 optimizedClear = &clearValue;
             }
             // 確保済み Heap の指定 Offset に GPU Resource を配置する
-            const HRESULT resourceResult = m_state->device->CreatePlacedResource(
-                selected->heap.Get(), offset, &desc, D3D12_RESOURCE_STATE_COMMON, optimizedClear,
-                IID_PPV_ARGS(&resource->m_resource));
+            const HRESULT resourceResult =
+                m_state->device->CreatePlacedResource(selected->heap.Get(), offset, &desc, D3D12_RESOURCE_STATE_COMMON,
+                                                      optimizedClear, IID_PPV_ARGS(&resource->m_resource));
             if (FAILED(resourceResult))
             {
                 return GroupResult::failure(placed_error("ID3D12Device.CreatePlacedResource", resourceResult));
@@ -489,14 +488,14 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
             const HRESULT nameResult = resource->m_resource->SetName(a_name);
             if (FAILED(nameResult))
             {
-                report_log_error("DX12PlacedResourceAllocator",
-                             placed_error("ID3D12Resource.SetName", nameResult), LogLevel::Warning);
+                report_log_error("DX12PlacedResourceAllocator", placed_error("ID3D12Resource.SetName", nameResult),
+                                 LogLevel::Warning);
             }
             resources.push_back(std::move(resource));
         }
 
         // Native Resource と Allocation の生成に成功した後だけ空き区間を書き換える
-        State::Range& range = selected->freeRanges[rangeIndex];
+        State::Range &range = selected->freeRanges[rangeIndex];
         const std::uint64_t rangeEnd = range.offset + range.size;
         const std::uint64_t placedEnd = offset + requiredSize;
         if (offset > range.offset && placedEnd < rangeEnd)
@@ -529,7 +528,7 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         // 全実体の生成成功後にだけ Heap の空き領域を消費する
         for (std::size_t index = 0; index < resources.size(); ++index)
         {
-            auto& resource = resources[index];
+            auto &resource = resources[index];
             resource->m_placementLifetime = allocation;
             resource->m_placementHeap = selected->heap.Get();
             resource->m_placementOffset = offset;
@@ -539,10 +538,10 @@ Result<std::vector<std::unique_ptr<DX12GpuResource>>> DX12PlacedResourceAllocato
         }
         return GroupResult::success(std::move(resources));
     }
-    catch (const std::bad_alloc&)
+    catch (const std::bad_alloc &)
     {
-        return GroupResult::failure({ErrorCategory::PlatformFailure,
-                                     "DX12PlacedResourceAllocator.create_resources.allocation"});
+        return GroupResult::failure(
+            {ErrorCategory::PlatformFailure, "DX12PlacedResourceAllocator.create_resources.allocation"});
     }
 }
 } // namespace cue::dx12

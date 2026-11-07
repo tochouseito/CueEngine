@@ -12,30 +12,34 @@ namespace cue::dx12
 {
 /// @brief Native Device と Heap は Owner の管理下で借用する
 DX12ViewManager::DX12ViewManager(CreateToken, DX12RenderDevice &a_device, DX12DescriptorAllocator &a_rtv,
-                                 DX12DescriptorAllocator &a_srv) noexcept
-    : m_device(a_device), m_rtv(a_rtv), m_srv(a_srv)
+                                 DX12DescriptorAllocator &a_srv, DX12DescriptorAllocator *a_dsv) noexcept
+    : m_device(a_device), m_rtv(a_rtv), m_srv(a_srv), m_dsv(a_dsv)
 {
 }
 
 /// @brief Heap の用途と所属 Device が揃った場合だけ Manager を公開する
 Result<std::unique_ptr<DX12ViewManager>> DX12ViewManager::create(DX12RenderDevice &a_device,
                                                                  DX12DescriptorAllocator &a_rtv,
-                                                                 DX12DescriptorAllocator &a_srv)
+                                                                 DX12DescriptorAllocator &a_srv,
+                                                                 DX12DescriptorAllocator *a_dsv)
 {
     using ManagerResult = Result<std::unique_ptr<DX12ViewManager>>;
     Microsoft::WRL::ComPtr<ID3D12Device> rtvDevice;
     Microsoft::WRL::ComPtr<ID3D12Device> srvDevice;
+    Microsoft::WRL::ComPtr<ID3D12Device> dsvDevice;
     if (!a_device.device() || !a_rtv.heap() || !a_srv.heap() || a_rtv.type() != D3D12_DESCRIPTOR_HEAP_TYPE_RTV ||
         a_srv.type() != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV || !a_srv.is_shader_visible() ||
         FAILED(a_rtv.heap()->GetDevice(IID_PPV_ARGS(&rtvDevice))) ||
         FAILED(a_srv.heap()->GetDevice(IID_PPV_ARGS(&srvDevice))) || rtvDevice.Get() != a_device.device() ||
-        srvDevice.Get() != a_device.device())
+        srvDevice.Get() != a_device.device() ||
+        (a_dsv && (!a_dsv->heap() || a_dsv->type() != D3D12_DESCRIPTOR_HEAP_TYPE_DSV || a_dsv->is_shader_visible() ||
+                   FAILED(a_dsv->heap()->GetDevice(IID_PPV_ARGS(&dsvDevice))) || dsvDevice.Get() != a_device.device())))
     {
         return ManagerResult::failure({ErrorCategory::InvalidArgument, "DX12ViewManager.create"});
     }
     try
     {
-        return ManagerResult::success(std::make_unique<DX12ViewManager>(CreateToken{}, a_device, a_rtv, a_srv));
+        return ManagerResult::success(std::make_unique<DX12ViewManager>(CreateToken{}, a_device, a_rtv, a_srv, a_dsv));
     }
     catch (const std::bad_alloc &)
     {
@@ -52,6 +56,8 @@ DX12DescriptorAllocator *DX12ViewManager::allocator(DX12ViewType a_type) const n
         return &m_rtv;
     case DX12ViewType::ShaderResource:
         return &m_srv;
+    case DX12ViewType::DepthStencil:
+        return m_dsv;
     }
     return nullptr;
 }
@@ -69,7 +75,8 @@ Result<DX12TextureViewDesc> DX12ViewManager::resolve_desc(ID3D12Resource &a_reso
         a_desc.firstMip >= native.MipLevels || FAILED(a_resource.GetDevice(IID_PPV_ARGS(&resourceDevice))) ||
         resourceDevice.Get() != device() ||
         (a_type == DX12ViewType::RenderTarget && (native.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) ||
-        (a_type == DX12ViewType::ShaderResource && (native.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0))
+        (a_type == DX12ViewType::ShaderResource && (native.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0) ||
+        (a_type == DX12ViewType::DepthStencil && (native.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0))
     {
         return DescResult::failure({ErrorCategory::InvalidArgument, "DX12ViewManager.texture.resource"});
     }
@@ -79,14 +86,19 @@ Result<DX12TextureViewDesc> DX12ViewManager::resolve_desc(ID3D12Resource &a_reso
     }
     if (a_desc.mipCount == 0)
     {
-        a_desc.mipCount = a_type == DX12ViewType::RenderTarget ? 1 : native.MipLevels - a_desc.firstMip;
+        a_desc.mipCount = a_type != DX12ViewType::ShaderResource ? 1 : native.MipLevels - a_desc.firstMip;
     }
     if (a_desc.format != native.Format || a_desc.mipCount > native.MipLevels - a_desc.firstMip ||
-        (a_type == DX12ViewType::RenderTarget && a_desc.mipCount != 1))
+        (a_type != DX12ViewType::ShaderResource && a_desc.mipCount != 1))
     {
         return DescResult::failure({ErrorCategory::InvalidArgument, "DX12ViewManager.texture.range"});
     }
-    // 現行 RHI の Color Texture Format に限定し、Typeless／Depth の解釈は追加時に定義する
+    // Depth は DSV に限定し、Color の RTV / SRV と混用しない
+    if (a_type == DX12ViewType::DepthStencil)
+        return a_desc.format == DXGI_FORMAT_D32_FLOAT
+                   ? DescResult::success(a_desc)
+                   : DescResult::failure({ErrorCategory::InvalidArgument, "DX12ViewManager.texture.depth_format"});
+    // Color Texture の型付き Format を受け付ける
     switch (a_desc.format)
     {
     case DXGI_FORMAT_R8G8B8A8_UNORM:
@@ -126,6 +138,12 @@ Result<DX12ViewHandle> DX12ViewManager::create_rtv(ID3D12Resource &a_resource, D
 Result<DX12ViewHandle> DX12ViewManager::create_srv(ID3D12Resource &a_resource, DX12TextureViewDesc a_desc)
 {
     return create_view(a_resource, DX12ViewType::ShaderResource, a_desc);
+}
+
+/// @brief DepthStencil 用 Slot を生成する
+Result<DX12ViewHandle> DX12ViewManager::create_dsv(ID3D12Resource &a_resource, DX12TextureViewDesc a_desc)
+{
+    return create_view(a_resource, DX12ViewType::DepthStencil, a_desc);
 }
 
 /// @brief 検証と Slot 確保が完了した場合だけ View を公開する
@@ -187,6 +205,14 @@ Result<void> DX12ViewManager::write_texture2d(DX12ViewHandle a_handle, ID3D12Res
         native.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
         native.Texture2D.MipSlice = desc.firstMip;
         device()->CreateRenderTargetView(&a_resource, &native, *cpu.try_value());
+    }
+    else if (a_handle.type == DX12ViewType::DepthStencil)
+    {
+        D3D12_DEPTH_STENCIL_VIEW_DESC native{};
+        native.Format = desc.format;
+        native.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        native.Texture2D.MipSlice = desc.firstMip;
+        device()->CreateDepthStencilView(&a_resource, &native, *cpu.try_value());
     }
     else
     {

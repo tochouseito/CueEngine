@@ -1,0 +1,14 @@
+formatVersion=2
+sceneId=@SCENE_ID@
+name=Main
+
+[object @CAMERA_ID@]
+name=Camera
+active=true
+transform.position=0,0,3
+transform.rotation=0,0,0,1
+transform.scale=1,1,1
+camera.projection=perspective
+camera.fovYRadians=1.04719758
+camera.near=0.1
+camera.far=1000

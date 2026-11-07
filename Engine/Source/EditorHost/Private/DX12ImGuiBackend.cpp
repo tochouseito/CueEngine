@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -49,6 +50,34 @@ class ContextScope final
     std::unique_lock<std::recursive_mutex> m_lock;
     ImGuiContext *m_previous;
 };
+
+/// @brief Snapshot 内の論理 Scene 参照だけを記録中の Native ID へ置き換え、復帰時に戻す
+class SceneTextureScope final
+{
+  public:
+    /// @brief Render 所有の Snapshot のみを変更し、Main の DrawData には触れない
+    SceneTextureScope(ImDrawData &a_draw, ImTextureID a_native) : m_draw(a_draw), m_native(a_native)
+    {
+        replace(static_cast<ImTextureID>(k_sceneViewTextureId), m_native);
+    }
+    /// @brief 記録が失敗・例外になった場合も論理参照を復元する
+    ~SceneTextureScope()
+    {
+        replace(m_native, static_cast<ImTextureID>(k_sceneViewTextureId));
+    }
+
+  private:
+    /// @brief 予約 ID と一致する通常描画 Command の Texture 参照だけを変更する
+    void replace(ImTextureID a_from, ImTextureID a_to)
+    {
+        for (auto *list : m_draw.CmdLists)
+            for (auto &command : list->CmdBuffer)
+                if (!command.UserCallback && command.ElemCount && command.GetTexID() == a_from)
+                    command.TexRef = ImTextureRef(a_to);
+    }
+    ImDrawData &m_draw;
+    ImTextureID m_native;
+};
 } // namespace
 
 class DX12ImGuiBackend::State final
@@ -70,6 +99,8 @@ class DX12ImGuiBackend::State final
     dx12::DX12GpuCommandQueue *queue = nullptr;
     std::unique_ptr<dx12::DX12DescriptorAllocator> allocator;
     std::vector<Descriptor> descriptors;
+    // Scene 用 Slot は物理 Graph 枠ごとに分離し、Main が作る論理 Texture ID とは独立する
+    std::vector<std::size_t> sceneSlots;
     ImGuiRendererInfo info;
     GpuTextureFormat format = GpuTextureFormat::Rgba8Unorm;
     bool isInitialized = false;
@@ -198,6 +229,62 @@ class DX12ImGuiBackend::State final
         return std::any_of(descriptors.begin(), descriptors.end(), [a_id](const Descriptor &a_slot)
                            { return a_slot.handle.is_valid() && !a_slot.isReserved && a_slot.gpu.ptr == a_id; });
     }
+
+    /// @brief 現在の物理 FinalColor を UI 専用 Heap へ登録する。旧利用 Fence の完了後だけ書き換える
+    [[nodiscard]] Result<ImTextureID> prepare_scene(dx12::DX12FrameGraphContext &a_context,
+                                                    FrameGraphResourceHandle a_source)
+    {
+        const auto frame = a_context.frame_index();
+        auto *resource = a_context.resource(a_source);
+        if (frame >= sceneSlots.size() || !resource)
+            return Result<ImTextureID>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.scene.resource"});
+        const auto desc = resource->GetDesc();
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+            (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0 ||
+            (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+             desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT))
+            return Result<ImTextureID>::failure({ErrorCategory::InvalidArgument, "ImGuiDX12.scene.format"});
+        auto &index = sceneSlots[frame];
+        if (index == (std::numeric_limits<std::size_t>::max)())
+        {
+            auto reserved = reserve(1);
+            if (!reserved.has_value())
+                return Result<ImTextureID>::failure(*reserved.try_error());
+            const auto slot = std::find_if(descriptors.begin(), descriptors.end(),
+                                           [](const Descriptor &a_slot) { return a_slot.isReserved; });
+            index = static_cast<std::size_t>(slot - descriptors.begin());
+            slot->isReserved = false;
+            ++info.activeDescriptors;
+        }
+        auto &slot = descriptors[index];
+        auto waited = wait_for_usage(slot.lastFence);
+        if (!waited.has_value())
+            return Result<ImTextureID>::failure(*waited.try_error());
+        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = desc.Format;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(resource, &view, slot.cpu);
+        return Result<ImTextureID>::success(static_cast<ImTextureID>(slot.gpu.ptr));
+    }
+
+    /// @brief Queue 完了後の Scene 用 Descriptor を公式 Texture と分けて返却する
+    [[nodiscard]] Result<void> release_scene_views()
+    {
+        for (auto &index : sceneSlots)
+        {
+            if (index == (std::numeric_limits<std::size_t>::max)())
+                continue;
+            auto released = allocator->release(descriptors[index].handle);
+            if (!released.has_value())
+                return released;
+            descriptors[index] = {};
+            index = (std::numeric_limits<std::size_t>::max)();
+            --info.activeDescriptors;
+        }
+        return Result<void>::success();
+    }
 };
 
 /// @brief static create 専用の空状態を作る
@@ -255,6 +342,7 @@ Result<std::unique_ptr<DX12ImGuiBackend>> DX12ImGuiBackend::create(IBackend &a_b
         state.ringFences.resize(a_frameCount, 0);
         state.info.descriptorCapacity = a_capacity;
         state.descriptors.resize(a_capacity);
+        state.sceneSlots.resize(a_frameCount, (std::numeric_limits<std::size_t>::max)());
         // UI 専用の Shader-visible SRV Heap を生成する
         auto heap = dx12::DX12DescriptorAllocator::create(*state.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                                                           a_capacity, true);
@@ -332,7 +420,8 @@ Result<void> DX12ImGuiBackend::new_frame()
 }
 
 /// @brief Texture 更新と公式 Native 記録を Graph の Graphics Command へ接続する
-Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_context)
+Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_context,
+                                      FrameGraphResourceHandle a_sceneSource)
 {
     TimingTraceScope traceScope("ImGui.GpuRecord");
     auto *context = dynamic_cast<dx12::DX12FrameGraphContext *>(&a_context);
@@ -383,6 +472,20 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
     {
         return prepared;
     }
+    bool hasSceneImage = false;
+    for (const auto *list : a_draw.CmdLists)
+        for (const auto &command : list->CmdBuffer)
+            hasSceneImage |= !command.UserCallback && command.ElemCount && command.GetTexID() == k_sceneViewTextureId;
+    std::optional<SceneTextureScope> sceneTexture;
+    if (hasSceneImage)
+    {
+        if (!a_sceneSource.is_valid())
+            return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiDX12.scene.source"});
+        auto scene = state.prepare_scene(*context, a_sceneSource);
+        if (!scene.has_value())
+            return Result<void>::failure(*scene.try_error());
+        sceneTexture.emplace(a_draw, *scene.try_value());
+    }
     for (const auto *list : a_draw.CmdLists)
     {
         for (const auto &command : list->CmdBuffer)
@@ -422,7 +525,8 @@ Result<void> DX12ImGuiBackend::record(ImDrawData &a_draw, FrameGraphContext &a_c
                                                  {
                                                      ++state.ringCalls;
                                                      state.recordedRing = ring;
-                                                     // 今回参照した Texture の最終利用 Fence を後で更新できるよう印を付ける
+                                                     // 今回参照した Texture の最終利用 Fence
+                                                     // を後で更新できるよう印を付ける
                                                      for (const auto *list : a_draw.CmdLists)
                                                      {
                                                          for (const auto &command : list->CmdBuffer)
@@ -632,6 +736,9 @@ Result<void> DX12ImGuiBackend::shutdown()
         state.isInitialized = false;
     }
     state.release_reservations();
+    auto released = state.release_scene_views();
+    if (!released.has_value())
+        return released;
     if (state.info.activeDescriptors != 0)
     {
         State::invariant_failure("ImGuiDX12.shutdown.descriptors");

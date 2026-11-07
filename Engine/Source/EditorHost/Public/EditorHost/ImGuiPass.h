@@ -21,17 +21,24 @@ class IImGuiRenderer
     ///
     /// Context は呼出中だけ借用する。Reset / Close / Submit と Resource 遷移は行わない
     [[nodiscard]] virtual Result<void> record_draw_data(FrameGraphContext &a_context) = 0;
+
+    /// @brief 今回の FinalColor を Scene View の論理 Texture 参照へ接続して UI を記録する
+    [[nodiscard]] virtual Result<void> record_scene_draw_data(FrameGraphContext &a_context, FrameGraphResourceHandle)
+    {
+        return record_draw_data(a_context);
+    }
 };
 
 /// @brief BackBuffer を Clear し、Host が注入した UI 実装で最後の描画を記録する
 ///
 /// Pass は Adapter を一意所有する。Adapter が借用する UI Owner は Graph 破棄まで生存させる
-/// FinalColor の Image 表示を使わない初期構成では BackBuffer のみを宣言する
+/// Scene 表示時は FinalColor の Read / ShaderRead も宣言し、物理 Texture の解決を記録時に委譲する
 class ImGuiPass final : public FrameGraphPass
 {
   public:
     /// @brief 注入された Adapter の所有権を受け取る
-    explicit ImGuiPass(std::unique_ptr<IImGuiRenderer> a_renderer) noexcept : m_renderer(std::move(a_renderer))
+    explicit ImGuiPass(std::unique_ptr<IImGuiRenderer> a_renderer, bool a_displaysScene = false) noexcept
+        : m_renderer(std::move(a_renderer)), m_displaysScene(a_displaysScene)
     {
     }
 
@@ -68,6 +75,13 @@ class ImGuiPass final : public FrameGraphPass
         }
         m_backBuffer = buffer.take_value();
         m_clearColor = desc.try_value()->clearColor;
+        if (m_displaysScene)
+        {
+            auto scene = a_builder.get_texture("FinalColorTexture");
+            if (!scene.has_value())
+                return Result<void>::failure(*scene.try_error());
+            m_scene = scene.take_value();
+        }
         return Result<void>::success();
     }
 
@@ -75,7 +89,10 @@ class ImGuiPass final : public FrameGraphPass
     [[nodiscard]] Result<void> describe_resources(FrameGraphBuilder &a_builder) override
     {
         // ImGui が直接描く Back Buffer の書込みを Graph へ宣言する
-        return a_builder.use(m_backBuffer, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
+        auto target = a_builder.use(m_backBuffer, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
+        if (!target.has_value() || !m_displaysScene)
+            return target;
+        return a_builder.use(m_scene, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead);
     }
 
     /// @brief 宣言済み Target の準備後に UI 記録を委譲し、Present 遷移は Graph に任せる
@@ -98,12 +115,15 @@ class ImGuiPass final : public FrameGraphPass
             return target;
         }
         // 上位 Editor が所有する実装へ UI の Command 記録を委譲する
-        return m_renderer->record_draw_data(a_context);
+        return m_displaysScene ? m_renderer->record_scene_draw_data(a_context, m_scene)
+                               : m_renderer->record_draw_data(a_context);
     }
 
   private:
     std::unique_ptr<IImGuiRenderer> m_renderer;
     FrameGraphResourceHandle m_backBuffer;
+    FrameGraphResourceHandle m_scene;
+    bool m_displaysScene = false;
     std::array<float, 4> m_clearColor{};
 };
 } // namespace cue

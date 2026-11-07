@@ -1,0 +1,11 @@
+# IDE 操作の抽象契約と Authoring Source の対応を Runtime から分離する
+add_library(Cue.EditorIde STATIC Private/ScriptSource.cpp)
+target_include_directories(Cue.EditorIde PUBLIC Public)
+target_link_libraries(Cue.EditorIde PUBLIC Cue.Foundation PRIVATE Cue.Project Cue.Platform)
+target_compile_features(Cue.EditorIde PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(Cue.EditorIde PRIVATE /utf-8)
+endif()
+if(WIN32)
+    add_subdirectory(Windows)
+endif()

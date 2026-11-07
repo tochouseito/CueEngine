@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <Foundation/Result.h>
+#include <Foundation/Utf8.h>
 
 namespace cue
 {
@@ -26,7 +27,7 @@ class Path final
     [[nodiscard]] static Result<Path> create(std::string_view a_text)
     {
         // 空文字・NUL・不正な UTF-8 を正規化前に拒否する
-        if (a_text.empty() || !is_valid_utf8(a_text))
+        if (a_text.empty() || !is_valid_utf8_text(a_text))
         {
             return Result<Path>::failure({ErrorCategory::InvalidArgument, "Path.create.text"});
         }
@@ -197,50 +198,6 @@ class Path final
     /// @brief 検証済み文字列と Root 長だけを内部で受け取る
     Path(std::string a_text, std::size_t a_rootSize) : m_text(std::move(a_text)), m_rootSize(a_rootSize)
     {
-    }
-    /// @brief Overlong、Surrogate、範囲外、NUL と途中終端を拒否する
-    [[nodiscard]] static bool is_valid_utf8(std::string_view a_text) noexcept
-    {
-        for (std::size_t offset = 0; offset < a_text.size();)
-        {
-            const auto first = static_cast<unsigned char>(a_text[offset++]);
-            // 埋込み NUL は OS API で文字列が途切れるため拒否する
-            if (first == 0)
-            {
-                return false;
-            }
-            if (first < 0x80)
-            {
-                continue;
-            }
-            // 先頭 Byte から必要な継続 Byte 数を決める
-            const unsigned count = first >= 0xc2 && first <= 0xdf   ? 1
-                                   : first >= 0xe0 && first <= 0xef ? 2
-                                   : first >= 0xf0 && first <= 0xf4 ? 3
-                                                                    : 0;
-            if (count == 0 || count > a_text.size() - offset)
-            {
-                return false;
-            }
-            std::uint32_t code = first & (0x7f >> (count + 1));
-            // 継続 Byte を検証しながら Unicode Code Point を復元する
-            for (unsigned index = 0; index < count; ++index)
-            {
-                const auto next = static_cast<unsigned char>(a_text[offset++]);
-                if ((next & 0xc0) != 0x80)
-                {
-                    return false;
-                }
-                code = (code << 6) | (next & 0x3f);
-            }
-            // 最短でない表現・代理符号・Unicode 範囲外を拒否する
-            if ((count == 1 && code < 0x80) || (count == 2 && code < 0x800) || (count == 3 && code < 0x10000) ||
-                code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff))
-            {
-                return false;
-            }
-        }
-        return true;
     }
     std::string m_text;
     std::size_t m_rootSize = 0;

@@ -144,7 +144,7 @@ DX12ShaderCompiler::DX12ShaderCompiler() noexcept = default;
 /// @brief Blob の Owner が先に参照を返却する契約で Compiler を解放する
 DX12ShaderCompiler::~DX12ShaderCompiler() = default;
 
-/// @brief 配置済み Runtime を優先し、開発環境では SDK の DXC を使う
+/// @brief 配置済み Runtime を優先し、開発環境だけ固定 Package の DXC を候補にする
 Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSystem *a_files)
 {
     using compilerResult = Result<std::unique_ptr<DX12ShaderCompiler>>;
@@ -188,6 +188,8 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         }
         if (!*exists.try_value())
         {
+            if (!k_allowDevelopmentFallback)
+                return compilerResult::failure({ErrorCategory::PlatformFailure, "DXC.packaged_runtime_missing"});
             libraryPath = Result<std::wstring>::success(k_dxcLibraryPath);
         }
         state.module = LoadLibraryExW(libraryPath.try_value()->c_str(), nullptr,
@@ -231,6 +233,8 @@ Result<std::unique_ptr<DX12ShaderCompiler>> DX12ShaderCompiler::create(IFileSyst
         }
         if (!*shaderExists.try_value())
         {
+            if (!k_allowDevelopmentFallback)
+                return compilerResult::failure({ErrorCategory::PlatformFailure, "DXC.packaged_shaders_missing"});
             // 開発時だけ Repository の Shader Source を参照候補にする
             auto sourceDirectory = utf16_to_utf8(k_shaderSourceDirectory);
             if (!sourceDirectory.has_value())

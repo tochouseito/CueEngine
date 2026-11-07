@@ -1,0 +1,51 @@
+# Version の正本を一度読み、C++ と Package 生成の値の不一致を防ぐ
+include("${CMAKE_CURRENT_LIST_DIR}/CueSemVer.cmake")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/Engine/Version.json")
+file(READ "${PROJECT_SOURCE_DIR}/Engine/Version.json" taskEngineVersionJson)
+string(JSON taskEngineVersionSchema GET "${taskEngineVersionJson}" schemaVersion)
+string(JSON taskEngineProduct GET "${taskEngineVersionJson}" product)
+string(JSON CUE_ENGINE_VERSION GET "${taskEngineVersionJson}" version)
+string(JSON CUE_ENGINE_SDK_ABI_VERSION GET "${taskEngineVersionJson}" sdkAbiVersion)
+cue_validate_engine_version("${CUE_ENGINE_VERSION}")
+if(NOT taskEngineVersionSchema EQUAL 1 OR NOT taskEngineProduct STREQUAL "engine" OR
+   NOT CUE_ENGINE_SDK_ABI_VERSION MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "Invalid Engine/Version.json")
+endif()
+
+# 配布 SDK を Configure した子は、元 Commit の識別値を引き継ぐ
+if(EXISTS "${PROJECT_SOURCE_DIR}/engine.cueengine")
+    file(STRINGS "${PROJECT_SOURCE_DIR}/engine.cueengine" taskInstalledBuild REGEX "^buildId=")
+    list(LENGTH taskInstalledBuild taskInstalledBuildCount)
+    if(NOT taskInstalledBuildCount EQUAL 1)
+        message(FATAL_ERROR "Engine package buildId is missing or ambiguous")
+    endif()
+    string(REGEX REPLACE "^buildId=" "" CUE_ENGINE_BUILD_ID "${taskInstalledBuild}")
+    set(taskDistributionDefault ON)
+else()
+    set(taskDistributionDefault OFF)
+    find_package(Git QUIET)
+    set(CUE_ENGINE_BUILD_ID "local-unversioned")
+    if(GIT_FOUND)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" OUTPUT_VARIABLE taskCommit
+            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE taskGitResult)
+        if(taskGitResult EQUAL 0)
+            set(CUE_ENGINE_BUILD_ID "${taskCommit}")
+            execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain
+                WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" OUTPUT_VARIABLE taskDirty
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            if(NOT taskDirty STREQUAL "")
+                string(APPEND CUE_ENGINE_BUILD_ID "-dirty")
+            endif()
+        endif()
+    endif()
+endif()
+if(NOT CUE_ENGINE_BUILD_ID MATCHES "^[0-9A-Za-z._+-]+$")
+    message(FATAL_ERROR "Invalid Engine build identifier")
+endif()
+option(CUE_DISTRIBUTION_BUILD "Require the installed Engine layout at runtime" ${taskDistributionDefault})
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/Generated/EngineInstallation")
+configure_file("${PROJECT_SOURCE_DIR}/cmake/EngineVersion.h.in"
+    "${PROJECT_BINARY_DIR}/Generated/EngineInstallation/EngineVersion.h" @ONLY)
+add_library(Cue.EngineVersion INTERFACE)
+target_include_directories(Cue.EngineVersion INTERFACE "${PROJECT_BINARY_DIR}/Generated")

@@ -9,6 +9,8 @@
 #include <thread>
 #include <utility>
 
+#include <Assets/BuiltinMesh.h>
+
 #include "../Support/FileSystemProbe.h"
 #include "../Support/TemporaryFiles.h"
 
@@ -44,6 +46,27 @@ bool advance_until(cue::EditorHost &a_host, std::uint64_t a_after, std::chrono::
 int test_reconfiguration()
 {
     cue::EditorHostConfig config;
+    // Scene View の SRV と MeshPass の GPU 枠も、Worker / Buffering の変更を跨いで再生成する
+    cue::SceneDescriptor descriptor;
+    descriptor.sceneId = "c73af25d-c59a-4ff3-9e9f-81b9f01771a4";
+    descriptor.name = "Scene Reconfiguration";
+    cue::SceneObjectDescriptor cube;
+    cube.objectId = "f2b65d09-b05b-45cb-bd1b-14c1c32d73f9";
+    cube.name = "Cube";
+    cube.transform.emplace();
+    cube.mesh = cue::SceneMeshDescriptor{std::string(cue::k_cubeMeshId)};
+    cue::SceneObjectDescriptor camera;
+    camera.objectId = "6cdbde0c-1577-48ed-a814-e69bccf8b194";
+    camera.name = "Camera";
+    camera.transform.emplace();
+    camera.transform->position.z = 3;
+    camera.camera.emplace();
+    descriptor.objects.push_back(std::move(cube));
+    descriptor.objects.push_back(std::move(camera));
+    auto scene = cue::Scene::create(std::move(descriptor));
+    if (!scene.has_value())
+        return 1;
+    config.initialScene = scene.take_value();
     config.window.clientSize = {320, 240};
     config.imgui.settingsFile.clear();
     config.frame.maxFps = 1;
@@ -154,7 +177,8 @@ int test_explicit_settings_without_persistence()
         config.frame.maxFps = 73;
         config.gpu = {2, 1};
         const cue::PerformanceSettings initial{
-            cue::frame_config_for_buffering(config.frame, config.gpu.resourceFrameCount), config.gpu, config.presentation};
+            cue::frame_config_for_buffering(config.frame, config.gpu.resourceFrameCount), config.gpu,
+            config.presentation};
         auto files = std::make_unique<cue::tests::FileSystemProbe>(*temporary.files);
         files->failedFilename = "Performance.cfg";
         files->onOpen = [&](const cue::Path &a_path)
@@ -173,13 +197,13 @@ int test_explicit_settings_without_persistence()
         auto applied = host.performance_settings();
         const auto changed = cue::performance_preset(cue::PerformancePreset::LowLatency);
         if (!applied.has_value() || *applied.try_value() != initial ||
-            !host.request_performance_settings(changed).has_value() ||
-            !advance_until(host, 0, std::chrono::seconds(3)))
+            !host.request_performance_settings(changed).has_value() || !advance_until(host, 0, std::chrono::seconds(3)))
         {
             return 5;
         }
         applied = host.performance_settings();
-        if (!applied.has_value() || *applied.try_value() != changed || !host.shutdown().has_value() || settingsReads != 0)
+        if (!applied.has_value() || *applied.try_value() != changed || !host.shutdown().has_value() ||
+            settingsReads != 0)
         {
             return 6;
         }

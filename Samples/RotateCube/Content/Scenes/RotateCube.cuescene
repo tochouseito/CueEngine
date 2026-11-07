@@ -1,0 +1,35 @@
+formatVersion=2
+sceneId=8d94c2b1-9b6a-435c-ade7-c01f473c3951
+name=RotateCube
+
+[object 9a00d731-7759-424c-9ade-fd086d624551]
+name=Cube
+active=true
+transform.position=0,0,0
+transform.rotation=0.126078606,0.256604791,-0.033782661,0.957662225
+transform.scale=1,1,1
+mesh.assetId=cue://engine/mesh/cube
+script.b5b8f0d2-cc4a-4f6f-b6a9-c180f9ceea01.typeId=sample.RotateCube
+script.b5b8f0d2-cc4a-4f6f-b6a9-c180f9ceea01.schemaVersion=1
+script.b5b8f0d2-cc4a-4f6f-b6a9-c180f9ceea01.enabled=true
+script.b5b8f0d2-cc4a-4f6f-b6a9-c180f9ceea01.property.speed=number:90
+script.b5b8f0d2-cc4a-4f6f-b6a9-c180f9ceea01.property.isRotating=boolean:true
+
+[object 35f6ad62-88f0-49dc-b067-f318c116eb61]
+name=Camera
+active=true
+transform.position=0,0,3
+transform.rotation=0,0,0,1
+transform.scale=1,1,1
+camera.projection=perspective
+camera.fovYRadians=1.04719758
+camera.near=0.100000001
+camera.far=1000
+
+[object ecf410ba-be45-461d-9e89-1f3c99d6d33f]
+name=Cube 2
+active=true
+transform.position=-1.50999999,0,0
+transform.rotation=0.342020124,0,0,0.939692616
+transform.scale=1,1.70000005,1
+mesh.assetId=cue://engine/mesh/cube

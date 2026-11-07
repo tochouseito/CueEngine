@@ -1,0 +1,27 @@
+formatVersion=2
+sceneId=@SCENE_ID@
+name=Main
+
+[object @CUBE_ID@]
+name=Cube
+active=true
+transform.position=0,0,0
+transform.rotation=0,0,0,1
+transform.scale=1,1,1
+mesh.assetId=cue://engine/mesh/cube
+script.@SCRIPT_ID@.typeId=sample.RotateCube
+script.@SCRIPT_ID@.schemaVersion=1
+script.@SCRIPT_ID@.enabled=true
+script.@SCRIPT_ID@.property.speed=number:90
+script.@SCRIPT_ID@.property.isRotating=boolean:true
+
+[object @CAMERA_ID@]
+name=Camera
+active=true
+transform.position=0,0,3
+transform.rotation=0,0,0,1
+transform.scale=1,1,1
+camera.projection=perspective
+camera.fovYRadians=1.04719758
+camera.near=0.1
+camera.far=1000

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <span>
 
 #include <d3d12.h>
+#include <wrl/client.h>
 
 #include <RHI/PipelineManager.h>
 
@@ -66,6 +68,15 @@ class DX12PipelineManager final : public IPipelineManager
                                                  std::span<const std::uint32_t> a_boundParameters) const;
     /// @brief Context と同じ Device の生成基盤か確認する
     [[nodiscard]] ID3D12Device *device() const noexcept;
+
+    /// @brief Root 定数 1 個と Indexed Draw の 24 Byte 間接描画 Signature を生成する
+    /// 返り値は呼出側が所有し、最後の GPU 参照終了まで保持する
+    [[nodiscard]] Result<Microsoft::WRL::ComPtr<ID3D12CommandSignature>> create_mesh_command_signature(
+        PipelineStateHandle a_pipeline, std::uint32_t a_drawIndexRootParameter);
+
+    /// @brief Graphics PSO の Depth 設定と実際の DSV の有無・形式を照合する
+    [[nodiscard]] Result<void> validate_depth_target(PipelineStateHandle a_pipeline,
+                                                     std::optional<GpuTextureFormat> a_depth) const;
 
   private:
     struct State;

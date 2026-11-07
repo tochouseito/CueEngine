@@ -1,0 +1,9 @@
+# RotateCube の永続設定。Path はこの File のある Directory を基準にする
+formatVersion=1
+projectId=7f533c49-d416-47ea-98c1-026822b1e6ed
+name=RotateCube
+applicationName=RotateCube
+sourceRoot=Source
+contentRoot=Content
+startupScene=Scenes/RotateCube.cuescene
+gameTarget=RotateCubeGame

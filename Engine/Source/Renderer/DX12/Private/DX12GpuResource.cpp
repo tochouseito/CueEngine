@@ -1,6 +1,7 @@
 #include <DX12/DX12GpuResource.h>
 
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -12,7 +13,7 @@ namespace cue::dx12
 namespace
 {
 /// @brief HRESULT を Native Code を持つ Error に変換する
-Error resource_error(const char* a_operation, HRESULT a_result)
+Error resource_error(const char *a_operation, HRESULT a_result)
 {
     return {ErrorCategory::PlatformFailure, a_operation, static_cast<std::int64_t>(a_result)};
 }
@@ -30,20 +31,21 @@ DXGI_FORMAT native_format(GpuTextureFormat a_format) noexcept
         return DXGI_FORMAT_R16G16B16A16_FLOAT;
     case GpuTextureFormat::R32Float:
         return DXGI_FORMAT_R32_FLOAT;
+    case GpuTextureFormat::D32Float:
+        return DXGI_FORMAT_D32_FLOAT;
     default:
         return DXGI_FORMAT_UNKNOWN;
     }
 }
 
 /// @brief 任意の Debug 名を設定し、失敗を診断へ残す
-void set_resource_name(ID3D12Resource& a_resource, std::wstring_view a_name, const wchar_t* a_fallback)
+void set_resource_name(ID3D12Resource &a_resource, std::wstring_view a_name, const wchar_t *a_fallback)
 {
     const std::wstring name = a_name.empty() ? std::wstring(a_fallback) : std::wstring(a_name);
     const HRESULT result = a_resource.SetName(name.c_str());
     if (FAILED(result))
     {
-        report_log_error("DX12GpuResource", resource_error("ID3D12Resource.SetName", result),
-                     LogLevel::Warning);
+        report_log_error("DX12GpuResource", resource_error("ID3D12Resource.SetName", result), LogLevel::Warning);
     }
 }
 } // namespace
@@ -56,12 +58,10 @@ DX12GpuResource::DX12GpuResource(CreateToken) noexcept
 /// @brief Buffer の容量と Heap 用途を検証して Native 定義を返す
 Result<D3D12_RESOURCE_DESC> DX12GpuResource::buffer_desc(GpuBufferDesc a_desc)
 {
-    if (a_desc.byteSize == 0 || (a_desc.memory != GpuMemoryUsage::Default &&
-                                 a_desc.memory != GpuMemoryUsage::Upload &&
+    if (a_desc.byteSize == 0 || (a_desc.memory != GpuMemoryUsage::Default && a_desc.memory != GpuMemoryUsage::Upload &&
                                  a_desc.memory != GpuMemoryUsage::Readback))
     {
-        return Result<D3D12_RESOURCE_DESC>::failure({ErrorCategory::InvalidArgument,
-                                                     "DX12GpuResource.buffer_desc"});
+        return Result<D3D12_RESOURCE_DESC>::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.buffer_desc"});
     }
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -79,14 +79,16 @@ Result<D3D12_RESOURCE_DESC> DX12GpuResource::texture2d_desc(GpuTexture2DDesc a_d
 {
     const DXGI_FORMAT format = native_format(a_desc.format);
     const std::uint32_t maxDimension = a_desc.width > a_desc.height ? a_desc.width : a_desc.height;
-    if (a_desc.width == 0 || a_desc.height == 0 ||
-        a_desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-        a_desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-        a_desc.mipLevels == 0 || a_desc.mipLevels > std::bit_width(maxDimension) ||
+    if (a_desc.width == 0 || a_desc.height == 0 || a_desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        a_desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || a_desc.mipLevels == 0 ||
+        a_desc.mipLevels > std::bit_width(maxDimension) ||
+        (a_desc.isDepthStencil != (a_desc.format == GpuTextureFormat::D32Float)) ||
+        (a_desc.isDepthStencil &&
+         (a_desc.isRenderTarget || a_desc.isShaderReadable || a_desc.mipLevels != 1 ||
+          !std::isfinite(a_desc.clearDepth) || a_desc.clearDepth < 0 || a_desc.clearDepth > 1)) ||
         format == DXGI_FORMAT_UNKNOWN)
     {
-        return Result<D3D12_RESOURCE_DESC>::failure({ErrorCategory::InvalidArgument,
-                                                     "DX12GpuResource.texture2d_desc"});
+        return Result<D3D12_RESOURCE_DESC>::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.texture2d_desc"});
     }
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -97,13 +99,15 @@ Result<D3D12_RESOURCE_DESC> DX12GpuResource::texture2d_desc(GpuTexture2DDesc a_d
     desc.Format = format;
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags = a_desc.isRenderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
+    desc.Flags = a_desc.isDepthStencil   ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+                 : a_desc.isRenderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+                                         : D3D12_RESOURCE_FLAG_NONE;
     return Result<D3D12_RESOURCE_DESC>::success(desc);
 }
 
 /// @brief Buffer の Heap 用途に固定された State で Committed Resource を作る
-Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(
-    ID3D12Device& a_device, GpuBufferDesc a_desc, std::wstring_view a_name)
+Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(ID3D12Device &a_device, GpuBufferDesc a_desc,
+                                                                        std::wstring_view a_name)
 {
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
     // 容量と Heap 用途を検証して Native の Buffer 定義へ変換する
@@ -136,8 +140,7 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(
     auto resource = std::make_unique<DX12GpuResource>(CreateToken{});
     // 専用 Heap と GPU Resource をまとめて生成する
     const HRESULT result = a_device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(),
-                                                             initialState, nullptr,
-                                                             IID_PPV_ARGS(&resource->m_resource));
+                                                            initialState, nullptr, IID_PPV_ARGS(&resource->m_resource));
     if (FAILED(result))
     {
         return ResourceResult::failure(resource_error("ID3D12Device.CreateCommittedResource.Buffer", result));
@@ -150,8 +153,9 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_buffer(
 }
 
 /// @brief Default Heap に Texture を作り転送前の COMMON State で公開する
-Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(
-    ID3D12Device& a_device, GpuTexture2DDesc a_desc, std::wstring_view a_name)
+Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(ID3D12Device &a_device,
+                                                                           GpuTexture2DDesc a_desc,
+                                                                           std::wstring_view a_name)
 {
     using ResourceResult = Result<std::unique_ptr<DX12GpuResource>>;
     // Texture の寸法・Format・用途を Native 定義へ変換する
@@ -171,11 +175,12 @@ Result<std::unique_ptr<DX12GpuResource>> DX12GpuResource::create_texture2d(
     {
         clearValue.Color[index] = a_desc.clearColor[index];
     }
+    if (a_desc.isDepthStencil)
+        clearValue.DepthStencil = {a_desc.clearDepth, 0};
     // 専用 Heap と GPU Resource をまとめて生成する
-    const HRESULT result = a_device.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(),
-                                                             D3D12_RESOURCE_STATE_COMMON,
-                                                             a_desc.isRenderTarget ? &clearValue : nullptr,
-                                                             IID_PPV_ARGS(&resource->m_resource));
+    const HRESULT result = a_device.CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_NONE, descResult.try_value(), D3D12_RESOURCE_STATE_COMMON,
+        (a_desc.isRenderTarget || a_desc.isDepthStencil) ? &clearValue : nullptr, IID_PPV_ARGS(&resource->m_resource));
     if (FAILED(result))
     {
         return ResourceResult::failure(resource_error("ID3D12Device.CreateCommittedResource.Texture2D", result));
@@ -205,7 +210,7 @@ std::uint64_t DX12GpuResource::buffer_size() const noexcept
 }
 
 /// @brief Native Resource を所有権を移さず返す
-ID3D12Resource* DX12GpuResource::resource() const noexcept
+ID3D12Resource *DX12GpuResource::resource() const noexcept
 {
     return m_resource.Get();
 }
@@ -217,7 +222,7 @@ bool DX12GpuResource::is_placed() const noexcept
 }
 
 /// @brief Placed Resource の Heap を非所有で返す
-ID3D12Heap* DX12GpuResource::placement_heap() const noexcept
+ID3D12Heap *DX12GpuResource::placement_heap() const noexcept
 {
     return m_placementHeap;
 }
@@ -232,8 +237,8 @@ std::uint64_t DX12GpuResource::placement_offset() const noexcept
 Result<void> DX12GpuResource::write(std::uint64_t a_offset, std::span<const std::byte> a_data)
 {
     // CPU 書込みは Upload Buffer の有効な範囲だけに許す
-    if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Upload ||
-        a_offset > m_bufferSize || a_data.size() > m_bufferSize - a_offset)
+    if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Upload || a_offset > m_bufferSize ||
+        a_data.size() > m_bufferSize - a_offset)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.write"});
     }
@@ -241,14 +246,14 @@ Result<void> DX12GpuResource::write(std::uint64_t a_offset, std::span<const std:
     {
         return Result<void>::success();
     }
-    void* mapped = nullptr;
+    void *mapped = nullptr;
     const D3D12_RANGE noRead{0, 0};
     const HRESULT result = m_resource->Map(0, &noRead, &mapped);
     if (FAILED(result))
     {
         return Result<void>::failure(resource_error("ID3D12Resource.Map.Upload", result));
     }
-    std::memcpy(static_cast<std::byte*>(mapped) + a_offset, a_data.data(), a_data.size());
+    std::memcpy(static_cast<std::byte *>(mapped) + a_offset, a_data.data(), a_data.size());
     const D3D12_RANGE written{static_cast<SIZE_T>(a_offset), static_cast<SIZE_T>(a_offset + a_data.size())};
     m_resource->Unmap(0, &written);
     return Result<void>::success();
@@ -258,8 +263,8 @@ Result<void> DX12GpuResource::write(std::uint64_t a_offset, std::span<const std:
 Result<void> DX12GpuResource::read(std::uint64_t a_offset, std::span<std::byte> a_data)
 {
     // CPU 読取りは Readback Buffer の有効な範囲だけに許す
-    if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Readback ||
-        a_offset > m_bufferSize || a_data.size() > m_bufferSize - a_offset)
+    if (m_kind != GpuResourceKind::Buffer || m_memory != GpuMemoryUsage::Readback || a_offset > m_bufferSize ||
+        a_data.size() > m_bufferSize - a_offset)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.read"});
     }
@@ -267,14 +272,14 @@ Result<void> DX12GpuResource::read(std::uint64_t a_offset, std::span<std::byte> 
     {
         return Result<void>::success();
     }
-    void* mapped = nullptr;
+    void *mapped = nullptr;
     const D3D12_RANGE readRange{static_cast<SIZE_T>(a_offset), static_cast<SIZE_T>(a_offset + a_data.size())};
     const HRESULT result = m_resource->Map(0, &readRange, &mapped);
     if (FAILED(result))
     {
         return Result<void>::failure(resource_error("ID3D12Resource.Map.Readback", result));
     }
-    std::memcpy(a_data.data(), static_cast<const std::byte*>(mapped) + a_offset, a_data.size());
+    std::memcpy(a_data.data(), static_cast<const std::byte *>(mapped) + a_offset, a_data.size());
     const D3D12_RANGE noWrite{0, 0};
     m_resource->Unmap(0, &noWrite);
     return Result<void>::success();

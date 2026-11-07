@@ -14,6 +14,9 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Debug;Development;Release",
+                "CUE_GAME_PROJECT": "",
+                "CUE_GAME_PLATFORM": "Windows",
+                "CUE_GAME_ARCHITECTURE": "x64",
                 "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
                 "VCPKG_MANIFEST_DIR": "${sourceDir}/ThirdParty",
                 "VCPKG_INSTALLED_DIR": "${sourceDir}/ThirdParty/vcpkg_installed",

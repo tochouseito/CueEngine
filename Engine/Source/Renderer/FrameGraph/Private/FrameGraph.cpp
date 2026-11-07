@@ -39,6 +39,18 @@ ICommandContext &FrameGraphContext::command_context() const noexcept
     return *m_command;
 }
 
+/// @brief 非対応 Backend では Depth Clear を記録しない
+Result<void> FrameGraphContext::clear_depth(FrameGraphResourceHandle, float)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.clear_depth.unsupported"});
+}
+
+/// @brief 非対応 Backend では複数描画先を記録しない
+Result<void> FrameGraphContext::set_render_targets(FrameGraphResourceHandle, FrameGraphResourceHandle)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_render_targets.unsupported"});
+}
+
 /// @brief 非対応の Backend では Command を変更せず失敗する
 Result<void> FrameGraphContext::set_graphics_pipeline(PipelineStateHandle)
 {

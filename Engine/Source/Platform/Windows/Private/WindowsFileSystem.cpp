@@ -61,8 +61,8 @@ bool is_valid_component(std::wstring_view a_name)
              ((base[3] >= L'1' && base[3] <= L'9') || base[3] == L'¹' || base[3] == L'²' || base[3] == L'³'));
 }
 
-/// @brief 通常 Path を検証し、長い File 名に対応する絶対 Native Path を返す
-Result<std::wstring> native_path(const Path &a_path)
+/// @brief 通常 Path を検証し、呼出時の作業 Directory を基準に完全修飾する
+Result<std::wstring> full_path(const Path &a_path)
 {
     if (a_path.is_empty())
     {
@@ -97,6 +97,18 @@ Result<std::wstring> native_path(const Path &a_path)
             file_error("GetFullPathNameW", length ? ERROR_FILENAME_EXCED_RANGE : GetLastError()));
     }
     full.resize(length);
+    return Result<std::wstring>::success(std::move(full));
+}
+
+/// @brief 完全修飾した Path へ長い File 名用の Native Prefix を付ける
+Result<std::wstring> native_path(const Path &a_path)
+{
+    auto result = full_path(a_path);
+    if (!result.has_value())
+    {
+        return result;
+    }
+    auto full = result.take_value();
     if (full.starts_with(L"\\\\"))
     {
         full = L"\\\\?\\UNC\\" + full.substr(2);
@@ -255,6 +267,18 @@ class WindowsFile final : public IFile
 class WindowsFileSystem final : public IFileSystem
 {
   public:
+    /// @brief Native Prefix を公開せず、完全修飾した UTF-8 Path を所有値で返す
+    Result<Path> absolute_path(const Path &a_path) override
+    {
+        auto full = full_path(a_path);
+        if (!full.has_value())
+        {
+            return Result<Path>::failure(*full.try_error());
+        }
+        auto text = utf16_to_utf8(*full.try_value());
+        return text.has_value() ? Path::create(*text.try_value()) : Result<Path>::failure(*text.try_error());
+    }
+
     /// @brief 配置 Path を UTF-8 に変換し、親を返す
     Result<Path> executable_directory() override
     {

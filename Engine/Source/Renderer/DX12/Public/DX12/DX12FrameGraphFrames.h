@@ -107,6 +107,10 @@ class DX12FrameGraphFrames final
     [[nodiscard]] Result<D3D12_CPU_DESCRIPTOR_HANDLE> rtv(std::uint32_t a_frameIndex,
                                                           FrameGraphResourceHandle a_handle) const;
 
+    /// @brief 枠と Depth Texture に対応する DSV を返す
+    [[nodiscard]] Result<D3D12_CPU_DESCRIPTOR_HANDLE> dsv(std::uint32_t a_frameIndex,
+                                                          FrameGraphResourceHandle a_handle) const;
+
     /// @brief 枠と論理 Handle に対応する Shader 可視 SRV を返す
     [[nodiscard]] Result<D3D12_GPU_DESCRIPTOR_HANDLE> srv(std::uint32_t a_frameIndex,
                                                           FrameGraphResourceHandle a_handle) const;
@@ -127,10 +131,12 @@ class DX12FrameGraphFrames final
     {
         DX12ViewHandle rtv;
         DX12ViewHandle srv;
+        DX12ViewHandle dsv;
         std::optional<D3D12_CPU_DESCRIPTOR_HANDLE> borrowedRtv;
         bool isImported = false;
         bool needsRtv = false;
         bool needsSrv = false;
+        bool needsDsv = false;
         bool isPrepared = false;
     };
 

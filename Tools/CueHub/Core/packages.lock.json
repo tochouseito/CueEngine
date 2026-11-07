@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "Velopack": {
+        "type": "Direct",
+        "requested": "[1.2.161, 1.2.161]",
+        "resolved": "1.2.161",
+        "contentHash": "OpHNacIumnkhaaX3ZlQ/TCR4YPOJvud2/PAOoWb6o+mIrLwIVA275I5wAgt4q/1O2VrJeDwR1qFQyqzG4lUArg=="
+      }
+    },
+    "net10.0-windows7.0/win-x64": {}
+  }
+}

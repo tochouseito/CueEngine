@@ -8,6 +8,7 @@
 
 namespace cue
 {
+class IMeshPool;
 /// @brief Renderer Backend が生成した Device と後続の GPU 資源を一意所有する契約
 ///
 /// 呼出側が所有し、利用者より長く生存させる。生成、停止、破棄は同一 Thread から直列に行う
@@ -38,6 +39,9 @@ public:
 
     /// @brief Backend が稼働する間だけ GPU ResourcePool を借用し、停止後は nullptr を返す
     [[nodiscard]] virtual IGpuResourcePool* get_resource_pool() noexcept = 0;
+
+    /// @brief 対応 Backend の静的 MeshPool を停止まで借用する。未対応 Backend は nullptr
+    [[nodiscard]] virtual IMeshPool* get_mesh_pool() noexcept { return nullptr; }
 
 protected:
     /// @brief 具体 Backend の生成経路だけが基底契約を構築する

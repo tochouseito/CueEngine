@@ -4,7 +4,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <EngineInstallation/EngineInstallation.h>
 #include <Platform/Diagnostics.h>
+#include <Platform/Windows/WindowsFileSystem.h>
 #include <WindowsHost/WindowsHost.h>
 
 /// @brief Window を表示し、終了要求まで Message を処理する
@@ -14,16 +16,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     {
         // 設定 File の導入までは起動設定を所有値で構築する
         cue::WindowsHostConfig config{{"CueEngine Windows Host", {1280, 720}}, {}, {}};
-        // Repository 内の検証 Host は全 Build 構成で開発保存先を明示する
+        // 配布物の利用 Lease を Host より長く保ち、開発 checkout は従来どおり利用する
+        auto files = cue::create_windows_file_system();
         auto root = cue::Path::create(CUE_REPOSITORY_ROOT);
-        if (!root.has_value())
+        if (!files.has_value() || !root.has_value())
         {
-            cue::report_log_error("CueWindowsHost storage", *root.try_error(), cue::LogLevel::Fatal);
+            cue::report_log_error("CueWindowsHost storage", !files.has_value() ? *files.try_error() : *root.try_error(),
+                                  cue::LogLevel::Fatal);
             return 1;
         }
-        // Repository 起動時の生成物を開発用保存先へ揃える
-        config.storage.mode = cue::StorageMode::Development;
-        config.storage.repositoryRoot = root.take_value();
+        auto installation = cue::resolve_engine_installation(**files.try_value(), *root.try_value());
+        if (!installation.has_value())
+        {
+            cue::report_log_error("CueWindowsHost installation", *installation.try_error(), cue::LogLevel::Fatal);
+            return 1;
+        }
+        auto engineLease = cue::acquire_engine_use_lease(**files.try_value(), *installation.try_value());
+        if (!engineLease.has_value())
+        {
+            cue::report_log_error("CueWindowsHost lease", *engineLease.try_error(), cue::LogLevel::Fatal);
+            return 1;
+        }
+        config.storage.mode =
+            installation.try_value()->isPackaged ? cue::StorageMode::Product : cue::StorageMode::Development;
+        config.storage.repositoryRoot = installation.try_value()->root;
+        config.storage.applicationName = "CueEngine-" + installation.try_value()->version;
         cue::WindowsHost host(std::move(config));
 
         // Window を生成して表示する
@@ -73,7 +90,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         }
         return 0;
     }
-    catch (const std::exception&)
+    catch (const std::exception &)
     {
         cue::report_log("CueWindowsHost", "unexpected C++ exception", cue::LogLevel::Fatal);
         return 2;

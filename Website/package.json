@@ -1,0 +1,21 @@
+{
+    "name": "cueengine-reference",
+    "version": "0.1.0",
+    "private": true,
+    "scripts": {
+        "start": "docusaurus start",
+        "build": "docusaurus build",
+        "serve": "docusaurus serve",
+        "test": "node --test"
+    },
+    "engines": {
+        "node": ">=24"
+    },
+    "dependencies": {
+        "@docusaurus/core": "3.10.2",
+        "@docusaurus/preset-classic": "3.10.2",
+        "@mdx-js/react": "3.1.1",
+        "react": "19.2.7",
+        "react-dom": "19.2.7"
+    }
+}

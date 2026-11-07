@@ -287,8 +287,8 @@ class WindowsHost::State final
                 return Result<void>::success();
             // 記録開始前に SwapChain の表示枠を取得する
             const auto readyStarted = clock->now();
-            auto ready = swapChain->wait_for_frame(a_stopToken, [&]()
-            { return isRenderStopped.load() || isPresentationSuspended.load(); });
+            auto ready = swapChain->wait_for_frame(
+                a_stopToken, [&]() { return isRenderStopped.load() || isPresentationSuspended.load(); });
             {
                 std::lock_guard lock(timingMutex);
                 presentationReadyWaitTimings.add(clock->now() - readyStarted);
@@ -338,8 +338,7 @@ class WindowsHost::State final
         }
         const auto presentStart = clock->now();
         auto presented = dx12Backend->get_swap_chain()->present();
-        const auto duration =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(clock->now() - presentStart);
+        const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(clock->now() - presentStart);
         {
             std::lock_guard lock(timingMutex);
             presentTimings.add(duration);
@@ -400,7 +399,8 @@ ILogger *WindowsHost::logger() const noexcept
 
 const Path *WindowsHost::log_file_path() const noexcept
 {
-    return std::this_thread::get_id() == m_ownerId && m_state && !m_state->logFile.is_empty() ? &m_state->logFile : nullptr;
+    return std::this_thread::get_id() == m_ownerId && m_state && !m_state->logFile.is_empty() ? &m_state->logFile
+                                                                                              : nullptr;
 }
 
 /// @brief 明示停止がない場合も Window を回収する
@@ -801,6 +801,19 @@ Result<bool> WindowsHost::step()
     {
         if (event.type == WindowEventType::CloseRequested)
         {
+            if (m_config.callbacks.shouldClose)
+            {
+                auto close = m_config.callbacks.shouldClose();
+                if (!close.has_value())
+                    return Result<bool>::failure(*close.try_error());
+                if (!*close.try_value())
+                {
+                    auto canceled = m_state->window->cancel_close_request();
+                    if (!canceled.has_value())
+                        return Result<bool>::failure(*canceled.try_error());
+                    continue;
+                }
+            }
             m_state->isCloseRequested = true;
             m_state->isRenderStopped.store(true);
         }
@@ -852,8 +865,8 @@ Result<bool> WindowsHost::step()
                 }
                 catch (...)
                 {
-                    return Result<void>::failure({ErrorCategory::PlatformFailure,
-                                                   "WindowsHost.performance_settings.exception"});
+                    return Result<void>::failure(
+                        {ErrorCategory::PlatformFailure, "WindowsHost.performance_settings.exception"});
                 }
             }();
             if (!applied.has_value())
@@ -920,8 +933,8 @@ Result<bool> WindowsHost::step()
         }
         bool isGpuBlocked = false;
         // GPU 未完了数の上限も Frame を採用する前に確認する
-        auto gpuReady = m_state->gpuFrames->wait_for_slot([&]() { isGpuBlocked = true; },
-                                                         [&]() { return isGpuBlocked; });
+        auto gpuReady =
+            m_state->gpuFrames->wait_for_slot([&]() { isGpuBlocked = true; }, [&]() { return isGpuBlocked; });
         if (!gpuReady.has_value())
         {
             return Result<bool>::failure(*gpuReady.try_error());
@@ -1031,7 +1044,7 @@ Result<void> WindowsHost::request_performance_settings(PerformanceSettings a_set
         return valid;
     }
     const bool rebuildsGraph = a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
-                                a_settings.presentation != m_config.presentation;
+                               a_settings.presentation != m_config.presentation;
     if (rebuildsGraph && !m_isGraphRebuildable)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings.display_factory"});
@@ -1040,7 +1053,8 @@ Result<void> WindowsHost::request_performance_settings(PerformanceSettings a_set
          a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount) &&
         m_config.callbacks.initializeRenderer && !m_config.callbacks.reconfigureRenderer)
     {
-        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings.renderer_callback"});
+        return Result<void>::failure(
+            {ErrorCategory::InvalidState, "WindowsHost.performance_settings.renderer_callback"});
     }
     m_pendingSettings = a_settings;
     m_state->runtime->request_drain();
@@ -1075,7 +1089,7 @@ Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() con
     if (!settings.has_value() || !progress.has_value())
     {
         return Result<PerformanceSettingsStatus>::failure(!settings.has_value() ? *settings.try_error()
-                                                                               : *progress.try_error());
+                                                                                : *progress.try_error());
     }
     const auto *swapChain = m_state->dx12Backend->get_swap_chain();
     return Result<PerformanceSettingsStatus>::success(
@@ -1088,7 +1102,7 @@ Result<void> WindowsHost::apply_pending_settings()
 {
     const auto settings = *m_pendingSettings;
     const bool rebuildsGraph = settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
-                                settings.presentation != m_config.presentation;
+                               settings.presentation != m_config.presentation;
     // 新規投入と Worker を止め、再構成中の参照をなくす
     auto paused = m_state->runtime->pause();
     if (!paused.has_value())

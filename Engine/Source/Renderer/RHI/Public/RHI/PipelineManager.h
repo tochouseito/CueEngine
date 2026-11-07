@@ -149,6 +149,23 @@ struct ShaderCompileDesc final
     std::vector<std::string> defines; // NAME または NAME=VALUE
 };
 
+enum class VertexElementFormat
+{
+    Float2,
+    Float3,
+    Float4,
+};
+
+/// @brief 分離頂点 Stream の一属性を記述する
+struct VertexInputElement final
+{
+    std::string semantic;
+    std::uint32_t semanticIndex = 0;
+    std::uint32_t inputSlot = 0;
+    std::uint32_t byteOffset = 0;
+    VertexElementFormat format = VertexElementFormat::Float3;
+};
+
 /// @brief 非 MSAA、単一 Color Target の Graphics Pipeline 設定
 struct GraphicsPipelineStateDesc final
 {
@@ -161,6 +178,10 @@ struct GraphicsPipelineStateDesc final
     CullMode cullMode = CullMode::None;
     bool isWireframe = false;
     bool isAlphaBlendEnabled = false;
+    std::vector<VertexInputElement> inputElements;
+    bool isDepthEnabled = false;
+    GpuTextureFormat depthFormat = GpuTextureFormat::D32Float;
+    bool isFrontCounterClockwise = false;
 };
 
 /// @brief Compute Pipeline の依存 Handle と設定

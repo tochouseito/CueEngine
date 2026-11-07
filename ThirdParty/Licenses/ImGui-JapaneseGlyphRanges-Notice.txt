@@ -1,0 +1,20 @@
+Dear ImGui v1.92.9b-docking の日本語 Glyph Range 用データ
+
+対象: imgui_draw.cpp の ImFontAtlas::GetGlyphRangesJapanese
+出自: https://github.com/ocornut/imgui/blob/v1.92.9b-docking/imgui_draw.cpp
+
+上流 Source は常用漢字・人名用漢字の Code Point 集合について、次の出典と
+Creative Commons Attribution 4.0 International (CC BY 4.0) を明記する
+
+- 文化庁の常用漢字表
+  https://www.bunka.go.jp/kokugo_nihongo/sisaku/joho/joho/kijun/naikaku/kanji/
+- 法務省の人名用漢字表
+  http://www.moj.go.jp/MINJI/minji86.html
+- License
+  https://creativecommons.org/licenses/by/4.0/legalcode
+- 上流が示す生成 Script
+  https://github.com/vaiorabbit/everyday_use_kanji
+
+元データの集合は Dear ImGui 内で累積 Offset に圧縮して格納される
+CueEngine はこの第三者 Source とデータを変更せず利用する
+Source を再配布する場合は上流の出典・License・欠損字に関するコメントも保持する

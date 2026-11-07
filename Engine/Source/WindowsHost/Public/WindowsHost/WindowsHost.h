@@ -32,7 +32,7 @@ class IBackend;
 /// 捕捉先は Host の shutdown 完了まで生存させる。Callback は再入しない
 struct WindowsHostCallbacks final
 {
-    std::function<Result<void>(Window&)> initializeWindow;
+    std::function<Result<void>(Window &)> initializeWindow;
     FrameCallback update;
     // Runtime と Graph の停止後、Backend と Window の破棄前に呼ぶ
     // 失敗時は下位 Owner を保持し、次の shutdown で再試行する
@@ -61,6 +61,9 @@ struct WindowsHostCallbacks final
     // FileSystem と Clock は Backend の停止まで借用可能。未指定なら既定 Factory を使う
     // Factory は渡された Clock を Backend の CPU 計測にも接続する
     std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *, Clock &)> createBackend;
+    // Window の Close 要求を Pump 後の Owner Thread で確認する。false は Window の要求を取り消す
+    // 未指定ならそのまま終了する。Editor の未保存確認は Native Message Handler の外で行う
+    std::function<Result<bool>()> shouldClose;
 };
 
 /// @brief 上位の起動処理から Host へ渡す起動設定の所有値

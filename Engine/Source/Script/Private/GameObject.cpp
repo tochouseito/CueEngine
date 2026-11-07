@@ -1,0 +1,120 @@
+#include <Script/GameObject.h>
+
+#include <algorithm>
+#include <cstring>
+#include <limits>
+
+namespace cue
+{
+namespace
+{
+/// @brief 呼出中の文字列だけを借用する。ABI の長さに収まらない入力は呼出前に拒否する
+CueScriptString borrow(std::string_view a_text) noexcept
+{
+    return {a_text.data(), static_cast<std::uint32_t>(a_text.size())};
+}
+} // namespace
+
+Result<void> script_result(CueScriptStatus a_status)
+{
+    if (a_status.code == 0)
+        return Result<void>::success();
+    const auto end = std::find(std::begin(a_status.message), std::end(a_status.message), '\0');
+    const auto category = a_status.code == 1   ? ErrorCategory::InvalidArgument
+                          : a_status.code == 2 ? ErrorCategory::PlatformFailure
+                                               : ErrorCategory::Fatal;
+    return Result<void>::failure({category, std::string(a_status.message, end)});
+}
+
+CueScriptStatus script_status(const Error &a_error) noexcept
+{
+    CueScriptStatus result{};
+    result.code = a_error.category == ErrorCategory::Fatal             ? 3
+                  : a_error.category == ErrorCategory::PlatformFailure ? 2
+                                                                       : 1;
+    const auto size = (std::min)(a_error.operation.size(), sizeof(result.message) - 1);
+    std::memcpy(result.message, a_error.operation.data(), size);
+    return result;
+}
+
+CueScriptStatus script_exception_status() noexcept
+{
+    CueScriptStatus status{};
+    status.code = 3;
+    constexpr char message[] = "Script.unhandled_exception";
+    std::memcpy(status.message, message, sizeof(message));
+    return status;
+}
+
+GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity) noexcept
+    : m_api(a_api), m_entity(a_entity)
+{
+}
+
+CueScriptEntity GameObject::handle() const noexcept
+{
+    return m_entity;
+}
+
+Result<bool> GameObject::is_alive() const
+{
+    if (!m_api.is_alive)
+        return Result<bool>::failure({ErrorCategory::InvalidState, "GameObject.is_alive.api"});
+    std::uint32_t alive = 0;
+    auto result = script_result(m_api.is_alive(m_api.context, m_entity, &alive));
+    if (!result.has_value())
+        return Result<bool>::failure(*result.try_error());
+    if (alive > 1)
+        return Result<bool>::failure({ErrorCategory::InvalidArgument, "GameObject.is_alive.value"});
+    return Result<bool>::success(alive != 0);
+}
+
+Result<math::floatTransform> GameObject::transform() const
+{
+    if (!m_api.get_transform)
+        return Result<math::floatTransform>::failure({ErrorCategory::InvalidState, "GameObject.transform.api"});
+    CueScriptTransform value{};
+    auto result = script_result(m_api.get_transform(m_api.context, m_entity, &value));
+    if (!result.has_value())
+        return Result<math::floatTransform>::failure(*result.try_error());
+    math::floatTransform transform{{value.position[0], value.position[1], value.position[2]},
+                                   {value.rotation[0], value.rotation[1], value.rotation[2], value.rotation[3]},
+                                   {value.scale[0], value.scale[1], value.scale[2]}};
+    auto matrix = transform.to_matrix();
+    if (!matrix.has_value())
+        return Result<math::floatTransform>::failure(*matrix.try_error());
+    return Result<math::floatTransform>::success(transform);
+}
+
+Result<void> GameObject::set_transform(const math::floatTransform &a_transform) const
+{
+    if (!m_api.set_transform)
+        return Result<void>::failure({ErrorCategory::InvalidState, "GameObject.set_transform.api"});
+    auto matrix = a_transform.to_matrix();
+    if (!matrix.has_value())
+        return Result<void>::failure(*matrix.try_error());
+    const CueScriptTransform value{
+        {a_transform.position.x, a_transform.position.y, a_transform.position.z},
+        {a_transform.rotation.x, a_transform.rotation.y, a_transform.rotation.z, a_transform.rotation.w},
+        {a_transform.scale.x, a_transform.scale.y, a_transform.scale.z}};
+    return script_result(m_api.set_transform(m_api.context, m_entity, &value));
+}
+
+Result<GameObject> GameObject::find_by_name(CueScriptSceneInstance a_instance, std::string_view a_name) const
+{
+    if (!m_api.find_by_name || a_name.empty() || a_name.size() > (std::numeric_limits<std::uint32_t>::max)())
+        return Result<GameObject>::failure({ErrorCategory::InvalidArgument, "GameObject.find_by_name.arguments"});
+    CueScriptEntity found{};
+    auto result = script_result(m_api.find_by_name(m_api.context, a_instance, borrow(a_name), &found));
+    if (!result.has_value())
+        return Result<GameObject>::failure(*result.try_error());
+    return Result<GameObject>::success(GameObject(m_api, found));
+}
+
+Result<void> GameObject::report(std::uint32_t a_severity, std::string_view a_text) const
+{
+    if (!m_api.report || a_text.size() > (std::numeric_limits<std::uint32_t>::max)())
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "GameObject.report.arguments"});
+    return script_result(m_api.report(m_api.context, a_severity, borrow(a_text)));
+}
+} // namespace cue

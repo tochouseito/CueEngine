@@ -21,7 +21,7 @@ namespace
 {
 /// @brief 外部 Texture が Graph の宣言と View の用途に一致するか調べる
 bool matches_imported_texture(const FrameGraphResourcePlan &a_planned, ID3D12Resource &a_resource, bool a_needsRtv,
-                              bool a_needsSrv) noexcept
+                              bool a_needsSrv, bool a_needsDsv) noexcept
 {
     const auto native = a_resource.GetDesc();
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -39,6 +39,9 @@ bool matches_imported_texture(const FrameGraphResourcePlan &a_planned, ID3D12Res
     case GpuTextureFormat::R32Float:
         format = DXGI_FORMAT_R32_FLOAT;
         break;
+    case GpuTextureFormat::D32Float:
+        format = DXGI_FORMAT_D32_FLOAT;
+        break;
     default:
         return false;
     }
@@ -46,7 +49,8 @@ bool matches_imported_texture(const FrameGraphResourcePlan &a_planned, ID3D12Res
            native.Height == a_planned.textureDesc.height && native.MipLevels == a_planned.textureDesc.mipLevels &&
            native.DepthOrArraySize == 1 && native.SampleDesc.Count == 1 && native.Format == format &&
            (!a_needsRtv || (native.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0) &&
-           (!a_needsSrv || (native.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0);
+           (!a_needsSrv || (native.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0) &&
+           (!a_needsDsv || (native.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0);
 }
 } // namespace
 
@@ -79,6 +83,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
     {
         std::vector<bool> needsRtv(a_plan.resources().size(), false);
         std::vector<bool> needsSrv(a_plan.resources().size(), false);
+        std::vector<bool> needsDsv(a_plan.resources().size(), false);
         // Shader から読む一時 Texture に SRV が必要かを先に集める
         for (const auto &planned : a_plan.resources())
         {
@@ -98,6 +103,8 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                 {
                     continue;
                 }
+                if (use.state == FrameGraphResourceState::DepthRead || use.state == FrameGraphResourceState::DepthWrite)
+                    needsDsv[use.resource.index] = true;
                 if (use.state == FrameGraphResourceState::RenderTarget)
                 {
                     needsRtv[use.resource.index] = true;
@@ -208,6 +215,7 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                 views.isImported = planned.isImported;
                 views.needsRtv = needsRtv[planned.handle.index];
                 views.needsSrv = needsSrv[planned.handle.index];
+                views.needsDsv = needsDsv[planned.handle.index];
                 if (planned.kind != GpuResourceKind::Texture2D || !planned.firstUse)
                 {
                     continue;
@@ -243,6 +251,14 @@ Result<std::unique_ptr<DX12FrameGraphFrames>> DX12FrameGraphFrames::create(const
                     views.rtv = rtvResult.take_value();
                 }
 
+                if (views.needsDsv)
+                {
+                    auto dsvResult =
+                        native ? viewManager.create_dsv(*native) : viewManager.reserve(DX12ViewType::DepthStencil);
+                    if (!dsvResult.has_value())
+                        return FramesResult::failure(*dsvResult.try_error());
+                    views.dsv = dsvResult.take_value();
+                }
                 if (!views.needsSrv)
                 {
                     views.isPrepared = native != nullptr;
@@ -490,7 +506,7 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
     {
         const auto &views = frame.views[planned.handle.index];
         if (!planned.isImported || planned.kind != GpuResourceKind::Texture2D || !planned.firstUse ||
-            (!views.needsRtv && !views.needsSrv))
+            (!views.needsRtv && !views.needsSrv && !views.needsDsv))
         {
             continue;
         }
@@ -501,15 +517,16 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
                                                      a_candidate.handle.index == planned.handle.index;
                                           });
         if (binding == a_external.end() || !binding->resource ||
-            !matches_imported_texture(planned, *binding->resource, views.needsRtv, views.needsSrv))
+            !matches_imported_texture(planned, *binding->resource, views.needsRtv, views.needsSrv, views.needsDsv))
         {
             return Result<void>::failure(
                 {ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.prepare_imported_views.resource"});
         }
-        for (const auto type : {DX12ViewType::RenderTarget, DX12ViewType::ShaderResource})
+        for (const auto type : {DX12ViewType::RenderTarget, DX12ViewType::ShaderResource, DX12ViewType::DepthStencil})
         {
             if ((type == DX12ViewType::RenderTarget && !views.needsRtv) ||
-                (type == DX12ViewType::ShaderResource && !views.needsSrv))
+                (type == DX12ViewType::ShaderResource && !views.needsSrv) ||
+                (type == DX12ViewType::DepthStencil && !views.needsDsv))
             {
                 continue;
             }
@@ -532,7 +549,7 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
     {
         auto &views = frame.views[planned.handle.index];
         if (!planned.isImported || planned.kind != GpuResourceKind::Texture2D || !planned.firstUse ||
-            (!views.needsRtv && !views.needsSrv))
+            (!views.needsRtv && !views.needsSrv && !views.needsDsv))
         {
             continue;
         }
@@ -558,6 +575,12 @@ Result<void> DX12FrameGraphFrames::prepare_imported_views(std::uint32_t a_frameI
                     return writeResult;
                 }
             }
+        }
+        if (views.needsDsv)
+        {
+            auto result = m_viewManager->write_texture2d(views.dsv, *native);
+            if (!result.has_value())
+                return result;
         }
         if (views.needsSrv)
         {
@@ -638,6 +661,20 @@ Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12FrameGraphFrames::rtv(std::uint32_t a_fr
     return m_viewManager->cpu_handle(views.rtv);
 }
 
+/// @brief Depth 用 Slot の所属・世代と準備状態を検証する
+Result<D3D12_CPU_DESCRIPTOR_HANDLE> DX12FrameGraphFrames::dsv(std::uint32_t a_frameIndex,
+                                                              FrameGraphResourceHandle a_handle) const
+{
+    if (!owns(a_frameIndex, a_handle))
+        return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::failure(
+            {ErrorCategory::InvalidArgument, "DX12FrameGraphFrames.dsv"});
+    const auto &views = m_frames[a_frameIndex].views[a_handle.index];
+    if (!views.needsDsv || (views.isImported && !views.isPrepared))
+        return Result<D3D12_CPU_DESCRIPTOR_HANDLE>::failure(
+            {ErrorCategory::InvalidState, "DX12FrameGraphFrames.dsv.unprepared"});
+    return m_viewManager->cpu_handle(views.dsv);
+}
+
 /// @brief 論理 Handle に対応する SRV Slot の世代を検証する
 Result<D3D12_GPU_DESCRIPTOR_HANDLE> DX12FrameGraphFrames::srv(std::uint32_t a_frameIndex,
                                                               FrameGraphResourceHandle a_handle) const
@@ -700,6 +737,13 @@ Result<void> DX12FrameGraphFrames::shutdown()
     {
         for (auto &views : frame.views)
         {
+            if (views.dsv.is_valid())
+            {
+                auto result = m_viewManager->release(views.dsv);
+                if (!result.has_value())
+                    return result;
+                views.dsv = {};
+            }
             if (views.rtv.is_valid())
             {
                 // 割り当てた RTV Slot を ViewManager へ返却する

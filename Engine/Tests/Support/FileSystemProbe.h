@@ -15,6 +15,13 @@ struct FileSystemProbe : public IFileSystem
     explicit FileSystemProbe(IFileSystem &a_files) : files(a_files)
     {
     }
+    /// @brief 絶対化の失敗を注入し、呼出回数を観測する
+    Result<Path> absolute_path(const Path &a_path) override
+    {
+        ++absoluteCount;
+        return failDirectory ? Result<Path>::failure({ErrorCategory::PlatformFailure, "Probe.absolute_path"})
+                             : files.absolute_path(a_path);
+    }
     /// @brief 配置 Path の取得失敗を注入できる
     Result<Path> executable_directory() override
     {
@@ -86,5 +93,6 @@ struct FileSystemProbe : public IFileSystem
     std::string failedFilename;
     std::function<void(const Path &)> onOpen;
     unsigned saveCount = 0;
+    unsigned absoluteCount = 0;
 };
 } // namespace cue::tests

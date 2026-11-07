@@ -1,0 +1,20 @@
+include_guard(GLOBAL)
+
+# Project と配布情報が同じ最大長と SemVer の識別子規則を利用する
+function(cue_validate_engine_version a_version)
+    string(LENGTH "${a_version}" taskLength)
+    if(taskLength GREATER 128 OR NOT "${a_version}" MATCHES
+       "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$")
+        message(FATAL_ERROR "Cue engineVersion is invalid: ${a_version}")
+    endif()
+    set(taskPrerelease "${CMAKE_MATCH_4}")
+    if(NOT taskPrerelease STREQUAL "")
+        string(SUBSTRING "${taskPrerelease}" 1 -1 taskPrerelease)
+        string(REPLACE "." ";" taskIdentifiers "${taskPrerelease}")
+        foreach(taskIdentifier IN LISTS taskIdentifiers)
+            if(taskIdentifier MATCHES "^0[0-9]+$")
+                message(FATAL_ERROR "Cue engineVersion has a leading-zero prerelease identifier")
+            endif()
+        endforeach()
+    endif()
+endfunction()

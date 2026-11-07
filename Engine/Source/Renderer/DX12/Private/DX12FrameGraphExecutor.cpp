@@ -76,6 +76,8 @@ bool matches_format(GpuTextureFormat a_format, DXGI_FORMAT a_native) noexcept
         return a_native == DXGI_FORMAT_R16G16B16A16_FLOAT;
     case GpuTextureFormat::R32Float:
         return a_native == DXGI_FORMAT_R32_FLOAT;
+    case GpuTextureFormat::D32Float:
+        return a_native == DXGI_FORMAT_D32_FLOAT;
     default:
         return false;
     }

@@ -1,6 +1,7 @@
 #include <DX12/DX12FrameGraphContext.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <new>
 
@@ -80,9 +81,65 @@ Result<void> DX12FrameGraphContext::set_render_target(FrameGraphResourceHandle a
         return Result<void>::failure(
             {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.set_render_target.format"});
     }
+    if (m_pipeline.is_valid())
+    {
+        auto depth = m_pipelines->validate_depth_target(m_pipeline, std::nullopt);
+        if (!depth.has_value())
+            return depth;
+    }
     const auto rtv = *rtvResult.try_value();
+    m_depthFormat.reset();
     m_targetFormat = targetFormat;
     command_list().OMSetRenderTargets(1, &rtv, false, nullptr);
+    return Result<void>::success();
+}
+
+/// @brief DepthWrite の宣言と最適化 Clear 値を照合して Clear する
+Result<void> DX12FrameGraphContext::clear_depth(FrameGraphResourceHandle a_depth, float a_value)
+{
+    if (!allows(a_depth, FrameGraphAccess::Write, FrameGraphResourceState::DepthWrite) ||
+        a_depth.index >= m_plan->resources().size() || !resource(a_depth) || m_command->type() != QueueType::Graphics ||
+        m_command->state() != CommandState::Recording || !std::isfinite(a_value) || a_value < 0 || a_value > 1 ||
+        m_plan->resources()[a_depth.index].textureDesc.clearDepth != a_value)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.clear_depth"});
+    auto dsv = m_frames->dsv(frame_index(), a_depth);
+    if (!dsv.has_value())
+        return Result<void>::failure(*dsv.try_error());
+    command_list().ClearDepthStencilView(*dsv.try_value(), D3D12_CLEAR_FLAG_DEPTH, a_value, 0, 0, nullptr);
+    return Result<void>::success();
+}
+
+/// @brief 記録前に両描画先の宣言と寸法を検証して Bind する
+Result<void> DX12FrameGraphContext::set_render_targets(FrameGraphResourceHandle a_color,
+                                                       FrameGraphResourceHandle a_depth)
+{
+    if (!allows(a_depth, FrameGraphAccess::Write, FrameGraphResourceState::DepthWrite) || !resource(a_depth) ||
+        !resource(a_color) || resource(a_depth)->GetDesc().Width != resource(a_color)->GetDesc().Width ||
+        resource(a_depth)->GetDesc().Height != resource(a_color)->GetDesc().Height)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.set_render_targets"});
+    auto dsv = m_frames->dsv(frame_index(), a_depth);
+    if (!dsv.has_value())
+        return Result<void>::failure(*dsv.try_error());
+    auto rtv = m_frames->rtv(frame_index(), a_color);
+    if (!rtv.has_value())
+        return Result<void>::failure(*rtv.try_error());
+    if (!allows(a_color, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget) ||
+        m_command->type() != QueueType::Graphics || m_command->state() != CommandState::Recording)
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.set_render_targets.color"});
+    const auto targetFormat = m_plan->resources()[a_color.index].textureDesc.format;
+    if (m_pipelineFormat && *m_pipelineFormat != targetFormat)
+        return Result<void>::failure(
+            {ErrorCategory::InvalidArgument, "DX12FrameGraphContext.set_render_targets.format"});
+    const auto depthFormat = m_plan->resources()[a_depth.index].textureDesc.format;
+    if (m_pipeline.is_valid())
+    {
+        auto compatible = m_pipelines->validate_depth_target(m_pipeline, depthFormat);
+        if (!compatible.has_value())
+            return compatible;
+    }
+    m_targetFormat = targetFormat;
+    m_depthFormat = depthFormat;
+    command_list().OMSetRenderTargets(1, rtv.try_value(), false, dsv.try_value());
     return Result<void>::success();
 }
 
@@ -142,6 +199,7 @@ Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_
     m_pipeline = a_pipeline;
     m_pipelineFormat = result.take_value();
     m_targetFormat.reset();
+    m_depthFormat.reset();
     m_boundParameters.clear();
     m_isComputeBound = false;
     return Result<void>::success();
@@ -159,6 +217,7 @@ Result<void> DX12FrameGraphContext::set_compute_pipeline(PipelineStateHandle a_p
     m_pipeline = a_pipeline;
     m_pipelineFormat.reset();
     m_targetFormat.reset();
+    m_depthFormat.reset();
     m_boundParameters.clear();
     m_isComputeBound = true;
     return Result<void>::success();
@@ -192,6 +251,9 @@ Result<void> DX12FrameGraphContext::draw_instanced(std::uint32_t a_vertexCount, 
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.draw"});
     }
+    auto depth = m_pipelines->validate_depth_target(m_pipeline, m_depthFormat);
+    if (!depth.has_value())
+        return depth;
     // Draw 前に必要な Root Binding の設定漏れを検出する
     auto validation = m_pipelines->validate_bindings(m_pipeline, m_boundParameters);
     if (!validation.has_value())
@@ -273,6 +335,7 @@ Result<void> DX12FrameGraphContext::record_external_graphics(
         m_pipeline = {};
         m_pipelineFormat.reset();
         m_targetFormat.reset();
+        m_depthFormat.reset();
         m_boundParameters.clear();
         m_isComputeBound = false;
         m_hasViewport = false;
@@ -300,6 +363,8 @@ Result<void> DX12FrameGraphContext::validate_external_graphics(GpuTextureFormat 
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.external_graphics"});
     }
+    if (m_pipeline.is_valid())
+        return m_pipelines->validate_depth_target(m_pipeline, m_depthFormat);
     return Result<void>::success();
 }
 

@@ -24,6 +24,7 @@ class DX12DescriptorAllocator;
 class DX12SwapChain;
 class DX12ViewManager;
 class DX12PipelineManager;
+class DX12MeshPool;
 struct DX12SwapChainConfig;
 struct DX12DescriptorHeapState;
 
@@ -103,6 +104,9 @@ public:
   /// @brief 稼働中だけ ResourcePool を借用させる
   [[nodiscard]] IGpuResourcePool *get_resource_pool() noexcept override;
 
+  /// @brief Backend が所有する MeshPool を停止まで借用する
+  [[nodiscard]] IMeshPool *get_mesh_pool() noexcept override;
+
   /// @brief 稼働中だけ指定用途の DescriptorAllocator を借用させる
   ///
   /// 停止後の再取得は nullptr。取得済み Pointer は同じ Backend の Queue または Command Lease が残る間だけ有効
@@ -139,6 +143,8 @@ private:
     std::unique_ptr<DX12QueuePool> m_queuePool;
     std::unique_ptr<DX12CommandPool> m_commandPool;
     std::unique_ptr<DX12GpuResourcePool> m_resourcePool;
+    // Command / Queue を使う静的 Mesh の転送と遅延破棄を所有する
+    std::unique_ptr<DX12MeshPool> m_meshPool;
     // 資源生成に使う Device と各 Manager の非所有参照を束ねる
     std::optional<DX12ResourceContext> m_resourceContext;
     // GPU 実行に使う CommandPool と QueuePool の非所有参照を束ねる

@@ -1,7 +1,18 @@
 # 公式配布 Archive の版と Hash を固定し、NuGet restore なしで PIX Event API を利用する
 set(CUE_PIX_VERSION "1.0.240308001")
 set(CUE_PIX_SHA256 "726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4")
-set(CUE_PIX_ARCHIVE "${CMAKE_BINARY_DIR}/ThirdParty/WinPixEventRuntime-${CUE_PIX_VERSION}.zip")
+set(CUE_PIX_ARCHIVE "" CACHE FILEPATH "Verified PIX archive override")
+if(CUE_PIX_ARCHIVE STREQUAL "")
+    # 配布 SDK の固定 Archive は Source を書き換えず、Project の生成 Tree に展開する
+    set(taskPackagedPix "${PROJECT_SOURCE_DIR}/ThirdParty/Packages/WinPixEventRuntime-${CUE_PIX_VERSION}.zip")
+    if(EXISTS "${taskPackagedPix}")
+        set(CUE_PIX_ARCHIVE "${taskPackagedPix}")
+    elseif(EXISTS "${PROJECT_SOURCE_DIR}/engine.cueengine")
+        message(FATAL_ERROR "Engine package is missing its verified PIX archive")
+    else()
+        set(CUE_PIX_ARCHIVE "${CMAKE_BINARY_DIR}/ThirdParty/WinPixEventRuntime-${CUE_PIX_VERSION}.zip")
+    endif()
+endif()
 set(CUE_PIX_DIRECTORY "${CMAKE_BINARY_DIR}/ThirdParty/WinPixEventRuntime-${CUE_PIX_VERSION}")
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/ThirdParty")
 

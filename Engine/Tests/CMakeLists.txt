@@ -5,6 +5,89 @@ endif()
 
 # Foundation と公開 Header は Platform 実装なしで単独検証する
 find_package(Threads REQUIRED)
+
+# Camera の数値契約と Scene Component を Native API なしで検証する
+add_executable(CueProjectionTests Math/ProjectionTests.cpp)
+target_link_libraries(CueProjectionTests PRIVATE Cue.Math)
+add_test(NAME Cue.Math.Projection COMMAND CueProjectionTests)
+add_executable(CueCameraTests Runtime/CameraTests.cpp)
+target_link_libraries(CueCameraTests PRIVATE Cue.Runtime)
+add_test(NAME Cue.Runtime.Camera COMMAND CueCameraTests)
+add_executable(CueSceneRenderComponentsTests Scene/SceneRenderComponentsTests.cpp)
+target_link_libraries(CueSceneRenderComponentsTests PRIVATE Cue.SceneRuntime)
+add_test(NAME Cue.Scene.RenderComponents COMMAND CueSceneRenderComponentsTests)
+add_executable(CueRenderSceneTests Renderer/RenderSceneTests.cpp)
+target_link_libraries(CueRenderSceneTests PRIVATE Cue.Renderer.SceneRender Cue.SceneRuntime Threads::Threads)
+add_test(NAME Cue.Renderer.SceneExtraction COMMAND CueRenderSceneTests)
+foreach(taskSceneRenderHeader RenderScene SceneRenderer)
+    set(taskSceneRenderHeaderSource "${CMAKE_CURRENT_BINARY_DIR}/SceneRenderHeaders/${taskSceneRenderHeader}.cpp")
+    file(GENERATE OUTPUT "${taskSceneRenderHeaderSource}" CONTENT "#include <SceneRender/${taskSceneRenderHeader}.h>\n")
+    target_sources(CueRenderSceneTests PRIVATE "${taskSceneRenderHeaderSource}")
+endforeach()
+
+# CPU Geometry と Cube は Platform / Renderer なしで検証する
+add_executable(CueMeshDataTests Assets/MeshDataTests.cpp)
+target_link_libraries(CueMeshDataTests PRIVATE Cue.Assets)
+add_test(NAME Cue.Assets.MeshData COMMAND CueMeshDataTests)
+add_executable(CueMeshHeaderCompile Assets/PublicHeaderCompile.cpp)
+target_link_libraries(CueMeshHeaderCompile PRIVATE Cue.Assets)
+add_test(NAME Cue.Assets.PublicHeaders COMMAND CueMeshHeaderCompile)
+foreach(taskAssetHeader MeshData BuiltinMesh)
+    set(taskAssetHeaderSource "${CMAKE_CURRENT_BINARY_DIR}/AssetHeaders/${taskAssetHeader}.cpp")
+    file(GENERATE OUTPUT "${taskAssetHeaderSource}" CONTENT "#include <Assets/${taskAssetHeader}.h>\n")
+    target_sources(CueMeshHeaderCompile PRIVATE "${taskAssetHeaderSource}")
+endforeach()
+
+# Scene 定義は Runtime 非依存、実体化は別の接続 Target で検証する
+add_executable(CueSceneTests Scene/SceneTests.cpp)
+target_link_libraries(CueSceneTests PRIVATE Cue.Scene)
+add_test(NAME Cue.Scene.Core COMMAND CueSceneTests)
+add_executable(CueSceneHeaderCompile Scene/PublicHeaderCompile.cpp)
+target_link_libraries(CueSceneHeaderCompile PRIVATE Cue.Scene)
+add_test(NAME Cue.Scene.PublicHeaders COMMAND CueSceneHeaderCompile)
+add_executable(CueSceneInstantiationTests Scene/SceneInstantiationTests.cpp)
+target_link_libraries(CueSceneInstantiationTests PRIVATE Cue.SceneRuntime Threads::Threads)
+add_test(NAME Cue.Scene.Instantiation COMMAND CueSceneInstantiationTests)
+add_executable(CueSceneCapacityTests Scene/SceneCapacityTests.cpp)
+target_link_libraries(CueSceneCapacityTests PRIVATE Cue.SceneRuntime)
+add_test(NAME Cue.Scene.InstantiationCapacity COMMAND CueSceneCapacityTests)
+
+# World の Instance・Handle・System・Transform を Window / GPU なしで検証する
+add_executable(CueWorldTests Runtime/WorldTests.cpp)
+target_link_libraries(CueWorldTests PRIVATE Cue.Runtime Threads::Threads)
+add_test(NAME Cue.Runtime.World COMMAND CueWorldTests)
+set_tests_properties(Cue.Runtime.World PROPERTIES TIMEOUT 20)
+add_executable(CueWorldHeaderCompile Runtime/WorldHeaderCompile.cpp)
+target_link_libraries(CueWorldHeaderCompile PRIVATE Cue.Runtime)
+add_test(NAME Cue.Runtime.WorldPublicHeaders COMMAND CueWorldHeaderCompile)
+add_executable(CueWorldComponentCapacityTests Runtime/WorldComponentCapacityTests.cpp)
+target_link_libraries(CueWorldComponentCapacityTests PRIVATE Cue.Runtime)
+add_test(NAME Cue.Runtime.WorldComponentCapacity COMMAND CueWorldComponentCapacityTests)
+
+# 数学型と各 Header は Native Backend なしで検証する
+add_executable(CueMathTests Math/MathTests.cpp)
+target_link_libraries(CueMathTests PRIVATE Cue.Math)
+add_test(NAME Cue.Math.Core COMMAND CueMathTests)
+
+add_executable(CueMathHeaderCompile Math/PublicHeaderCompile.cpp)
+target_link_libraries(CueMathHeaderCompile PRIVATE Cue.Math)
+add_test(NAME Cue.Math.PublicHeaders COMMAND CueMathHeaderCompile)
+# 各公開 Header を別の翻訳単位にし、Include 順の偶然による不足を検出する
+foreach(taskMathHeader Scalar VectorOperations Vector2 Vector3 Vector4 Quaternion Matrix4x4 Transform Projection Math)
+    set(taskMathHeaderSource "${CMAKE_CURRENT_BINARY_DIR}/MathHeaders/${taskMathHeader}.cpp")
+    file(GENERATE OUTPUT "${taskMathHeaderSource}" CONTENT "#include <Math/${taskMathHeader}.h>\n")
+    target_sources(CueMathHeaderCompile PRIVATE "${taskMathHeaderSource}")
+endforeach()
+
+# 旧 ECS の Entity / Pool / Pipeline / Prototype を Native Backend なしで検証する
+add_executable(CueECSHeaderCompile ECS/PublicHeaderCompile.cpp)
+target_link_libraries(CueECSHeaderCompile PRIVATE Cue.ECS)
+add_test(NAME Cue.ECS.PublicHeaders COMMAND CueECSHeaderCompile)
+add_executable(CueECSTests ECS/ECSTests.cpp ECS/RegistryPeer.cpp ECS/RegressionTests.cpp)
+target_link_libraries(CueECSTests PRIVATE Cue.ECS Threads::Threads)
+add_test(NAME Cue.ECS.LegacyParity COMMAND CueECSTests)
+set_tests_properties(Cue.ECS.LegacyParity PROPERTIES TIMEOUT 15)
+
 add_executable(CueTimingTraceTests Foundation/TimingTraceTests.cpp)
 target_link_libraries(CueTimingTraceTests PRIVATE Cue.Profiler Threads::Threads)
 add_test(NAME Cue.Foundation.TimingTrace COMMAND CueTimingTraceTests)
@@ -20,6 +103,11 @@ add_test(NAME Cue.Foundation.Result COMMAND CueFoundationResultTests)
 add_executable(CueFoundationPathTests Foundation/PathTests.cpp)
 target_link_libraries(CueFoundationPathTests PRIVATE Cue.Foundation)
 add_test(NAME Cue.Foundation.Path COMMAND CueFoundationPathTests)
+
+# Project の公開契約は Win32 / Editor / Renderer なしで Compile する
+add_executable(CueProjectHeaderCompile Project/PublicHeaderCompile.cpp)
+target_link_libraries(CueProjectHeaderCompile PRIVATE Cue.Project)
+add_test(NAME Cue.Project.PublicHeaders COMMAND CueProjectHeaderCompile)
 
 # 計測分布の p95、固定容量、Overflow と入れ子 Guard を確認する
 add_executable(CueFoundationTimingTests Foundation/TimingSamplesTests.cpp)
@@ -43,6 +131,28 @@ target_link_libraries(CueLoggingHeaderCompile PRIVATE Cue.Logging)
 add_test(NAME Cue.Logging.PublicHeaders COMMAND CueLoggingHeaderCompile)
 
 if(WIN32)
+    add_executable(CueSceneFileTests Scene/SceneFileTests.cpp)
+    add_executable(CueDX12DepthTests Renderer/DX12DepthTests.cpp)
+    target_link_libraries(CueDX12DepthTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.Depth COMMAND CueDX12DepthTests)
+    set_tests_properties(Cue.Renderer.DX12.Depth PROPERTIES TIMEOUT 20)
+    add_executable(CueDX12SceneRendererTests Renderer/DX12SceneRendererTests.cpp)
+    target_link_libraries(CueDX12SceneRendererTests PRIVATE Cue.Renderer.DX12 Cue.Platform.Windows)
+    add_test(NAME Cue.Renderer.DX12.SceneRenderer COMMAND CueDX12SceneRendererTests)
+    set_tests_properties(Cue.Renderer.DX12.SceneRenderer PROPERTIES TIMEOUT 30)
+    # Copy Queue の実転送・Page 共有・Fence と借用に基づく遅延破棄を WARP で検証する
+    add_executable(CueDX12MeshPoolTests Renderer/DX12MeshPoolTests.cpp)
+    target_link_libraries(CueDX12MeshPoolTests PRIVATE Cue.Renderer.DX12)
+    add_test(NAME Cue.Renderer.DX12.MeshPool COMMAND CueDX12MeshPoolTests)
+    set_tests_properties(Cue.Renderer.DX12.MeshPool PROPERTIES TIMEOUT 30)
+    foreach(taskMeshHeader RHI/MeshPool DX12/DX12MeshPool)
+        string(REPLACE "/" "_" taskMeshHeaderName "${taskMeshHeader}")
+        set(taskMeshHeaderSource "${CMAKE_CURRENT_BINARY_DIR}/MeshHeaders/${taskMeshHeaderName}.cpp")
+        file(GENERATE OUTPUT "${taskMeshHeaderSource}" CONTENT "#include <${taskMeshHeader}.h>\n")
+        target_sources(CueDX12MeshPoolTests PRIVATE "${taskMeshHeaderSource}")
+    endforeach()
+    target_link_libraries(CueSceneFileTests PRIVATE Cue.Scene Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Scene.FileLoading COMMAND CueSceneFileTests)
     add_executable(CueInputLatencyTests Editor/InputLatencyTests.cpp)
     target_link_libraries(CueInputLatencyTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows imgui::imgui)
     add_test(NAME Cue.Editor.InputLatency COMMAND CueInputLatencyTests)
@@ -96,6 +206,15 @@ if(WIN32)
     target_link_libraries(CueFileSystemTests PRIVATE Cue.Platform.Windows Cue.WindowsHost Cue.Foundation.Windows)
     add_test(NAME Cue.Platform.Windows.FileSystem COMMAND CueFileSystemTests)
     set_tests_properties(Cue.Platform.Windows.FileSystem PROPERTIES TIMEOUT 15)
+
+    # Project の実 File 読み込みと起動引数の検証は GPU を作らず確認する
+    add_executable(CueProjectTests Project/ProjectTests.cpp)
+    target_link_libraries(CueProjectTests PRIVATE Cue.Project Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Project.Loading COMMAND CueProjectTests)
+    set_tests_properties(Cue.Project.Loading PROPERTIES TIMEOUT 15)
+    add_executable(CueEditorLaunchOptionsTests Editor/EditorLaunchOptionsTests.cpp)
+    target_link_libraries(CueEditorLaunchOptionsTests PRIVATE Cue.EditorHost)
+    add_test(NAME Cue.Editor.ProjectArguments COMMAND CueEditorLaunchOptionsTests)
     # 共通 Factory から DX12 Backend を生成し、Device の所有と停止を検証する
     add_executable(CueDX12BackendTests Renderer/DX12BackendTests.cpp)
     target_link_libraries(CueDX12BackendTests PRIVATE Cue.Renderer.DX12)
@@ -235,6 +354,7 @@ if(WIN32)
 
     # 製品 Window の表示、状態変更、Close を別 Process から確認する
     add_executable(CueWindowsHostProcessTests Platform/WindowsHostProcessTests.cpp)
+    target_compile_features(CueWindowsHostProcessTests PRIVATE cxx_std_20)
     target_link_libraries(CueWindowsHostProcessTests PRIVATE user32)
     add_test(NAME Cue.WindowsHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueWindowsHost>)
     add_test(NAME Cue.WindowsHost.ResizeMinimizeRestore
@@ -274,6 +394,10 @@ if(WIN32)
 
     # Editor の既定 Thread 構成と失敗時停止を実 Window で確認する
     add_executable(CueEditorHostTests Editor/EditorHostTests.cpp)
+    add_executable(CueEditorSceneTests Editor/EditorSceneTests.cpp)
+    target_link_libraries(CueEditorSceneTests PRIVATE Cue.EditorHost Cue.Renderer.DX12)
+    add_test(NAME Cue.EditorHost.Scene COMMAND CueEditorSceneTests)
+    set_tests_properties(Cue.EditorHost.Scene PROPERTIES TIMEOUT 30)
     target_link_libraries(CueEditorHostTests PRIVATE Cue.EditorHost)
     add_test(NAME Cue.EditorHost.Lifecycle COMMAND CueEditorHostTests)
     set_tests_properties(Cue.EditorHost.Lifecycle PROPERTIES TIMEOUT 30)
@@ -291,22 +415,298 @@ if(WIN32)
 
     # 共通の Process Fixture で Editor の Executable の表示と正常 Close を確認する
     add_dependencies(CueWindowsHostProcessTests CueEditorHost)
-    add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain)
+    add_test(NAME Cue.EditorHost.Process COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain
+             "${PROJECT_SOURCE_DIR}/Samples/RotateCube/RotateCube.cueproj")
     set_tests_properties(Cue.EditorHost.Process PROPERTIES TIMEOUT 15)
+    add_test(NAME Cue.EditorHost.NoProject COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain)
+    set_tests_properties(Cue.EditorHost.NoProject PROPERTIES TIMEOUT 15)
     # GPU Resize の成否と区別し、Worker 表示中の Window 状態変更と終了応答を確認する
     add_test(NAME Cue.EditorHost.ResizeMinimizeRestore
-             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --resize)
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --resize
+             "${PROJECT_SOURCE_DIR}/Samples/RotateCube/RotateCube.cueproj")
     set_tests_properties(Cue.EditorHost.ResizeMinimizeRestore PROPERTIES TIMEOUT 20)
+    # 実行 File の配置先とは別の CWD から、相対 Project 引数で起動する
+    add_test(NAME Cue.EditorHost.ProjectRelative
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain "RotateCube/RotateCube.cueproj")
+    set_tests_properties(Cue.EditorHost.ProjectRelative PROPERTIES
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/Samples" TIMEOUT 15)
+    # Windows の Command Line 分割も含め、日本語・空白を含む設定 File の起動を検証する
+    set(taskProjectFixture "${CMAKE_CURRENT_BINARY_DIR}/ProjectFixtures/回転 Cube")
+    file(MAKE_DIRECTORY "${taskProjectFixture}/Source" "${taskProjectFixture}/Content")
+    # gameTarget 付き Project は Source の CMake Entry も持つ。成果物未生成でも編集は起動できる
+    configure_file("${PROJECT_SOURCE_DIR}/Samples/RotateCube/Source/CMakeLists.txt"
+                   "${taskProjectFixture}/Source/CMakeLists.txt" COPYONLY)
+    configure_file("${PROJECT_SOURCE_DIR}/Samples/RotateCube/RotateCube.cueproj"
+                   "${taskProjectFixture}/回転 Cube.cueproj" COPYONLY)
+    file(MAKE_DIRECTORY "${taskProjectFixture}/Content/Scenes")
+    configure_file("${PROJECT_SOURCE_DIR}/Samples/RotateCube/Content/Scenes/RotateCube.cuescene"
+                   "${taskProjectFixture}/Content/Scenes/RotateCube.cuescene" COPYONLY)
+    add_test(NAME Cue.EditorHost.ProjectUnicode
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --sustain
+                     "${taskProjectFixture}/回転 Cube.cueproj")
+    set_tests_properties(Cue.EditorHost.ProjectUnicode PROPERTIES TIMEOUT 15)
+    add_test(NAME Cue.EditorHost.ProjectMissingArgument
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --project-failure)
+    add_test(NAME Cue.EditorHost.ProjectMissingFile
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --project-failure
+                     "${taskProjectFixture}/Missing.cueproj")
+    # 未対応 Version も GPU 初期化前の診断と終了 Code 1 で処理する
+    file(READ "${PROJECT_SOURCE_DIR}/Samples/RotateCube/RotateCube.cueproj" taskProjectDescriptor)
+    string(REPLACE "formatVersion=1" "formatVersion=2" taskUnsupportedProject "${taskProjectDescriptor}")
+    file(WRITE "${taskProjectFixture}/Unsupported.cueproj" "${taskUnsupportedProject}")
+    add_test(NAME Cue.EditorHost.ProjectUnsupportedVersion
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --project-failure
+                     "${taskProjectFixture}/Unsupported.cueproj")
+    set_tests_properties(Cue.EditorHost.ProjectMissingArgument Cue.EditorHost.ProjectMissingFile
+                         Cue.EditorHost.ProjectUnsupportedVersion PROPERTIES TIMEOUT 15)
+    # Project の配置は正しくても、Scene 本文が不正なら表示基盤の生成前に拒否する
+    file(READ "${PROJECT_SOURCE_DIR}/Samples/RotateCube/Content/Scenes/RotateCube.cuescene" taskSceneDescriptor)
+    string(REGEX REPLACE "formatVersion=[0-9]+" "formatVersion=3" taskBadScene "${taskSceneDescriptor}")
+    file(WRITE "${taskProjectFixture}/Content/Scenes/Unsupported.cuescene" "${taskBadScene}")
+    string(REPLACE "RotateCube.cuescene" "Unsupported.cuescene" taskBadSceneProject "${taskProjectDescriptor}")
+    file(WRITE "${taskProjectFixture}/UnsupportedScene.cueproj" "${taskBadSceneProject}")
+    add_test(NAME Cue.EditorHost.SceneUnsupportedVersion
+             COMMAND CueWindowsHostProcessTests $<TARGET_FILE:CueEditorHost> --project-failure
+                     "${taskProjectFixture}/UnsupportedScene.cueproj")
+    set_tests_properties(Cue.EditorHost.SceneUnsupportedVersion PROPERTIES TIMEOUT 15)
 endif()
 
 if(CUE_BUILD_PERFORMANCE_TOOLS)
     add_subdirectory(Performance)
 endif()
 
+# Script の保存・SDK・実行を分け、Native Game Code の失敗を World / Editor と混同しない
+add_executable(CueScriptSdkTests Script/ScriptSdkTests.cpp)
+target_link_libraries(CueScriptSdkTests PRIVATE Cue.Script)
+add_test(NAME Cue.Script.Sdk COMMAND CueScriptSdkTests)
+
+add_executable(CueScriptRuntimeTests Script/ScriptRuntimeTests.cpp)
+target_link_libraries(CueScriptRuntimeTests PRIVATE Cue.ScriptRuntime Cue.SceneRuntime Threads::Threads)
+add_test(NAME Cue.Script.Runtime COMMAND CueScriptRuntimeTests)
+
+add_executable(CueSceneScriptTests Scene/SceneScriptTests.cpp)
+target_link_libraries(CueSceneScriptTests PRIVATE Cue.Scene)
+add_test(NAME Cue.Scene.Script COMMAND CueSceneScriptTests)
+
+add_executable(CueEditorScriptTests Editor/EditorScriptTests.cpp)
+target_link_libraries(CueEditorScriptTests PRIVATE Cue.Editor Threads::Threads)
+add_test(NAME Cue.Editor.Script COMMAND CueEditorScriptTests)
+
+if(WIN32)
+    add_executable(CueProjectBuildContractTests Project/ProjectBuildContractTests.cpp)
+    target_link_libraries(CueProjectBuildContractTests PRIVATE Cue.Project Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Project.BuildContract COMMAND CueProjectBuildContractTests)
+    add_executable(CueGameBuildArtifactTests Project/GameBuildArtifactTests.cpp)
+    target_link_libraries(CueGameBuildArtifactTests PRIVATE Cue.ProjectBuild Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Project.GameBuildArtifacts COMMAND CueGameBuildArtifactTests)
+
+    # Build 対象の選択と、製品・Play 共通の実行契約を独立して確認する
+    add_executable(CueGameBuildTargetTests Project/GameBuildTargetTests.cpp)
+    target_link_libraries(CueGameBuildTargetTests PRIVATE Cue.ProjectBuild)
+    add_test(NAME Cue.Project.GameBuildTarget COMMAND CueGameBuildTargetTests)
+    add_executable(CueEditorBuildUiTests Editor/EditorBuildUiTests.cpp)
+    target_link_libraries(CueEditorBuildUiTests PRIVATE Cue.Editor.Ui imgui::imgui)
+    add_test(NAME Cue.Editor.BuildUi COMMAND CueEditorBuildUiTests)
+    add_executable(CueEditorGameBuildTests EditorHost/EditorGameBuildTests.cpp)
+    target_link_libraries(CueEditorGameBuildTests PRIVATE
+        Cue.EditorHost Cue.Renderer.DX12 Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.GameBuild COMMAND CueEditorGameBuildTests)
+    set_tests_properties(Cue.Editor.GameBuild PROPERTIES TIMEOUT 30)
+    cue_copy_shader_runtime(CueEditorGameBuildTests)
+    # Window と GPU を維持する Project 再選択の所有権と失敗時保全を実 WARP で確認する
+    add_executable(CueEditorProjectSwitchTests EditorHost/EditorProjectSwitchTests.cpp)
+    target_link_libraries(CueEditorProjectSwitchTests PRIVATE
+        Cue.EditorHost Cue.Renderer.DX12 Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.ProjectSwitch COMMAND CueEditorProjectSwitchTests)
+    set_tests_properties(Cue.Editor.ProjectSwitch PROPERTIES TIMEOUT 60)
+    cue_copy_shader_runtime(CueEditorProjectSwitchTests)
+    add_executable(CueGameBuildServiceFixture WIN32 Project/GameBuildServiceFixture.cpp)
+    target_link_libraries(CueGameBuildServiceFixture PRIVATE shell32)
+    target_compile_features(CueGameBuildServiceFixture PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(CueGameBuildServiceFixture PRIVATE /utf-8)
+    endif()
+    add_executable(CueGameBuildServiceTests Project/GameBuildServiceTests.cpp)
+    target_link_libraries(CueGameBuildServiceTests PRIVATE
+        Cue.ProjectBuild.Windows Cue.Platform.Windows Cue.Foundation.Windows)
+    add_dependencies(CueGameBuildServiceTests CueGameBuildServiceFixture)
+    add_test(NAME Cue.Project.GameBuildService COMMAND CueGameBuildServiceTests $<TARGET_FILE:CueGameBuildServiceFixture>)
+    set_tests_properties(Cue.Project.GameBuildService PROPERTIES TIMEOUT 45)
+    add_executable(CueScriptSourceTests EditorIde/ScriptSourceTests.cpp)
+    target_link_libraries(CueScriptSourceTests PRIVATE
+        Cue.EditorIde Cue.Project Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.EditorIde.ScriptSource COMMAND CueScriptSourceTests)
+    add_executable(CueIdeBridgeFixture WIN32 EditorIde/IdeBridgeFixture.cpp)
+    target_link_libraries(CueIdeBridgeFixture PRIVATE shell32)
+    target_compile_features(CueIdeBridgeFixture PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(CueIdeBridgeFixture PRIVATE /utf-8)
+    endif()
+    add_executable(CueWindowsIdeServiceTests EditorIde/WindowsIdeServiceTests.cpp)
+    target_link_libraries(CueWindowsIdeServiceTests PRIVATE
+        Cue.EditorIde.Windows Cue.Platform.Windows Cue.Foundation.Windows)
+    add_dependencies(CueWindowsIdeServiceTests CueIdeBridgeFixture Cue.VisualStudioBridge)
+    add_test(NAME Cue.EditorIde.WindowsService COMMAND CueWindowsIdeServiceTests $<TARGET_FILE:CueIdeBridgeFixture>)
+    set_tests_properties(Cue.EditorIde.WindowsService PROPERTIES TIMEOUT 15)
+    get_property(taskVisualStudioBridge GLOBAL PROPERTY CUE_VISUAL_STUDIO_BRIDGE_EXE)
+    add_test(NAME Cue.EditorIde.BridgeInvalidArguments COMMAND "${taskVisualStudioBridge}" --invalid)
+    set_tests_properties(Cue.EditorIde.BridgeInvalidArguments PROPERTIES WILL_FAIL TRUE TIMEOUT 10)
+    add_executable(CueEditorScriptControllerTests EditorHost/EditorScriptControllerTests.cpp)
+    target_include_directories(CueEditorScriptControllerTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
+    target_link_libraries(CueEditorScriptControllerTests PRIVATE Cue.EditorHost Cue.EditorIde Cue.ProjectBuild
+        Cue.ScriptPlay Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.ScriptController COMMAND CueEditorScriptControllerTests)
+    add_executable(CueGameStartupTests GameRuntime/GameStartupTests.cpp)
+    target_link_libraries(CueGameStartupTests PRIVATE Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Runtime.GameStartup COMMAND CueGameStartupTests)
+    add_executable(CueGameSessionTests Runtime/GameSessionTests.cpp)
+    target_link_libraries(CueGameSessionTests PRIVATE Cue.GameRuntime Threads::Threads)
+    add_test(NAME Cue.Runtime.GameSession COMMAND CueGameSessionTests)
+
+    get_property(taskConfiguredGame GLOBAL PROPERTY CUE_CONFIGURED_GAME_TARGET)
+    get_property(taskConfiguredProject GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT)
+    get_property(taskConfiguredProjectId GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT_ID)
+    get_property(taskPlayerDirectory GLOBAL PROPERTY CUE_CONFIGURED_GAME_PLAYER_DIRECTORY)
+    if(taskConfiguredGame)
+        add_dependencies(CueGameBuildArtifactTests Cue.GameProjectBuild)
+        add_test(NAME Cue.Project.GameBuildArtifactIntegration COMMAND CueGameBuildArtifactTests
+                 "${taskConfiguredProject}" "$<TARGET_FILE:${taskConfiguredGame}>")
+        add_executable(CueEditorPlayServicesTests EditorHost/EditorPlayServicesTests.cpp)
+        target_include_directories(CueEditorPlayServicesTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
+        target_link_libraries(CueEditorPlayServicesTests PRIVATE
+            Cue.EditorHost Cue.ProjectBuild Cue.ScriptPlay Cue.Renderer.DX12
+            Cue.Platform.Windows Cue.Foundation.Windows)
+        add_dependencies(CueEditorPlayServicesTests Cue.GameProjectBuild CuePlayHost)
+        add_test(NAME Cue.Editor.PlayConfiguration COMMAND CueEditorPlayServicesTests
+                 $<TARGET_FILE:CuePlayHost> "${taskConfiguredProject}")
+        set_tests_properties(Cue.Editor.PlayConfiguration PROPERTIES TIMEOUT 30)
+        cue_copy_shader_runtime(CueEditorPlayServicesTests)
+    endif()
+    add_test(NAME Cue.Project.GameCMake COMMAND "${CMAKE_COMMAND}"
+        "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DCUE_FIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/ProjectCMakeFixtures"
+        "-DCUE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCUE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DCUE_CONFIGURATION=$<CONFIG>"
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GameProjectCMakeTests.cmake")
+    set_tests_properties(Cue.Project.GameCMake PROPERTIES TIMEOUT 90)
+    add_test(NAME Cue.Project.GamePlayerCMake COMMAND "${CMAKE_COMMAND}"
+        "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DCUE_FIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/ProjectCMakeFixtures"
+        "-DCUE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCUE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DCUE_CONFIGURATION=$<CONFIG>"
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GamePlayerCMakeTests.cmake")
+    set_tests_properties(Cue.Project.GamePlayerCMake PROPERTIES TIMEOUT 90)
+
+    # 選択 Project が Sample 以外でも Engine のテスト群を構成できるよう、Sample 固有検証だけを条件化する
+    if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed"
+       AND TARGET RotateCubeGame AND TARGET RotateCubeGame.Static)
+        if(taskPlayerDirectory AND TARGET Cue.GamePlayerPackage)
+            # 配布物だけを別 Directory へ移し、可視描画・静的登録・回転・停止を検証する
+            add_executable(CueGamePlayerProcessTests GameRuntime/GamePlayerProcessTests.cpp)
+            target_link_libraries(CueGamePlayerProcessTests PRIVATE
+                Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows user32 psapi)
+            add_dependencies(CueGamePlayerProcessTests Cue.GamePlayerPackage)
+            add_test(NAME Cue.GamePlayer.Relocated COMMAND CueGamePlayerProcessTests "${taskPlayerDirectory}")
+            set_tests_properties(Cue.GamePlayer.Relocated PROPERTIES TIMEOUT 40)
+        endif()
+        add_executable(CueScriptModuleLoadingTests Script/ScriptModuleLoadingTests.cpp)
+        target_link_libraries(CueScriptModuleLoadingTests PRIVATE Cue.ScriptRuntime Cue.SceneRuntime RotateCubeGame.Static)
+        add_dependencies(CueScriptModuleLoadingTests RotateCubeGame)
+        add_test(NAME Cue.Script.ModuleLoading COMMAND CueScriptModuleLoadingTests $<TARGET_FILE:RotateCubeGame>)
+    endif()
+    add_executable(CueEditorScriptUiTests Editor/EditorScriptUiTests.cpp)
+    target_link_libraries(CueEditorScriptUiTests PRIVATE Cue.Editor.Ui imgui::imgui)
+    add_test(NAME Cue.Editor.ScriptUi COMMAND CueEditorScriptUiTests)
+    # Native Crash / Hang を Test Process へ持ち込まず、所有 Job の回収と再 Play を検証する
+    add_library(CuePlayFailureGame SHARED Script/PlayFailureGame.cpp)
+    target_link_libraries(CuePlayFailureGame PRIVATE Cue.Script)
+    set_target_properties(CuePlayFailureGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+    if(MSVC)
+        target_compile_options(CuePlayFailureGame PRIVATE /utf-8)
+    endif()
+    add_executable(CuePlayProtocolFixture WIN32 Script/PlayProtocolFixture.cpp)
+    target_link_libraries(CuePlayProtocolFixture PRIVATE shell32)
+    set_target_properties(CuePlayProtocolFixture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+    if(MSVC)
+        target_compile_options(CuePlayProtocolFixture PRIVATE /utf-8)
+    endif()
+    if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed" AND TARGET RotateCubeGame)
+        add_executable(CueScriptPlayTests Script/ScriptPlayTests.cpp)
+        target_link_libraries(CueScriptPlayTests PRIVATE Cue.ScriptPlay)
+        add_dependencies(CueScriptPlayTests CuePlayHost RotateCubeGame CuePlayFailureGame CuePlayProtocolFixture)
+        add_test(NAME Cue.Script.Play COMMAND CueScriptPlayTests $<TARGET_FILE:CuePlayHost>
+                 $<TARGET_FILE:RotateCubeGame> $<TARGET_FILE:CuePlayFailureGame> $<TARGET_FILE:CuePlayProtocolFixture>)
+        set_tests_properties(Cue.Script.Play PROPERTIES TIMEOUT 40)
+        add_executable(CueScriptDebugPlayTests Script/ScriptDebugPlayTests.cpp)
+        target_link_libraries(CueScriptDebugPlayTests PRIVATE Cue.ScriptPlay Cue.EditorIde.Windows
+            Cue.Platform.Windows Cue.Foundation.Windows)
+        add_dependencies(CueScriptDebugPlayTests CuePlayHost RotateCubeGame)
+        add_test(NAME Cue.Script.DebugPlay COMMAND CueScriptDebugPlayTests
+            $<TARGET_FILE:CuePlayHost> $<TARGET_FILE:RotateCubeGame>)
+        set_tests_properties(Cue.Script.DebugPlay PROPERTIES TIMEOUT 60)
+    endif()
+endif()
+
+# 編集正本・保存の失敗境界を Native UI / GPU から独立して検証する
+if(WIN32)
+    add_executable(CueEngineInstallationTests Project/EngineInstallationTests.cpp)
+    target_link_libraries(CueEngineInstallationTests PRIVATE Cue.EngineInstallation Cue.EngineVersion
+        Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.EngineInstallation COMMAND CueEngineInstallationTests)
+    add_executable(CueProjectCreatorTests ProjectTools/ProjectCreatorTests.cpp)
+    target_link_libraries(CueProjectCreatorTests PRIVATE Cue.ProjectTools Cue.Scene Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.ProjectTools.Create COMMAND CueProjectCreatorTests "${PROJECT_SOURCE_DIR}/Templates")
+    set_tests_properties(Cue.ProjectTools.Create PROPERTIES TIMEOUT 30)
+    add_test(NAME Cue.ProjectTools.CMakeVersion COMMAND "${CMAKE_COMMAND}"
+        "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DCUE_FIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/ProjectToolsCMake"
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/ProjectTools/ProjectVersionCMakeTests.cmake")
+    add_test(NAME Cue.ProjectTools.Cli COMMAND pwsh -NoProfile -File
+        "${PROJECT_SOURCE_DIR}/Engine/Tests/ProjectTools/ProjectToolCliTests.ps1"
+        -Tool "$<TARGET_FILE:CueProjectTool>" -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/ProjectToolCli")
+    set_tests_properties(Cue.ProjectTools.Cli PROPERTIES TIMEOUT 30)
+    add_test(NAME Cue.Packaging.Contracts COMMAND pwsh -NoProfile -File
+        "${PROJECT_SOURCE_DIR}/Tools/Packaging/Scripts/PackageCommonTests.ps1"
+        -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/PackageContractTests")
+    set_tests_properties(Cue.Packaging.Contracts PROPERTIES TIMEOUT 30)
+    # GitHub へ送信せず、署名検証と Release 公開の失敗境界を確認する
+    add_test(NAME Cue.Packaging.TaggedRelease COMMAND pwsh -NoProfile -File
+        "${PROJECT_SOURCE_DIR}/Tools/Packaging/Scripts/TaggedReleaseTests.ps1"
+        -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/TaggedReleaseTests")
+    set_tests_properties(Cue.Packaging.TaggedRelease PROPERTIES TIMEOUT 60)
+endif()
+
+add_executable(CueEditorApplicationTests Editor/EditorApplicationTests.cpp)
+target_link_libraries(CueEditorApplicationTests PRIVATE Cue.Editor)
+add_test(NAME Cue.Editor.Application COMMAND CueEditorApplicationTests)
+add_executable(CueSceneDocumentTests Editor/SceneDocumentTests.cpp)
+target_link_libraries(CueSceneDocumentTests PRIVATE Cue.Editor)
+add_test(NAME Cue.Editor.Document COMMAND CueSceneDocumentTests)
+add_executable(CueMathEulerTests Math/EulerTests.cpp)
+target_link_libraries(CueMathEulerTests PRIVATE Cue.Math)
+add_test(NAME Cue.Math.Euler COMMAND CueMathEulerTests)
+
+if(WIN32)
+    # Native Close の取消と Object UUID 発行を Dialog 操作なしで検証する
+    add_executable(CueEditorUiTests Editor/EditorUiTests.cpp)
+    target_link_libraries(CueEditorUiTests PRIVATE Cue.Editor.Ui imgui::imgui)
+    add_test(NAME Cue.Editor.Ui COMMAND CueEditorUiTests)
+    add_executable(CueWindowsCloseCancellationTests Platform/WindowsCloseCancellationTests.cpp)
+    target_link_libraries(CueWindowsCloseCancellationTests PRIVATE Cue.Platform.Windows)
+    add_test(NAME Cue.Platform.Windows.CloseCancellation COMMAND CueWindowsCloseCancellationTests)
+    add_executable(CueEditorWindowsServicesTests EditorHost/EditorWindowsServicesTests.cpp)
+    target_include_directories(CueEditorWindowsServicesTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
+    target_link_libraries(CueEditorWindowsServicesTests PRIVATE Cue.EditorHost Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.WindowsServices COMMAND CueEditorWindowsServicesTests)
+endif()
+
 if(WIN32)
     set(taskShaderTests CueDX12PipelineManagerTests
+        CueDX12SceneRendererTests
         CueDX12BackendTests CueDX12MainFrameGraphTests CueDX12FrameGraphFramesTests CueDX12SwapChainTests
-        CueEditorHostTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueInputLatencyTests
+        CueEditorHostTests CueEditorSceneTests CueImGuiDX12BackendTests CuePerformanceSettingsIntegrationTests CueInputLatencyTests
     )
     if(CUE_BUILD_PERFORMANCE_TOOLS)
         list(APPEND taskShaderTests CueM09FramePacingProbe CueSpikeTimingProbe)

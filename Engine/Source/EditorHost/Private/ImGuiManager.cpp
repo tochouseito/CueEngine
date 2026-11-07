@@ -719,6 +719,19 @@ Result<void> ImGuiManager::render_frame(std::uint64_t a_frame, std::stop_token a
     }
     // 公開順と同じ Frame ID の Snapshot だけを消費する
     const auto slot = a_frame % state.frameCount;
+    if (a_token.stop_requested() && (!state.snapshots[slot] || state.snapshots[slot]->frame != a_frame))
+    {
+        // Main が公開前に停止した末尾 Frame は消費数を進めず、下位の取消処理だけを実行する
+        lock.unlock();
+        try
+        {
+            return a_record(a_frame, a_token);
+        }
+        catch (...)
+        {
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "ImGuiManager.render.cancel_callback"});
+        }
+    }
     if (!state.snapshots[slot] || state.snapshots[slot]->frame != a_frame || a_frame != state.transfer.consumedFrames)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.render_frame.order"});
@@ -799,7 +812,7 @@ Result<ImGuiTransferInfo> ImGuiManager::transfer_info() const
 }
 
 /// @brief Owner の直接記録または有効な Render Scope 内から、一度だけ描画を記録する
-Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
+Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context, FrameGraphResourceHandle a_sceneSource)
 {
     TimingTraceScope traceScope("ImGui.Record");
     if (std::this_thread::get_id() != m_ownerId && g_recordingManager != this)
@@ -824,7 +837,7 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
             return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.record.duplicate"});
         }
         // Worker 経路は Main の可変 DrawData ではなく Snapshot を記録する
-        auto result = m_state->renderer->record(snapshot.draw, a_context);
+        auto result = m_state->renderer->record(snapshot.draw, a_context, a_sceneSource);
         snapshot.wasRecorded = result.has_value();
         return result;
     }
@@ -845,7 +858,7 @@ Result<void> ImGuiManager::record_draw_data(FrameGraphContext &a_context)
     {
         return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiManager.draw_data"});
     }
-    auto recorded = m_state->renderer->record(*draw, a_context);
+    auto recorded = m_state->renderer->record(*draw, a_context, a_sceneSource);
     if (recorded.has_value())
     {
         m_state->lastRecordedFrame = m_state->info.frames;

@@ -47,6 +47,12 @@ class FrameGraphContext
     /// @brief 宣言済み RenderTarget を現在の Graphics Pass の描画先に設定する
     [[nodiscard]] virtual Result<void> set_render_target(FrameGraphResourceHandle a_target) = 0;
 
+    /// @brief DepthWrite 宣言済み Texture を Clear する。非対応 Backend は失敗する
+    [[nodiscard]] virtual Result<void> clear_depth(FrameGraphResourceHandle a_depth, float a_value = 1.0f);
+    /// @brief Color と Depth の描画先を一組として設定する
+    [[nodiscard]] virtual Result<void> set_render_targets(FrameGraphResourceHandle a_color,
+                                                          FrameGraphResourceHandle a_depth);
+
     /// @brief ShaderRead と宣言した Texture の SRV を Graphics Root Table に設定する
     ///
     /// Root Signature と Pipeline は呼出 Pass が先に設定する

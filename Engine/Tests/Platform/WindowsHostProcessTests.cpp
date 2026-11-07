@@ -1,6 +1,9 @@
 
 #include <cstdio>
 #include <cwchar>
+#include <iterator>
+#include <string>
+#include <string_view>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -99,13 +102,14 @@ int exercise_window_states(HWND a_window, HANDLE a_process)
 /// @brief 製品 Host の Window 表示、状態変更、Close を確認する
 int wmain(int a_argumentCount, wchar_t* a_arguments[])
 {
-    if (a_argumentCount != 2 && a_argumentCount != 3)
+    if (a_argumentCount < 2 || a_argumentCount > 4)
     {
         return 1;
     }
-    const bool isResizeMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--resize") == 0;
-    const bool isSustainMode = a_argumentCount == 3 && std::wcscmp(a_arguments[2], L"--sustain") == 0;
-    if (a_argumentCount == 3 && !isResizeMode && !isSustainMode)
+    const bool isFailureMode = a_argumentCount >= 3 && std::wcscmp(a_arguments[2], L"--project-failure") == 0;
+    const bool isResizeMode = a_argumentCount >= 3 && std::wcscmp(a_arguments[2], L"--resize") == 0;
+    const bool isSustainMode = a_argumentCount >= 3 && std::wcscmp(a_arguments[2], L"--sustain") == 0;
+    if (a_argumentCount >= 3 && !isResizeMode && !isSustainMode && !isFailureMode)
     {
         return 1;
     }
@@ -113,7 +117,20 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(a_arguments[1], nullptr, nullptr, nullptr, FALSE, 0,
+    // Editor は起動引数で Sample を選ぶ。Quote を含まない File Path を一つの引数として渡す
+    std::wstring command = L"\"" + std::wstring(a_arguments[1]) + L"\"";
+    // 引数なし起動は通常動作とし、値のない明示 Flag の拒否を別に検証する
+    if (isFailureMode && a_argumentCount == 3)
+        command += L" --project";
+    if (a_argumentCount == 4)
+    {
+        if (std::wcschr(a_arguments[3], L'\"'))
+        {
+            return 1;
+        }
+        command += L" --project \"" + std::wstring(a_arguments[3]) + L"\"";
+    }
+    if (!CreateProcessW(a_arguments[1], command.data(), nullptr, nullptr, FALSE, 0,
                         nullptr, nullptr, &startup, &process))
     {
         return 2;
@@ -131,6 +148,26 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
     }
 
     int result = search.handle ? 0 : 3;
+    if (result == 0 && isFailureMode)
+    {
+        // Project 検証失敗は起動 Error の Dialog だけを表示し、通常の Editor Window を生成しない
+        wchar_t title[512]{};
+        if (!GetWindowTextW(search.handle, title, static_cast<int>(std::size(title))) ||
+            std::wstring_view(title) != L"CueEngine Editor - Project")
+        {
+            result = 10;
+        }
+    }
+    else if (result == 0 && a_argumentCount == 4)
+    {
+        // 設定失敗の MessageBox を Main Window の成功と誤認しない
+        wchar_t title[512]{};
+        if (!GetWindowTextW(search.handle, title, static_cast<int>(std::size(title))) ||
+            std::wstring_view(title) != L"CueEngine Editor - RotateCube")
+        {
+            result = 10;
+        }
+    }
     // ImGui の約 5 秒の自動保存と Worker の連続進行も製品 Process 上で通過させる
     if (result == 0 && isSustainMode && WaitForSingleObject(process.hProcess, 6000) != WAIT_TIMEOUT)
     {
@@ -154,7 +191,7 @@ int wmain(int a_argumentCount, wchar_t* a_arguments[])
     if (result == 0)
     {
         DWORD exitCode = 0;
-        if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != 0)
+        if (!GetExitCodeProcess(process.hProcess, &exitCode) || exitCode != (isFailureMode ? 1u : 0u))
         {
             result = 5;
         }

@@ -113,6 +113,8 @@ class IFileSystem
     IFileSystem(const IFileSystem &) = delete;
     /// @brief Service 所有権の複製を禁止する
     IFileSystem &operator=(const IFileSystem &) = delete;
+    /// @brief 呼出時の作業 Directory を基準に絶対化する。Symlink は解決せず、作業 Directory も変更しない
+    [[nodiscard]] virtual Result<Path> absolute_path(const Path &a_path) = 0;
     /// @brief 実行 File の配置 Directory を絶対 Path で返す
     [[nodiscard]] virtual Result<Path> executable_directory() = 0;
     /// @brief ユーザー単位のローカルデータ Directory を絶対 Path で返す

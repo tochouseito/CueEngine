@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <Foundation/Result.h>
+#include <FrameGraph/FrameGraphBuilder.h>
 #include <Platform/Clock.h>
 #include <Platform/Window.h>
 #include <Profiler/Profiler.h>
@@ -16,6 +17,8 @@
 
 namespace cue
 {
+// Main の UI Snapshot には Native Descriptor ではなく、この予約済み論理 Texture ID を保持する
+inline constexpr std::uint64_t k_sceneViewTextureId = 0xfffffffffffffff0ull;
 class IBackend;
 class FrameGraphContext;
 class IFileSystem;
@@ -100,7 +103,7 @@ class ImGuiManager final
     {
     };
 
-public:
+  public:
     /// @brief create 内部だけで未初期化の Owner を生成する
     explicit ImGuiManager(CreateToken) noexcept;
 
@@ -114,8 +117,8 @@ public:
     /// @brief 明示停止がない場合も Handler を解除してから Context を解放する
     ~ImGuiManager();
 
-    ImGuiManager(const ImGuiManager&) = delete;
-    ImGuiManager& operator=(const ImGuiManager&) = delete;
+    ImGuiManager(const ImGuiManager &) = delete;
+    ImGuiManager &operator=(const ImGuiManager &) = delete;
 
     /// @brief SwapChain を持つ Backend を借用し、UI 専用 Heap と公式 GPU Backend を生成する
     ///
@@ -155,7 +158,8 @@ public:
     /// 直接記録では次の UI Frame 前に提出 / 破棄する。転送時は render_frame 内で該当 Snapshot を借用する
     /// GPU 完了後に Manager を停止する
     /// 外部記録後に同じ Context で描画を続ける場合は Pipeline / Target / Viewport / Binding を再設定する
-    [[nodiscard]] Result<void> record_draw_data(FrameGraphContext &a_context);
+    [[nodiscard]] Result<void> record_draw_data(FrameGraphContext &a_context,
+                                                FrameGraphResourceHandle a_sceneSource = {});
 
     /// @brief GPU Backend の描画枠と Descriptor の所有数を Owner Thread へ返す
     [[nodiscard]] Result<ImGuiRendererInfo> renderer_info() const;
@@ -173,7 +177,7 @@ public:
     /// @brief この Context 上で UI Callback を実行し、失敗時も開いた Frame を回収する
     ///
     /// Callback からの再入は拒否する。Callback の例外も Result へ変換する
-    [[nodiscard]] Result<void> build_frame(const editorUiCallback& a_buildUi = {});
+    [[nodiscard]] Result<void> build_frame(const editorUiCallback &a_buildUi = {});
 
     /// @brief 最後に確定した Frame の所有値を返す。入力は常に ImGui へ送る
     ///
@@ -192,11 +196,11 @@ public:
     /// 複数回呼べる。設定保存失敗時も Context を解放し、Error を返す
     [[nodiscard]] Result<void> shutdown();
 
-private:
+  private:
     class State;
 
     /// @brief Owner Thread と Context の生存状態を検証する
-    [[nodiscard]] Result<void> validate(const char* a_operation) const;
+    [[nodiscard]] Result<void> validate(const char *a_operation) const;
 
     /// @brief 失敗した UI Callback が残した Frame を描画 Data にせず終了する
     void cancel_frame() noexcept;

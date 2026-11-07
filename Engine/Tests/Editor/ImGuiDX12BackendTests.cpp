@@ -526,6 +526,19 @@ int run_transfer_case(cue::dx12::AdapterSelection a_selection)
     {
         return 4;
     }
+    // Main が公開する前の取消は存在しない Snapshot を要求せず、消費順も進めない
+    std::stop_source unpublishedStop;
+    unpublishedStop.request_stop();
+    bool wasUnpublishedRecorded = true;
+    bool sawUnpublishedCancel = false;
+    auto unpublished = manager->render_frame(0, unpublishedStop.get_token(),
+        [&](std::uint64_t a_frame, std::stop_token a_token)
+        {
+            sawUnpublishedCancel = a_frame == 0 && a_token.stop_requested();
+            return cue::Result<void>::success();
+        }, &wasUnpublishedRecorded);
+    if (!unpublished.has_value() || !sawUnpublishedCancel || wasUnpublishedRecorded)
+        return 26;
 #if defined(_DEBUG)
     auto *device = dynamic_cast<cue::dx12::DX12RenderDevice *>(backend->get_render_device());
     Microsoft::WRL::ComPtr<ID3D12Device> probe = device->device();
