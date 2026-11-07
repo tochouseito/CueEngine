@@ -5,12 +5,18 @@ on:
     tags:
       - engine-v*
       - hub-v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing engine-v or hub-v tag to publish
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: cue-release-${{ github.ref }}
+  group: cue-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -27,12 +33,13 @@ jobs:
       NUGET_PACKAGES: ${{ github.workspace }}/out/nuget/packages
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
-      CUE_RELEASE_TAG: ${{ github.ref_name }}
+      CUE_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
           global-json-file: global.json
@@ -51,9 +58,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
       - name: Test Hub services
         run: |
-          ./Tools/Packaging/Scripts/PackageCommonTests.ps1 -TestRoot out/package-tests
+          pwsh -NoProfile -File Tools/Packaging/Scripts/PackageCommonTests.ps1 -TestRoot out/package-tests
           if ($LASTEXITCODE -ne 0) { throw 'Package contract tests failed' }
-          ./Tools/Packaging/Scripts/TaggedReleaseTests.ps1 -TestRoot out/tagged-release-tests
+          pwsh -NoProfile -File Tools/Packaging/Scripts/TaggedReleaseTests.ps1 -TestRoot out/tagged-release-tests
           if ($LASTEXITCODE -ne 0) { throw 'Tagged release tests failed' }
           dotnet restore Tools/CueHub.Tests/CueHub.Tests.csproj --locked-mode
           if ($LASTEXITCODE -ne 0) { throw 'Hub restore failed' }
@@ -98,7 +105,7 @@ jobs:
 
   refresh-downloads:
     needs: release
-    if: startsWith(github.ref_name, 'hub-v')
+    if: startsWith(inputs.tag || github.ref_name, 'hub-v')
     runs-on: ubuntu-latest
     permissions:
       actions: write
