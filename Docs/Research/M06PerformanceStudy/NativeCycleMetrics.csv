@@ -1,0 +1,8 @@
+case,metric,count,avg_cycles,p95_cycles,max_cycles
+next-cycles,AllocatorReset,1800,31288.225555555557,39523,72938
+next-cycles,CommandClose,1800,59568.551666666666,82639,150906
+next-cycles,CycleReadOverhead,1800,1150.7594444444444,1438,15451
+next-cycles,ExecuteLists,1800,311076.3627777778,404572,748422
+next-cycles,ListReset,1800,131254.2811111111,163481,303608
+next-cycles,PresentNative,1800,815727.385,1024724,1677572
+next-cycles,Signal,1800,30835.514444444445,40242,419303

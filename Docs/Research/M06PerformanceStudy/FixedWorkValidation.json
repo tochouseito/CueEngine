@@ -1,0 +1,807 @@
+{
+  "cpu_runs": 36,
+  "render_samples": 21600,
+  "cpu_run_checks": [
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-1-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-1-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-2-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-2-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-3-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-baseline-3-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-cache-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-cache-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-cache-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-descriptor-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-descriptor-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-descriptor-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-snapshot-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-snapshot-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-snapshot-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-waitable-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-waitable-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "Fixed",
+      "run": "new-waitable-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-descriptor-stress-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-descriptor-stress-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-descriptor-stress-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-1-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-1-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-2-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-2-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-3-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "DescriptorStress",
+      "run": "new-stress-3-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1280,
+        "height": 720,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1296,
+        "outer_height": 759
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-borderless-1-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": true,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1920,
+        "outer_height": 1080
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-borderless-2-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": true,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1920,
+        "outer_height": 1080
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-borderless-3-case.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": true,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1920,
+        "outer_height": 1080
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-1-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-1-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-2-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-2-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-3-after.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    },
+    {
+      "phase": "PresentationExact",
+      "run": "new-screen-windowed-3-before.csv",
+      "window": {
+        "title": "CueEngine Performance Study",
+        "width": 1920,
+        "height": 1080,
+        "refresh_hz": 75,
+        "borderless": false,
+        "primary_monitor": true,
+        "monitor_width": 1920,
+        "monitor_height": 1080,
+        "outer_x": 0,
+        "outer_y": 0,
+        "outer_width": 1936,
+        "outer_height": 1119
+      },
+      "render_samples": 600,
+      "status": 0,
+      "dropped": 0
+    }
+  ],
+  "pixel_checks": [
+    {
+      "build": "development",
+      "cases": 4,
+      "images_per_case": 9,
+      "checksums": [
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d804a8d30ae30b25",
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d804a8d30ae30b25",
+        "e7962c050f1fd542",
+        "f46d3c129d90ccbd"
+      ],
+      "identical": true
+    },
+    {
+      "build": "debug",
+      "cases": 4,
+      "images_per_case": 9,
+      "checksums": [
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d804a8d30ae30b25",
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d733c14a2fc9fa7b",
+        "d804a8d30ae30b25",
+        "e7962c050f1fd542",
+        "f46d3c129d90ccbd"
+      ],
+      "identical": true
+    }
+  ],
+  "micro_rows": 168,
+  "micro_checksum_equivalence": true,
+  "presentmon_runs": 9,
+  "presentmon_selected_rows": 5382,
+  "superseded_phases": [
+    "FurtherPresentationCpu",
+    "PresentationPaths/Further"
+  ],
+  "reason": "windowed height was 1061, borderless height was 1080; replaced by exact-size phases"
+}

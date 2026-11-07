@@ -1,0 +1,458 @@
+[
+    {
+        "run": "new-borderless-1-after.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9897,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-1-before.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9889,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-2-after.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9903,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-2-before.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9895,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-3-after.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9902,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-3-before.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 0,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9887,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-1-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9887,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-2-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9896,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-3-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 0,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9903,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": false,
+            "actual_tearing": false
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-tearing-1-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 2048,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9892,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": true,
+            "actual_tearing": true
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-tearing-2-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 2048,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.989,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": true,
+            "actual_tearing": true
+        }
+    },
+    {
+        "run": "new-borderless-swap-none-tearing-3-case.csv",
+        "actual": {
+            "buffers": 2,
+            "maximum_latency": 0,
+            "scaling": 1,
+            "flags": 2048,
+            "width": 1920,
+            "height": 1080
+        },
+        "render_samples": 600,
+        "wall_seconds": 11.9892,
+        "window": {
+            "title": "CueEngine Performance Study",
+            "width": 1920,
+            "height": 1080,
+            "refresh_hz": 75,
+            "borderless": true,
+            "primary_monitor": true,
+            "monitor_width": 1920,
+            "monitor_height": 1080,
+            "outer_x": 0,
+            "outer_y": 0,
+            "outer_width": 1920,
+            "outer_height": 1080
+        },
+        "frame": {
+            "workers": true,
+            "frames_in_flight": 2,
+            "max_fps": 60
+        },
+        "presentation": {
+            "buffers": 2,
+            "vsync": false,
+            "tearing": true,
+            "actual_tearing": true
+        }
+    }
+]

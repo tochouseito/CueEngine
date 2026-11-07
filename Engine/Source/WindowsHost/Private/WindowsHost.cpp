@@ -1,0 +1,1495 @@
+#include <WindowsHost/WindowsHost.h>
+
+#include <Profiler/TimingTrace.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <utility>
+#include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+#include <DX12/DX12Backend.h>
+#include <DX12/DX12CommandPool.h>
+#include <DX12/DX12MainFrameGraph.h>
+#include <DX12/DX12QueuePool.h>
+#include <DX12/DX12RenderDevice.h>
+#include <DX12/DX12SwapChain.h>
+#include <Foundation/ScopedFlag.h>
+#include <Logging/FileLogSink.h>
+#include <Logging/Logger.h>
+#include <Platform/Diagnostics.h>
+#include <Platform/WindowSystem.h>
+#include <Platform/Windows/WindowsDebugLogSink.h>
+#include <Platform/Windows/WindowsFileSystem.h>
+#include <Platform/Windows/WindowsPlatform.h>
+#include <RHI/BackendFactory.h>
+#include <RHI/GpuFrameQueue.h>
+#include <Runtime/Runtime.h>
+#include <WindowsHost/PerformanceSettings.h>
+
+namespace cue
+{
+namespace
+{
+/// @brief 起動ごとの新規 File と構成別の DebugSink を、Host の所有 Logger に組み立てる
+Result<std::unique_ptr<Logger>> create_host_logger(IFileSystem &a_files, const StoragePaths &a_paths,
+                                                   const HostLoggingConfig &a_config, Path &a_logFile)
+{
+    using loggerResult = Result<std::unique_ptr<Logger>>;
+    // 不正なログ出力レベルと出力方式を生成前に拒否する
+    if (a_config.minimumLevel > LogLevel::Fatal ||
+        (a_config.debugOutput != DebugLogOutput::Automatic && a_config.debugOutput != DebugLogOutput::Enabled &&
+         a_config.debugOutput != DebugLogOutput::Disabled))
+    {
+        return loggerResult::failure({ErrorCategory::InvalidArgument, "WindowsHost.logging.config"});
+    }
+    bool isDebugEnabled = a_config.debugOutput == DebugLogOutput::Enabled;
+#if !defined(CUE_SHIPPING)
+    isDebugEnabled = isDebugEnabled || a_config.debugOutput == DebugLogOutput::Automatic;
+#endif
+    std::vector<std::unique_ptr<ILogSink>> sinks;
+    sinks.push_back(create_windows_debug_log_sink(isDebugEnabled));
+    if (a_config.isFileEnabled)
+    {
+        // CreateNew と PID / 時刻 / 連番を合わせ、同時 Process と同じ ms の再起動でも旧ログを保全する
+        static std::atomic<std::uint64_t> sequence = 0;
+        bool wasCreated = false;
+        for (int attempt = 0; attempt < 16; ++attempt)
+        {
+            const auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
+            auto path = a_paths.logs.join("CueEngine-" + std::to_string(timestamp) + "-" +
+                                          std::to_string(GetCurrentProcessId()) + "-" +
+                                          std::to_string(sequence.fetch_add(1)) + ".log");
+            if (!path.has_value())
+            {
+                return loggerResult::failure(*path.try_error());
+            }
+            auto file = FileLogSink::create(a_files, *path.try_value());
+            if (!file.has_value())
+            {
+                const auto &error = *file.try_error();
+                // 名前の衝突だけは新しい連番で再試行する
+                if (error.nativeCode == ERROR_FILE_EXISTS || error.nativeCode == ERROR_ALREADY_EXISTS)
+                {
+                    continue;
+                }
+                return loggerResult::failure(error);
+            }
+            a_logFile = path.take_value();
+            sinks.push_back(file.take_value());
+            wasCreated = true;
+            break;
+        }
+        if (!wasCreated)
+        {
+            return loggerResult::failure({ErrorCategory::PlatformFailure, "WindowsHost.logging.filename"});
+        }
+    }
+    return Logger::create(std::move(sinks), a_config.minimumLevel);
+}
+} // namespace
+
+class WindowsHost::State final
+{
+  public:
+    /// @brief 実行資源より長く生存する Host 所有の記録先を借用する
+    explicit State(Profiler &a_profiler) : profiler(a_profiler)
+    {
+    }
+
+    Profiler &profiler;
+    // Window、Backend、UI と Worker の破棄まで時計を維持する
+    WindowsThreadServices services;
+    Clock *clock = nullptr;
+    // Backend、UI と Worker より長く生存させる
+    std::unique_ptr<IFileSystem> files;
+    StoragePaths paths;
+    // 逆順破棄でも登録解除が Logger より先、Logger の File 回収が FileSystem より先になる
+    std::unique_ptr<Logger> logger;
+    std::unique_ptr<DiagnosticRegistration> diagnosticRegistration;
+    Path logFile;
+    std::unique_ptr<WindowSystem> system;
+    std::unique_ptr<Window> window;
+    std::unique_ptr<IBackend> backend;
+    dx12::DX12Backend *dx12Backend = nullptr;
+    std::unique_ptr<dx12::DX12MainFrameGraph> graph;
+    std::unique_ptr<Runtime> runtime;
+    std::atomic<bool> isRenderStopped = false;
+    std::atomic<bool> isPresentationSuspended = false;
+    // 要求寸法と実際の表示寸法は Window を所有する Main Thread だけが操作する
+    WindowSize requestedSize{};
+    WindowSize presentationSize{};
+    bool isCloseRequested = false;
+    bool isDestroyed = false;
+    bool hasWindowInitializationStarted = false;
+    bool isSimulationPaused = false;
+    mutable std::mutex timingMutex;
+    ProfileMetric presentTimings = profiler.create_metric("Host.Present");
+    std::unique_ptr<GpuFrameQueue> gpuFrames;
+    ProfileMetric gpuQueueWaitTimings = profiler.create_metric("Host.GpuQueueWait");
+    std::uint32_t peakGpuFrames = 0;
+    std::uint32_t gpuFrameCount = 2;
+    std::uint32_t unfinishedGpuFrames = 0;
+    bool isPredictionEnabled = false;
+    ProfileMetric presentationReadyWaitTimings = profiler.create_metric("Host.PresentationReady");
+    ProfileMetric presentIntervalTimings = profiler.create_metric("Host.PresentInterval");
+    ProfileMetric displayIntervalTimings = profiler.create_metric("Host.DisplayInterval");
+    PresentationTiming presentationTiming;
+    ProfileMetric presentApiTimings = profiler.create_metric("Host.PresentApi");
+    ProfileMetric presentationStatisticsTimings = profiler.create_metric("Host.PresentationStatistics");
+    ProfileMetric admissionWaitTimings = profiler.create_metric("Host.AdmissionWait");
+    ProfileMetric mainGpuWaitTimings = profiler.create_metric("Host.MainGpuWait");
+    ProfileMetric mainPresentationWaitTimings = profiler.create_metric("Host.MainPresentationWait");
+    ProfileMetric mainResourceWaitTimings = profiler.create_metric("Host.MainResourceWait");
+    InputLatencySamples inputLatency{&profiler};
+    struct FrameInput final
+    {
+        std::vector<InputEventTiming> events;
+        std::chrono::steady_clock::time_point captured;
+        bool wasPresented = false;
+        PresentationTiming presentation;
+    };
+    // CPU Frame の投入・完了が同じ Slot への Main 書込みと Render 読取りを同期する
+    std::array<FrameInput, 8> frameInputs;
+
+    /// @brief 単一 Thread の開始可否確認を全回記録し、待たなかった理由には 0 を加える
+    struct AdmissionSample final
+    {
+        State &state;
+        std::chrono::steady_clock::time_point started = state.clock->now();
+        std::chrono::nanoseconds gpu{}, presentation{}, resources{};
+        /// @brief Pump に戻る早期 return でも未計測の待機を残さない
+        ~AdmissionSample()
+        {
+            const auto elapsed = state.clock->now() - started;
+            std::lock_guard lock(state.timingMutex);
+            state.admissionWaitTimings.add(elapsed);
+            state.mainGpuWaitTimings.add(gpu);
+            state.mainPresentationWaitTimings.add(presentation);
+            state.mainResourceWaitTimings.add(resources);
+        }
+    };
+
+    /// @brief 最古の Frame を覆う Graphics Fence の通知を待つ。Main は Message でも復帰する
+    [[nodiscard]] Result<bool> wait_for_gpu(bool a_isMain)
+    {
+        // 再利用を妨げている最古の GPU 提出の完了点を選ぶ
+        const auto *completion = gpuFrames->oldest_completion();
+        auto *queue = dynamic_cast<dx12::DX12GpuCommandQueue *>(dx12Backend->get_swap_chain()->graphics_queue());
+        if (!queue || !completion || completion->queue_identity() != queue->identity())
+        {
+            return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.gpu_wait.completion"});
+        }
+        return queue->wait_for_fence_for(completion->fence_value(), std::chrono::milliseconds(1), a_isMain);
+    }
+
+    /// @brief 最新の ClientSize を保持し、旧寸法への追加提出を停止する
+    void request_resize(WindowSize a_size)
+    {
+        requestedSize = a_size;
+        isPresentationSuspended.store(isSimulationPaused || a_size.width == 0 || a_size.height == 0 ||
+                                      a_size.width != presentationSize.width ||
+                                      a_size.height != presentationSize.height);
+    }
+
+    /// @brief 全 CPU Frame の完了後、Owner Thread でサイズ依存資源を再生成する
+    [[nodiscard]] Result<void> prepare_presentation()
+    {
+        const auto size = requestedSize;
+        // 最小化中や停止中はサイズ依存資源を生成しない
+        if (size.width == 0 || size.height == 0 || isRenderStopped.load())
+        {
+            return Result<void>::success();
+        }
+        if (size.width == presentationSize.width && size.height == presentationSize.height)
+        {
+            return Result<void>::success();
+        }
+        const auto *resources = dx12Backend->get_resource_context();
+        if (!resources || !graph)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.resize.resources"});
+        }
+        // Graph は全枠の完了を待ち、旧 External Binding と View を外してから SwapChain を更新する
+        // GPU 静止後に Graph と Back Buffer の寸法を揃える
+        auto result = graph->resize(*resources, size.width, size.height);
+        if (!result.has_value())
+        {
+            return result;
+        }
+        presentationSize = size;
+        isPresentationSuspended.store(false);
+        return Result<void>::success();
+    }
+
+    /// @brief 固定 Graph の Command を Graphics Queue に提出して表示する
+    [[nodiscard]] Result<void> render(
+        std::uint64_t a_frameIndex, std::stop_token a_stopToken, std::uint32_t a_frameCount,
+        const std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> &a_recordFrame)
+    {
+        bool wasSubmitted = false;
+        FrameCallback record = [&](std::uint64_t, std::stop_token) -> Result<void>
+        {
+            // 表示を止める Frame も上位の Scope に通し、未記録 Snapshot を回収する
+            if (a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+            {
+                return Result<void>::success();
+            }
+            const auto *execution = dx12Backend->get_execution_context();
+            auto *swapChain = dx12Backend->get_swap_chain();
+            if (!execution || !swapChain || !swapChain->graphics_queue() || !graph)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.render.resources"});
+            }
+            // 論理 Frame ID を GPU 資源の循環枠へ対応付ける
+            const auto frameSlot = static_cast<std::uint32_t>(a_frameIndex % a_frameCount);
+            const auto waitStarted = clock->now();
+            std::optional<Error> waitFailure;
+            // GPU 未完了数の上限まで空きができるのを待つ
+            auto available = gpuFrames->wait_for_slot(
+                [&]()
+                {
+                    auto waited = wait_for_gpu(false);
+                    if (!waited.has_value())
+                    {
+                        waitFailure = *waited.try_error();
+                    }
+                },
+                [&]()
+                {
+                    return waitFailure.has_value() || a_stopToken.stop_requested() || isRenderStopped.load() ||
+                           isPresentationSuspended.load();
+                });
+            {
+                std::lock_guard lock(timingMutex);
+                gpuQueueWaitTimings.add(clock->now() - waitStarted);
+                unfinishedGpuFrames = gpuFrames->pending();
+            }
+            if (waitFailure)
+            {
+                return Result<void>::failure(*waitFailure);
+            }
+            if (!available.has_value())
+                return Result<void>::failure(*available.try_error());
+            if (!*available.try_value())
+                return Result<void>::success();
+            // 記録開始前に SwapChain の表示枠を取得する
+            const auto readyStarted = clock->now();
+            auto ready = swapChain->wait_for_frame(
+                a_stopToken, [&]() { return isRenderStopped.load() || isPresentationSuspended.load(); });
+            {
+                std::lock_guard lock(timingMutex);
+                presentationReadyWaitTimings.add(clock->now() - readyStarted);
+            }
+            if (!ready.has_value())
+            {
+                return Result<void>::failure(*ready.try_error());
+            }
+            if (!*ready.try_value())
+            {
+                return Result<void>::success();
+            }
+            // 表示準備済みの枠へ Graph の Command を記録して提出する
+            auto executed = graph->execute(
+                frameSlot, *execution, [&]()
+                { return a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load(); });
+            if (!executed.has_value())
+            {
+                return Result<void>::failure(*executed.try_error());
+            }
+            wasSubmitted = *executed.try_value();
+            if (wasSubmitted)
+            {
+                // Present が省略されても、提出した GPU Frame の完了点を保持する
+                // 実際に提出した GPU 作業だけを未完了 Queue に登録する
+                auto tracked = gpuFrames->submitted(graph->submitted_completion());
+                if (!tracked.has_value())
+                    return tracked;
+                std::lock_guard lock(timingMutex);
+                peakGpuFrames = std::max(peakGpuFrames, gpuFrames->pending());
+                unfinishedGpuFrames = gpuFrames->pending();
+            }
+            return Result<void>::success();
+        };
+        auto recorded =
+            a_recordFrame ? a_recordFrame(a_frameIndex, a_stopToken, record) : record(a_frameIndex, a_stopToken);
+        if (!recorded.has_value())
+        {
+            return recorded;
+        }
+        // DXGI が Message Thread を待つ場合に備え、上位の Context 排他と Pin を残さない
+        // 記録中に最小化や Close が届いた場合も、提出済み GPU 作業の寿命を残して Present だけ止める
+        // 未提出・停止・最小化では Present まで進めない
+        if (!wasSubmitted || a_stopToken.stop_requested() || isRenderStopped.load() || isPresentationSuspended.load())
+        {
+            return Result<void>::success();
+        }
+        const auto presentStart = clock->now();
+        auto presented = dx12Backend->get_swap_chain()->present();
+        const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(clock->now() - presentStart);
+        {
+            std::lock_guard lock(timingMutex);
+            presentTimings.add(duration);
+            // 成功した Present の時刻と入力 Snapshot の対応を保存する
+            if (presented.has_value())
+            {
+                const auto timing = dx12Backend->get_swap_chain()->timing();
+                presentApiTimings.add(timing.presentReturned - timing.presentStarted);
+                presentationStatisticsTimings.add(timing.statisticsDuration);
+                auto &input = frameInputs[a_frameIndex % frameInputs.size()];
+                input.wasPresented = true;
+                input.presentation = timing;
+                if (presentationTiming.presentCount)
+                {
+                    presentIntervalTimings.add(timing.lastPresent - presentationTiming.lastPresent);
+                }
+                // 同じ統計世代で進んだ表示標本だけから表示間隔を求める
+                if (timing.hasDisplayTiming && presentationTiming.hasDisplayTiming &&
+                    timing.statisticsEpoch == presentationTiming.statisticsEpoch &&
+                    timing.displayedPresentCount > presentationTiming.displayedPresentCount &&
+                    timing.lastDisplay > presentationTiming.lastDisplay)
+                {
+                    displayIntervalTimings.add(timing.lastDisplay - presentationTiming.lastDisplay);
+                }
+                presentationTiming = timing;
+            }
+        }
+        return presented;
+    }
+};
+
+/// @brief 起動設定と構築 Thread を固定する
+WindowsHost::WindowsHost(WindowsHostConfig a_config)
+    : m_config(std::move(a_config)), m_ownerId(std::this_thread::get_id())
+{
+}
+
+/// @brief 初期化から停止まで共有する時計を Owner Thread へ借用する
+Clock *WindowsHost::clock() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state ? m_state->clock : nullptr;
+}
+
+IFileSystem *WindowsHost::file_system() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state ? m_state->files.get() : nullptr;
+}
+
+const StoragePaths *WindowsHost::storage_paths() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state && m_state->files ? &m_state->paths : nullptr;
+}
+
+ILogger *WindowsHost::logger() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state ? m_state->logger.get() : nullptr;
+}
+
+const Path *WindowsHost::log_file_path() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_state && !m_state->logFile.is_empty() ? &m_state->logFile
+                                                                                              : nullptr;
+}
+
+/// @brief 明示停止がない場合も Window を回収する
+WindowsHost::~WindowsHost()
+{
+    auto result = shutdown();
+    if (!result.has_value())
+    {
+        report_log_error("CueWindowsHost cleanup", *result.try_error(), LogLevel::Error);
+        // 借用解除が完了していない Window を暗黙破棄すると、上位 Owner の参照が失効する
+        // 明示 shutdown は再試行できるが、Destructor では安全な回収を継続できない
+        if (m_state && m_state->hasWindowInitializationStarted)
+        {
+            std::terminate();
+        }
+    }
+}
+
+/// @brief Windows の Window、Renderer Backend、Runtime を順に構築する
+Result<void> WindowsHost::initialize()
+{
+    // Win32 の Window は構築 Thread でしか操作できない
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.initialize"});
+    }
+    // WindowsHost は一度だけ初期化する。失敗時も停止済みにする
+    if (m_lifecycle != Lifecycle::Uninitialized)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.initialize"});
+    }
+
+    // 初期化の途中で失敗した場合も、部分資源を破棄して停止済みにする
+    m_lifecycle = Lifecycle::Stopped;
+
+    // FrameController の許容先行数と Flip Model の最小 BackBuffer 数を表示前に検証する
+    auto settingsResult = validate_performance_settings({m_config.frame, m_config.gpu, m_config.presentation});
+    auto simulationResult = validate_simulation_config(m_config.simulation);
+    if (!settingsResult.has_value() || !simulationResult.has_value() ||
+        (m_config.simulation.frequencyHz != 0 && !m_config.callbacks.simulationUpdate))
+    {
+        // Graph 生成前の入力失敗でも Host が受け取った Pass を残さない
+        m_config.graph = {};
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.config"});
+    }
+
+    // 部分初期化の失敗時は元の Error を返し、Cleanup の失敗は別に診断する
+    auto rollback = [this](Error a_error)
+    {
+        report_log_error("WindowsHost.initialize", a_error, LogLevel::Error);
+        auto cleanupResult = shutdown();
+        if (!cleanupResult.has_value())
+        {
+            report_log_error("CueWindowsHost cleanup", *cleanupResult.try_error(), LogLevel::Error);
+        }
+        return Result<void>::failure(std::move(a_error));
+    };
+
+    // 機能をまとめたStateを構築
+    m_profiler = std::make_unique<Profiler>();
+    m_state = std::make_unique<State>(*m_profiler);
+
+    // 入力 Window と描画 Backend より先に共通の時計を確定する
+    auto servicesResult = create_windows_thread_services();
+    if (!servicesResult.has_value())
+    {
+        return rollback(*servicesResult.try_error());
+    }
+    m_state->services = servicesResult.take_value();
+    m_state->clock = m_config.clock ? m_config.clock : m_state->services.clock.get();
+
+    // FileSystemがなければWindowsFileSystemを作る
+    auto files = m_config.fileSystem ? Result<std::unique_ptr<IFileSystem>>::success(std::move(m_config.fileSystem))
+                                     : create_windows_file_system();
+    if (!files.has_value())
+    {
+        return rollback(*files.try_error());
+    }
+    m_state->files = files.take_value();
+
+    // 保存先の決定
+    auto paths = resolve_storage_paths(*m_state->files, m_config.storage);
+    if (!paths.has_value())
+    {
+        return rollback(*paths.try_error());
+    }
+    m_state->paths = paths.take_value();
+
+    // 保存先のディレクトリを作成する
+    auto directories = create_storage_directories(*m_state->files, m_state->paths);
+    if (!directories.has_value())
+    {
+        return rollback(*directories.try_error());
+    }
+
+    // Logger の生成
+    auto logger = create_host_logger(*m_state->files, m_state->paths, m_config.logging, m_state->logFile);
+    if (!logger.has_value())
+    {
+        return rollback(*logger.try_error());
+    }
+    m_state->logger = logger.take_value();
+    // 共通診断 API のログ配送先を、この Host の Logger へ登録する
+    auto registration = register_diagnostic_logger(*m_state->logger);
+    if (!registration.has_value())
+    {
+        return rollback(*registration.try_error());
+    }
+    m_state->diagnosticRegistration = registration.take_value();
+
+    report_log("WindowsHost", "initializing");
+    auto systemResult = create_windows_window_system(*m_state->clock);
+    if (!systemResult.has_value())
+    {
+        return rollback(*systemResult.try_error());
+    }
+    m_state->system = systemResult.take_value();
+
+    // Window を作成し、表示に失敗した場合も所有先から回収する
+    auto windowResult = m_state->system->create_window(m_config.window);
+    if (!windowResult.has_value())
+    {
+        return rollback(*windowResult.try_error());
+    }
+    m_state->window = windowResult.take_value();
+
+    // Window に依存する上位 Host の機能を、表示と Message Pump より前に接続する
+    if (m_config.callbacks.initializeWindow)
+    {
+        m_state->hasWindowInitializationStarted = true;
+        auto hostResult = m_config.callbacks.initializeWindow(*m_state->window);
+        if (!hostResult.has_value())
+        {
+            return rollback(*hostResult.try_error());
+        }
+    }
+
+    // Backend が Device を所有し、Window より先に停止できる順序で保持する
+    // 独自 Factory または既定 Factory に FileSystem と時計を渡す
+    auto backendResult = m_config.callbacks.createBackend
+                             ? m_config.callbacks.createBackend(m_state->files.get(), *m_state->clock)
+                             : create_backend(m_state->files.get(), m_state->clock);
+    if (!backendResult.has_value())
+    {
+        return rollback(*backendResult.try_error());
+    }
+    m_state->backend = backendResult.take_value();
+    m_state->dx12Backend = dynamic_cast<dx12::DX12Backend *>(m_state->backend.get());
+    // WindowsHost が必要とする DX12 Backend であることを確認する
+    if (!m_state->dx12Backend)
+    {
+        return rollback({ErrorCategory::InvalidState, "WindowsHost.backend"});
+    }
+
+    // Window の Client Area と同じ大きさで Back Buffer と固定 Graph を用意する
+    auto handleResult = borrow_windows_window_handle(*m_state->window);
+    if (!handleResult.has_value())
+    {
+        return rollback(*handleResult.try_error());
+    }
+    m_state->presentationSize = m_state->window->client_size();
+    m_state->request_resize(m_state->presentationSize);
+
+    // Swap Chain の設定を構築する
+    dx12::DX12SwapChainConfig swapConfig{};
+    swapConfig.width = m_state->presentationSize.width;
+    swapConfig.height = m_state->presentationSize.height;
+    swapConfig.bufferCount = m_config.presentation.bufferCount;
+    swapConfig.isVSyncEnabled = m_config.presentation.isVSyncEnabled;
+    swapConfig.isTearingAllowed = m_config.presentation.isTearingAllowed;
+    swapConfig.isWaitableEnabled = m_config.presentation.isWaitableEnabled;
+    swapConfig.maxQueuedFrames = m_config.presentation.maxQueuedFrames;
+    auto swapResult = m_state->dx12Backend->create_swap_chain(*handleResult.try_value(), swapConfig);
+    if (!swapResult.has_value())
+    {
+        return rollback(*swapResult.try_error());
+    }
+    // Editor 等の GPU 接続を先に生成し、Graph の Pass が借用できる状態にする
+    if (m_config.callbacks.initializeRenderer)
+    {
+        m_state->hasWindowInitializationStarted = true;
+        auto hostResult = m_config.callbacks.initializeRenderer(*m_state->backend, m_config.frame.maxFramesInFlight,
+                                                                m_config.gpu.resourceFrameCount);
+        if (!hostResult.has_value())
+        {
+            return rollback(*hostResult.try_error());
+        }
+    }
+    const auto *resources = m_state->dx12Backend->get_resource_context();
+    if (!resources)
+    {
+        return rollback({ErrorCategory::InvalidState, "WindowsHost.graph.resources"});
+    }
+
+    // FrameGraph の構築は Backend と SwapChain が生存する間だけ有効で、Runtime より長く保持する
+    dx12::DX12MainFrameGraphConfig graphConfig;
+    graphConfig.frameCount = m_config.gpu.resourceFrameCount;
+    graphConfig.clearColor = m_config.presentation.clearColor;
+    // Host が選択した抽象 Pass を Graph に移し、DX12 層には Editor の具体型を伝えない
+    m_isGraphRebuildable = !m_config.graph.displayPass || static_cast<bool>(m_config.graph.displayPassFactory);
+    graphConfig.configure = m_config.graph.configure;
+    graphConfig.displayPass = std::move(m_config.graph.displayPass);
+    graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
+    auto graphResult = dx12::DX12MainFrameGraph::create(*resources, *m_state->dx12Backend->get_swap_chain(),
+                                                        std::move(graphConfig), &m_state->profiler);
+    if (!graphResult.has_value())
+    {
+        return rollback(*graphResult.try_error());
+    }
+    m_state->graph = graphResult.take_value();
+
+    // FrameController が借りる共通 Service を渡して Runtime を生成する
+    m_state->runtime =
+        std::make_unique<Runtime>(m_config.frame, *m_state->clock, *m_state->services.waiter,
+                                  *m_state->services.threadFactory, m_config.simulation, &m_state->profiler);
+    // 非同期 Callback が使う State は Runtime の停止まで生存させる
+    State *state = m_state.get();
+    // GPU 資源の枠数と未完了提出の上限を別々に保持する
+    m_state->gpuFrameCount = m_config.gpu.resourceFrameCount;
+    m_state->isPredictionEnabled = m_config.presentation.isVSyncEnabled;
+    m_state->gpuFrames = std::make_unique<GpuFrameQueue>(m_config.gpu.maxFramesInFlight);
+    // Update は採用された Frame だけで実行し、UI と Worker の Thread 契約は上位 Host が検証する
+    auto update = m_config.callbacks.update;
+    if (!update)
+    {
+        // Update 未指定でも Frame の進行に必要な成功 Callback を登録する
+        update = [](std::uint64_t, std::stop_token) { return Result<void>::success(); };
+    }
+    // Update・Render・Main と表示待機を Runtime の各実行段階へ接続する
+    auto runtimeResult = m_state->runtime->initialize(
+        std::move(update),
+        [state, recordFrame = m_config.callbacks.recordFrame,
+         inputRendered = m_config.callbacks.isInputRendered](std::uint64_t a_frameIndex, std::stop_token a_stopToken)
+        {
+            // Render 開始時刻を入力から描画開始までの計測に使う
+            const auto started = state->clock->now();
+            // GPU 枠の取得、Graph の記録・提出、Present を順に進める
+            auto result = state->render(a_frameIndex, a_stopToken, state->gpuFrameCount, recordFrame);
+            bool wasInputRendered = true;
+            // 上位 Host が入力を実際に描画したか、記録成功後に確認する
+            if (result.has_value() && inputRendered)
+            {
+                auto rendered = inputRendered(a_frameIndex);
+                if (!rendered.has_value())
+                {
+                    // 入力描画の確認失敗も Render の失敗として返す
+                    result = Result<void>::failure(*rendered.try_error());
+                }
+                else
+                {
+                    wasInputRendered = *rendered.try_value();
+                }
+            }
+            // Present 復帰と入力描画確認を含む CPU 完了時刻を採取する
+            const auto completed = state->clock->now();
+            // 論理 Frame ID に対応する入力 Snapshot の枠を参照する
+            auto &input = state->frameInputs[a_frameIndex % state->frameInputs.size()];
+            // Main と Render が共有する入力統計を排他更新する
+            std::lock_guard lock(state->timingMutex);
+            if (result.has_value() && input.wasPresented && wasInputRendered)
+            {
+                // 表示した入力だけを各区間の遅延標本として集計する
+                state->inputLatency.presented(input.events, a_frameIndex, input.presentation.presentCount,
+                                              input.captured, started, input.presentation.presentStarted,
+                                              input.presentation.presentReturned, completed);
+            }
+            else
+            {
+                // 描画の省略や失敗は遅延 0 とせず、未表示の件数に加える
+                state->inputLatency.skipped(input.events.size());
+            }
+            // 次の Frame が同じ枠を使えるよう、処理済み入力を回収する
+            input.events.clear();
+            return result;
+        },
+        [state, main = m_config.callbacks.main,
+         capture = m_config.callbacks.captureInput](std::uint64_t a_frame, std::stop_token a_token) -> Result<void>
+        {
+            // 採用した Frame の入力格納先を選び、前回の Present 状態を解除する
+            auto &input = state->frameInputs[a_frame % state->frameInputs.size()];
+            input.wasPresented = false;
+            // Window に到達した入力を取り出し、受信件数を保持する
+            state->window->take_input_events(input.events);
+            const auto observed = input.events.size();
+            // Main Callback で UI 等を構築し、この Frame に使う入力を確定する
+            if (main)
+            {
+                auto result = main(a_frame, a_token);
+                if (!result.has_value())
+                {
+                    return result;
+                }
+            }
+            // 入力 Consumer が実際に取り込んだイベントへ一覧を絞る
+            if (capture)
+            {
+                auto result = capture(input.events);
+                if (!result.has_value())
+                {
+                    return result;
+                }
+            }
+            else
+            {
+                // Consumer からの確認なしに、Window へ到達しただけの入力を描画済みと扱わない
+                input.events.clear();
+            }
+            // 入力 Snapshot が確定した時刻を Render への受渡し時刻として記録する
+            input.captured = state->clock->now();
+            std::lock_guard lock(state->timingMutex);
+            // Window 到達数と描画へ割り当てた数を別々に集計する
+            state->inputLatency.assigned(observed, input.events.size());
+            return Result<void>::success();
+        },
+        {[state](std::stop_token a_token, bool a_isNonBlocking)
+         {
+             // SwapChain の次の表示枠を待ち、停止・最小化中は取得を取り消す
+             return state->dx12Backend->get_swap_chain()->wait_for_frame(
+                 a_token, [state]() { return state->isRenderStopped.load() || state->isPresentationSuspended.load(); },
+                 a_isNonBlocking);
+         },
+         [state]() -> std::optional<std::chrono::steady_clock::time_point>
+         {
+             // Render が更新する表示統計を同じ Lock の下で参照する
+             std::lock_guard lock(state->timingMutex);
+             const auto &timing = state->presentationTiming;
+             const auto now = state->clock->now();
+             // 無効・未来・古い Refresh 標本では表示時刻を予測しない
+             if (!state->isPredictionEnabled || !timing.hasRefreshTiming ||
+                 timing.refreshInterval <= std::chrono::nanoseconds::zero() || now < timing.lastRefresh ||
+                 now - timing.lastRefresh > std::chrono::milliseconds(250))
+             {
+                 return std::nullopt;
+             }
+             // 最後の Refresh 位相から現在時刻より後の次の周期を求める
+             const auto intervals = (now - timing.lastRefresh) / timing.refreshInterval + 1;
+             return timing.lastRefresh + timing.refreshInterval * intervals;
+         },
+         // 再構成後の Waitable 有効状態を待機計画へ通知する
+         [state]() { return state->dx12Backend->get_swap_chain()->is_waitable_enabled(); }},
+        // 固定更新 Callback と描画用 Snapshot の生成 Callback を渡す
+        m_config.callbacks.simulationUpdate, m_config.callbacks.prepareFrame);
+    if (!runtimeResult.has_value())
+    {
+        // Runtime 初期化失敗では Window と GPU 資源も回収する
+        return rollback(*runtimeResult.try_error());
+    }
+
+    // GPU と Frame の初期化に成功した後で Window を表示する
+    auto showResult = m_state->window->show();
+    if (!showResult.has_value())
+    {
+        return rollback(*showResult.try_error());
+    }
+
+    m_lifecycle = Lifecycle::Running;
+    report_log("WindowsHost", "initialized");
+    return Result<void>::success();
+}
+
+/// @brief Windows Event を消費して Window の終了要求を返す
+Result<bool> WindowsHost::step()
+{
+    TimingTraceScope traceScope("Host.Step");
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<bool>::failure({ErrorCategory::WrongThread, "WindowsHost.step"});
+    }
+    if (m_lifecycle != Lifecycle::Running || m_isStepping)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.step"});
+    }
+
+    ScopedFlag stepping(m_isStepping);
+    // 開始期限 / 空き枠の待機後に入力を取り直し、採取済みの UI を FPS 待機で古くしない
+    bool isFrameReady = false;
+    if (!m_state->isPresentationSuspended.load() && !m_pendingSettings)
+    {
+        TimingTraceScope tracePermit("Host.FramePermit");
+        auto ready = m_state->runtime->wait_for_frame();
+        if (!ready.has_value())
+        {
+            return Result<bool>::failure(*ready.try_error());
+        }
+        isFrameReady = *ready.try_value();
+    }
+    // Win32 Message を処理し、Queue 上の終了通知も同じ周回で反映する
+    TimingTraceScope tracePump("Host.Pump");
+    auto pumpResult = m_state->system->pump_events();
+    tracePump.finish();
+    if (!pumpResult.has_value())
+    {
+        return Result<bool>::failure(*pumpResult.try_error());
+    }
+    WindowEvent event{};
+    // 採取済み Window Event から Close・最小化・寸法変更を反映する
+    while (m_state->window->try_pop_event(event))
+    {
+        if (event.type == WindowEventType::CloseRequested)
+        {
+            if (m_config.callbacks.shouldClose)
+            {
+                auto close = m_config.callbacks.shouldClose();
+                if (!close.has_value())
+                    return Result<bool>::failure(*close.try_error());
+                if (!*close.try_value())
+                {
+                    auto canceled = m_state->window->cancel_close_request();
+                    if (!canceled.has_value())
+                        return Result<bool>::failure(*canceled.try_error());
+                    continue;
+                }
+            }
+            m_state->isCloseRequested = true;
+            m_state->isRenderStopped.store(true);
+        }
+        else if (event.type == WindowEventType::Destroyed)
+        {
+            m_state->isDestroyed = true;
+            m_state->isRenderStopped.store(true);
+        }
+        else if (event.type == WindowEventType::Minimized || event.type == WindowEventType::Resized ||
+                 event.type == WindowEventType::Restored)
+        {
+            if (event.type == WindowEventType::Minimized || event.clientSize.width == 0 || event.clientSize.height == 0)
+            {
+                m_state->isSimulationPaused = true;
+            }
+            // 最新寸法にまとめ、既に投入済みの Frame は Snapshot を回収しながら完了させる
+            m_state->request_resize(event.clientSize);
+        }
+    }
+
+    // Window が生存したままの WM_QUIT は所有契約に反する
+    if (*pumpResult.try_value() == PumpStatus::QuitRequested && !m_state->isDestroyed)
+    {
+        return Result<bool>::failure({ErrorCategory::InvalidState, "WindowsHost.quit"});
+    }
+    if (m_state->isCloseRequested || m_state->isDestroyed || *pumpResult.try_value() == PumpStatus::QuitRequested)
+    {
+        return Result<bool>::success(false);
+    }
+
+    // 設定変更は既存 CPU Frame を排出してから適用する
+    if (m_pendingSettings)
+    {
+        // 排出中も必ず Pump へ戻り、表示待機が Resize / Close で解除できる状態を維持する
+        m_state->isPresentationSuspended.store(true);
+        auto idle = m_state->runtime->is_idle();
+        if (!idle.has_value())
+        {
+            return Result<bool>::failure(*idle.try_error());
+        }
+        // 空き状態と有効寸法が揃った境界でのみ再構成する
+        if (*idle.try_value() && m_state->requestedSize.width && m_state->requestedSize.height)
+        {
+            auto applied = [&]() -> Result<void>
+            {
+                try
+                {
+                    return apply_pending_settings();
+                }
+                catch (...)
+                {
+                    return Result<void>::failure(
+                        {ErrorCategory::PlatformFailure, "WindowsHost.performance_settings.exception"});
+                }
+            }();
+            if (!applied.has_value())
+            {
+                // Native 再構築途中の失敗では旧設定を実効値として公開せず、停止だけを許可する
+                m_lifecycle = Lifecycle::Stopped;
+                return Result<bool>::failure(*applied.try_error());
+            }
+        }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return Result<bool>::success(true);
+    }
+
+    // 描画停止中も Pump を続け、CPU と GPU が静止するのを待つ
+    if (m_state->isPresentationSuspended.load())
+    {
+        // 新規 Frame を投入せず、全 Update / Render / Present と ImGui Snapshot の消費を待つ
+        // Worker の失敗もここで返し、未完了 Frame を永久に待たない
+        auto idleResult = m_state->runtime->is_idle();
+        if (!idleResult.has_value())
+        {
+            return Result<bool>::failure(*idleResult.try_error());
+        }
+        if (!*idleResult.try_value() || m_state->requestedSize.width == 0 || m_state->requestedSize.height == 0)
+        {
+            // Main を join や GPU 待機で塞がず、次の step でも Win32 Message を処理する
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return Result<bool>::success(true);
+        }
+        // CPU 側が静止した後にだけ GPU 完了を待つ。ImGui の Context 排他は保持しない
+        // 最小化の停止時間を Simulation の経過時間から除外する
+        if (m_state->isSimulationPaused)
+        {
+            // 最小化中の時間は更新に足さず、Worker 寿命と Snapshot ID は維持する
+            m_state->runtime->reset_simulation_sample_time();
+            m_state->isSimulationPaused = false;
+        }
+        auto resizeResult = m_state->prepare_presentation();
+        if (!resizeResult.has_value())
+        {
+            return Result<bool>::failure(*resizeResult.try_error());
+        }
+        m_state->request_resize(m_state->requestedSize);
+        // GPU / Resize 待機中の入力も次の Pump で反映してから UI を再開する
+        return Result<bool>::success(true);
+    }
+
+    if (!isFrameReady)
+    {
+        return Result<bool>::success(true);
+    }
+    if (!m_config.frame.useWorkerThreads)
+    {
+        State::AdmissionSample admission{*m_state};
+        // 単一 Thread は Snapshot を作る前に表示枠を確認し、未準備なら Message Pump に戻る
+        // 単一 Thread では UI 構築前に表示枠を非待機で確認する
+        auto ready = m_state->dx12Backend->get_swap_chain()->wait_for_frame({}, {}, true);
+        if (!ready.has_value())
+        {
+            return Result<bool>::failure(*ready.try_error());
+        }
+        bool isGpuBlocked = false;
+        // GPU 未完了数の上限も Frame を採用する前に確認する
+        auto gpuReady =
+            m_state->gpuFrames->wait_for_slot([&]() { isGpuBlocked = true; }, [&]() { return isGpuBlocked; });
+        if (!gpuReady.has_value())
+        {
+            return Result<bool>::failure(*gpuReady.try_error());
+        }
+        auto progress = m_state->runtime->progress();
+        if (!progress.has_value())
+        {
+            return Result<bool>::failure(*progress.try_error());
+        }
+        const auto slot = static_cast<std::uint32_t>(progress.try_value()->submittedFrames % m_state->gpuFrameCount);
+        // 次に使う Graph 枠の GPU 資源が再利用可能か調べる
+        auto frameReady = m_state->graph->is_frame_ready(slot);
+        if (!frameReady.has_value())
+        {
+            return Result<bool>::failure(*frameReady.try_error());
+        }
+        // 上位 Renderer の枠も含め、待ちを UI 構築後へ持ち込まない
+        Result<bool> rendererReady = Result<bool>::success(true);
+        if (m_config.callbacks.isRendererReady)
+        {
+            try
+            {
+                rendererReady = m_config.callbacks.isRendererReady();
+            }
+            catch (...)
+            {
+                rendererReady =
+                    Result<bool>::failure({ErrorCategory::PlatformFailure, "WindowsHost.renderer_ready.exception"});
+            }
+        }
+        if (!rendererReady.has_value())
+        {
+            return Result<bool>::failure(*rendererReady.try_error());
+        }
+        // GPU 上限の空きと今回再利用する枠だけを確認し、無関係な未完了 Frame は待たない
+        // 未準備の種類に応じて待ち、入力を採取せず Pump へ戻る
+        if (!*ready.try_value() || !*gpuReady.try_value() || !*frameReady.try_value() || !*rendererReady.try_value())
+        {
+            const auto waitStarted = m_state->clock->now();
+            if (!*gpuReady.try_value())
+            {
+                auto waited = m_state->wait_for_gpu(true);
+                admission.gpu = m_state->clock->now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else if (!*ready.try_value())
+            {
+                auto waited = m_state->dx12Backend->get_swap_chain()->wait_for_frame({}, {}, false, true);
+                admission.presentation = m_state->clock->now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else if (m_state->gpuFrames->oldest_completion())
+            {
+                auto waited = m_state->wait_for_gpu(true);
+                admission.resources = m_state->clock->now() - waitStarted;
+                if (!waited.has_value())
+                {
+                    return Result<bool>::failure(*waited.try_error());
+                }
+            }
+            else
+            {
+                // 外部 Pool 等の未準備でも Message に即応し、次の確認まで長い Sleep を行わない
+                const auto waited = MsgWaitForMultipleObjectsEx(0, nullptr, 1, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                admission.resources = m_state->clock->now() - waitStarted;
+                if (waited == WAIT_FAILED)
+                {
+                    return Result<bool>::failure({ErrorCategory::PlatformFailure, "WindowsHost.resource_wait.event",
+                                                  static_cast<std::int64_t>(GetLastError())});
+                }
+            }
+            return Result<bool>::success(true);
+        }
+    }
+    // 入力処理後は Callback を開始する。開始条件は維持されるが非同期失敗を再確認する
+    // すべての開始条件が揃った Frame だけを Runtime へ投入する
+    auto frameResult = m_state->runtime->step();
+    if (!frameResult.has_value())
+    {
+        return Result<bool>::failure(*frameResult.try_error());
+    }
+    return Result<bool>::success(true);
+}
+
+/// @brief 変更前に入力と再構築能力を検証し、実行中の構成はその場で変更しない
+Result<void> WindowsHost::request_performance_settings(PerformanceSettings a_settings)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.performance_settings"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings"});
+    }
+    a_settings.frame = frame_config_for_buffering(a_settings.frame, a_settings.gpu.resourceFrameCount);
+    // ゲームが許可した範囲を超える設定は、再構成前に拒否する
+    auto valid = validate_performance_policy(a_settings, m_config.performancePolicy);
+    if (!valid.has_value())
+    {
+        return valid;
+    }
+    const bool rebuildsGraph = a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
+                               a_settings.presentation != m_config.presentation;
+    if (rebuildsGraph && !m_isGraphRebuildable)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings.display_factory"});
+    }
+    if ((a_settings.frame.maxFramesInFlight != m_config.frame.maxFramesInFlight ||
+         a_settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount) &&
+        m_config.callbacks.initializeRenderer && !m_config.callbacks.reconfigureRenderer)
+    {
+        return Result<void>::failure(
+            {ErrorCategory::InvalidState, "WindowsHost.performance_settings.renderer_callback"});
+    }
+    m_pendingSettings = a_settings;
+    m_state->runtime->request_drain();
+    return Result<void>::success();
+}
+
+/// @brief 実体の構築に成功した構成だけを公開する
+Result<PerformanceSettings> WindowsHost::performance_settings() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<PerformanceSettings>::failure({ErrorCategory::WrongThread, "WindowsHost.performance_settings"});
+    }
+    if (m_lifecycle != Lifecycle::Running)
+    {
+        return Result<PerformanceSettings>::failure({ErrorCategory::InvalidState, "WindowsHost.performance_settings"});
+    }
+    return Result<PerformanceSettings>::success({m_config.frame, m_config.gpu, m_config.presentation});
+}
+
+/// @brief UI が適用完了まで追加の操作を保留できるようにする
+bool WindowsHost::has_pending_performance_settings() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_pendingSettings.has_value();
+}
+
+/// @brief Tearing Capability と実際に使用した同期方式を要求値から分離する
+Result<PerformanceSettingsStatus> WindowsHost::performance_settings_status() const
+{
+    auto settings = performance_settings();
+    auto progress = frame_progress();
+    if (!settings.has_value() || !progress.has_value())
+    {
+        return Result<PerformanceSettingsStatus>::failure(!settings.has_value() ? *settings.try_error()
+                                                                                : *progress.try_error());
+    }
+    const auto *swapChain = m_state->dx12Backend->get_swap_chain();
+    return Result<PerformanceSettingsStatus>::success(
+        resolve_performance_status(*settings.try_value(), *progress.try_value(), swapChain->is_tearing_enabled(),
+                                   swapChain->queued_frame_limit(), has_pending_performance_settings()));
+}
+
+/// @brief Frame ID を維持したまま Worker、Graph、表示枠、ImGui Ring を順に再構成する
+Result<void> WindowsHost::apply_pending_settings()
+{
+    const auto settings = *m_pendingSettings;
+    const bool rebuildsGraph = settings.gpu.resourceFrameCount != m_config.gpu.resourceFrameCount ||
+                               settings.presentation != m_config.presentation;
+    // 新規投入と Worker を止め、再構成中の参照をなくす
+    auto paused = m_state->runtime->pause();
+    if (!paused.has_value())
+    {
+        return paused;
+    }
+    if (rebuildsGraph)
+    {
+        auto stopped = m_state->graph->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_state->graph.reset();
+        m_state->gpuFrames.reset();
+        auto handle = borrow_windows_window_handle(*m_state->window);
+        if (!handle.has_value())
+        {
+            return Result<void>::failure(*handle.try_error());
+        }
+        dx12::DX12SwapChainConfig swap;
+        swap.width = m_state->requestedSize.width;
+        swap.height = m_state->requestedSize.height;
+        swap.bufferCount = settings.presentation.bufferCount;
+        swap.isVSyncEnabled = settings.presentation.isVSyncEnabled;
+        swap.isTearingAllowed = settings.presentation.isTearingAllowed;
+        swap.isWaitableEnabled = settings.presentation.isWaitableEnabled;
+        swap.maxQueuedFrames = settings.presentation.maxQueuedFrames;
+        // 新しい表示方式に合わせて SwapChain を再生成する
+        auto replaced = m_state->dx12Backend->replace_swap_chain(*handle.try_value(), swap);
+        if (!replaced.has_value())
+        {
+            return replaced;
+        }
+    }
+    if (m_config.callbacks.reconfigureRenderer)
+    {
+        // ImGui 等の上位 GPU 資源の枠数も同じ構成へ変更する
+        auto configured = m_config.callbacks.reconfigureRenderer(*m_state->backend, settings.frame.maxFramesInFlight,
+                                                                 settings.gpu.resourceFrameCount);
+        if (!configured.has_value())
+        {
+            return configured;
+        }
+    }
+    if (rebuildsGraph)
+    {
+        dx12::DX12MainFrameGraphConfig graphConfig;
+        graphConfig.frameCount = settings.gpu.resourceFrameCount;
+        graphConfig.clearColor = settings.presentation.clearColor;
+        graphConfig.configure = m_config.graph.configure;
+        graphConfig.displayPassFactory = m_config.graph.displayPassFactory;
+        // 新しい GPU 枠数に対応する Graph と物理資源を作り直す
+        auto graph = dx12::DX12MainFrameGraph::create(*m_state->dx12Backend->get_resource_context(),
+                                                      *m_state->dx12Backend->get_swap_chain(), std::move(graphConfig),
+                                                      &m_state->profiler);
+        if (!graph.has_value())
+        {
+            return Result<void>::failure(*graph.try_error());
+        }
+        m_state->graph = graph.take_value();
+        m_state->presentationSize = m_state->requestedSize;
+    }
+    // 上限だけ変更する場合も GPU 完了を確認してから古い Completion 所有を捨てる
+    if (!rebuildsGraph && settings.gpu.maxFramesInFlight != m_config.gpu.maxFramesInFlight)
+    {
+        auto *queue = m_state->dx12Backend->get_swap_chain()->graphics_queue();
+        // Graph を再生成しない上限変更でも、既存の GPU 提出を完了させる
+        auto completion = queue->signal();
+        if (!completion.has_value())
+        {
+            return Result<void>::failure(*completion.try_error());
+        }
+        auto waited = queue->wait_for_fence(*completion.try_value());
+        if (!waited.has_value())
+        {
+            return waited;
+        }
+        m_state->gpuFrames.reset();
+    }
+    if (!m_state->gpuFrames)
+    {
+        m_state->gpuFrames = std::make_unique<GpuFrameQueue>(settings.gpu.maxFramesInFlight);
+    }
+    m_state->gpuFrameCount = settings.gpu.resourceFrameCount;
+    m_state->isPredictionEnabled = settings.presentation.isVSyncEnabled;
+    // 論理 Frame ID を引き継いで CPU 実行を再開する
+    auto resumed = m_state->runtime->resume(settings.frame, m_pendingSimulation);
+    if (!resumed.has_value())
+    {
+        return resumed;
+    }
+    m_config.frame = settings.frame;
+    m_config.gpu = settings.gpu;
+    m_config.presentation = settings.presentation;
+    if (m_pendingSimulation)
+    {
+        m_config.simulation = *m_pendingSimulation;
+        m_pendingSimulation.reset();
+    }
+    m_pendingSettings.reset();
+    m_state->isSimulationPaused = false;
+    m_state->request_resize(m_state->requestedSize);
+    {
+        std::lock_guard lock(m_state->timingMutex);
+        m_state->presentTimings.reset();
+        m_state->gpuQueueWaitTimings.reset();
+        m_state->peakGpuFrames = 0;
+        m_state->unfinishedGpuFrames = 0;
+        m_state->presentationReadyWaitTimings.reset();
+        m_state->presentIntervalTimings.reset();
+        m_state->displayIntervalTimings.reset();
+        m_state->presentationTiming = {};
+    }
+    report_log("WindowsHost", "performance settings applied");
+    return Result<void>::success();
+}
+
+/// @brief 実行中だけ CPU Frame の進行を構築 Thread に公開する
+Result<FrameProgress> WindowsHost::frame_progress() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameProgress>::failure({ErrorCategory::WrongThread, "WindowsHost.frame_progress"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameProgress>::failure({ErrorCategory::InvalidState, "WindowsHost.frame_progress"});
+    }
+    return m_state->runtime->progress();
+}
+
+/// @brief Owner と Runtime の寿命を検証し、固定容量の CPU 統計を取得する
+Result<FrameTimingInfo> WindowsHost::frame_timing_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.frame_timing_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameTimingInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.frame_timing_info"});
+    }
+    return m_state->runtime->timing_info();
+}
+
+/// @brief Registry を初期化後から Host 破棄まで借用する。登録は Owner の Worker 停止中に行う
+Profiler *WindowsHost::profiler() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId ? m_profiler.get() : nullptr;
+}
+
+/// @brief 停止後も保持した計測値を所有 Snapshot へ複製する。外部出力は行わない
+Result<ProfilerSnapshot> WindowsHost::profiler_snapshot() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<ProfilerSnapshot>::failure({ErrorCategory::WrongThread, "WindowsHost.profiler_snapshot"});
+    }
+    if (!m_profiler)
+    {
+        return Result<ProfilerSnapshot>::failure({ErrorCategory::InvalidState, "WindowsHost.profiler_snapshot"});
+    }
+    return m_profiler->snapshot();
+}
+
+/// @brief Owner に入力イベントと反映済み CPU Frame の計測 Snapshot を返す
+Result<InputLatencyInfo> WindowsHost::input_latency_info() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<InputLatencyInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.input_latency_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state)
+    {
+        return Result<InputLatencyInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.input_latency_info"});
+    }
+    std::lock_guard lock(m_state->timingMutex);
+    return Result<InputLatencyInfo>::success(m_state->inputLatency.info());
+}
+
+/// @brief GPU 完了済み計測値と Present の CPU 経過時間を所有 Snapshot にまとめる
+Result<MainFrameGraphPerformance> WindowsHost::graph_performance() const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::WrongThread, "WindowsHost.graph_performance"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->graph)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::InvalidState, "WindowsHost.graph_performance"});
+    }
+    try
+    {
+        auto performance = m_state->graph->performance();
+        // Graph Lock は解放済み。Host の値と Profiler の小さな集計結果を一緒に取得する
+        std::lock_guard lock(m_state->timingMutex);
+        performance.present = m_state->presentTimings.statistics();
+        performance.gpuQueueWait = m_state->gpuQueueWaitTimings.statistics();
+        performance.presentationReadyWait = m_state->presentationReadyWaitTimings.statistics();
+        performance.presentInterval = m_state->presentIntervalTimings.statistics();
+        performance.displayInterval = m_state->displayIntervalTimings.statistics();
+        performance.presentApi = m_state->presentApiTimings.statistics();
+        performance.presentationStatistics = m_state->presentationStatisticsTimings.statistics();
+        performance.admissionWait = m_state->admissionWaitTimings.statistics();
+        performance.mainGpuWait = m_state->mainGpuWaitTimings.statistics();
+        performance.mainPresentationWait = m_state->mainPresentationWaitTimings.statistics();
+        performance.mainResourceWait = m_state->mainResourceWaitTimings.statistics();
+        performance.peakUnfinishedGpuFrames = m_state->peakGpuFrames;
+        performance.unfinishedGpuFrames = m_state->unfinishedGpuFrames;
+        performance.presentation = m_state->presentationTiming;
+        return Result<MainFrameGraphPerformance>::success(std::move(performance));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<MainFrameGraphPerformance>::failure(
+            {ErrorCategory::PlatformFailure, "WindowsHost.graph_performance.allocation"});
+    }
+}
+
+/// @brief Runtime、Backend、Window を順に停止して Destroyed と Quit を処理する
+Result<void> WindowsHost::shutdown()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.shutdown"});
+    }
+    if (m_isStepping)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.shutdown"});
+    }
+    m_lifecycle = Lifecycle::Stopped;
+    // Window や Backend の生成前に失敗した場合も未使用の Pass と Callback を回収する
+    m_config.graph = {};
+    if (!m_state)
+    {
+        return Result<void>::success();
+    }
+
+    // Worker の Callback を止めてから GPU と Window の所有先を解放する
+    m_state->isRenderStopped.store(true);
+    std::optional<Error> failure;
+    if (m_state->runtime)
+    {
+        auto runtimeResult = m_state->runtime->shutdown();
+        if (!runtimeResult.has_value())
+        {
+            failure = *runtimeResult.try_error();
+        }
+        m_state->runtime.reset();
+    }
+    if (m_state->graph)
+    {
+        auto graphResult = m_state->graph->shutdown();
+        if (!graphResult.has_value() && !failure)
+        {
+            failure = *graphResult.try_error();
+        }
+        m_state->graph.reset();
+    }
+    // Pass が借用する UI とその Message Handler を、GPU 完了後かつ Device / Window の破棄前に止める
+    if (m_state->hasWindowInitializationStarted && m_config.callbacks.shutdownWindow)
+    {
+        auto hostResult = m_config.callbacks.shutdownWindow();
+        if (!hostResult.has_value())
+        {
+            // 上位機能が Window / Device の借用をまだ解除できない可能性がある
+            // 下位 Owner は保持し、Stopped 状態からの shutdown 再試行を許可する
+            report_log_error("WindowsHost.shutdown", failure ? *failure : *hostResult.try_error(), LogLevel::Error);
+            return Result<void>::failure(failure ? *failure : *hostResult.try_error());
+        }
+        m_state->hasWindowInitializationStarted = false;
+    }
+    // Graph が GPU 完了を確認した後、Limiter が保持する Fence / Device の参照を解放する
+    m_state->gpuFrames.reset();
+    if (m_state->backend)
+    {
+        auto backendResult = m_state->backend->shutdown();
+        if (!backendResult.has_value() && !failure)
+        {
+            failure = *backendResult.try_error();
+        }
+        m_state->backend.reset();
+    }
+    if (m_state->window && !m_state->isDestroyed)
+    {
+        auto destroyResult = m_state->window->destroy();
+        if (!destroyResult.has_value())
+        {
+            if (!failure)
+            {
+                failure = *destroyResult.try_error();
+            }
+        }
+        if (destroyResult.has_value() && m_state->system)
+        {
+            TimingTraceScope tracePump("Host.Pump");
+            auto pumpResult = m_state->system->pump_events();
+            tracePump.finish();
+            if (!pumpResult.has_value() && !failure)
+            {
+                failure = *pumpResult.try_error();
+            }
+            WindowEvent event{};
+            while (m_state->window->try_pop_event(event))
+            {
+                if (event.type == WindowEventType::Destroyed)
+                {
+                    m_state->isDestroyed = true;
+                }
+            }
+            if (pumpResult.has_value() &&
+                (*pumpResult.try_value() != PumpStatus::QuitRequested || !m_state->isDestroyed) && !failure)
+            {
+                failure = Error{ErrorCategory::InvalidState, "WindowsHost.shutdown.quit"};
+            }
+        }
+    }
+    // System が借用する Window の参照を先に失効させる
+    m_state->window.reset();
+    m_state->system.reset();
+    if (failure)
+    {
+        report_log_error("WindowsHost.shutdown", *failure, LogLevel::Error);
+    }
+    if (m_state->diagnosticRegistration)
+    {
+        report_log("WindowsHost", "stopped");
+    }
+    // 配送中の呼出しを待って借用解除し、Close の緊急診断が自分の File へ再帰しないようにする
+    m_state->diagnosticRegistration.reset();
+    if (m_state->logger)
+    {
+        auto stopped = m_state->logger->shutdown();
+        if (!stopped.has_value())
+        {
+            report_log_error("WindowsHost.logging.shutdown", *stopped.try_error(), LogLevel::Error);
+            if (!failure)
+            {
+                failure = *stopped.try_error();
+            }
+            // File の Close が失敗した場合も所有先を残し、次の shutdown で回収を再試行する
+            return Result<void>::failure(*failure);
+        }
+        m_state->logger.reset();
+    }
+    m_state.reset();
+    return failure ? Result<void>::failure(*failure) : Result<void>::success();
+}
+/// @brief ゲーム更新の方針は性能設定 Policy / 保存値から独立して変更する
+Result<void> WindowsHost::request_simulation_config(SimulationConfig a_config)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<void>::failure({ErrorCategory::WrongThread, "WindowsHost.simulation_config"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "WindowsHost.simulation_config"});
+    }
+    auto valid = validate_simulation_config(a_config);
+    if (!valid.has_value() || (a_config.frequencyHz != 0 && !m_config.callbacks.simulationUpdate))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "WindowsHost.simulation_config"});
+    }
+    m_pendingSimulation = a_config;
+    if (!m_pendingSettings)
+    {
+        m_pendingSettings = PerformanceSettings{m_config.frame, m_config.gpu, m_config.presentation};
+    }
+    m_state->runtime->request_drain();
+    return Result<void>::success();
+}
+
+/// @brief Render Frame に対応する確定 Tick と補間値を Owner Thread へ返す
+Result<FrameSimulationInfo> WindowsHost::frame_simulation_info(std::uint64_t a_frame) const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+    {
+        return Result<FrameSimulationInfo>::failure({ErrorCategory::WrongThread, "WindowsHost.simulation_info"});
+    }
+    if (m_lifecycle != Lifecycle::Running || !m_state || !m_state->runtime)
+    {
+        return Result<FrameSimulationInfo>::failure({ErrorCategory::InvalidState, "WindowsHost.simulation_info"});
+    }
+    return m_state->runtime->simulation_info(a_frame);
+}
+} // namespace cue

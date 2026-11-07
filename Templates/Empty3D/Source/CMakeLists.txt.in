@@ -1,0 +1,2 @@
+# Source の正本から開発 DLL と製品 Static Library を生成する
+cue_add_game_module(@GAME_TARGET@ SOURCES Game.cpp)

@@ -1,0 +1,95 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <memory>
+
+#include <RHI/Command.h>
+
+namespace cue
+{
+/// @brief 完了 Token を最大 8 件保持し、Frame 数で GPU への先行を制限する
+///
+/// Host が所有し、Render が操作を直列化する。待機中も Token を保持する
+/// Frame 全 Queue の合流 Completion を登録する。CPU 完了や Present 成功を代用しない
+class GpuFrameQueue final
+{
+  public:
+    /// @brief 確保済み固定容量の内側で未完了上限を指定する
+    explicit GpuFrameQueue(std::uint32_t a_limit = 2) noexcept : m_limit(a_limit)
+    {
+    }
+
+    /// @brief 完了済み Token を回収し、上限到達時だけ通知可能な待機を呼ぶ
+    /// a_wait は短時間で戻り、a_shouldCancel を再確認できるようにする
+    [[nodiscard]] Result<bool> wait_for_slot(const std::function<void()> &a_wait,
+                                             const std::function<bool()> &a_shouldCancel)
+    {
+        if (m_limit == 0 || m_limit > m_entries.size() || !a_wait || !a_shouldCancel)
+            return Result<bool>::failure({ErrorCategory::InvalidArgument, "GpuFrameQueue.config"});
+        while (true)
+        {
+            // 停止・最小化などの取消は空き枠を取得せずに戻す
+            if (a_shouldCancel())
+                return Result<bool>::success(false);
+            // 全 Token の検証が成功するまで所有参照の配置を変更しない
+            // すべての未完了提出を非待機で照会する
+            std::array<bool, 8> completed{};
+            for (std::uint32_t index = 0; index < m_count; ++index)
+            {
+                auto status = m_entries[index]->completion_status();
+                if (!status.has_value())
+                    return Result<bool>::failure(*status.try_error());
+                completed[index] = *status.try_value();
+            }
+            // 未完了の提出だけを前へ詰め、完了した参照を回収する
+            std::uint32_t remaining = 0;
+            for (std::uint32_t index = 0; index < m_count; ++index)
+            {
+                if (!completed[index])
+                {
+                    if (remaining != index)
+                        m_entries[remaining] = std::move(m_entries[index]);
+                    ++remaining;
+                }
+            }
+            for (auto index = remaining; index < m_count; ++index)
+                m_entries[index].reset();
+            m_count = remaining;
+            // GPU 未完了数が上限未満なら次の Frame を受け付ける
+            if (m_count < m_limit)
+                return Result<bool>::success(true);
+            // 満杯のときだけ利用側の待機処理へ委譲する
+            a_wait();
+        }
+    }
+
+    /// @brief 提出前に空きを確保した Frame の完了点を割当なしで保持する
+    [[nodiscard]] Result<void> submitted(std::shared_ptr<ICommandCompletion> a_completion)
+    {
+        if (!a_completion || m_count >= m_limit || m_count >= m_entries.size())
+            return Result<void>::failure({ErrorCategory::InvalidState, "GpuFrameQueue.submitted"});
+        // 新しい提出の Completion を順序を保って保持する
+        m_entries[m_count++] = std::move(a_completion);
+        return Result<void>::success();
+    }
+
+    /// @brief 未完了 Frame 数を操作する Render Thread から取得する
+    [[nodiscard]] std::uint32_t pending() const noexcept
+    {
+        return m_count;
+    }
+
+    /// @brief 最古の未回収提出点を次の Queue 操作まで借用する。Render 操作の直列化が必要
+    [[nodiscard]] const ICommandCompletion *oldest_completion() const noexcept
+    {
+        return m_count ? m_entries[0].get() : nullptr;
+    }
+
+  private:
+    std::array<std::shared_ptr<ICommandCompletion>, 8> m_entries;
+    std::uint32_t m_limit;
+    std::uint32_t m_count = 0;
+};
+} // namespace cue

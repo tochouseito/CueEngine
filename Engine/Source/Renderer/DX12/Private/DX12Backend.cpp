@@ -1,0 +1,337 @@
+#include <DX12/DX12Backend.h>
+
+#include <array>
+#include <cstddef>
+#include <new>
+#include <utility>
+
+#include <DX12/DX12CommandPool.h>
+#include <DX12/DX12DescriptorAllocator.h>
+#include <DX12/DX12GpuResourcePool.h>
+#include <DX12/DX12MeshPool.h>
+#include <DX12/DX12PipelineManager.h>
+#include <DX12/DX12QueuePool.h>
+#include <DX12/DX12RenderDevice.h>
+#include <DX12/DX12SwapChain.h>
+#include <DX12/DX12ViewManager.h>
+#include <Platform/Diagnostics.h>
+
+#include "DX12ResourceLeakChecker.h"
+
+namespace cue::dx12
+{
+/// @brief Pool の Lease が残る間も Descriptor Heap を GPU 完了まで共有所有する
+struct DX12DescriptorHeapState final
+{
+    std::array<std::unique_ptr<DX12DescriptorAllocator>, static_cast<std::size_t>(DX12DescriptorHeapRole::Count)>
+        allocators;
+};
+
+/// @brief Factory が成功するまで空の所有状態を保持する
+DX12Backend::DX12Backend(CreateToken) noexcept
+{
+}
+
+/// @brief Device、全 Descriptor Heap、各 Pool が揃うまで Backend を公開しない
+Result<std::unique_ptr<DX12Backend>> DX12Backend::create(const DX12DescriptorHeapConfig &a_descriptorConfig,
+                                                         IFileSystem *a_files, Clock *a_clock)
+{
+    return create(AdapterSelection::HardwarePreferred, a_descriptorConfig, a_files, a_clock);
+}
+
+/// @brief Adapter 選択以外は本番と同じ生成と Rollback を利用する
+Result<std::unique_ptr<DX12Backend>> DX12Backend::create(AdapterSelection a_selection,
+                                                         const DX12DescriptorHeapConfig &a_descriptorConfig,
+                                                         IFileSystem *a_files, Clock *a_clock)
+{
+    using BackendResult = Result<std::unique_ptr<DX12Backend>>;
+    if (a_descriptorConfig.cpuViewCapacity == 0 || a_descriptorConfig.shaderViewCapacity == 0 ||
+        a_descriptorConfig.cpuSamplerCapacity == 0 || a_descriptorConfig.shaderSamplerCapacity == 0 ||
+        a_descriptorConfig.rtvCapacity == 0 || a_descriptorConfig.dsvCapacity == 0)
+    {
+        return BackendResult::failure({ErrorCategory::InvalidArgument, "DX12Backend.create.descriptor_config"});
+    }
+
+    // Adapter 選択に従って Device を生成する
+    auto deviceResult = DX12RenderDevice::create(a_selection);
+    if (!deviceResult.has_value())
+    {
+        return BackendResult::failure(*deviceResult.try_error());
+    }
+
+    // View の種類ごとに CPU 保管領域と GPU Bind 用領域を分ける
+    struct HeapSpec final
+    {
+        D3D12_DESCRIPTOR_HEAP_TYPE type;
+        std::uint32_t capacity;
+        bool isShaderVisible;
+    };
+    const std::array heapSpecs = {
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, a_descriptorConfig.cpuViewCapacity, false},
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, a_descriptorConfig.shaderViewCapacity, true},
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, a_descriptorConfig.cpuSamplerCapacity, false},
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, a_descriptorConfig.shaderSamplerCapacity, true},
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, a_descriptorConfig.rtvCapacity, false},
+        HeapSpec{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, a_descriptorConfig.dsvCapacity, false},
+    };
+    static_assert(heapSpecs.size() == static_cast<std::size_t>(DX12DescriptorHeapRole::Count));
+    auto descriptors = std::make_shared<DX12DescriptorHeapState>();
+    // 用途ごとに分離した Descriptor Heap を一括生成する
+    for (std::size_t index = 0; index < heapSpecs.size(); ++index)
+    {
+        const HeapSpec& spec = heapSpecs[index];
+        auto descriptorResult = DX12DescriptorAllocator::create(*(*deviceResult.try_value())->device(), spec.type,
+                                                                spec.capacity, spec.isShaderVisible);
+        if (!descriptorResult.has_value())
+        {
+            return BackendResult::failure(*descriptorResult.try_error());
+        }
+        descriptors->allocators[index] = descriptorResult.take_value();
+    }
+
+    // Device に依存する Queue を全種類生成し、失敗時は部分所有を公開しない
+    // GPU Queue の貸出しと Fence 管理を所有する Pool を用意する
+    auto queuePoolResult = DX12QueuePool::create(**deviceResult.try_value(), descriptors);
+    if (!queuePoolResult.has_value())
+    {
+        return BackendResult::failure(*queuePoolResult.try_error());
+    }
+
+    // CommandPool は Queue を固定せず、提出時に呼出側が借りた Queue を受け取る
+    // Command の記録・再利用・提出を管理する Pool を用意する
+    auto commandPoolResult = DX12CommandPool::create(**deviceResult.try_value(), descriptors);
+    if (!commandPoolResult.has_value())
+    {
+        return BackendResult::failure(*commandPoolResult.try_error());
+    }
+
+    // ResourcePool は Device を保持し、生成後の GPU Resource を一元管理する
+    // 常駐 GPU 資源を所有する ResourcePool を用意する
+    auto resourcePoolResult = DX12GpuResourcePool::create(**deviceResult.try_value());
+    if (!resourcePoolResult.has_value())
+    {
+        return BackendResult::failure(*resourcePoolResult.try_error());
+    }
+
+    // Mesh は必要時だけ Page を確保し、Copy Queue の転送完了後に描画へ公開する
+    auto meshPoolResult = DX12MeshPool::create(**deviceResult.try_value(), **commandPoolResult.try_value(),
+                                              **queuePoolResult.try_value());
+    if (!meshPoolResult.has_value())
+        return BackendResult::failure(*meshPoolResult.try_error());
+
+    // Shader・Root Signature・PSO を保持する Manager を生成する
+    auto pipelineResult = DX12PipelineManager::create(**deviceResult.try_value(), a_files);
+    if (!pipelineResult.has_value())
+    {
+        return BackendResult::failure(*pipelineResult.try_error());
+    }
+
+    // 生成済み Heap を借用して ViewManager を構築する
+    auto viewResult = DX12ViewManager::create(
+        **deviceResult.try_value(), *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Rtv)],
+        *descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::ShaderView)],
+        descriptors->allocators[static_cast<std::size_t>(DX12DescriptorHeapRole::Dsv)].get());
+    if (!viewResult.has_value())
+    {
+        return BackendResult::failure(*viewResult.try_error());
+    }
+    try
+    {
+        // 全生成の成功後にだけ Backend の公開状態へ所有権を移す
+        auto backend = std::make_unique<DX12Backend>(CreateToken{});
+        backend->m_device = deviceResult.take_value();
+        backend->m_descriptors = std::move(descriptors);
+        backend->m_viewManager = viewResult.take_value();
+        backend->m_pipelineManager = pipelineResult.take_value();
+        backend->m_queuePool = queuePoolResult.take_value();
+        backend->m_commandPool = commandPoolResult.take_value();
+        backend->m_resourcePool = resourcePoolResult.take_value();
+        backend->m_meshPool = meshPoolResult.take_value();
+        backend->m_resourceContext.emplace(
+            DX12ResourceContext{*backend->m_device, *backend->m_viewManager, *backend->m_pipelineManager,
+                                a_clock ? *a_clock : get_default_clock()});
+        backend->m_executionContext.emplace(DX12ExecutionContext{*backend->m_commandPool, *backend->m_queuePool});
+        return BackendResult::success(std::move(backend));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return BackendResult::failure({ErrorCategory::PlatformFailure, "DX12Backend.create.allocation"});
+    }
+}
+
+/// @brief 明示停止されていない Queue も GPU 完了後に破棄する
+DX12Backend::~DX12Backend()
+{
+    auto result = shutdown();
+    if (!result.has_value())
+    {
+        report_log_error("DX12Backend.shutdown", *result.try_error(), LogLevel::Error);
+    }
+}
+
+/// @brief 新規貸出を止め、借用中の Queue の寿命を Lease に引き継ぐ
+Result<void> DX12Backend::shutdown()
+{
+    // CommandPool の Slot 完了を先に確認してから QueuePool を停止する
+    const bool hasOwnedDevice = m_device != nullptr;
+    Result<void> stopResult = Result<void>::success();
+    if (m_swapChain)
+    {
+        stopResult = m_swapChain->shutdown();
+        if (!stopResult.has_value())
+        {
+            return stopResult;
+        }
+        m_swapChain.reset();
+    }
+    // Graph と SwapChain の停止後に借用入口を閉じ、Manager は Heap より先に破棄する
+    m_resourceContext.reset();
+    m_executionContext.reset();
+    if (m_meshPool)
+    {
+        // Mesh の全参照を待ってから、転送に使う Command / Queue の入口を閉じる
+        stopResult = m_meshPool->shutdown();
+        m_meshPool.reset();
+    }
+    if (m_resourcePool)
+    {
+        auto resourceStopResult = m_resourcePool->shutdown();
+        if (stopResult.has_value())
+            stopResult = std::move(resourceStopResult);
+        m_resourcePool.reset();
+    }
+    if (m_commandPool)
+    {
+        // GPU 資源の利用が終わるまで Command の保持参照を維持する
+        auto commandStopResult = m_commandPool->shutdown();
+        if (stopResult.has_value())
+        {
+            stopResult = std::move(commandStopResult);
+        }
+        m_commandPool.reset();
+    }
+    if (m_queuePool)
+    {
+        auto queueStopResult = m_queuePool->shutdown();
+        if (stopResult.has_value())
+        {
+            stopResult = std::move(queueStopResult);
+        }
+        m_queuePool.reset();
+    }
+    // 借用が残る失敗経路では Pool の共有状態が GPU 完了まで Heap を保持する
+    m_pipelineManager.reset();
+    m_viewManager.reset();
+    m_descriptors.reset();
+    m_device.reset();
+
+    // 借用中の Object が残る失敗経路では誤検出を避け、正常停止した最初の一回だけ報告する
+    if (hasOwnedDevice && stopResult.has_value())
+    {
+        DX12ResourceLeakChecker::report_live_objects();
+    }
+    return stopResult;
+}
+
+/// @brief Backend が稼働する間だけ Device を借用させる
+IRenderDevice* DX12Backend::get_render_device() noexcept
+{
+    return m_device.get();
+}
+
+/// @brief Backend が所有する QueuePool の借用 Pointer を返す
+IQueuePool* DX12Backend::get_queue_pool() noexcept
+{
+    return m_queuePool.get();
+}
+
+/// @brief Backend が所有する CommandPool の借用 Pointer を返す
+ICommandPool* DX12Backend::get_command_pool() noexcept
+{
+    return m_commandPool.get();
+}
+
+/// @brief Backend が所有する ResourcePool の借用 Pointer を返す
+IGpuResourcePool* DX12Backend::get_resource_pool() noexcept
+{
+    return m_resourcePool.get();
+}
+
+/// @brief Backend 稼働中の MeshPool の借用 Pointer を返す
+IMeshPool* DX12Backend::get_mesh_pool() noexcept
+{
+    return m_meshPool.get();
+}
+
+/// @brief 用途に対応する Heap の Allocator を Backend 稼働中だけ貸す
+DX12DescriptorAllocator* DX12Backend::get_descriptor_allocator(DX12DescriptorHeapRole a_role) noexcept
+{
+    const std::size_t index = static_cast<std::size_t>(a_role);
+    return m_descriptors && index < m_descriptors->allocators.size() ? m_descriptors->allocators[index].get() : nullptr;
+}
+
+/// @brief 全生成基盤が揃う稼働期間だけ Resource Context を貸す
+const DX12ResourceContext *DX12Backend::get_resource_context() const noexcept
+{
+    return m_resourceContext ? &*m_resourceContext : nullptr;
+}
+
+/// @brief Pool の生成後から停止まで Execution Context を貸す
+const DX12ExecutionContext *DX12Backend::get_execution_context() const noexcept
+{
+    return m_executionContext ? &*m_executionContext : nullptr;
+}
+
+/// @brief Graphics Queue と RTV Allocator を Backend の所有下に保持する
+Result<void> DX12Backend::create_swap_chain(void* a_windowHandle, const DX12SwapChainConfig& a_config)
+{
+    // SwapChain は Backend が所有する Graphics Queue と RTV Allocator を借用する
+    if (!m_device || !m_queuePool || m_swapChain)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain"});
+    }
+    const auto *resources = get_resource_context();
+    if (!resources)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12Backend.create_swap_chain.context"});
+    }
+    // SwapChain 専用に Graphics Queue の Lease を確保する
+    auto leaseResult = m_queuePool->acquire(QueueType::Graphics);
+    if (!leaseResult.has_value())
+    {
+        return Result<void>::failure(*leaseResult.try_error());
+    }
+
+    // SwapChain を 生成する
+    // Window と生成用 Context を接続して SwapChain を所有する
+    auto result = DX12SwapChain::create(*resources, leaseResult.take_value(), a_windowHandle, a_config);
+    if (!result.has_value())
+    {
+        return Result<void>::failure(*result.try_error());
+    }
+    m_swapChain = result.take_value();
+    return Result<void>::success();
+}
+
+/// @brief Backend 停止後の借用を拒否する
+DX12SwapChain* DX12Backend::get_swap_chain() noexcept
+{
+    return m_swapChain.get();
+}
+
+/// @brief BackBuffer の全借用が終了した境界で生成時 Flags を切り替える
+Result<void> DX12Backend::replace_swap_chain(void *a_windowHandle, const DX12SwapChainConfig &a_config)
+{
+    if (m_swapChain)
+    {
+        // 旧 SwapChain を停止してから新しい表示条件へ切り替える
+        auto stopped = m_swapChain->shutdown();
+        if (!stopped.has_value())
+        {
+            return stopped;
+        }
+        m_swapChain.reset();
+    }
+    return create_swap_chain(a_windowHandle, a_config);
+}
+} // namespace cue::dx12

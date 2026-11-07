@@ -1,0 +1,21 @@
+{
+    "name": "cue-engine",
+    "version-string": "0.1.0",
+    "builtin-baseline": "19780d9cdf84d0944cf9a318666703b89ab6629c",
+    "dependencies": [
+        {
+            "name": "imgui",
+            "features": [
+                "docking-experimental",
+                "win32-binding",
+                "dx12-binding"
+            ]
+        }
+    ],
+    "overrides": [
+        {
+            "name": "imgui",
+            "version": "1.92.9"
+        }
+    ]
+}

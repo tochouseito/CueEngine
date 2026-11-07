@@ -1,0 +1,491 @@
+#include <DX12/DX12FrameGraphExecutor.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <new>
+#include <vector>
+
+#include <pix3.h>
+#include <wrl/client.h>
+
+#include <DX12/DX12CommandPool.h>
+#include <DX12/DX12FrameGraphResources.h>
+#include <DX12/DX12GpuResource.h>
+
+namespace cue::dx12
+{
+namespace
+{
+/// @brief 論理 State を従来の ResourceBarrier API が受け取る State に変換する
+bool native_state(FrameGraphResourceState a_state, D3D12_RESOURCE_STATES &a_native) noexcept
+{
+    switch (a_state)
+    {
+    case FrameGraphResourceState::Common:
+        a_native = D3D12_RESOURCE_STATE_COMMON;
+        return true;
+    case FrameGraphResourceState::GenericRead:
+        a_native = D3D12_RESOURCE_STATE_GENERIC_READ;
+        return true;
+    case FrameGraphResourceState::CopySource:
+        a_native = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        return true;
+    case FrameGraphResourceState::CopyDestination:
+        a_native = D3D12_RESOURCE_STATE_COPY_DEST;
+        return true;
+    case FrameGraphResourceState::ShaderRead:
+        a_native = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        return true;
+    case FrameGraphResourceState::PixelShaderRead:
+        a_native = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        return true;
+    case FrameGraphResourceState::NonPixelShaderRead:
+        a_native = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        return true;
+    case FrameGraphResourceState::UnorderedAccess:
+        a_native = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        return true;
+    case FrameGraphResourceState::RenderTarget:
+        a_native = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        return true;
+    case FrameGraphResourceState::DepthRead:
+        a_native = D3D12_RESOURCE_STATE_DEPTH_READ;
+        return true;
+    case FrameGraphResourceState::DepthWrite:
+        a_native = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        return true;
+    case FrameGraphResourceState::Present:
+        a_native = D3D12_RESOURCE_STATE_PRESENT;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// @brief 外部 Texture の論理 Format と Native Format の一致を検証する
+bool matches_format(GpuTextureFormat a_format, DXGI_FORMAT a_native) noexcept
+{
+    switch (a_format)
+    {
+    case GpuTextureFormat::Rgba8Unorm:
+        return a_native == DXGI_FORMAT_R8G8B8A8_UNORM;
+    case GpuTextureFormat::Bgra8Unorm:
+        return a_native == DXGI_FORMAT_B8G8R8A8_UNORM;
+    case GpuTextureFormat::Rgba16Float:
+        return a_native == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case GpuTextureFormat::R32Float:
+        return a_native == DXGI_FORMAT_R32_FLOAT;
+    case GpuTextureFormat::D32Float:
+        return a_native == DXGI_FORMAT_D32_FLOAT;
+    default:
+        return false;
+    }
+}
+
+/// @brief 使用時と Graph 境界の State に必要な Resource Flag を確認する
+bool supports_state(const D3D12_RESOURCE_DESC &a_desc, FrameGraphResourceState a_state) noexcept
+{
+    if (a_state == FrameGraphResourceState::RenderTarget)
+    {
+        return (a_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+    }
+    if (a_state == FrameGraphResourceState::DepthRead || a_state == FrameGraphResourceState::DepthWrite)
+    {
+        return (a_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+    }
+    if (a_state == FrameGraphResourceState::UnorderedAccess)
+    {
+        return (a_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+    }
+    return true;
+}
+
+/// @brief 誤った Native Resource を Binding しないよう形状と必要 Flag を調べる
+bool matches_resource(const FrameGraphResourcePlan &a_planned, ID3D12Resource &a_resource) noexcept
+{
+    // 外部 Resource の Native 形状を論理宣言と照合する
+    const auto desc = a_resource.GetDesc();
+    if (!supports_state(desc, a_planned.initialState) || !supports_state(desc, a_planned.finalState))
+    {
+        return false;
+    }
+    if (a_planned.kind == GpuResourceKind::Buffer)
+    {
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || desc.Width < a_planned.bufferDesc.byteSize)
+        {
+            return false;
+        }
+        D3D12_HEAP_PROPERTIES heap{};
+        if (FAILED(a_resource.GetHeapProperties(&heap, nullptr)))
+        {
+            return false;
+        }
+        const auto memory = a_planned.bufferDesc.memory;
+        if ((memory == GpuMemoryUsage::Default && heap.Type != D3D12_HEAP_TYPE_DEFAULT) ||
+            (memory == GpuMemoryUsage::Upload && heap.Type != D3D12_HEAP_TYPE_UPLOAD) ||
+            (memory == GpuMemoryUsage::Readback && heap.Type != D3D12_HEAP_TYPE_READBACK))
+        {
+            return false;
+        }
+    }
+    else if (a_planned.kind == GpuResourceKind::Texture2D)
+    {
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != a_planned.textureDesc.width ||
+            desc.Height != a_planned.textureDesc.height || desc.MipLevels != a_planned.textureDesc.mipLevels ||
+            desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1 ||
+            !matches_format(a_planned.textureDesc.format, desc.Format))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
+
+    return (!a_planned.needsRenderTarget || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0) &&
+           (!a_planned.needsDepthStencil || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0) &&
+           (!a_planned.needsUnorderedAccess || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0);
+}
+
+/// @brief 検証済み論理 Barrier を Native Barrier へ変換する
+bool native_barrier(const FrameGraphBarrierPlan &a_planned, std::span<ID3D12Resource *const> a_resources,
+                    std::uint64_t a_graphId, D3D12_RESOURCE_BARRIER &a_native) noexcept
+{
+    if (a_planned.resource.graphId != a_graphId || a_planned.resource.index >= a_resources.size())
+    {
+        return false;
+    }
+    auto *resource = a_resources[a_planned.resource.index];
+    if (!resource)
+    {
+        return false;
+    }
+    if (a_planned.kind == FrameGraphBarrierKind::UnorderedAccess)
+    {
+        a_native.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        a_native.UAV.pResource = resource;
+        return true;
+    }
+    if (a_planned.kind != FrameGraphBarrierKind::Transition ||
+        !native_state(a_planned.before, a_native.Transition.StateBefore) ||
+        !native_state(a_planned.after, a_native.Transition.StateAfter))
+    {
+        return false;
+    }
+    a_native.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    a_native.Transition.pResource = resource;
+    a_native.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    return true;
+}
+} // namespace
+
+/// @brief Executor の一回の記録に限って Native Resource 表を借りる
+DX12FrameGraphPassContext::DX12FrameGraphPassContext(std::uint64_t a_graphId,
+                                                     std::span<ID3D12Resource *const> a_resources) noexcept
+    : m_graphId(a_graphId), m_resources(a_resources)
+{
+}
+
+/// @brief Callback 内で他 Graph の Handle を誤用した場合は Resource を渡さない
+ID3D12Resource *DX12FrameGraphPassContext::resource(FrameGraphResourceHandle a_handle) const noexcept
+{
+    if (a_handle.graphId == 0 || a_handle.graphId != m_graphId || a_handle.index >= m_resources.size())
+    {
+        return nullptr;
+    }
+    return m_resources[a_handle.index];
+}
+
+/// @brief 不正な Binding や Barrier を記録前に拒否し、各 Pass の Activation を先に発行する
+Result<void> DX12FrameGraphExecutor::record(const FrameGraphPlan &a_plan, DX12FrameGraphResources &a_resources,
+                                            std::span<const DX12FrameGraphExternalResource> a_external,
+                                            std::span<const dx12FrameGraphPassCallback> a_callbacks,
+                                            DX12GpuCommandContext &a_context)
+{
+    return record_range(a_plan, a_resources, a_external, a_callbacks, a_context, 0, a_plan.passes().size(), true);
+}
+
+/// @brief 描画枠の Binding と Native Barrier を全提出に先行して検証する
+Result<void> DX12FrameGraphExecutor::prepare(const FrameGraphPlan &a_plan, DX12FrameGraphResources &a_resources,
+                                             std::span<const DX12FrameGraphExternalResource> a_external,
+                                             DX12GpuCommandContext &a_context, DX12FrameGraphPrepared &a_prepared)
+{
+    using RecordResult = Result<void>;
+    a_prepared.planId = 0;
+    if (!a_resources.matches_plan(a_plan) || a_context.state() != CommandState::Recording ||
+        !a_context.command_list() || a_plan.passes().size() > (std::numeric_limits<UINT>::max)())
+    {
+        return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.prepare.context"});
+    }
+    const std::uint64_t graphId = !a_plan.resources().empty() ? a_plan.resources().front().handle.graphId
+                                  : !a_plan.passes().empty()  ? a_plan.passes().front().handle.graphId
+                                                              : 0;
+    Microsoft::WRL::ComPtr<ID3D12Device> commandDevice;
+    const HRESULT deviceResult = a_context.command_list()->GetDevice(IID_PPV_ARGS(&commandDevice));
+    if (FAILED(deviceResult))
+    {
+        return RecordResult::failure(
+            {ErrorCategory::PlatformFailure, "ID3D12GraphicsCommandList.GetDevice", deviceResult});
+    }
+    try
+    {
+        a_prepared.resources.assign(a_plan.resources().size(), nullptr);
+        a_prepared.hasBinding.assign(a_plan.resources().size(), false);
+        // 論理 Resource の順序で Native Pointer の参照表を作る
+        for (std::size_t index = 0; index < a_plan.resources().size(); ++index)
+        {
+            const auto &planned = a_plan.resources()[index];
+            if (planned.handle.graphId != graphId || planned.handle.index != index)
+            {
+                return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.plan"});
+            }
+            if (!planned.isImported && planned.firstUse)
+            {
+                // Graph が所有する一時 Resource の実体を参照表へ登録する
+                auto *transient = a_resources.resource(planned.handle);
+                if (!transient)
+                {
+                    return RecordResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.transient"});
+                }
+                Microsoft::WRL::ComPtr<ID3D12Device> resourceDevice;
+                if (FAILED(transient->resource()->GetDevice(IID_PPV_ARGS(&resourceDevice))) ||
+                    resourceDevice.Get() != commandDevice.Get())
+                {
+                    return RecordResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.transient_device"});
+                }
+                a_prepared.resources[index] = transient->resource();
+            }
+        }
+        // 外部 Binding の重複や Graph 所属の不一致を拒否する
+        for (const auto &binding : a_external)
+        {
+            if (binding.handle.graphId != graphId || binding.handle.index >= a_plan.resources().size() ||
+                !a_plan.resources()[binding.handle.index].isImported || a_prepared.hasBinding[binding.handle.index] ||
+                !binding.resource)
+            {
+                return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.binding"});
+            }
+            // 複数の論理 Handle が同じ Native Resource を指すと State 計画が分岐する
+            for (const auto *bound : a_prepared.resources)
+            {
+                if (bound == binding.resource)
+                {
+                    return RecordResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.duplicate_resource"});
+                }
+            }
+            Microsoft::WRL::ComPtr<ID3D12Device> resourceDevice;
+            if (FAILED(binding.resource->GetDevice(IID_PPV_ARGS(&resourceDevice))) ||
+                resourceDevice.Get() != commandDevice.Get() ||
+                !matches_resource(a_plan.resources()[binding.handle.index], *binding.resource))
+            {
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.external_resource"});
+            }
+            a_prepared.resources[binding.handle.index] = binding.resource;
+            a_prepared.hasBinding[binding.handle.index] = true;
+        }
+        // 前回と参照先が変わった Resource に合わせて準備情報を更新する
+        for (std::size_t index = 0; index < a_plan.resources().size(); ++index)
+        {
+            if (a_plan.resources()[index].isImported && !a_prepared.hasBinding[index])
+            {
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.missing_binding"});
+            }
+        }
+
+        a_prepared.before.resize(a_plan.passes().size());
+        a_prepared.after.resize(a_plan.passes().size());
+        a_prepared.initial.clear();
+        a_prepared.final.clear();
+        // 確保済みの Barrier 配列を再利用し、今回の内容へ置き換える
+        for (auto &barriers : a_prepared.before)
+            barriers.clear();
+        for (auto &barriers : a_prepared.after)
+            barriers.clear();
+        // 各 Pass の前後に必要な遷移を Native Barrier へ変換する
+        for (std::size_t index = 0; index < a_plan.passes().size(); ++index)
+        {
+            if (a_plan.passes()[index].handle.graphId != graphId ||
+                a_plan.passes()[index].barriersBefore.size() > (std::numeric_limits<UINT>::max)() ||
+                a_plan.passes()[index].barriersAfter.size() > (std::numeric_limits<UINT>::max)() ||
+                a_resources.barriers_before_pass(index).size() > (std::numeric_limits<UINT>::max)())
+            {
+                return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.pass"});
+            }
+            for (const auto &barrier : a_plan.passes()[index].barriersBefore)
+            {
+                D3D12_RESOURCE_BARRIER native{};
+                if (!native_barrier(barrier, a_prepared.resources, graphId, native))
+                {
+                    return RecordResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.barrier"});
+                }
+                a_prepared.before[index].push_back(native);
+            }
+            for (const auto &barrier : a_plan.passes()[index].barriersAfter)
+            {
+                D3D12_RESOURCE_BARRIER native{};
+                if (!native_barrier(barrier, a_prepared.resources, graphId, native))
+                {
+                    return RecordResult::failure(
+                        {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.barrier_after"});
+                }
+                a_prepared.after[index].push_back(native);
+            }
+        }
+        if (a_plan.final_barriers().size() > (std::numeric_limits<UINT>::max)())
+        {
+            return RecordResult::failure(
+                {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.final_barrier_count"});
+        }
+        // 外部資源の復帰と Present に必要な最終 Barrier を変換する
+        for (const auto &barrier : a_plan.final_barriers())
+        {
+            D3D12_RESOURCE_BARRIER native{};
+            if (!native_barrier(barrier, a_prepared.resources, graphId, native))
+            {
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record.final_barrier"});
+            }
+            a_prepared.final.push_back(native);
+        }
+
+        // Graph 開始前に必要な初期遷移も同じ形式へ変換する
+        for (const auto &barrier : a_plan.initial_barriers())
+        {
+            D3D12_RESOURCE_BARRIER native{};
+            if (!native_barrier(barrier, a_prepared.resources, graphId, native))
+            {
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.prepare.initial_barrier"});
+            }
+            a_prepared.initial.push_back(native);
+        }
+        a_prepared.planId = a_plan.id();
+        a_prepared.device = commandDevice.Get();
+        return RecordResult::success();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return RecordResult::failure({ErrorCategory::PlatformFailure, "DX12FrameGraphExecutor.prepare.allocation"});
+    }
+}
+
+/// @brief State の遷移前後に Queue が扱えない Graphics 専用 Bit を含めない
+bool supports_barrier_queue(const D3D12_RESOURCE_BARRIER &a_barrier, QueueType a_queue) noexcept
+{
+    if (a_queue == QueueType::Copy && a_barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
+        return false;
+    if (a_queue == QueueType::Graphics || a_barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+    {
+        return true;
+    }
+    // 対象 Queue が扱えない Resource State を記録前に拒否する
+    const auto states = a_barrier.Transition.StateBefore | a_barrier.Transition.StateAfter;
+    const auto allowed = a_queue == QueueType::Copy
+                             ? D3D12_RESOURCE_STATE_COPY_SOURCE | D3D12_RESOURCE_STATE_COPY_DEST
+                             : D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_COPY_SOURCE |
+                                   D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    return (states & ~allowed) == 0;
+}
+
+/// @brief 検証済み実行表を再利用し、指定範囲の Callback と Barrier だけを記録する
+Result<void> DX12FrameGraphExecutor::record_prepared(const FrameGraphPlan &a_plan, DX12FrameGraphResources &a_resources,
+                                                     const DX12FrameGraphPrepared &a_prepared,
+                                                     std::span<const dx12FrameGraphPassCallback> a_callbacks,
+                                                     DX12GpuCommandContext &a_context, std::size_t a_firstPass,
+                                                     std::size_t a_passCount, bool a_includeFinal,
+                                                     bool a_includeInitial)
+{
+    using RecordResult = Result<void>;
+    if (a_prepared.planId != a_plan.id() || !a_resources.matches_plan(a_plan) ||
+        a_prepared.resources.size() != a_plan.resources().size() ||
+        a_prepared.before.size() != a_plan.passes().size() || a_prepared.after.size() != a_plan.passes().size() ||
+        a_context.state() != CommandState::Recording || !a_context.command_list() ||
+        a_callbacks.size() != a_passCount || a_firstPass > a_plan.passes().size() ||
+        a_passCount > a_plan.passes().size() - a_firstPass ||
+        ((a_includeInitial || a_includeFinal) && a_context.type() != QueueType::Graphics))
+    {
+        return RecordResult::failure(
+            {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.context"});
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device> commandDevice;
+    if (FAILED(a_context.command_list()->GetDevice(IID_PPV_ARGS(&commandDevice))) ||
+        commandDevice.Get() != a_prepared.device)
+        return RecordResult::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.device"});
+    // Barrier の Queue 適合性は記録前に確認し、失敗時に途中の Callback を呼ばない
+    // 指定範囲の Barrier を対象 Queue に記録できるか先に検証する
+    for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
+    {
+        if (!a_callbacks[index - a_firstPass] || a_plan.passes()[index].queue != a_context.type())
+            return RecordResult::failure(
+                {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.pass"});
+        for (const auto &barrier : a_prepared.before[index])
+            if (!supports_barrier_queue(barrier, a_context.type()))
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.before_queue"});
+        for (const auto &barrier : a_prepared.after[index])
+            if (!supports_barrier_queue(barrier, a_context.type()))
+                return RecordResult::failure(
+                    {ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_prepared.after_queue"});
+    }
+    const std::uint64_t graphId = !a_plan.resources().empty() ? a_plan.resources().front().handle.graphId
+                                  : !a_plan.passes().empty()  ? a_plan.passes().front().handle.graphId
+                                                              : 0;
+    DX12FrameGraphPassContext passContext(graphId, a_prepared.resources);
+    auto &list = *a_context.command_list();
+    if (a_includeInitial && !a_prepared.initial.empty())
+        list.ResourceBarrier(static_cast<UINT>(a_prepared.initial.size()), a_prepared.initial.data());
+    // Pass ごとに Alias 有効化・状態遷移・本体・終了遷移を順に記録する
+    for (std::size_t index = a_firstPass; index < a_firstPass + a_passCount; ++index)
+    {
+        const auto aliasing = a_resources.barriers_before_pass(index);
+        if (!aliasing.empty())
+            list.ResourceBarrier(static_cast<UINT>(aliasing.size()), aliasing.data());
+        const auto &before = a_prepared.before[index];
+        if (!before.empty())
+            list.ResourceBarrier(static_cast<UINT>(before.size()), before.data());
+        // Native Event 名を Plan の Pass 名へ揃え、Timestamp の区間と同じ範囲を Capture で識別する
+        const auto &name = a_plan.passes()[index].name;
+        PIXBeginEvent(&list, PIX_COLOR_DEFAULT, "%s", name.c_str());
+        // 抽象 Pass の実行結果を受け取り、失敗時は後続を記録しない
+        auto callback = a_callbacks[index - a_firstPass](list, passContext);
+        PIXEndEvent(&list);
+        if (!callback.has_value())
+            return callback;
+        const auto &after = a_prepared.after[index];
+        if (!after.empty())
+            list.ResourceBarrier(static_cast<UINT>(after.size()), after.data());
+    }
+    if (a_includeFinal && !a_prepared.final.empty())
+        list.ResourceBarrier(static_cast<UINT>(a_prepared.final.size()), a_prepared.final.data());
+    return RecordResult::success();
+}
+
+/// @brief 既存の一回記録 API は一時実行表を生成してから指定範囲を記録する
+Result<void> DX12FrameGraphExecutor::record_range(const FrameGraphPlan &a_plan, DX12FrameGraphResources &a_resources,
+                                                  std::span<const DX12FrameGraphExternalResource> a_external,
+                                                  std::span<const dx12FrameGraphPassCallback> a_callbacks,
+                                                  DX12GpuCommandContext &a_context, std::size_t a_firstPass,
+                                                  std::size_t a_passCount, bool a_includeFinal)
+{
+    if (a_callbacks.size() != a_plan.passes().size() || a_firstPass > a_callbacks.size() ||
+        a_passCount > a_callbacks.size() - a_firstPass)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphExecutor.record_range.callbacks"});
+    DX12FrameGraphPrepared prepared;
+    // 参照表と Barrier の準備を済ませてから範囲記録へ進む
+    auto preparation = prepare(a_plan, a_resources, a_external, a_context, prepared);
+    if (!preparation.has_value())
+        return preparation;
+    return record_prepared(a_plan, a_resources, prepared, a_callbacks.subspan(a_firstPass, a_passCount), a_context,
+                           a_firstPass, a_passCount, a_includeFinal,
+                           a_firstPass == 0 && a_context.type() == QueueType::Graphics);
+}
+} // namespace cue::dx12

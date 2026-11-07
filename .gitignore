@@ -359,5 +359,19 @@ MigrationBackup/
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
 
+# Local CMake configuration
+CMakeUserPresets.json
+
+# Serena の PC ごとの設定とキャッシュ
+/.serena/
+
+# Project ごとの生成されたゲーム成果物と CMake 中間生成物
+[Bb]uild/
+[Ii]ntermediate/
+
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# vcpkg の生成物は管理せず、Manifest と License のみを記録する
+/ThirdParty/vcpkg_installed/
+/ThirdParty/WinPixEventRuntime/

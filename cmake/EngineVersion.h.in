@@ -1,0 +1,7 @@
+#pragma once
+
+// 配布物と実行 File が同じ Version の正本を参照する
+#define CUE_ENGINE_VERSION "@CUE_ENGINE_VERSION@"
+#define CUE_ENGINE_BUILD_ID "@CUE_ENGINE_BUILD_ID@"
+#define CUE_ENGINE_SDK_ABI_VERSION @CUE_ENGINE_SDK_ABI_VERSION@
+#cmakedefine01 CUE_DISTRIBUTION_BUILD

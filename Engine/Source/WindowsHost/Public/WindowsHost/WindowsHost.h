@@ -1,0 +1,198 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <Foundation/Result.h>
+#include <Passes/MainFrameGraph.h>
+#include <Platform/Clock.h>
+#include <Platform/Window.h>
+#include <Profiler/Profiler.h>
+#include <RHI/FrameExecution.h>
+#include <RHI/Presentation.h>
+#include <Runtime/FrameController.h>
+#include <WindowsHost/HostLogging.h>
+#include <WindowsHost/InputLatency.h>
+#include <WindowsHost/PerformanceSettings.h>
+#include <WindowsHost/StoragePaths.h>
+
+namespace cue
+{
+class IBackend;
+
+/// @brief Host 固有機能の Window 初期化、Main、Update と停止を抽象契約で接続する
+///
+/// 初期化、Main と停止は構築 Thread、Update は Frame 設定の実行 Thread から呼ぶ
+/// 捕捉先は Host の shutdown 完了まで生存させる。Callback は再入しない
+struct WindowsHostCallbacks final
+{
+    std::function<Result<void>(Window &)> initializeWindow;
+    FrameCallback update;
+    // Runtime と Graph の停止後、Backend と Window の破棄前に呼ぶ
+    // 失敗時は下位 Owner を保持し、次の shutdown で再試行する
+    std::function<Result<void>()> shutdownWindow;
+    // SwapChain 生成後、Graph 構築前に呼ぶ。具体 Backend 型は上位の実装側で解釈する
+    // CPU Snapshot 容量と GPU 描画枠容量を別々に渡す
+    std::function<Result<void>(IBackend &, std::uint32_t, std::uint32_t)> initializeRenderer;
+    // Message Pump 後、採用 Frame の Update より先に構築 Thread で呼ぶ
+    // ImGui 等の具体型は捕捉先に閉じ、失敗時は Frame の投入を止める
+    FrameCallback main;
+    // Graph の記録・提出・取消だけを囲む。Present は排他 / Snapshot の借用終了後に実行する
+    std::function<Result<void>(std::uint64_t, std::stop_token, const FrameCallback &)> recordFrame;
+    // CPU / GPU を排出した境界でだけ枠数を変更する。Context の所有は上位 Host に残す
+    std::function<Result<void>(IBackend &, std::uint32_t, std::uint32_t)> reconfigureRenderer;
+    // 固定ゲーム更新。Update Thread から呼ぶ。既存 update は Frame ごとの抽出処理に使う
+    simulationCallback simulationUpdate;
+    // 更新した World の前後状態と補間係数を描画 Snapshot へ複製する
+    frameSnapshotCallback prepareFrame;
+    // 単一 Thread の UI 構築前に上位 Renderer の GPU Ring を非待機で確認する
+    std::function<Result<bool>()> isRendererReady;
+    // Main 完了後、実際に反映した入力を移す。未指定なら到達件数だけ記録し、反映標本は作らない
+    std::function<Result<void>(std::vector<InputEventTiming> &)> captureInput;
+    // Render Callback 復帰後、その入力 Snapshot が描画されたか返す。未指定なら Host の描画を採用する
+    std::function<Result<bool>(std::uint64_t)> isInputRendered;
+    // 初期化 Thread で一度だけ呼び、Backend の一意所有権を Host へ渡す
+    // FileSystem と Clock は Backend の停止まで借用可能。未指定なら既定 Factory を使う
+    // Factory は渡された Clock を Backend の CPU 計測にも接続する
+    std::function<Result<std::unique_ptr<IBackend>>(IFileSystem *, Clock &)> createBackend;
+    // Window の Close 要求を Pump 後の Owner Thread で確認する。false は Window の要求を取り消す
+    // 未指定ならそのまま終了する。Editor の未保存確認は Native Message Handler の外で行う
+    std::function<Result<bool>()> shouldClose;
+};
+
+/// @brief 上位の起動処理から Host へ渡す起動設定の所有値
+struct WindowsHostConfig final
+{
+    // Window の初期 Title と Client 寸法
+    WindowDescriptor window;
+    // Runtime の CPU Frame と待機の初期条件
+    FrameControllerDesc frame;
+    PresentationConfig presentation;
+    // Editor 等の具体型を公開せず、追加描画と表示 Pass の所有権を受け取る
+    MainFrameGraphConfig graph;
+    // 上位アプリの処理を Host の各段階へ接続する Callback 群
+    WindowsHostCallbacks callbacks;
+    StoragePathsConfig storage;
+    // 未指定なら Windows 実装を生成する。指定された実装も Host が所有する
+    std::unique_ptr<IFileSystem> fileSystem;
+    HostLoggingConfig logging;
+    GpuFrameConfig gpu;
+    // 実行中に受け付ける性能設定の公開範囲
+    PerformanceSettingsPolicy performancePolicy;
+    // 固定更新・可変更新と追い付き上限の指定
+    SimulationConfig simulation;
+    // 未指定なら Host が時計を所有する。指定時は全利用 Thread と Host の停止完了まで借用する
+    Clock *clock = nullptr;
+};
+
+/// @brief Windows の Window、Runtime、Renderer Backend を所有し、終了まで Message を処理する
+///
+/// 構築 Thread が初期化、Message Pump、停止、破棄を行い、再入しない
+class WindowsHost final
+{
+  public:
+    /// @brief Frame と SwapChain 設定を所有値で保持する
+    explicit WindowsHost(WindowsHostConfig a_config);
+
+    /// @brief 明示停止がない場合も Window を解放する
+    ~WindowsHost();
+
+    WindowsHost(const WindowsHost &) = delete;
+    WindowsHost &operator=(const WindowsHost &) = delete;
+
+    /// @brief Window、Renderer Backend、Runtime を作成して表示する
+    ///
+    /// 構築 Thread から一度だけ呼ぶ。失敗時は部分資源を破棄して停止済みにする
+    [[nodiscard]] Result<void> initialize();
+
+    /// @brief 初期化 Callback から停止完了まで FileSystem を非所有で借用する
+    /// 構築 Thread だけで取得する。停止後は nullptr を返す
+    [[nodiscard]] IFileSystem *file_system() const noexcept;
+    /// @brief 入力・Frame・表示の共通時計を初期化中から停止まで Owner Thread へ借用する
+    [[nodiscard]] Clock *clock() const noexcept;
+    /// @brief FileSystem と同じ借用期間の保存先を返す
+    [[nodiscard]] const StoragePaths *storage_paths() const noexcept;
+
+    /// @brief 初期化 Callback から停止完了まで Logger を非所有で借用する
+    /// 構築 Thread だけで取得し、Worker 等の借用先は shutdown より前に停止する
+    [[nodiscard]] ILogger *logger() const noexcept;
+    /// @brief この起動で生成したログ File の Path を借用する。File 無効時は nullptr
+    /// 構築 Thread のみ。shutdown 完了で失効する
+    [[nodiscard]] const Path *log_file_path() const noexcept;
+
+    /// @brief Window Event を処理し、継続中なら true を返す
+    ///
+    /// 構築 Thread から呼ぶ。失敗時も shutdown を呼ぶ
+    [[nodiscard]] Result<bool> step();
+
+    /// @brief 初期化後から Host 破棄まで Registry を借用する。Owner 専用、登録は Worker 停止中に行う
+    [[nodiscard]] Profiler *profiler() const noexcept;
+    /// @brief 全計測の所有 Snapshot を返す。Owner 専用で停止後も利用できる
+    [[nodiscard]] Result<ProfilerSnapshot> profiler_snapshot() const;
+
+    /// @brief 入力到達から対応 Frame の Present / CPU 完了までの統計を返す。Owner Thread 専用
+    [[nodiscard]] Result<InputLatencyInfo> input_latency_info() const;
+
+    /// @brief 実行中の CPU Frame 進行状態を構築 Thread へ返す
+    ///
+    /// Runtime 停止後は InvalidState を返す。GPU 完了状態は表さない
+    [[nodiscard]] Result<FrameProgress> frame_progress() const;
+
+    /// @brief 実行中の CPU Frame 時間と FPS 待機の集計を Owner Thread に返す
+    [[nodiscard]] Result<FrameTimingInfo> frame_timing_info() const;
+
+    /// @brief Graph 記録・GPU 完了待機・Present と完了済 GPU Pass の統計を返す
+    [[nodiscard]] Result<MainFrameGraphPerformance> graph_performance() const;
+
+    /// @brief Owner Thread で設定要求を保存する。UI Callback 内でも呼べる。適用は次の静止境界
+    [[nodiscard]] Result<void> request_performance_settings(PerformanceSettings a_settings);
+    /// @brief 最後に適用できた設定の所有値を返す。Owner Thread 専用
+    [[nodiscard]] Result<PerformanceSettings> performance_settings() const;
+    /// @brief 要求値、実効値と表示同期の Fallback 理由を Owner Thread へ返す
+    [[nodiscard]] Result<PerformanceSettingsStatus> performance_settings_status() const;
+    /// @brief 未適用の要求があるか返す。Owner Thread 専用
+    [[nodiscard]] bool has_pending_performance_settings() const noexcept;
+    /// @brief 開発者が更新周期を変更する。ユーザーの FPS 設定と独立し、CPU 静止境界で適用する
+    [[nodiscard]] Result<void> request_simulation_config(SimulationConfig a_config);
+    /// @brief Owner Thread へ確定 Frame の更新 / 補間情報を所有値で返す
+    [[nodiscard]] Result<FrameSimulationInfo> frame_simulation_info(std::uint64_t a_frame) const;
+
+    /// @brief Runtime と Backend を停止してから Window を破棄し、Message を回収する
+    ///
+    /// 構築 Thread から複数回呼べる。最初の Error を返す
+    /// 上位の停止 Callback が失敗した場合は Backend / Window を保持し、shutdown を再試行する
+    [[nodiscard]] Result<void> shutdown();
+
+  private:
+    class State;
+
+    enum class Lifecycle
+    {
+        Uninitialized,
+        Running,
+        Stopped,
+    };
+
+    WindowsHostConfig m_config;
+    std::thread::id m_ownerId;
+    // 実行資源の停止後も最終値を保持し、Producer より後に破棄する
+    std::unique_ptr<Profiler> m_profiler;
+    std::unique_ptr<State> m_state;
+    Lifecycle m_lifecycle = Lifecycle::Uninitialized;
+    bool m_isStepping = false;
+    // 安全な Frame 境界まで保持する未適用の設定要求
+    std::optional<PerformanceSettings> m_pendingSettings;
+    // 性能設定と同じ停止境界で反映する Simulation の変更要求
+    std::optional<SimulationConfig> m_pendingSimulation;
+    bool m_isGraphRebuildable = true;
+
+    /// @brief CPU / GPU を静止してから設定を反映する。失敗後は shutdown する
+    [[nodiscard]] Result<void> apply_pending_settings();
+};
+} // namespace cue

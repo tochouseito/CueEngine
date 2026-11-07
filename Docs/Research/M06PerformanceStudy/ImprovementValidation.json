@@ -1,0 +1,218 @@
+[
+    {
+        "run": "baseline-1-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "baseline-1-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "baseline-2-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "baseline-2-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "baseline-3-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "baseline-3-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "combined-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "combined-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "combined-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "combined-readout15-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "combined-readout15-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "combined-readout15-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "freqcache-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "freqcache-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "freqcache-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "gpustats15-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "gpustats15-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "gpustats15-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "nthstats-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "nthstats-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "nthstats-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "preformat-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-combined-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-combined-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-combined-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "preformat-combined-readout15-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-combined-readout15-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "preformat-combined-readout15-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "readout15-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "readout15-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "readout15-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "statunlock-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "statunlock-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "statunlock-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    }
+]

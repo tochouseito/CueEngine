@@ -1,0 +1,20 @@
+[
+    {
+        "run": "next-cycles-1-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-cycles-2-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-cycles-3-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    }
+]

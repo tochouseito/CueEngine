@@ -1,0 +1,110 @@
+name: Tagged Engine and Hub Release
+
+on:
+  push:
+    tags:
+      - engine-v*
+      - hub-v*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cue-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_CLI_HOME: ${{ github.workspace }}/out/dotnet-home
+      NUGET_PACKAGES: ${{ github.workspace }}/out/nuget/packages
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      CUE_RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
+        with:
+          global-json-file: global.json
+      - name: Validate product tag
+        id: version
+        run: ./Tools/Packaging/Scripts/Test-ReleaseTag.ps1 -Tag $env:CUE_RELEASE_TAG
+      - name: Prepare C++ dependencies
+        if: steps.version.outputs.product == 'engine'
+        run: ./scripts/prepare_dependencies.ps1
+      - name: Build and test native code
+        if: steps.version.outputs.product == 'engine'
+        run: |
+          ./scripts/codex_build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
+          ctest --preset windows-vs2026-debug --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
+      - name: Test Hub services
+        run: |
+          ./Tools/Packaging/Scripts/PackageCommonTests.ps1 -TestRoot out/package-tests
+          if ($LASTEXITCODE -ne 0) { throw 'Package contract tests failed' }
+          ./Tools/Packaging/Scripts/TaggedReleaseTests.ps1 -TestRoot out/tagged-release-tests
+          if ($LASTEXITCODE -ne 0) { throw 'Tagged release tests failed' }
+          dotnet restore Tools/CueHub.Tests/CueHub.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Hub restore failed' }
+          dotnet run --project Tools/CueHub.Tests/CueHub.Tests.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Hub tests failed' }
+          dotnet restore Tools/CueHub.UiTests/CueHub.UiTests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Hub UI restore failed' }
+          dotnet run --project Tools/CueHub.UiTests/CueHub.UiTests.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Hub UI tests failed' }
+      - name: Prepare package signing key
+        env:
+          CUE_PACKAGE_SIGNING_KEY_PEM: ${{ secrets.CUE_PACKAGE_SIGNING_KEY_PEM }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CUE_PACKAGE_SIGNING_KEY_PEM)) { throw 'Set CUE_PACKAGE_SIGNING_KEY_PEM before publishing signed packages' }
+          $key = [Security.Cryptography.ECDsa]::Create()
+          try {
+            $key.ImportFromPem($env:CUE_PACKAGE_SIGNING_KEY_PEM)
+            if ($key.KeySize -ne 256 -or $key.ExportParameters($false).Curve.Oid.Value -cne '1.2.840.10045.3.1.7') { throw 'P-256 signing key required' }
+            [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'cue-signing.pem'), $key.ExportPkcs8PrivateKeyPem())
+            [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'cue-publisher.pem'), $key.ExportSubjectPublicKeyInfoPem())
+          } finally { $key.Dispose() }
+      - name: Package Engine
+        if: steps.version.outputs.product == 'engine'
+        run: |
+          ./Tools/Packaging/Engine/New-EnginePackage.ps1 -SigningKeyFile (Join-Path $env:RUNNER_TEMP 'cue-signing.pem') -OutputDirectory out/release
+      - name: Package Hub
+        if: steps.version.outputs.product == 'hub'
+        run: |
+          ./Tools/Packaging/Hub/New-HubPackage.ps1 -SigningKeyFile (Join-Path $env:RUNNER_TEMP 'cue-signing.pem') -TrustedPublisherKeyFile (Join-Path $env:RUNNER_TEMP 'cue-publisher.pem') -OutputDirectory out/release
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUE_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          $directory = if ($env:CUE_RELEASE_TAG.StartsWith('hub-v')) { 'out/release/Release' } else { 'out/release' }
+          ./Tools/Packaging/Scripts/Publish-TaggedRelease.ps1 -Tag $env:CUE_RELEASE_TAG -PackageDirectory $directory -Repository $env:CUE_RELEASE_REPOSITORY -PublisherPublicKeyFile (Join-Path $env:RUNNER_TEMP 'cue-publisher.pem')
+      - name: Remove temporary private key
+        if: always()
+        run: |
+          $keyFile = Join-Path $env:RUNNER_TEMP 'cue-signing.pem'
+          if (Test-Path -LiteralPath $keyFile) { Remove-Item -LiteralPath $keyFile -Force }
+
+  refresh-downloads:
+    needs: release
+    if: startsWith(github.ref_name, 'hub-v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Refresh CueHub download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run reference-site.yml --ref release

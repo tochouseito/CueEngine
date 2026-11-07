@@ -1,0 +1,7 @@
+requested_mode,vsync,effective_mode,fallback,render_avg_ms,cycle_avg_ms,cycle_p95_ms,fps_wait_avg_ms,ready_wait_avg_ms,present_avg_ms,present_interval_avg_ms,present_interval_p95_ms,input_sample_to_cpu_complete_avg_ms,peak_gpu_frames,completed_gpu_frames,has_refresh_statistics,refresh_interval_ms,derived_display_interval_avg_ms
+0,0,0,0,1.196,16.671,16.685,15.465,0.000,0.321,16.672,17.240,17.834,2,178,1,13.338,16.673
+1,0,1,0,1.159,16.677,16.712,15.503,0.003,0.330,16.680,17.382,17.811,1,178,1,13.338,16.673
+2,0,0,2,1.225,16.674,16.703,15.437,0.000,0.350,16.672,17.239,17.879,1,178,1,13.338,16.673
+0,1,0,0,1.234,16.671,16.680,15.426,0.000,0.322,16.673,17.128,17.897,2,178,1,13.338,16.673
+1,1,1,0,1.242,16.674,16.694,15.418,0.003,0.343,16.672,17.323,17.889,1,178,1,13.338,16.672
+2,1,2,0,1.326,16.680,16.710,15.339,0.004,0.354,16.680,17.438,17.997,1,178,1,13.338,16.673

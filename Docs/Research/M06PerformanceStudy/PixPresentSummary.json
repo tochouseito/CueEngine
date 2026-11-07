@@ -1,0 +1,682 @@
+{
+  "capture": "out\\validation\\M06-PerformanceStudy\\PresentationPaths\\PresentTimeline\\present-approved-02.wpix",
+  "pid": 40932,
+  "render_tid": 6616,
+  "first_reliable_ns": 232135700,
+  "stop_ns": 5329808900,
+  "render_samples": 4453,
+  "reliable_seconds": 5.0976732,
+  "render_queue_submissions": 302,
+  "samples_with_stack": 4424,
+  "present_samples": 1144,
+  "present_instrumentation_stack_samples": 132,
+  "present_dpc_stack_samples": 9,
+  "etw_lost_events": 0,
+  "etw_lost_buffers": 0,
+  "render_switch_outs": 625,
+  "switch_outs_with_matched_stack": 0,
+  "present_inactive_ns": null,
+  "present_inclusive_modules": [
+    [
+      "CueEditorTimingProbe.exe",
+      1144
+    ],
+    [
+      "ucrtbase.dll",
+      1144
+    ],
+    [
+      "kernel32.dll",
+      1144
+    ],
+    [
+      "ntdll.dll",
+      1144
+    ],
+    [
+      "dxgi.dll",
+      1139
+    ],
+    [
+      "D3D12Core.dll",
+      1058
+    ],
+    [
+      "nvwgf2umx.dll",
+      738
+    ],
+    [
+      "ntoskrnl.exe",
+      568
+    ],
+    [
+      "win32u.dll",
+      515
+    ],
+    [
+      "dxgkrnl.sys",
+      507
+    ],
+    [
+      "dxgmms2.sys",
+      177
+    ],
+    [
+      "nvlddmkm.sys",
+      54
+    ],
+    [
+      "KernelBase.dll",
+      38
+    ],
+    [
+      "nvspcap64.dll",
+      27
+    ],
+    [
+      "win32kbase.sys",
+      27
+    ],
+    [
+      "D3D12.dll",
+      11
+    ],
+    [
+      "user32.dll",
+      9
+    ],
+    [
+      "gdi32.dll",
+      6
+    ],
+    [
+      "uxtheme.dll",
+      4
+    ],
+    [
+      "watchdog.sys",
+      2
+    ],
+    [
+      "win32kfull.sys",
+      2
+    ],
+    [
+      "nvppex.dll",
+      2
+    ],
+    [
+      "msvcp_win.dll",
+      2
+    ],
+    [
+      "win32k.sys",
+      2
+    ],
+    [
+      "Wdf01000.sys",
+      1
+    ],
+    [
+      "usbaudio.sys",
+      1
+    ],
+    [
+      "ks.sys",
+      1
+    ],
+    [
+      "USBXHCI.SYS",
+      1
+    ],
+    [
+      "dwmapi.dll",
+      1
+    ],
+    [
+      "msvcp140.dll",
+      1
+    ]
+  ],
+  "present_leaf_modules": [
+    [
+      "ntoskrnl.exe",
+      369
+    ],
+    [
+      "nvwgf2umx.dll",
+      362
+    ],
+    [
+      "dxgkrnl.sys",
+      83
+    ],
+    [
+      "ntdll.dll",
+      64
+    ],
+    [
+      "nvlddmkm.sys",
+      49
+    ],
+    [
+      "dxgi.dll",
+      48
+    ],
+    [
+      "dxgmms2.sys",
+      47
+    ],
+    [
+      "D3D12Core.dll",
+      47
+    ],
+    [
+      "nvspcap64.dll",
+      19
+    ],
+    [
+      "win32kbase.sys",
+      14
+    ],
+    [
+      "user32.dll",
+      9
+    ],
+    [
+      "gdi32.dll",
+      6
+    ],
+    [
+      "win32u.dll",
+      5
+    ],
+    [
+      "ucrtbase.dll",
+      4
+    ],
+    [
+      "CueEditorTimingProbe.exe",
+      4
+    ],
+    [
+      "watchdog.sys",
+      2
+    ],
+    [
+      "win32kfull.sys",
+      2
+    ],
+    [
+      "msvcp_win.dll",
+      2
+    ],
+    [
+      "D3D12.dll",
+      2
+    ],
+    [
+      "win32k.sys",
+      2
+    ],
+    [
+      "nvppex.dll",
+      1
+    ],
+    [
+      "kernel32.dll",
+      1
+    ],
+    [
+      "KernelBase.dll",
+      1
+    ],
+    [
+      "msvcp140.dll",
+      1
+    ]
+  ],
+  "present_leaf_functions": [
+    [
+      "ntoskrnl.exe!RtlpUnwindPrologue",
+      46
+    ],
+    [
+      "ntoskrnl.exe!RtlpLookupFunctionEntryForStackWalks",
+      38
+    ],
+    [
+      "ntoskrnl.exe!EtwpEventWriteFull",
+      24
+    ],
+    [
+      "ntoskrnl.exe!KxWaitForLockOwnerShip",
+      22
+    ],
+    [
+      "ntoskrnl.exe!EtwpWriteUserEvent",
+      15
+    ],
+    [
+      "ntoskrnl.exe!ObpReferenceObjectByHandleWithTag",
+      15
+    ],
+    [
+      "ntoskrnl.exe!RtlpxVirtualUnwind",
+      14
+    ],
+    [
+      "dxgmms2.sys!_memset_spec_plain",
+      12
+    ],
+    [
+      "ntoskrnl.exe!ExReleaseResourceLite",
+      10
+    ],
+    [
+      "ntoskrnl.exe!KiSystemServiceUser",
+      9
+    ],
+    [
+      "ntoskrnl.exe!EtwpReserveTraceBuffer",
+      9
+    ],
+    [
+      "ntoskrnl.exe!KiDeferredReadySingleThread",
+      8
+    ],
+    [
+      "ntdll.dll!RtlLeaveCriticalSection",
+      8
+    ],
+    [
+      "ntoskrnl.exe!KeQueryPerformanceCounter",
+      8
+    ],
+    [
+      "dxgkrnl.sys!DXGCONTEXT::GetRenderHwQueueCount",
+      7
+    ],
+    [
+      "ntoskrnl.exe!ExpInterlockedPopEntrySListFault",
+      6
+    ],
+    [
+      "gdi32.dll!DdQueryDisplaySettingsUniqueness",
+      6
+    ],
+    [
+      "ntoskrnl.exe!KeAcquireInStackQueuedSpinLock",
+      6
+    ],
+    [
+      "ntoskrnl.exe!RtlpWalkFrameChain",
+      6
+    ],
+    [
+      "ntdll.dll!RtlFreeHeap",
+      6
+    ],
+    [
+      "ntdll.dll!RtlpLowFragHeapAllocFromContext",
+      6
+    ],
+    [
+      "ntoskrnl.exe!EtwWriteEx",
+      5
+    ],
+    [
+      "dxgi.dll!CFlipPresentToDWM<CDXGISwapChainWrapper>::FlipPresentCore",
+      5
+    ],
+    [
+      "ntoskrnl.exe!ExAllocateHeapPool",
+      5
+    ],
+    [
+      "dxgkrnl.sys!DxgkEscape",
+      5
+    ],
+    [
+      "dxgkrnl.sys!PrepareIndependentFlipToken",
+      5
+    ],
+    [
+      "D3D12Core.dll!ATL::CComObjectRootBase::_Chain",
+      5
+    ],
+    [
+      "dxgi.dll!CDelegatingUseCountedObject<CD3D12Resource>::QueryInterface",
+      5
+    ],
+    [
+      "dxgmms2.sys!VidSchiInterlockedRemoveHeadListIfExist",
+      5
+    ],
+    [
+      "nvwgf2umx.dll!0x2b8fbb",
+      5
+    ]
+  ],
+  "present_inclusive_functions": [
+    [
+      "CueEditorTimingProbe.exe!cue::WindowsHost::State::render",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!cue::`anonymous namespace'::invoke_callback",
+      1144
+    ],
+    [
+      "ucrtbase.dll!thread_start<unsigned int (__cdecl*)(void *),1>",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!std::_Func_impl_no_alloc<`cue::FrameController::start'::`15'::<lambda_2>,cue::Result<void>,std::stop_token>::_Do_call",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!`cue::`anonymous namespace'::WindowsThread::WindowsThread'::`2'::<lambda_1>::operator()",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!std::thread::_Invoke<std::tuple<`cue::`anonymous namespace'::WindowsThread::WindowsThread'::`2'::<lambda_1>,std::stop_token>,0,1>",
+      1144
+    ],
+    [
+      "kernel32.dll!BaseThreadInitThunk",
+      1144
+    ],
+    [
+      "ntdll.dll!RtlUserThreadStart",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!cue::dx12::DX12SwapChain::present",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!cue::FrameController::render_loop",
+      1144
+    ],
+    [
+      "CueEditorTimingProbe.exe!std::_Func_impl_no_alloc<`cue::WindowsHost::initialize'::`2'::<lambda_3>,cue::Result<void>,unsigned __int64,std::stop_token>::_Do_call",
+      1144
+    ],
+    [
+      "dxgi.dll!CDXGISwapChain::Present",
+      1139
+    ],
+    [
+      "dxgi.dll!CDXGISwapChain::PresentImpl",
+      1129
+    ],
+    [
+      "dxgi.dll!CDXGISwapChain::PresentImplCore",
+      1125
+    ],
+    [
+      "dxgi.dll!CDXGISwapChain::FlipPresentToDWM",
+      1088
+    ],
+    [
+      "dxgi.dll!CFlipPresentToDWM<CDXGISwapChainWrapper>::FlipPresentCore",
+      1078
+    ],
+    [
+      "dxgi.dll!CD3D12Device::PresentExtended",
+      1070
+    ],
+    [
+      "dxgi.dll!CD3D12Device::CloseAndSubmitCommandList",
+      775
+    ],
+    [
+      "D3D12Core.dll!CCommandQueue<0>::ExecuteCommandLists",
+      622
+    ],
+    [
+      "D3D12Core.dll!CCommandQueue<0>::ExecuteCommandListsImpl",
+      621
+    ],
+    [
+      "nvwgf2umx.dll!0x81372d",
+      587
+    ],
+    [
+      "nvwgf2umx.dll!0x826c59",
+      585
+    ],
+    [
+      "nvwgf2umx.dll!0x7f435c",
+      585
+    ],
+    [
+      "nvwgf2umx.dll!0x7a09c7",
+      584
+    ],
+    [
+      "nvwgf2umx.dll!0x7a2c6b",
+      584
+    ],
+    [
+      "nvwgf2umx.dll!0x7fad49",
+      578
+    ],
+    [
+      "ntoskrnl.exe!KiSystemServiceCopyEnd",
+      545
+    ],
+    [
+      "nvwgf2umx.dll!0x75743d",
+      282
+    ],
+    [
+      "nvwgf2umx.dll!0x7dedef",
+      281
+    ],
+    [
+      "nvwgf2umx.dll!0x7df04b",
+      275
+    ],
+    [
+      "nvwgf2umx.dll!0x757528",
+      255
+    ],
+    [
+      "nvwgf2umx.dll!0x758529",
+      240
+    ],
+    [
+      "nvwgf2umx.dll!0x7e0443",
+      239
+    ],
+    [
+      "D3D12Core.dll!CGraphicsCommandQueue::SubmitPresent",
+      190
+    ],
+    [
+      "nvwgf2umx.dll!0x11ab30",
+      188
+    ],
+    [
+      "dxgkrnl.sys!DxgkSubmitPresentToHwQueue",
+      188
+    ],
+    [
+      "win32u.dll!NtDxgkSubmitPresentToHwQueue",
+      188
+    ],
+    [
+      "D3D12Core.dll!CallAndLogImpl<long (__cdecl*)(_D3DKMT_SUBMITPRESENTTOHWQUEUE * __ptr64),_D3DKMT_SUBMITPRESENTTOHWQUEUE * __ptr64>",
+      188
+    ],
+    [
+      "nvwgf2umx.dll!0x119048",
+      185
+    ],
+    [
+      "dxgkrnl.sys!DXGCONTEXT::Present",
+      151
+    ],
+    [
+      "nvwgf2umx.dll!0x1f8965",
+      147
+    ],
+    [
+      "D3D12Core.dll!NDXGI::CDevice::SubmitCommandToHwQueueCB",
+      146
+    ],
+    [
+      "nvwgf2umx.dll!0x81419d",
+      146
+    ],
+    [
+      "D3D12Core.dll!CallAndLogImpl<long (__cdecl*)(_D3DKMT_SUBMITCOMMANDTOHWQUEUE const * __ptr64),_D3DKMT_SUBMITCOMMANDTOHWQUEUE * __ptr64>",
+      144
+    ],
+    [
+      "win32u.dll!NtGdiDdDDISubmitCommandToHwQueue",
+      143
+    ],
+    [
+      "dxgkrnl.sys!DxgkSubmitCommandToHwQueue",
+      141
+    ],
+    [
+      "dxgkrnl.sys!DxgkSubmitCommandToHwQueueInternal",
+      141
+    ],
+    [
+      "ntoskrnl.exe!EtwpTraceStackWalk",
+      130
+    ],
+    [
+      "nvwgf2umx.dll!0x241d90",
+      130
+    ],
+    [
+      "ntoskrnl.exe!KeExpandKernelStackAndCalloutInternal",
+      121
+    ]
+  ],
+  "method": "Read-only PIX SQLite query, target Render thread only. CPU samples are not wall-time measurements. Inclusive counts overlap. StackEvents 16-byte pairs are empirically matched by exact thread/timestamp; this layout is version-specific. No matched switch-out stack means inactive duration is unknown, not zero. NVIDIA private symbols are unavailable; export-only symbols are shown as RVA. Device-path mapping assumes this machine's C: volume.",
+  "capture_sha256": "A9F7D984F1A2F3CAE6860DBF507849C9E2AF2BF2C705A81ABBDAF95B40CD1C8F",
+  "probe_sha256": "75A562ECBDB5B3F3E1FB2138A99CB071FCC2CBE3E63155DE5444121C2E2A17F5",
+  "conditions": {
+    "case": "new-baseline",
+    "configuration": "Development",
+    "platform": "Windows",
+    "pointer_bits": 64,
+    "repeat": 1,
+    "warmup_frames": 120,
+    "measurement_frames": 1500,
+    "status": 0,
+    "wall_seconds": 27.0466,
+    "selected_samples": 49600,
+    "dropped_samples": 0,
+    "window": {
+      "title": "CueEngine Performance Study",
+      "width": 1280,
+      "height": 720,
+      "refresh_hz": 75,
+      "borderless": false,
+      "primary_monitor": true,
+      "monitor_width": 1920,
+      "monitor_height": 1080,
+      "outer_x": 0,
+      "outer_y": 0,
+      "outer_width": 1296,
+      "outer_height": 759
+    },
+    "frame": {
+      "workers": true,
+      "frames_in_flight": 2,
+      "max_fps": 60
+    },
+    "presentation": {
+      "buffers": 2,
+      "vsync": false,
+      "tearing": false,
+      "actual_tearing": false
+    },
+    "study": {
+      "readout_stride": 15,
+      "gpu_timestamps": true,
+      "pix_markers": true,
+      "statistics_outside_lock": false,
+      "cache_timestamp_frequency": false,
+      "nth_statistics": false,
+      "gpu_statistics_stride": 1,
+      "preformat_ui_text": false,
+      "wait_before_ui": false,
+      "rotate_command_slots": false,
+      "native_cycles": false,
+      "cache_graph_preparation": false,
+      "separate_imgui_recording": false,
+      "waitable_swap_chain": false,
+      "maximum_presentation_latency": 0,
+      "descriptor_lookup": false,
+      "present_dispatch": false,
+      "present_gpu_wait": false,
+      "stress_texture_count": 0
+    },
+    "progress": {
+      "submitted": 1621,
+      "updated": 1621,
+      "rendered": 1620
+    },
+    "ui": {
+      "frames": 1621,
+      "vertices": 2432,
+      "indices": 3684,
+      "snapshot_allocations": 22,
+      "copied_bytes": 90567658
+    },
+    "layout_file": null,
+    "adapter": {
+      "source": "Actual RenderDevice adapter",
+      "vendor_id": 4318,
+      "device_id": 9475,
+      "dedicated_video_memory_bytes": 12703498240
+    },
+    "method": "Raw Hook elapsed times; fixed preallocated collector; no timing-statistics polling or file IO during frames. Hooks and clock reads add overhead. Select warmup <= frame < warmup + frames. Metric intervals may nest and must not be summed blindly.",
+    "cycle_failures": 0,
+    "command_slot_counts": [
+      1621,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "pix_version": "2602.25",
+  "cpu_sampling_hz": 8000
+}

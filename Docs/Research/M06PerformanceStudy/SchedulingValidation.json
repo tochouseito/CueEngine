@@ -1,0 +1,182 @@
+[
+    {
+        "run": "next-baseline-1-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-baseline-1-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-baseline-2-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-baseline-2-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-baseline-3-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-baseline-3-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-buffer3-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-buffer3-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-buffer3-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-combined-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-combined-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-combined-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-command2-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-command2-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-command2-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-frame1-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-frame1-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-frame1-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-main-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-main-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-main-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-tearing-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-tearing-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-tearing-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-ui-gate-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-ui-gate-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2328
+    },
+    {
+        "run": "next-ui-gate-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-vsync-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-vsync-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "next-vsync-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    }
+]

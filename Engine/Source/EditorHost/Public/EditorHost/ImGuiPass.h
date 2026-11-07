@@ -1,0 +1,129 @@
+#pragma once
+
+#include <array>
+#include <memory>
+#include <utility>
+
+#include <FrameGraph/FrameGraph.h>
+
+namespace cue
+{
+/// @brief Editor が所有する UI の記録を Graphics Pass へ接続する抽象契約
+///
+/// ImGui と Native API の具体型は実装側へ閉じる。Owner Thread で直列に呼ぶ
+class IImGuiRenderer
+{
+  public:
+    /// @brief Pass が所有する実装を抽象型から破棄する
+    virtual ~IImGuiRenderer() = default;
+
+    /// @brief 確定済み UI を設定済み RTV へ記録し、失敗は Graph へ伝える
+    ///
+    /// Context は呼出中だけ借用する。Reset / Close / Submit と Resource 遷移は行わない
+    [[nodiscard]] virtual Result<void> record_draw_data(FrameGraphContext &a_context) = 0;
+
+    /// @brief 今回の FinalColor を Scene View の論理 Texture 参照へ接続して UI を記録する
+    [[nodiscard]] virtual Result<void> record_scene_draw_data(FrameGraphContext &a_context, FrameGraphResourceHandle)
+    {
+        return record_draw_data(a_context);
+    }
+};
+
+/// @brief BackBuffer を Clear し、Host が注入した UI 実装で最後の描画を記録する
+///
+/// Pass は Adapter を一意所有する。Adapter が借用する UI Owner は Graph 破棄まで生存させる
+/// Scene 表示時は FinalColor の Read / ShaderRead も宣言し、物理 Texture の解決を記録時に委譲する
+class ImGuiPass final : public FrameGraphPass
+{
+  public:
+    /// @brief 注入された Adapter の所有権を受け取る
+    explicit ImGuiPass(std::unique_ptr<IImGuiRenderer> a_renderer, bool a_displaysScene = false) noexcept
+        : m_renderer(std::move(a_renderer)), m_displaysScene(a_displaysScene)
+    {
+    }
+
+    /// @brief Graph と GPU Marker に共通の Pass 名を返す
+    [[nodiscard]] const char *name() const noexcept override
+    {
+        return "ImGui";
+    }
+
+    /// @brief BackBuffer と公式描画を同じ Graphics Command へ記録する
+    [[nodiscard]] QueueType type() const noexcept override
+    {
+        return QueueType::Graphics;
+    }
+
+    /// @brief BackBuffer の Handle と宣言済み Clear 色を取得し、Adapter の欠落を拒否する
+    [[nodiscard]] Result<void> setup(FrameGraphBuilder &a_builder) override
+    {
+        if (!m_renderer)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "ImGuiPass.renderer"});
+        }
+        // Editor 用の表示先である外部 Back Buffer を取得する
+        auto buffer = a_builder.get_texture("BackBuffer");
+        if (!buffer.has_value())
+        {
+            return Result<void>::failure(*buffer.try_error());
+        }
+        // Back Buffer の宣言から Clear 色を引き継ぐ
+        auto desc = a_builder.texture_desc(*buffer.try_value());
+        if (!desc.has_value())
+        {
+            return Result<void>::failure(*desc.try_error());
+        }
+        m_backBuffer = buffer.take_value();
+        m_clearColor = desc.try_value()->clearColor;
+        if (m_displaysScene)
+        {
+            auto scene = a_builder.get_texture("FinalColorTexture");
+            if (!scene.has_value())
+                return Result<void>::failure(*scene.try_error());
+            m_scene = scene.take_value();
+        }
+        return Result<void>::success();
+    }
+
+    /// @brief UI 描画と Clear に必要な Write / RenderTarget を Graph へ宣言する
+    [[nodiscard]] Result<void> describe_resources(FrameGraphBuilder &a_builder) override
+    {
+        // ImGui が直接描く Back Buffer の書込みを Graph へ宣言する
+        auto target = a_builder.use(m_backBuffer, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget);
+        if (!target.has_value() || !m_displaysScene)
+            return target;
+        return a_builder.use(m_scene, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead);
+    }
+
+    /// @brief 宣言済み Target の準備後に UI 記録を委譲し、Present 遷移は Graph に任せる
+    [[nodiscard]] Result<void> execute(FrameGraphContext &a_context) override
+    {
+        if (!m_renderer || !m_backBuffer.is_valid())
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "ImGuiPass.execute"});
+        }
+        // ImGui の描画前に Back Buffer を所定の色でクリアする
+        auto clear = a_context.clear_render_target(m_backBuffer, m_clearColor);
+        if (!clear.has_value())
+        {
+            return clear;
+        }
+        // 同じ Back Buffer の RTV を描画先へ設定する
+        auto target = a_context.set_render_target(m_backBuffer);
+        if (!target.has_value())
+        {
+            return target;
+        }
+        // 上位 Editor が所有する実装へ UI の Command 記録を委譲する
+        return m_displaysScene ? m_renderer->record_scene_draw_data(a_context, m_scene)
+                               : m_renderer->record_draw_data(a_context);
+    }
+
+  private:
+    std::unique_ptr<IImGuiRenderer> m_renderer;
+    FrameGraphResourceHandle m_backBuffer;
+    FrameGraphResourceHandle m_scene;
+    bool m_displaysScene = false;
+    std::array<float, 4> m_clearColor{};
+};
+} // namespace cue

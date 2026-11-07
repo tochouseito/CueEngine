@@ -1,0 +1,110 @@
+[
+    {
+        "run": "new-baseline-1-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-baseline-1-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-baseline-2-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-baseline-2-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-baseline-3-after",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-baseline-3-before",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-cache-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-cache-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-cache-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-descriptor-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-descriptor-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-descriptor-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-snapshot-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-snapshot-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-snapshot-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-waitable-1-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-waitable-2-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    },
+    {
+        "run": "new-waitable-3-case",
+        "render_samples": 600,
+        "dropped": 0,
+        "ui_vertices": 2432
+    }
+]
