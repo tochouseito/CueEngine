@@ -56,7 +56,7 @@ internal sealed record InstallReceipt(string ReceiptId, string EngineId, string 
 public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_http, PackageVerifier a_verifier, string? a_leaseDirectory = null)
 {
     private readonly HubStateStore m_store = a_store;
-    private readonly HttpClient m_http = a_http;
+    private readonly GitHubReleaseClient m_github = new(a_http);
     private readonly PackageVerifier m_verifier = a_verifier;
     private readonly string? m_leaseDirectory = a_leaseDirectory;
     private readonly SemaphoreSlim m_operation = new(1, 1);
@@ -65,7 +65,7 @@ public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_htt
     public async Task<EngineRegistration> install_release_async(PublishedRelease a_release, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel, EngineRegistration? a_repair = null)
     {
         foreach (var pair in a_release.Assets)
-            if (!EngineCatalogService.is_asset_url(pair.Value, a_release.Tag)) throw new InvalidDataException("配布 URL が不正です");
+            if (!GitHubReleaseClient.is_asset_url(pair.Value)) throw new InvalidDataException("配布 API の URL が不正です");
         var manifestBytes = await download_small_async(a_release.Assets["engine-release.json"], 65536, a_cancel);
         var signature = Encoding.ASCII.GetString(await download_small_async(a_release.Assets["engine-release.json.sig"], 4096, a_cancel));
         var manifest = m_verifier.verify(manifestBytes, signature);
@@ -247,15 +247,13 @@ public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_htt
 
     private async Task<byte[]> download_small_async(string a_url, int a_limit, CancellationToken a_cancel)
     {
-        using var response = await m_http.GetAsync(a_url, HttpCompletionOption.ResponseHeadersRead, a_cancel);
-        response.EnsureSuccessStatusCode();
+        using var response = await m_github.get_asset_async(a_url, a_cancel);
         return await EngineCatalogService.read_bounded_async(response.Content, a_limit, a_cancel);
     }
 
     private async Task download_package_async(string a_url, string a_file, long a_size, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel)
     {
-        using var response = await m_http.GetAsync(a_url, HttpCompletionOption.ResponseHeadersRead, a_cancel);
-        response.EnsureSuccessStatusCode();
+        using var response = await m_github.get_asset_async(a_url, a_cancel);
         if (response.Content.Headers.ContentLength is long length && length != a_size) throw new InvalidDataException("取得する容量が一致しません");
         await using var input = await response.Content.ReadAsStreamAsync(a_cancel);
         await using var output = new FileStream(a_file, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);

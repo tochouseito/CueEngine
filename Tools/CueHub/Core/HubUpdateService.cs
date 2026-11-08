@@ -28,7 +28,7 @@ public sealed record HubUpdateOffer(UpdateManager Manager, IVelopackLocator Loca
 /// <summary>Engine Release を除外し、署名した Hub 用 Feed だけを Updater へ渡す</summary>
 public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, PackageVerifier a_verifier, IVelopackLocator? a_locator = null)
 {
-    private readonly HttpClient m_http = a_http;
+    private readonly GitHubReleaseClient m_github = new(a_http);
     private readonly HubStateStore m_store = a_store;
     private readonly PackageVerifier m_verifier = a_verifier;
     private readonly IVelopackLocator? m_locator = a_locator;
@@ -39,10 +39,7 @@ public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, P
         var completed = false;
         for (var page = 1; page <= 100; ++page)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/tochouseito/CueEngine/releases?per_page=100&page={page}");
-            request.Headers.UserAgent.ParseAdd("CueHub/0.1");
-            using var response = await m_http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, a_cancel);
-            response.EnsureSuccessStatusCode();
+            using var response = await m_github.get_releases_async(page, a_cancel);
             using var document = JsonDocument.Parse(await EngineCatalogService.read_bounded_async(response.Content, 4 * 1024 * 1024, a_cancel));
             foreach (var item in document.RootElement.EnumerateArray())
             {
@@ -144,8 +141,7 @@ public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, P
 
     private async Task<byte[]> download_async(string a_url, int a_limit, CancellationToken a_cancel)
     {
-        using var response = await m_http.GetAsync(a_url, HttpCompletionOption.ResponseHeadersRead, a_cancel);
-        response.EnsureSuccessStatusCode();
+        using var response = await m_github.get_asset_async(a_url, a_cancel);
         return await EngineCatalogService.read_bounded_async(response.Content, a_limit, a_cancel);
     }
 }

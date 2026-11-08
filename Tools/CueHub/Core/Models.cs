@@ -46,6 +46,7 @@ public sealed record PublishedRelease
     public bool IsPreview { get; init; }
     public DateTimeOffset PublishedUtc { get; init; }
     public string PageUrl { get; init; } = "";
+    /// <summary>Asset 名と自 Repository の Asset API URL の対応。Browser 向け URL を取得に使わない</summary>
     public Dictionary<string, string> Assets { get; init; } = new(StringComparer.Ordinal);
     [JsonIgnore] public string Display => $"{Version}  {(IsPreview ? "Preview" : "正式版")}  {PublishedUtc.LocalDateTime:yyyy-MM-dd}";
 }

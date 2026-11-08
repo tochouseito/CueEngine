@@ -60,6 +60,12 @@ Engine の指定は Project に Version として保存し、PC の絶対 Path �
 
 公開済みの `engine-v<SemVer>` Release を列挙し、正式版と Preview を合計して公開日時順の最新 10 世代を表示する。
 Hub Release / Draft / 必須 Asset の欠損は除外する。取得失敗時は保存済み一覧と診断を表示する。
+Release 一覧と配布 File は Hub 内の `HttpClient` から GitHub REST API へ直接要求し、Git / GitHub CLI / Token を要求しない。
+Asset ID と自 Repository の API URL、公開 Tag / File 名の対応を確認し、File 取得には `Accept: application/octet-stream` を指定する。
+GitHub が返す 302 は標準 Handler で追跡し、取得後の署名 / Hash / サイズの検証は維持する。
+公開一覧 Cache は `engine-catalog-v2.json` を使う。旧 `engine-catalog.json` は保全し、更新後の初回だけはオンラインで一覧を取得し直す。
+この変更は導入済み Engine / Project の登録には影響しない。
+API 自体の障害や回数制限は引き続き発生し得るため、取得失敗時は手動のパッケージ導入も利用できる。
 11 世代目以前の配布物は GitHub から取得し、同じフォルダに ZIP / `engine-release.json` /
 `engine-release.json.sig` を置いて「パッケージから導入」を使用する。
 
@@ -72,6 +78,7 @@ Hash / サイズ / Path / Reparse Point / Zip Slip / 大文字小文字の重複
 ## Hub 自身の更新
 
 Settings の「Hub 更新を確認・準備」で `hub-v` Release だけを調べる。
+Hub の Manifest / 署名 / Feed / Full Package も、Engine と同じ Asset API から取得する。
 `hub-release.json` と署名、署名対象の `releases.win.json` と Full Package を検証した後、
 ローカルの検証済み Feed を Velopack に渡す。適用直前にも取得済み Package の SHA-256 を確認する。
 Engine Release や署名されていない Delta は利用しない。
@@ -91,6 +98,8 @@ dotnet run --project Tools/CueHub.UiTests/CueHub.UiTests.csproj -c Debug
 Core の検証は一時鍵と所有 Temp Root を使う。WPF 検証は STA で全 Tab を実生成し、
 Binding Error と起動時 Command の抑止を確認する。
 実更新の任意検証は Test exe の `--hub-update <installedRoot> <feed> <publicKey> <currentVersion> <proofFile>`。
+API 取得の任意検証は Test exe の `--github-api <publicKey の絶対 Path> <新しい検証 Root の絶対 Path>`。
+専用 Root に公開 Engine を実導入し、Hub Feed を検証する。既存の Hub / Engine 登録には触れず、更新適用も行わない。
 製品 Main には検証専用の起動引数を追加しない。
 
 インストーラー生成は `Tools/Packaging/Hub/README.md` を参照。

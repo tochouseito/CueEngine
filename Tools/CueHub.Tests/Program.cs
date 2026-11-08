@@ -7,7 +7,7 @@ using Cue.Hub;
 
 namespace Cue.Hub.Tests;
 
-internal static class Program
+internal static partial class Program
 {
     private static int s_checks;
     private static void check(bool a_condition, string a_message)
@@ -18,13 +18,17 @@ internal static class Program
     private static async Task rejected(Func<Task> a_action, string a_message)
     {
         try { await a_action(); }
-        catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException or InvalidOperationException or FormatException or JsonException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException or InvalidOperationException or FormatException or JsonException or OperationCanceledException or HttpRequestException)
         { ++s_checks; return; }
         throw new InvalidOperationException("Expected rejection: " + a_message);
     }
 
     public static async Task<int> Main(string[] a_arguments)
     {
+        if (a_arguments.Length == 3 && a_arguments[0] == "--github-api")
+        {
+            return await test_live_github_downloads(a_arguments[1], a_arguments[2]);
+        }
         if (a_arguments.Length == 6 && a_arguments[0] == "--hub-update")
         {
             return await test_installed_hub_update(a_arguments[1], a_arguments[2], a_arguments[3], a_arguments[4], a_arguments[5]);
@@ -41,6 +45,7 @@ internal static class Program
         {
             await test_packages(root);
             await test_catalog(root);
+            await test_github_downloads(root);
             await test_hub_feed_validation(root);
             test_state_and_paths(root);
             if (a_arguments.Length == 2 && a_arguments[0] == "--engine-root") await test_real_project(a_arguments[1], root);
@@ -179,9 +184,10 @@ internal static class Program
         var cachedService = new EngineCatalogService(offline, store);
         var cached = await cachedService.refresh_async(CancellationToken.None);
         check(cached.Count == 10 && cachedService.LastWarning != null, "offline catalog retained");
-        check(!EngineCatalogService.is_asset_url("https://evil.example/package.zip", list[0].Tag), "foreign URL rejected");
-        check(!EngineCatalogService.is_asset_url("http://github.com/tochouseito/CueEngine/releases/download/" + list[0].Tag + "/a", list[0].Tag), "http URL rejected");
-        check(!EngineCatalogService.is_asset_url("https://github.com/other/repo/releases/download/" + list[0].Tag + "/a", list[0].Tag), "foreign repository rejected");
+        check(list.All(item => item.Assets.Values.All(GitHubReleaseClient.is_asset_url)), "catalog stores asset API URLs");
+        check(!GitHubReleaseClient.is_asset_url("https://evil.example/package.zip"), "foreign URL rejected");
+        check(!GitHubReleaseClient.is_asset_url("http://api.github.com/repos/tochouseito/CueEngine/releases/assets/1"), "http URL rejected");
+        check(!GitHubReleaseClient.is_asset_url("https://api.github.com/repos/other/repo/releases/assets/1"), "foreign repository rejected");
     }
 
     private static void test_state_and_paths(string a_root)
@@ -261,7 +267,7 @@ internal static class Program
     {
         var version = a_tag[8..];
         var names = new[] { $"CueEngine-{version}-windows-x64.zip", "engine-release.json", "engine-release.json.sig" };
-        return new { tag_name = a_tag, prerelease = a_preview, draft = a_draft, published_at = DateTimeOffset.UtcNow.AddDays(a_day).ToString("O"), assets = names.Take(a_missing ? 1 : 3).Select(name => new { name, browser_download_url = EngineCatalogService.RepositoryUrl + "/releases/download/" + a_tag + "/" + name }).ToArray() };
+        return new { tag_name = a_tag, prerelease = a_preview, draft = a_draft, published_at = DateTimeOffset.UtcNow.AddDays(a_day).ToString("O"), assets = names.Take(a_missing ? 1 : 3).Select((name, index) => new { name, id = 1000L + a_day * 10 + index, url = GitHubReleaseClient.asset_url(1000L + a_day * 10 + index), browser_download_url = EngineCatalogService.RepositoryUrl + "/releases/download/" + a_tag + "/" + name }).ToArray() };
     }
 
     private static string sign(ECDsa a_key, byte[] a_bytes) => Convert.ToBase64String(a_key.SignData(a_bytes, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));

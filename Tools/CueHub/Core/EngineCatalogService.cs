@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Text.Json;
 
 namespace Cue.Hub;
@@ -7,8 +6,9 @@ namespace Cue.Hub;
 public sealed class EngineCatalogService(HttpClient a_http, HubStateStore a_store)
 {
     public const string RepositoryUrl = "https://github.com/tochouseito/CueEngine";
-    private readonly HttpClient m_http = a_http;
-    private readonly string m_cache = Path.Combine(a_store.DirectoryPath, "engine-catalog.json");
+    private readonly GitHubReleaseClient m_github = new(a_http);
+    // 旧 Cache は browser_download_url しか持たないため保全し、API 形式はオンラインで再取得する
+    private readonly string m_cache = Path.Combine(a_store.DirectoryPath, "engine-catalog-v2.json");
     public string? LastWarning { get; private set; }
 
     public async Task<IReadOnlyList<PublishedRelease>> refresh_async(CancellationToken a_cancel)
@@ -20,11 +20,7 @@ public sealed class EngineCatalogService(HttpClient a_http, HubStateStore a_stor
             var completed = false;
             for (var page = 1; page <= 100; ++page)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/tochouseito/CueEngine/releases?per_page=100&page={page}");
-                request.Headers.UserAgent.ParseAdd("CueHub/0.1");
-                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-                using var response = await m_http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, a_cancel);
-                response.EnsureSuccessStatusCode();
+                using var response = await m_github.get_releases_async(page, a_cancel);
                 var bytes = await read_bounded_async(response.Content, 4 * 1024 * 1024, a_cancel);
                 using var document = JsonDocument.Parse(bytes);
                 if (document.RootElement.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Release 一覧が配列ではありません");
@@ -51,7 +47,7 @@ public sealed class EngineCatalogService(HttpClient a_http, HubStateStore a_stor
             if (cached.Length > 10) throw new InvalidDataException("カタログ Cache の件数が不正です");
             // Cache は署名検証の代わりに使わず、URL も再検証する
             foreach (var item in cached)
-                if (!SafePaths.is_version(item.Version) || item.Tag != "engine-v" + item.Version || item.Assets.Any(asset => !is_asset_url(asset.Value, item.Tag)))
+                if (!SafePaths.is_version(item.Version) || item.Tag != "engine-v" + item.Version || item.Assets.Any(asset => !GitHubReleaseClient.is_asset_url(asset.Value)))
                     throw new InvalidDataException("カタログ Cache が不正です");
             return cached;
         }
@@ -68,21 +64,23 @@ public sealed class EngineCatalogService(HttpClient a_http, HubStateStore a_stor
         if (preview != version.Split('+')[0].Contains('-')) return null;
         if (!a_item.TryGetProperty("published_at", out var published) || !DateTimeOffset.TryParse(published.GetString(), out var date)) return null;
         var assets = new Dictionary<string, string>(StringComparer.Ordinal);
+        var identifiers = new HashSet<long>();
         foreach (var asset in a_item.GetProperty("assets").EnumerateArray())
         {
             var name = asset.GetProperty("name").GetString() ?? "";
-            var url = asset.GetProperty("browser_download_url").GetString() ?? "";
-            if (!is_asset_url(url, tag) || !assets.TryAdd(name, url)) return null;
+            if (!asset.TryGetProperty("id", out var identifier) || identifier.ValueKind != JsonValueKind.Number ||
+                !identifier.TryGetInt64(out var id) || id <= 0 || !identifiers.Add(id)) return null;
+            if (!asset.TryGetProperty("url", out var api) || api.ValueKind != JsonValueKind.String) return null;
+            var url = api.GetString() ?? "";
+            var browser = asset.GetProperty("browser_download_url").GetString() ?? "";
+            // 一覧内の ID / API と Tag / File 名の対応を確認してから、API URL だけを保存する
+            if (url != GitHubReleaseClient.asset_url(id) || string.IsNullOrWhiteSpace(name) ||
+                browser != RepositoryUrl + "/releases/download/" + Uri.EscapeDataString(tag) + "/" + Uri.EscapeDataString(name) ||
+                !assets.TryAdd(name, url)) return null;
         }
         var expected = a_engine ? $"CueEngine-{version}-windows-x64.zip" : "releases.win.json";
         if (!assets.ContainsKey(expected) || (a_engine && (!assets.ContainsKey("engine-release.json") || !assets.ContainsKey("engine-release.json.sig")))) return null;
         return new PublishedRelease { Version = version, Tag = tag, IsPreview = preview, PublishedUtc = date, PageUrl = RepositoryUrl + "/releases/tag/" + Uri.EscapeDataString(tag), Assets = assets };
-    }
-
-    public static bool is_asset_url(string a_url, string a_tag)
-    {
-        if (!Uri.TryCreate(a_url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || uri.Host != "github.com" || !uri.IsDefaultPort || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0) return false;
-        return uri.AbsolutePath.StartsWith("/tochouseito/CueEngine/releases/download/" + Uri.EscapeDataString(a_tag) + "/", StringComparison.Ordinal);
     }
 
     public static async Task<byte[]> read_bounded_async(HttpContent a_content, int a_limit, CancellationToken a_cancel)
