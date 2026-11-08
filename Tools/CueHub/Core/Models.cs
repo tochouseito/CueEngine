@@ -14,7 +14,7 @@ public sealed record EngineRegistration
     public string LeaseId { get; init; } = "";
     public bool IsManaged { get; init; }
     public string ReceiptId { get; init; } = "";
-    [JsonIgnore] public string Display => $"{Version}  {(IsManaged ? "導入版" : "ローカル開発版")}  {Root}";
+    [JsonIgnore] public string Display => Version;
 }
 
 public sealed record ProjectRegistration
