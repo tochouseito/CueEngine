@@ -46,6 +46,25 @@ jobs:
       - name: Validate product tag
         id: version
         run: ./Tools/Packaging/Scripts/Test-ReleaseTag.ps1 -Tag $env:CUE_RELEASE_TAG
+      - name: Prepare verified DXC archive
+        if: steps.version.outputs.product == 'engine'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Release の直 URL に依存せず API で取得し、通常 Build と梱包 Build で同じ検証済み Archive を使う
+          $definition = Get-Content -LiteralPath ThirdParty/DirectXShaderCompiler.cmake -Raw
+          $version = [regex]::Match($definition, '(?m)^set\(CUE_DXC_VERSION "([^"]+)"\)\r?$').Groups[1].Value
+          $expectedHash = [regex]::Match($definition, '(?m)^set\(CUE_DXC_SHA256 "([a-f0-9]{64})"\)\r?$').Groups[1].Value
+          $asset = [regex]::Match($definition, 'https://github.com/microsoft/DirectXShaderCompiler/releases/download/v\$\{CUE_DXC_VERSION\}/([^"/]+\.zip)').Groups[1].Value
+          if (-not $version -or -not $expectedHash -or -not $asset) { throw 'DXC release definition is missing or invalid' }
+          $directory = Join-Path $env:RUNNER_TEMP 'cue-dxc'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          gh release download "v$version" --repo microsoft/DirectXShaderCompiler --pattern $asset --dir $directory --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'DXC API download failed' }
+          $archive = Join-Path $directory $asset
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $expectedHash) { throw 'DXC archive hash mismatch' }
+          New-Item -ItemType Directory -Path ThirdParty/Packages -Force | Out-Null
+          Copy-Item -LiteralPath $archive -Destination "ThirdParty/Packages/DXC-$version.zip" -Force
       - name: Prepare C++ dependencies
         if: steps.version.outputs.product == 'engine'
         run: ./scripts/prepare_dependencies.ps1
