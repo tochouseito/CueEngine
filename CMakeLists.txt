@@ -23,6 +23,8 @@ endif()
 
 add_subdirectory(Engine/Source)
 
+include("${PROJECT_SOURCE_DIR}/cmake/CueHub.cmake")
+
 if(BUILD_TESTING)
     add_subdirectory(Engine/Tests)
 endif()

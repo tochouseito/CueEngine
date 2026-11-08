@@ -89,6 +89,24 @@ int test_manager()
     const auto settingsPath = temporary.path / L"設定" / "layout.ini";
     const auto utf8Path = settingsPath.u8string();
     config.settingsFile.assign(utf8Path.begin(), utf8Path.end());
+    // Unicode を含む配置でも ImGui の stdio を通さず TTF を読めることを確認する
+    auto executable = files->executable_directory();
+    if (!executable.has_value())
+        return __LINE__;
+    const auto fontDirectory = temporary.path / L"フォント";
+    std::filesystem::copy(std::filesystem::u8path(executable.try_value()->utf8()) / "EngineResources" / "Fonts",
+                          fontDirectory, std::filesystem::copy_options::recursive);
+    const auto fontPath = fontDirectory.u8string();
+    config.fontDirectory.assign(fontPath.begin(), fontPath.end());
+    auto missingFonts = config;
+    missingFonts.fontDirectory += "/missing";
+    auto failedFonts = cue::ImGuiManager::create(*window, missingFonts);
+    if (failedFonts.has_value() || ImGui::GetCurrentContext() != external.get())
+        return __LINE__;
+    auto invalidFonts = config;
+    invalidFonts.codeFontSize = 0.0f;
+    if (cue::ImGuiManager::create(*window, invalidFonts).has_value())
+        return __LINE__;
     auto managerResult = cue::ImGuiManager::create(*window, config);
     if (!managerResult.has_value() || ImGui::GetCurrentContext() != external.get())
     {
@@ -109,16 +127,27 @@ int test_manager()
         return 7;
     }
     bool validStyle = false;
+    bool validGlyphs = false;
     for (int frame = 0; frame < 2; ++frame)
     {
         auto result = manager->build_frame([&]()
         {
             validStyle = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable) != 0 &&
                          (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) == 0 &&
-                         ImGui::GetIO().Fonts->Fonts.Size == 1 && ImGui::GetStyle().FrameRounding == 4.0f;
+                         ImGui::GetIO().Fonts->Fonts.Size == 2 && ImGui::GetStyle().FrameRounding == 4.0f &&
+                         std::string(ImGui::GetFont()->GetDebugName()) == "Inter";
             ImGui::SetNextWindowSize({200.0f, 120.0f});
             ImGui::Begin("ManagerTest");
             ImGui::TextUnformatted("CPU UI Frame");
+            ImGui::TextUnformatted("日本語 \ue5d2");
+            const bool hasUiGlyphs = ImGui::GetFontBaked()->FindGlyphNoFallback(0x65e5) &&
+                                     ImGui::GetFontBaked()->FindGlyphNoFallback(0xe5d2);
+            auto *codeFont = ImGui::GetIO().Fonts->Fonts[1];
+            ImGui::PushFont(codeFont, config.codeFontSize);
+            ImGui::TextUnformatted("Code 日本語");
+            validGlyphs = hasUiGlyphs && std::string(codeFont->GetDebugName()) == "JetBrains Mono" &&
+                          ImGui::GetFontBaked()->FindGlyphNoFallback(0x65e5);
+            ImGui::PopFont();
             ImGui::End();
             ImGui::SetNextFrameWantCaptureKeyboard(true);
             ImGui::SetNextFrameWantCaptureMouse(true);
@@ -130,7 +159,7 @@ int test_manager()
         }
     }
     auto info = manager->frame_info();
-    if (!validStyle || !info.has_value() || info.try_value()->frames != 3 || info.try_value()->vertexCount == 0 ||
+    if (!validStyle || !validGlyphs || !info.has_value() || info.try_value()->frames != 3 || info.try_value()->vertexCount == 0 ||
         !info.try_value()->wantsKeyboard || !info.try_value()->wantsMouse ||
         ImGui::GetCurrentContext() != external.get())
     {

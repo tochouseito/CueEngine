@@ -39,6 +39,10 @@ struct ImGuiManagerConfig final
     IFileSystem *fileSystem = nullptr;
     // 停止・破棄まで全 Thread から借用する。未指定なら Platform の既定時計を使う
     Clock *clock = nullptr;
+    // 空なら実行 File 隣の EngineResources/Fonts。明示指定は UTF-8 Path とする
+    std::string fontDirectory;
+    // UI Font と分離したコード表示用 Font の大きさ
+    float codeFontSize = 16.0f;
 };
 
 /// @brief 具体 GPU 型を公開せず UI Backend の所有と利用状況を返す

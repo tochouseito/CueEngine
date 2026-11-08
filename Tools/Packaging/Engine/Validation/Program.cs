@@ -28,11 +28,20 @@ internal static class Program
             var progress = new Progress<InstallProgress>(value => Console.WriteLine(value.Message));
             var engine = await installer.install_local_async(Path.Combine(releaseDirectory, verified.PackageFileName),
                 manifest, signature, progress, CancellationToken.None);
+            foreach (var font in new[] { "Inter-VariableFont_opsz,wght.ttf", "NotoSansJP-VariableFont_wght.ttf",
+                "JetBrainsMono-VariableFont_wght.ttf", "MaterialSymbolsOutlined-VariableFont_FILL,GRAD,opsz,wght.ttf" })
+            {
+                SafePaths.regular_file(Path.Combine(engine.Root, "ThirdParty", "Fonts", font));
+                SafePaths.regular_file(Path.Combine(Path.GetDirectoryName(engine.Editor)!, "EngineResources", "Fonts", font));
+            }
+            foreach (var license in new[] { "Inter-OFL.txt", "NotoSansJP-OFL.txt", "JetBrainsMono-OFL.txt",
+                "MaterialSymbols-Apache-2.0.txt", "MaterialSymbols-Notice.txt" })
+                SafePaths.regular_file(Path.Combine(engine.Root, "Licenses", license));
             var projects = new ProjectService(store);
             var cube = await projects.create_async(engine, Path.Combine(root, "RotateCube"), "Package Cube", "PackageCube",
-                "RotateCube", CancellationToken.None);
+                CancellationToken.None);
             var empty = await projects.create_async(engine, Path.Combine(root, "Empty3D"), "Empty Scene", "EmptyScene",
-                "Empty3D", CancellationToken.None);
+                CancellationToken.None);
             var validated = await projects.register_async(engine, cube.ProjectFile, CancellationToken.None);
             if (validated.ProjectId != cube.ProjectId || cube.ProjectId == empty.ProjectId)
                 throw new InvalidDataException("Project identities were not preserved or regenerated");
@@ -53,7 +62,7 @@ internal static class Program
                 createdAndValidated = true, sharedLeaseBlockedRemoval = true
             };
             HubStateStore.atomic_write(Path.Combine(root, "result.json"), JsonSerializer.SerializeToUtf8Bytes(result, HubStateStore.JsonOptions));
-            Console.WriteLine("Engine package installation, two templates, ProjectTool validation and use lease checks passed");
+            Console.WriteLine("Engine package installation, fonts, licenses, ProjectTool validation and use lease checks passed");
             return 0;
         }
         catch (Exception error)

@@ -5,6 +5,32 @@ View は `Views`、画面状態は `ViewModels`、File / Process / Network の�
 Hub / Packaging の C# Project に限り NuGet Restore を許可する。
 WPF Binding と .NET Interface の公開 Property は .NET の PascalCase を使う。
 
+画面左側の「プロジェクト」「インストール」「設定」で表示を切り替える。
+プロジェクト画面は Hub に保存された登録一覧を表示する。右上の「追加」で既存の `.cueproj` を登録し、
+「新しいプロジェクト」で一覧から専用の作成ページへ切り替える。
+「使用する Engine」は作成ページの入力項目とし、インストール画面で導入したバージョンを選択する。
+インストール画面は導入済み Engine をカードで表示し、検索と「すべて／正式リリース／Preview」で絞り込む。
+右上の「リストに追加」からローカル Engine 登録またはパッケージ導入を行う。
+「Engine をインストール」は公開版の選択ウィンドウを開き、正式版／Preview を選択して導入する。
+修復・アンインストール・登録解除・保存場所の表示は、各 Engine の「管理」メニューから行う。
+検索・絞り込みは新規 Project 作成用の Engine 候補を変更しない。
+既存 Project を開くときは Project が指定する版を自動選択し、作成用の Engine 選択とは分離する。
+作成に失敗した場合はページと入力を保持し、成功した場合は一覧へ戻って作成した Project を選択する。
+「プロジェクト一覧へ」または「キャンセル」でも一覧へ戻る。
+
+## Visual Studio から起動
+
+Visual Studio 2026 に .NET デスクトップ開発環境と .NET 10 SDK を用意する。
+
+Engine の Configure 後に `out/build/windows-vs2026/CueEngine.slnx` を開き、`CueHub` を右クリックして
+「スタートアップ プロジェクトに設定」を選ぶ。F5 でデバッグ起動、Ctrl+F5 で通常起動できる。
+Hub だけを開く場合は `Tools/CueHub/CueHub.csproj` を直接開く。
+生成された Solution を手で編集する必要はない。CMake が外部 C# Project として登録する。
+
+Hub は個別にビルドし、必要な NuGet パッケージを lock ファイルに従って復元する。
+Debug は Debug、Development / Release は Release として Hub をビルドする。
+UI の確認はインストーラーの再生成を経由せず、この起動経路で行う。
+
 ## 開発用 Build
 
 ```powershell
@@ -25,7 +51,8 @@ dotnet build Tools/CueHub/CueHub.csproj -c Debug /p:RestoreLockedMode=true
 Engine を選択して新規作成、または `.cueproj` を登録する。
 登録時は現在導入済み SDK の ProjectTool を読み取り用に利用するため、最初の Engine 登録が必要。
 その Reader が対応する形式なら、Project の指定 Engine がまだ未導入でも一覧へ登録できる。
-新規作成は C++ ProjectTool に委譲し、Empty3D / RotateCube を利用する。
+新規作成は C++ ProjectTool に委譲し、空 Project を作成する。Hub にテンプレート選択機能は設けない。
+公開済み ProjectTool との互換性のため、内部 CLI 呼び出しでは必須の `--template Empty3D` を渡す。
 Engine の指定は Project に Version として保存し、PC の絶対 Path は保存しない。
 「一覧から外す」は登録解除だけであり、Project File を削除しない。
 

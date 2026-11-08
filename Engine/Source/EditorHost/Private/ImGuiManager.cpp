@@ -29,6 +29,7 @@
 #include <Platform/Windows/WindowsPlatform.h>
 
 #include "DX12ImGuiBackend.h"
+#include "EditorFonts.h"
 #include "ImGuiSynchronization.h"
 
 // 公式 Header の指示に従い、Win32 型を公開 Header に漏らさず実装側で宣言する
@@ -114,6 +115,8 @@ public:
   Window *window = nullptr;
   WindowsMessageHandlerToken handler;
   ImGuiManagerConfig config;
+  // ImGui 1.92 の遅延 Glyph 生成も参照するため、Context の破棄まで TTF を所有する
+  EditorFonts fonts;
   ImGuiFrameInfo info;
   ImGuiContext *previousFrameContext = nullptr;
   ImGuiErrorRecoveryState recovery;
@@ -184,7 +187,8 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
 {
     using ManagerResult = Result<std::unique_ptr<ImGuiManager>>;
     if (!std::isfinite(a_config.fontSize) || a_config.fontSize <= 0.0f || a_config.fontSize > 256.0f ||
-        a_config.settingsFile.find('\0') != std::string::npos)
+        !std::isfinite(a_config.codeFontSize) || a_config.codeFontSize <= 0.0f || a_config.codeFontSize > 256.0f ||
+        a_config.settingsFile.find('\0') != std::string::npos || a_config.fontDirectory.find('\0') != std::string::npos)
     {
         return ManagerResult::failure({ErrorCategory::InvalidArgument, "ImGuiManager.config"});
     }
@@ -239,6 +243,12 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
                 settings = loaded.take_value();
             }
         }
+        auto fonts = read_editor_fonts(*state.files, state.config.fontDirectory);
+        if (!fonts.has_value())
+        {
+            return ManagerResult::failure(*fonts.try_error());
+        }
+        state.fonts = fonts.take_value();
         TimingTraceScope traceLock("ImGui.Lock");
         std::lock_guard lock(imgui_context_mutex());
         traceLock.finish();
@@ -264,11 +274,10 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
         io.IniFilename = nullptr;
         ImGui::StyleColorsDark();
         ImGui::GetStyle().FrameRounding = 4.0f;
-        ImFontConfig font;
-        font.SizePixels = state.config.fontSize;
-        if (!io.Fonts->AddFontDefault(&font))
+        auto initializedFonts = initialize_editor_fonts(io, state.fonts, state.config.fontSize, state.config.codeFontSize);
+        if (!initializedFonts.has_value())
         {
-            return ManagerResult::failure({ErrorCategory::PlatformFailure, "ImGuiManager.fonts"});
+            return ManagerResult::failure(*initializedFonts.try_error());
         }
 
         // 初回は Layout が存在しなくてもよい。既存 File の読込み失敗は初期化失敗にする
@@ -1248,6 +1257,7 @@ Result<void> ImGuiManager::shutdown()
     ImGui::DestroyContext(m_state->context);
     ImGui::SetCurrentContext(previous == m_state->context ? nullptr : previous);
     m_state->context = nullptr;
+    m_state->fonts = {};
     m_state->window = nullptr;
     m_state->isReady = false;
     return saved;

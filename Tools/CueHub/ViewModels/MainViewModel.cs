@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Windows.Data;
 
 namespace Cue.Hub;
 
@@ -17,27 +18,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly List<HubCommand> m_commands = [];
     private CancellationTokenSource? m_operation;
     private EngineRegistration? m_selectedEngine;
+    private EngineRegistration? m_selectedCreationEngine;
     private ProjectRegistration? m_selectedProject;
     private PublishedRelease? m_selectedRelease;
     private string m_status = "ローカル Engine を登録するか、公開版の一覧を取得してください";
     private double m_progress;
     private bool m_isBusy;
+    private bool m_isProjectCreationOpen;
     private string m_engineDirectory = "";
     private string m_keyFile = "";
     private string m_localFeed = "";
     private bool m_includePreview;
+    private string m_engineSearch = "";
+    private int m_installedChannel;
+    private int m_catalogChannel;
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Version => Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "development";
     public ObservableCollection<EngineRegistration> Engines { get; } = [];
     public ObservableCollection<ProjectRegistration> Projects { get; } = [];
     public ObservableCollection<PublishedRelease> Releases { get; } = [];
-    public string[] Templates { get; } = ["Empty3D", "RotateCube"];
-    public string Template { get; set; } = "Empty3D";
+    public ICollectionView InstalledEngines { get; }
+    public ICollectionView AvailableReleases { get; }
+    public string EngineSearch { get => m_engineSearch; set { set(ref m_engineSearch, value); InstalledEngines.Refresh(); } }
+    public int InstalledChannel { get => m_installedChannel; set { set(ref m_installedChannel, value); InstalledEngines.Refresh(); } }
+    public int CatalogChannel { get => m_catalogChannel; set { set(ref m_catalogChannel, value); AvailableReleases.Refresh(); } }
     public string ProjectName { get; set; } = "MyGame";
     public string ApplicationName { get; set; } = "MyGame";
     private string m_projectDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "CueProjects", "MyGame");
     public string ProjectDirectory { get => m_projectDirectory; set => set(ref m_projectDirectory, value); }
     public EngineRegistration? SelectedEngine { get => m_selectedEngine; set { set(ref m_selectedEngine, value); refresh_commands(); } }
+    public EngineRegistration? SelectedCreationEngine { get => m_selectedCreationEngine; set { set(ref m_selectedCreationEngine, value); refresh_commands(); } }
     public ProjectRegistration? SelectedProject
     {
         get => m_selectedProject;
@@ -57,6 +67,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string Status { get => m_status; private set => set(ref m_status, value); }
     public double Progress { get => m_progress; private set => set(ref m_progress, value); }
     public bool IsBusy { get => m_isBusy; private set { set(ref m_isBusy, value); refresh_commands(); } }
+    public bool IsProjectCreationOpen { get => m_isProjectCreationOpen; private set => set(ref m_isProjectCreationOpen, value); }
     public string EngineDirectory { get => m_engineDirectory; set => set(ref m_engineDirectory, value); }
     public string KeyFile { get => m_keyFile; set => set(ref m_keyFile, value); }
     public string LocalFeed { get => m_localFeed; set => set(ref m_localFeed, value); }
@@ -64,6 +75,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public HubCommand RegisterEngine { get; }
     public HubCommand RegisterProject { get; }
     public HubCommand CreateProject { get; }
+    public HubCommand ShowProjectCreation { get; }
+    public HubCommand HideProjectCreation { get; }
     public HubCommand OpenProject { get; }
     public HubCommand RemoveProject { get; }
     public HubCommand RefreshCatalog { get; }
@@ -78,12 +91,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public HubCommand ChooseLocalFeed { get; }
     public HubCommand UpdateHub { get; }
     public HubCommand OpenArchive { get; }
+    public HubCommand ShowEngineFolder { get; }
     public HubCommand Cancel { get; }
 
     public MainViewModel(HubStateStore a_store, IUserDialogs a_dialogs)
     {
         m_store = a_store;
         m_dialogs = a_dialogs;
+        // 表示用 View を分け、新規 Project の Engine 候補へ検索条件を持ち込まない
+        InstalledEngines = new ListCollectionView(Engines) { Filter = filter_installed_engine };
+        AvailableReleases = new ListCollectionView(Releases) { Filter = item => ((PublishedRelease)item).IsPreview == (CatalogChannel == 1) };
         RegisterEngine = command(async _ =>
         {
             var folder = m_dialogs.folder("CueEngine のルートフォルダを選択");
@@ -93,13 +110,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RegisterProject = command(async token =>
         {
             var file = m_dialogs.file("Project を登録", "CueEngine Project|*.cueproj");
-            if (file != null) { await new ProjectService(m_store).register_async(require_engine(), file, token); reload(); Status = "Project を登録しました"; }
+            if (file != null)
+            {
+                var registered = await new ProjectService(m_store).register_async(require_engine(), file, token);
+                reload();
+                SelectedProject = Projects.FirstOrDefault(item => item.ProjectFile == registered.ProjectFile);
+                Status = "Project を登録しました";
+            }
         }, () => SelectedEngine != null);
+        // 作成操作の成功時だけフォームを閉じ、失敗時は入力を保持する
         CreateProject = command(async token =>
         {
-            await new ProjectService(m_store).create_async(require_engine(), ProjectDirectory, ProjectName, ApplicationName, Template, token);
-            reload(); Status = "Project を作成しました。一覧から Editor で開けます";
-        }, () => SelectedEngine != null);
+            var engine = SelectedCreationEngine ?? throw new InvalidOperationException("使用する Engine を選択してください");
+            var created = await new ProjectService(m_store).create_async(engine, ProjectDirectory, ProjectName, ApplicationName, token);
+            reload();
+            SelectedProject = Projects.FirstOrDefault(item => item.ProjectFile == created.ProjectFile);
+            IsProjectCreationOpen = false;
+            Status = "Project を作成しました。一覧から Editor で開けます";
+        }, () => SelectedCreationEngine != null);
+        ShowProjectCreation = command(_ => { IsProjectCreationOpen = true; return Task.CompletedTask; });
+        HideProjectCreation = command(_ => { IsProjectCreationOpen = false; return Task.CompletedTask; });
         OpenProject = command(async token =>
         {
             var pid = await new ProjectService(m_store).open_async(require_engine(), SelectedProject!, token);
@@ -108,11 +138,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RemoveProject = command(async _ => { new ProjectService(m_store).unregister(SelectedProject!); reload(); Status = "一覧から登録を外しました。Project のファイルは保持しています"; await Task.CompletedTask; }, () => SelectedProject != null);
         RefreshCatalog = command(async token =>
         {
-            var service = new EngineCatalogService(m_http, m_store);
-            var result = await service.refresh_async(token);
-            Releases.Clear();
-            foreach (var item in result.Where(item => IncludePreview || !item.IsPreview)) Releases.Add(item);
-            Status = service.LastWarning ?? $"公開 Engine {Releases.Count} 件を取得しました（正式版・Preview 合計最大 10 世代）";
+            await load_catalog_async(token);
         });
         InstallEngine = command(async token =>
         {
@@ -136,6 +162,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RepairEngine = command(async token =>
         {
             var selected = SelectedEngine!;
+            if (!Releases.Any(item => item.Version == selected.Version)) await load_catalog_async(token);
             var release = Releases.FirstOrDefault(item => item.Version == selected.Version) ?? throw new InvalidOperationException("同じ Version の一覧を取得してください。旧版は同じパッケージを手動で取得できます");
             var service = installer(); var report = progress();
             await Task.Run(() => service.install_release_async(release, report, token, selected), token);
@@ -178,12 +205,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             else Status = "Hub 更新の適用を取り消しました";
         });
         OpenArchive = command(async _ => { Process.Start(new ProcessStartInfo(EngineCatalogService.RepositoryUrl + "/releases") { UseShellExecute = true }); await Task.CompletedTask; });
+        ShowEngineFolder = command(_ =>
+        {
+            var folder = SafePaths.full(require_engine().Root);
+            SafePaths.no_links(folder);
+            if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("Engine の保存場所が見つかりません");
+            var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            start.ArgumentList.Add(folder);
+            Process.Start(start)?.Dispose();
+            return Task.CompletedTask;
+        }, () => SelectedEngine != null);
         Cancel = new HubCommand(() => { m_operation?.Cancel(); return Task.CompletedTask; }, () => IsBusy);
         m_commands.Add(Cancel);
         reload();
     }
 
     private EngineRegistration require_engine() => SelectedEngine ?? throw new InvalidOperationException("Engine を選択してください");
+    private bool filter_installed_engine(object a_item)
+    {
+        var engine = (EngineRegistration)a_item;
+        var isPreview = engine.Version.Split('+')[0].Contains('-');
+        return (InstalledChannel == 0 || isPreview == (InstalledChannel == 2)) &&
+            (EngineSearch.Length == 0 || engine.Display.Contains(EngineSearch, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task load_catalog_async(CancellationToken a_token)
+    {
+        var service = new EngineCatalogService(m_http, m_store);
+        var result = await service.refresh_async(a_token);
+        Releases.Clear();
+        foreach (var item in result.Where(item => IncludePreview || !item.IsPreview)) Releases.Add(item);
+        Status = service.LastWarning ?? $"公開 Engine {Releases.Count} 件を取得しました（正式版・Preview 合計最大 10 世代）";
+    }
     private PackageVerifier verifier() => new(System.Text.Encoding.UTF8.GetString(read_small_file(KeyFile, 16384)));
     private static byte[] read_small_file(string a_file, int a_limit)
     {
@@ -216,12 +269,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void reload()
     {
         var selectedId = SelectedEngine?.Id;
+        var creationId = SelectedCreationEngine?.Id;
         var selectedFile = SelectedProject?.ProjectFile;
         var state = m_store.load();
         EngineDirectory = state.EngineDirectory; KeyFile = state.TrustedPublisherKeyFile; LocalFeed = state.LocalHubFeed; IncludePreview = state.IncludePreview;
         Engines.Clear(); foreach (var item in state.Engines) Engines.Add(item);
         Projects.Clear(); foreach (var item in state.Projects.OrderByDescending(item => item.LastOpenedUtc)) Projects.Add(item);
         SelectedEngine = Engines.FirstOrDefault(item => item.Id == selectedId) ?? Engines.FirstOrDefault();
+        // 作成用の選択は既存 Project に必要な版やインストール対象の選択と分離する
+        SelectedCreationEngine = Engines.FirstOrDefault(item => item.Id == creationId) ?? Engines.FirstOrDefault();
         SelectedProject = Projects.FirstOrDefault(item => item.ProjectFile == selectedFile) ?? Projects.FirstOrDefault();
     }
 

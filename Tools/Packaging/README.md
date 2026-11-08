@@ -57,7 +57,7 @@ dotnet run --project Tools/CueHub.UiTests/CueHub.UiTests.csproj -c Release --no-
 ```
 
 Tag 公開 Test は GitHub を模擬し、ネットワークへ公開・投稿しない。
-実 ZIP の導入、二つの Template 作成、CLI 検証、利用中 Lease の確認は
+実 ZIP の導入、Font / License の同梱、空 Project 作成、CLI 検証、利用中 Lease の確認は
 `Engine/Validation/CueEnginePackageProbe.csproj` を使う。
 
 ```powershell

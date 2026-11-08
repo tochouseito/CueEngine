@@ -665,7 +665,8 @@ if(WIN32)
         -P "${PROJECT_SOURCE_DIR}/Engine/Tests/ProjectTools/ProjectVersionCMakeTests.cmake")
     add_test(NAME Cue.ProjectTools.Cli COMMAND pwsh -NoProfile -File
         "${PROJECT_SOURCE_DIR}/Engine/Tests/ProjectTools/ProjectToolCliTests.ps1"
-        -Tool "$<TARGET_FILE:CueProjectTool>" -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/ProjectToolCli")
+        -Tool "$<TARGET_FILE:CueProjectTool>" -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/ProjectToolCli"
+        -EngineVersion "${CUE_ENGINE_VERSION}")
     set_tests_properties(Cue.ProjectTools.Cli PROPERTIES TIMEOUT 30)
     add_test(NAME Cue.Packaging.Contracts COMMAND pwsh -NoProfile -File
         "${PROJECT_SOURCE_DIR}/Tools/Packaging/Scripts/PackageCommonTests.ps1"
@@ -712,4 +713,14 @@ if(WIN32)
         list(APPEND taskShaderTests CueM09FramePacingProbe CueSpikeTimingProbe)
     endif()
     cue_copy_shader_runtime(${taskShaderTests})
+    # Manager 単独利用も Host 経由も、実行 File 隣の同じ Font 資源を利用する
+    set(taskFontTests CueImGuiManagerTests CueImGuiDX12BackendTests CueInputLatencyTests
+        CueEditorHostTests CueEditorSceneTests CuePerformanceSettingsIntegrationTests CueHostLoggingTests)
+    foreach(taskTarget IN ITEMS CueEditorGameBuildTests CueEditorProjectSwitchTests CueEditorPlayServicesTests
+        CueM09FramePacingProbe CueSpikeTimingProbe)
+        if(TARGET ${taskTarget})
+            list(APPEND taskFontTests ${taskTarget})
+        endif()
+    endforeach()
+    cue_copy_editor_fonts(${taskFontTests})
 endif()

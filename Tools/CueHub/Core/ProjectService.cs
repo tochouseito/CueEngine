@@ -9,10 +9,10 @@ public sealed class ProjectService(HubStateStore a_store)
 {
     private readonly HubStateStore m_store = a_store;
 
-    public async Task<ProjectRegistration> create_async(EngineRegistration a_engine, string a_directory, string a_name, string a_applicationName, string a_template, CancellationToken a_cancel)
+    public async Task<ProjectRegistration> create_async(EngineRegistration a_engine, string a_directory, string a_name, string a_applicationName, CancellationToken a_cancel)
     {
-        if (a_template is not ("Empty3D" or "RotateCube")) throw new InvalidDataException("テンプレートを選択してください");
-        var result = await run_tool_async(a_engine, ["create", "--directory", SafePaths.full(a_directory), "--name", a_name, "--application-name", a_applicationName, "--template", a_template, "--engine-version", a_engine.Version], a_cancel);
+        // 公開済み ProjectTool の必須引数を満たし、Hub からは空 Project だけを作成する
+        var result = await run_tool_async(a_engine, ["create", "--directory", SafePaths.full(a_directory), "--name", a_name, "--application-name", a_applicationName, "--template", "Empty3D", "--engine-version", a_engine.Version], a_cancel);
         return register_result(result, a_engine, true);
     }
 

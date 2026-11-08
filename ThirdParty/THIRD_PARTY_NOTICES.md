@@ -38,7 +38,7 @@ Engine / Editor Package と DXC を含む実行物に、対応する License / N
 
 ### 埋め込み Font と補助実装
 
-`v1.92.9b-docking` の `imgui_draw.cpp` / `docs/FONTS.md` を照合した。現在は `AddFontDefault` を使用し、既定 Font の除外定義を設定していないため、Editor 配布物に次の Notice も含める。
+`v1.92.9b-docking` の `imgui_draw.cpp` / `docs/FONTS.md` を照合した。Editor は下記の追加 Font を使用するが、既定 Font の除外定義は設定していないため、Binary に含まれる次の Notice も保持する。
 
 | 対象 | License / 帰属 | 保持する File |
 | --- | --- | --- |
@@ -50,6 +50,22 @@ Engine / Editor Package と DXC を含む実行物に、対応する License / N
 Font の帰属表記は固定 ImGui Tag に一致する。MIT 全文は ProggyClean の上流 Commit `139ec08a38096161291792313ef5803fc4f0e37b` の `LICENSE`、ProggyForever の上流 Commit `f8868ba43bb42c4d88454d03ad81cbd139789f72` の `LICENSE.txt` から保持した。stb は固定 ImGui Tag に含まれる 3 Header の共通 License Block を保持した。
 
 `misc/fonts/` の追加 Font や第三者の ImGui 拡張を将来配布する場合は、上表の範囲に含めず個別に License を確認する。
+
+### Editor の追加 Font
+
+旧 CueEngine の未改変 TTF を `Fonts/` に保持する。取得元 Commit、Font Version と SHA-256 は
+[Fonts/README.md](Fonts/README.md) に記録する。File 内の Copyright / License Metadata は保持する。
+
+| Font | 出自 | License / 同梱文書 |
+| --- | --- | --- |
+| Inter | https://github.com/rsms/inter | [Inter-OFL.txt](Licenses/Inter-OFL.txt)、SIL OFL 1.1 |
+| Noto Sans JP | https://github.com/notofonts/noto-cjk | [NotoSansJP-OFL.txt](Licenses/NotoSansJP-OFL.txt)、SIL OFL 1.1 |
+| JetBrains Mono | https://github.com/JetBrains/JetBrainsMono | [JetBrainsMono-OFL.txt](Licenses/JetBrainsMono-OFL.txt)、SIL OFL 1.1 |
+| Material Symbols Outlined | https://github.com/google/material-design-icons | [MaterialSymbols-Apache-2.0.txt](Licenses/MaterialSymbols-Apache-2.0.txt)、[MaterialSymbols-Notice.txt](Licenses/MaterialSymbols-Notice.txt) |
+
+OFL Font は元の License と Copyright を添付し、Font 単体で販売しない。改変する場合は Reserved Font Name の条件も確認する。
+Material Symbols は Apache-2.0 の全文と上記帰属表示を含める。TTF を変換・改変する場合はその旨を明記する。
+Editor の Binary 配置と Source-backed SDK の両方に Font / License を同梱する。
 
 ## vcpkg
 

@@ -76,7 +76,7 @@ try
     {
         [IO.File]::Copy((Join-Path $engineRoot $name), (Join-Path $payload $name), $false)
     }
-    foreach ($name in @('Engine/Source', 'Engine/Shader', 'cmake', 'Templates', 'Tools/VisualStudioBridge'))
+    foreach ($name in @('Engine/Source', 'Engine/Shader', 'cmake', 'Templates', 'Tools/VisualStudioBridge', 'ThirdParty/Fonts'))
     {
         Copy-CuePackageTree (Join-Path $engineRoot $name) (Join-Path $payload $name)
     }

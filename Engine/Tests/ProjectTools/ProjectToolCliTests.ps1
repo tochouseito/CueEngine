@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$Tool,
     [Parameter(Mandatory)][string]$TestRoot,
-    [string]$EngineVersion = '0.1.0-preview.1'
+    [Parameter(Mandatory)][string]$EngineVersion
 )
 
 $ErrorActionPreference = 'Stop'

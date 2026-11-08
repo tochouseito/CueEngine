@@ -2,6 +2,7 @@
 # vcpkg の Release Library を独自の Development 構成でも利用する
 set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT Release)
 find_package(imgui CONFIG REQUIRED GLOBAL)
+include("${PROJECT_SOURCE_DIR}/cmake/CueEditorFonts.cmake")
 
 add_library(Cue.EditorHost STATIC
     Public/EditorHost/ImGuiPass.h
@@ -13,6 +14,8 @@ add_library(Cue.EditorHost STATIC
     Private/EditorPlayServices.cpp
     Private/EditorScriptController.cpp
     Private/ImGuiManager.cpp
+    Private/EditorFonts.h
+    Private/EditorFonts.cpp
     Private/DX12ImGuiBackend.cpp
 )
 
@@ -22,6 +25,7 @@ target_compile_features(Cue.EditorHost PUBLIC cxx_std_20)
 target_link_libraries(Cue.EditorHost PRIVATE Cue.EngineVersion)
 
 add_executable(CueEditorHost WIN32 Main.cpp)
+cue_copy_editor_fonts(CueEditorHost)
 target_link_libraries(CueEditorHost PRIVATE Cue.EditorHost Cue.ProjectBuild.Windows Cue.EditorIde.Windows Cue.EngineInstallation Cue.Platform.Windows Cue.Foundation.Windows shell32)
 cue_copy_visual_studio_bridge(CueEditorHost)
 # 未選択起動から Project を開いた場合も Metadata / Play の実行先を用意する

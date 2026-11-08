@@ -237,23 +237,22 @@ internal static class Program
         var store = new HubStateStore(Path.Combine(a_testRoot, "RealProject"));
         var engine = new EngineRegistryService(store).register_local(SafePaths.full(a_engineRoot));
         var service = new ProjectService(store);
-        foreach (var template in new[] { "Empty3D", "RotateCube" })
-        {
-            var created = await service.create_async(engine, Path.Combine(a_testRoot, template), template, template, template, CancellationToken.None);
-            var loaded = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
-            check(loaded.EngineVersion == engine.Version && loaded.ProjectId == created.ProjectId, "real project create validate " + template);
-            await rejected(() => service.create_async(engine, Path.GetDirectoryName(created.ProjectFile)!, template, template, template, CancellationToken.None), "existing project preserved");
-            var bytes = File.ReadAllBytes(created.ProjectFile);
-            service.unregister(created);
-            check(File.ReadAllBytes(created.ProjectFile).SequenceEqual(bytes), "unregister preserved project files");
-            // 未導入版の Project も登録できるが、別版の Editor は起動させない
-            var futureVersion = "999.0.0-preview.1";
-            File.WriteAllText(created.ProjectFile, Encoding.UTF8.GetString(bytes).Replace("engineVersion=" + engine.Version, "engineVersion=" + futureVersion, StringComparison.Ordinal), new UTF8Encoding(false));
-            var unavailable = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
-            check(unavailable.EngineVersion == futureVersion && store.load().Projects.Any(item => item.ProjectId == created.ProjectId), "register project with unavailable engine version");
-            await rejected(() => service.open_async(engine, unavailable, CancellationToken.None), "do not open project in another engine version");
-            service.unregister(unavailable);
-        }
+        var created = await service.create_async(engine, Path.Combine(a_testRoot, "NewProject"), "NewProject", "NewProject", CancellationToken.None);
+        var loaded = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
+        check(loaded.EngineVersion == engine.Version && loaded.ProjectId == created.ProjectId, "real project create validate without template selection");
+        var scene = File.ReadAllText(Path.Combine(Path.GetDirectoryName(created.ProjectFile)!, "Content", "Scenes", "Main.cuescene"));
+        check(scene.Contains("camera.projection=perspective", StringComparison.Ordinal) && !scene.Contains("mesh.", StringComparison.Ordinal), "new project contains camera without sample meshes");
+        await rejected(() => service.create_async(engine, Path.GetDirectoryName(created.ProjectFile)!, "NewProject", "NewProject", CancellationToken.None), "existing project preserved");
+        var bytes = File.ReadAllBytes(created.ProjectFile);
+        service.unregister(created);
+        check(File.ReadAllBytes(created.ProjectFile).SequenceEqual(bytes), "unregister preserved project files");
+        // 未導入版の Project も登録できるが、別版の Editor は起動させない
+        var futureVersion = "999.0.0-preview.1";
+        File.WriteAllText(created.ProjectFile, Encoding.UTF8.GetString(bytes).Replace("engineVersion=" + engine.Version, "engineVersion=" + futureVersion, StringComparison.Ordinal), new UTF8Encoding(false));
+        var unavailable = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
+        check(unavailable.EngineVersion == futureVersion && store.load().Projects.Any(item => item.ProjectId == created.ProjectId), "register project with unavailable engine version");
+        await rejected(() => service.open_async(engine, unavailable, CancellationToken.None), "do not open project in another engine version");
+        service.unregister(unavailable);
         new EngineRegistryService(store).unregister_local(engine);
         check(File.Exists(engine.Editor), "unregister local engine preserved executable");
     }
