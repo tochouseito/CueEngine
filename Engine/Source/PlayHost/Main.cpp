@@ -17,6 +17,10 @@
 #include <GameRuntime/GameSession.h>
 #include <Platform/Diagnostics.h>
 #include <Platform/Windows/WindowsFileSystem.h>
+#include <Platform/Windows/WindowsPlatform.h>
+#include <Runtime/Components/TransformComponent.h>
+#include <Runtime/FrameController.h>
+#include <Runtime/World.h>
 #include <Scene/Scene.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayServer.h>
@@ -33,6 +37,7 @@ struct Options final
     std::uint32_t maxTicks = 0;
     bool isDescribe = false;
     bool isHeadless = false;
+    bool isEmbedded = false;
     bool isDebug = false;
 };
 
@@ -61,6 +66,11 @@ cue::Result<Options> read_options()
         if (key == "--headless" && !options.isHeadless)
         {
             options.isHeadless = true;
+            continue;
+        }
+        if (key == "--embedded" && !options.isEmbedded)
+        {
+            options.isEmbedded = true;
             continue;
         }
         if (key == "--debug-wait" && !options.isDebug)
@@ -100,7 +110,7 @@ cue::Result<Options> read_options()
             return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.argument"});
     }
     if (options.pipeName.empty() || options.module.is_empty() || !options.session ||
-        (options.isDescribe && options.isDebug))
+        (options.isDescribe && options.isDebug) || (options.isEmbedded && !options.isHeadless))
         return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.required_arguments"});
     return cue::Result<Options>::success(std::move(options));
 }
@@ -126,6 +136,48 @@ int fail(cue::PlayServer &a_server, const cue::Error &a_error)
     (void)queued;
     drain(a_server);
     return 1;
+}
+
+/// @brief 更新確定後の描画値と既知 Object の姿勢を複写し、Game / World の参照を Process 外へ渡さない
+cue::Result<cue::PlayViewSnapshot> capture_view(cue::GameSession &a_session, const cue::Scene &a_scene)
+{
+    auto render = a_session.snapshot();
+    if (!render.has_value())
+        return cue::Result<cue::PlayViewSnapshot>::failure(*render.try_error());
+    cue::PlayViewSnapshot view;
+    view.tick = a_session.completed_ticks();
+    view.render = render.take_value();
+    auto *world = a_session.world();
+    if (!world)
+        return cue::Result<cue::PlayViewSnapshot>::failure({cue::ErrorCategory::InvalidState, "Play.view.world"});
+    // 現行の Script API が扱う開始 Scene の Object だけを識別し、削除済み Object は公開しない
+    for (const auto &object : a_scene.descriptor().objects)
+    {
+        if (!object.transform)
+            continue;
+        auto entity = world->find_by_id(a_session.instance(), object.objectId);
+        if (!entity.has_value())
+            continue;
+        auto transform = world->get_component<cue::TransformComponent>(*entity.try_value());
+        if (transform.has_value())
+            view.transforms.push_back({object.objectId, (*transform.try_value())->local()});
+    }
+    return cue::Result<cue::PlayViewSnapshot>::success(std::move(view));
+}
+
+/// @brief Play の更新境界で姿勢を変更する。拒否できる入力失敗では実行 World を変更しない
+cue::Result<void> set_play_transform(cue::GameSession &a_session, const cue::PlayCommand &a_command)
+{
+    auto *world = a_session.world();
+    if (!world)
+        return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Play.transform.world"});
+    auto entity = world->find_by_id(a_session.instance(), a_command.objectId);
+    if (!entity.has_value())
+        return cue::Result<void>::failure(*entity.try_error());
+    auto transform = world->get_component<cue::TransformComponent>(*entity.try_value());
+    if (!transform.has_value())
+        return cue::Result<void>::failure(*transform.try_error());
+    return (*transform.try_value())->set_local(a_command.transform);
 }
 
 /// @brief 親の開始許可と Debugger 接続を両方満たすまで、Game DLL を読まずに待つ
@@ -244,6 +296,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
 
     bool shouldStop = false;
     std::uint64_t ticks = 0;
+    std::optional<std::uint64_t> pendingView;
     // IPC は World の更新中に適用せず、Owner Thread 上の次の更新前で確定する
     const auto processCommands = [&]() -> cue::Result<void>
     {
@@ -255,6 +308,28 @@ int run(const Options &a_options, cue::PlayServer &a_server)
             if (command.kind == cue::PlayCommand::Kind::Stop)
             {
                 shouldStop = true;
+                continue;
+            }
+            if (command.kind == cue::PlayCommand::Kind::RequestView)
+            {
+                if (!a_options.isEmbedded || pendingView)
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Play.view.request"});
+                pendingView = command.requestId;
+                continue;
+            }
+            if (command.kind == cue::PlayCommand::Kind::SetTransform)
+            {
+                auto changed = set_play_transform(*session, command);
+                cue::PlayTransformAck ack;
+                ack.requestId = command.requestId;
+                ack.objectId = command.objectId;
+                ack.transform = command.transform;
+                ack.isAccepted = changed.has_value();
+                if (!changed.has_value())
+                    ack.error = changed.try_error()->operation;
+                auto queued = a_server.send_transform_ack(ack);
+                if (!queued.has_value())
+                    return queued;
                 continue;
             }
             if (command.kind != cue::PlayCommand::Kind::SetProperty)
@@ -280,6 +355,28 @@ int run(const Options &a_options, cue::PlayServer &a_server)
 
     if (a_options.isHeadless)
     {
+        // Window のない Editor Play でも FPS 制御は共通 FrameController に任せる
+        // 単一 Owner 上で更新・IPC・抽出を直列化し、Debugger 停止後の大量追い付きは行わない
+        auto createdServices = cue::create_windows_thread_services();
+        if (!createdServices.has_value())
+            return fail(a_server, *createdServices.try_error());
+        auto services = createdServices.take_value();
+        cue::FrameControllerDesc frame{1, false, a_options.isEmbedded ? 60u : 0u};
+        cue::FrameController controller(frame, *services.clock, *services.waiter, *services.threadFactory);
+        auto registered = controller.register_callbacks(
+            [&](std::uint64_t, std::stop_token)
+            {
+                auto updated = session->update(std::chrono::nanoseconds(16'666'667));
+                if (updated.has_value())
+                    ++ticks;
+                return updated;
+            },
+            [](std::uint64_t, std::stop_token) { return cue::Result<void>::success(); });
+        if (!registered.has_value())
+            return fail(a_server, *registered.try_error());
+        auto started = controller.start();
+        if (!started.has_value())
+            return fail(a_server, *started.try_error());
         auto ready = a_server.send_ready();
         if (!ready.has_value())
             return fail(a_server, *ready.try_error());
@@ -290,12 +387,26 @@ int run(const Options &a_options, cue::PlayServer &a_server)
                 return fail(a_server, *commands.try_error());
             if (shouldStop)
                 break;
-            auto updated = session->update(std::chrono::nanoseconds(16'666'667));
-            if (!updated.has_value())
-                return fail(a_server, *updated.try_error());
-            ++ticks;
-            Sleep(1);
+            auto stepped = controller.step();
+            if (!stepped.has_value())
+                return fail(a_server, *stepped.try_error());
+            // 要求一件に対して更新確定後の最新値だけを返し、遅い Editor 向けの蓄積を作らない
+            if (*stepped.try_value() && pendingView)
+            {
+                auto snapshot = capture_view(*session, *scene);
+                if (!snapshot.has_value())
+                    return fail(a_server, *snapshot.try_error());
+                auto queued = a_server.send_view(*pendingView, *snapshot.try_value());
+                if (!queued.has_value())
+                    return fail(a_server, *queued.try_error());
+                pendingView.reset();
+            }
+            if (!a_options.isEmbedded)
+                Sleep(1);
         }
+        auto stopped = controller.stop();
+        if (!stopped.has_value())
+            return fail(a_server, *stopped.try_error());
     }
     else
     {

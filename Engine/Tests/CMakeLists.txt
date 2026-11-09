@@ -650,6 +650,16 @@ if(WIN32)
     if(MSVC)
         target_compile_options(CuePlayProtocolFixture PRIVATE /utf-8)
     endif()
+    # Project 未選択の既定 Build でも、実 Editor / 子 Process の表示と Crash 分離を検証する
+    add_executable(CueEditorEmbeddedPlayTests EditorHost/EditorEmbeddedPlayTests.cpp)
+    target_link_libraries(CueEditorEmbeddedPlayTests PRIVATE
+        Cue.EditorHost Cue.ScriptPlay Cue.Renderer.DX12 Cue.Platform.Windows Cue.Foundation.Windows)
+    add_dependencies(CueEditorEmbeddedPlayTests CuePlayHost CuePlayFailureGame CuePlayProtocolFixture)
+    add_test(NAME Cue.Editor.EmbeddedPlay COMMAND CueEditorEmbeddedPlayTests
+        $<TARGET_FILE:CuePlayHost> $<TARGET_FILE:CuePlayFailureGame> $<TARGET_FILE:CuePlayProtocolFixture>)
+    set_tests_properties(Cue.Editor.EmbeddedPlay PROPERTIES TIMEOUT 60)
+    cue_copy_shader_runtime(CueEditorEmbeddedPlayTests)
+    cue_copy_editor_fonts(CueEditorEmbeddedPlayTests)
     if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed" AND TARGET RotateCubeGame)
         add_executable(CueScriptPlayTests Script/ScriptPlayTests.cpp)
         target_link_libraries(CueScriptPlayTests PRIVATE Cue.ScriptPlay)

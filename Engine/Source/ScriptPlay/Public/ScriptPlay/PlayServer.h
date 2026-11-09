@@ -18,7 +18,9 @@ struct PlayCommand final
         Start,
         Stop,
         SetProperty,
-        ContinueDebug
+        ContinueDebug,
+        RequestView,
+        SetTransform
     };
     Kind kind = Kind::Stop;
     std::uint64_t requestId = 0;
@@ -26,6 +28,7 @@ struct PlayCommand final
     std::string objectId;
     std::string scriptInstanceId;
     ScriptPropertyValue value;
+    math::floatTransform transform;
 };
 
 /// @brief 専用 Play Process が所有する通信端点。World / DLL の所有権は持たない
@@ -57,6 +60,10 @@ class PlayServer final
     [[nodiscard]] Result<void> send_debug_waiting();
     /// @brief 変更の確定値または拒否理由を通知する
     [[nodiscard]] Result<void> send_ack(const PlayPropertyAck &a_ack);
+    /// @brief 未応答の取得要求へ更新完了後の所有値を複写する。同時に保持する要求は一件
+    [[nodiscard]] Result<void> send_view(std::uint64_t a_requestId, const PlayViewSnapshot &a_snapshot);
+    /// @brief 更新前境界で適用した Transform の確定値または拒否理由を通知する
+    [[nodiscard]] Result<void> send_transform_ack(const PlayTransformAck &a_ack);
     /// @brief 異常終了前に可能な範囲で診断を送信する
     [[nodiscard]] Result<void> send_error(std::string_view a_message);
     /// @brief 送信予約が残っているか返す。終了時の排出は上位が期限を設ける

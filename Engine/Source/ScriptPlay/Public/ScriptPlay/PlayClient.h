@@ -7,6 +7,8 @@
 #include <vector>
 
 #include <Foundation/Path.h>
+#include <Math/Transform.h>
+#include <SceneRender/RenderScene.h>
 #include <ScriptData/ScriptData.h>
 
 namespace cue
@@ -33,6 +35,33 @@ struct PlayClientConfig final
     Path module;
     bool isHeadless = false;
     std::uint32_t maxTicks = 0;
+    // Editor 内表示では Window を生成せず、要求された確定値だけを親へ転送する
+    bool isEmbedded = false;
+};
+
+/// @brief 実行中の Object の Local Transform。永続 ID だけを使い Runtime Handle を共有しない
+struct PlayObjectTransform final
+{
+    std::string objectId;
+    math::floatTransform transform;
+};
+
+/// @brief 子の更新完了時点の所有値。描画と Inspector が同じ確定境界を観測する
+struct PlayViewSnapshot final
+{
+    std::uint64_t tick = 0;
+    SceneRenderSnapshot render;
+    std::vector<PlayObjectTransform> transforms;
+};
+
+/// @brief 実行中 Transform の変更応答。保存用 Scene と Undo 履歴へ反映しない
+struct PlayTransformAck final
+{
+    std::uint64_t requestId = 0;
+    bool isAccepted = false;
+    std::string objectId;
+    math::floatTransform transform;
+    std::string error;
 };
 
 /// @brief 子 World の確定境界で処理した Property 変更の応答。編集正本は変更しない
@@ -87,6 +116,12 @@ class PlayClient final
     /// @brief Session 付きの型付き変更要求を予約する。成功値は応答照合用 ID
     [[nodiscard]] Result<std::uint64_t> set_property(std::string_view a_objectId, std::string_view a_scriptInstanceId,
                                                      const ScriptPropertyValue &a_value);
+    /// @brief 実行中 Object の Transform 変更を次の更新前へ予約する。成功値は応答照合用 ID
+    [[nodiscard]] Result<std::uint64_t> set_transform(std::string_view a_objectId,
+                                                      const math::floatTransform &a_transform);
+    /// @brief 最後の確定値を Owner Thread だけに貸す。次の poll / start / stop / 破棄で失効する
+    /// 開始前・停止中・失敗後は nullptr。低速な Editor に対して Snapshot を無制限に蓄積しない
+    [[nodiscard]] const PlayViewSnapshot *view_snapshot() const noexcept;
     /// @brief 次の操作まで有効な状態値を返す
     [[nodiscard]] PlayState state() const noexcept;
     /// @brief 最後に子 Process から複写した Metadata を借用する。次の poll / 破棄で失効する
@@ -97,6 +132,8 @@ class PlayClient final
     [[nodiscard]] std::uint64_t session_id() const noexcept;
     /// @brief 確定済み応答の所有権を移す。未応答要求は含めない
     [[nodiscard]] std::vector<PlayPropertyAck> take_acknowledgements();
+    /// @brief 確定した Transform 応答の所有権を Owner Thread へ移す。未応答要求は含めない
+    [[nodiscard]] std::vector<PlayTransformAck> take_transform_acknowledgements();
 
   private:
     struct State;

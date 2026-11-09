@@ -61,3 +61,6 @@ Project ごとの Build / Artifact 選択 UI は別段階で整備する。
 
 初期再読み込みは Stop → Build → Play。状態を保持した Hot Reload、Play の埋込み表示、一般の World State 同期、
 任意 Component の ABI 登録、独立アプリの Package / Build UI はこの基盤だけで完成したものと扱わない。
+
+Editor SceneView への埋込み表示と実行 Transform の同期は、後続の
+[ADR-0031](0031-editor-embedded-play.md)で定義する。Game DLL の Process 分離と編集正本の保全は維持する。

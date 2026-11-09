@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <Math/Projection.h>
 #include <Platform/FileSystem.h>
 #include <Project/Project.h>
 #include <ProjectBuild/GameBuild.h>
@@ -24,6 +25,22 @@ Result<void> validate_play_file(IFileSystem &a_files, const Path &a_file, const 
 }
 } // namespace
 
+Result<void> validate_editor_play_view(const SceneRenderSnapshot &a_snapshot, float a_aspect)
+{
+    if (a_snapshot.objects.empty())
+        return Result<void>::success();
+    if (!a_snapshot.camera)
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorHost.play.camera_missing"});
+    const auto &camera = *a_snapshot.camera;
+    auto projection = math::perspective_rh_zo(camera.verticalFovRadians, a_aspect, camera.nearClip, camera.farClip);
+    if (!projection.has_value())
+        return Result<void>::failure(*projection.try_error());
+    for (const auto &object : a_snapshot.objects)
+        if (!math::is_finite(object.world * camera.view * *projection.try_value()))
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorHost.play.matrix_overflow"});
+    return Result<void>::success();
+}
+
 Result<PlayClientConfig> resolve_editor_play_config(IFileSystem &a_files, const Project *a_project,
                                                     const std::optional<Path> &a_executable,
                                                     const std::optional<Path> &a_module)
@@ -32,6 +49,9 @@ Result<PlayClientConfig> resolve_editor_play_config(IFileSystem &a_files, const 
         return Result<PlayClientConfig>::failure(
             {ErrorCategory::InvalidArgument, "EditorHost.play.partial_configuration"});
     PlayClientConfig config;
+    // Editor の SceneView が描画を担当し、Game DLL は表示 Window のない子 Process に隔離する
+    config.isHeadless = true;
+    config.isEmbedded = true;
     if (a_executable)
     {
         // Library の明示設定を優先し、不正でも Project の DLL に黙って戻らない

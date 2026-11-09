@@ -108,12 +108,139 @@ int test_unselected_editor()
     CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
     return 0;
 }
+
+/// @brief Play 入力と Editor Camera が保存正本を触らず、実入力を専用要求に変換することを確認する
+int test_play_view_ui()
+{
+    cue::EditorApplicationConfig config;
+    unsigned nextId = 0;
+    config.generateId = [&nextId]()
+    {
+        char text[37]{};
+        std::snprintf(text, sizeof(text), "20000000-0000-4000-8000-%012u", ++nextId);
+        return cue::Result<std::string>::success(text);
+    };
+    auto created = cue::EditorApplication::create(std::nullopt, std::move(config));
+    CUE_EDITOR_UI_CHECK(created.has_value());
+    auto application = created.take_value();
+    auto cube = application->add_cube();
+    CUE_EDITOR_UI_CHECK(cube.has_value());
+    auto uiResult = cue::EditorUi::create();
+    CUE_EDITOR_UI_CHECK(uiResult.has_value());
+    auto ui = uiResult.take_value();
+    auto original = application->document().scene().serialize();
+    CUE_EDITOR_UI_CHECK(original.has_value());
+    auto liveScene = application->document().scene().descriptor();
+    liveScene.objects.back().transform->position.x = 11;
+    cue::EditorUiContext display;
+    display.sceneTextureId = 0xCE003;
+    display.isPlaying = true;
+    display.canStop = true;
+    display.playSessionId = 17;
+    display.playScene = &liveScene;
+    std::unique_ptr<ImGuiContext, decltype(&ImGui::DestroyContext)> context(ImGui::CreateContext(),
+                                                                            &ImGui::DestroyContext);
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = {display.displayWidth, display.displayHeight};
+    io.DeltaTime = 1.0f / 60.0f;
+    CUE_EDITOR_UI_CHECK(io.Fonts->Build());
+    io.Fonts->SetTexID(static_cast<ImTextureID>(1));
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+
+    // Live 値から始まる Scalar を編集し、Document の Begin / Preview / Commit を一件も発行しない
+    auto *inspector = ImGui::FindWindowByName("Inspector##EditorInspector");
+    CUE_EDITOR_UI_CHECK(inspector != nullptr);
+    const float positionOffset = 2 * ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 1;
+    const auto advance = [&]()
+    {
+        auto result = frame(*ui, application->document(), display);
+        if (!result.has_value())
+            return false;
+        for (const auto &action : *result.try_value())
+            if (action.kind != cue::EditorActionKind::SetPlayTransform)
+                return false;
+        return true;
+    };
+    io.AddMousePosEvent(inspector->DC.CursorStartPos.x + 30,
+                        inspector->DC.CursorStartPos.y + positionOffset + ImGui::GetFrameHeight() * 0.5f);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddMouseButtonEvent(0, true);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddMouseButtonEvent(0, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    CUE_EDITOR_UI_CHECK(advance());
+    CUE_EDITOR_UI_CHECK(io.WantTextInput);
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddKeyEvent(ImGuiKey_A, true);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddKeyEvent(ImGuiKey_A, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    CUE_EDITOR_UI_CHECK(advance());
+    io.AddInputCharactersUTF8("7.5");
+    auto edited = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(edited.has_value() && edited.try_value()->size() == 1);
+    CUE_EDITOR_UI_CHECK(edited.try_value()->front().kind == cue::EditorActionKind::SetPlayTransform);
+    CUE_EDITOR_UI_CHECK(edited.try_value()->front().objectId == *cube.try_value());
+    CUE_EDITOR_UI_CHECK(edited.try_value()->front().transform.position.x == 7.5f);
+    liveScene.objects.back().transform->position.x = 123;
+    CUE_EDITOR_UI_CHECK(advance());
+    CUE_EDITOR_UI_CHECK(std::strcmp(context->InputTextState.GetText(), "7.5") == 0);
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    auto cancelled = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(cancelled.has_value() && cancelled.try_value()->size() == 1);
+    CUE_EDITOR_UI_CHECK(cancelled.try_value()->front().kind == cue::EditorActionKind::SetPlayTransform);
+    CUE_EDITOR_UI_CHECK(cancelled.try_value()->front().transform.position.x == 11);
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    CUE_EDITOR_UI_CHECK(advance());
+    display.playSessionId = 18;
+    CUE_EDITOR_UI_CHECK(advance());
+    display.isPlaying = false;
+    CUE_EDITOR_UI_CHECK(advance());
+    CUE_EDITOR_UI_CHECK(!application->document().is_transform_editing());
+
+    // SceneView 内の Wheel は表示 Camera のみを動かし、外側の入力は受け取らない
+    auto *view = ImGui::FindWindowByName("Scene View##EditorSceneView");
+    CUE_EDITOR_UI_CHECK(view != nullptr);
+    ImGui::FocusWindow(view);
+    const auto center = view->Rect().GetCenter();
+    io.AddMousePosEvent(center.x, center.y);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseWheelEvent(0, 1);
+    auto camera = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(camera.has_value() && camera.try_value()->size() == 1);
+    CUE_EDITOR_UI_CHECK(camera.try_value()->front().kind == cue::EditorActionKind::SetSceneViewCamera);
+    CUE_EDITOR_UI_CHECK(camera.try_value()->front().transform.position.z == 2.5f);
+    display.sceneViewCamera = camera.try_value()->front().transform;
+    io.AddMousePosEvent(view->DC.CursorStartPos.x + 35, view->DC.CursorStartPos.y + ImGui::GetFrameHeight() * 0.5f);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseButtonEvent(0, true);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseButtonEvent(0, false);
+    auto reset = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(reset.has_value() && reset.try_value()->size() == 1);
+    CUE_EDITOR_UI_CHECK(reset.try_value()->front().kind == cue::EditorActionKind::ResetSceneViewCamera);
+    io.AddMousePosEvent(0, 0);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseWheelEvent(0, 1);
+    auto outside = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(outside.has_value() && outside.try_value()->empty());
+    auto after = application->document().scene().serialize();
+    CUE_EDITOR_UI_CHECK(after.has_value() && *after.try_value() == *original.try_value());
+    CUE_EDITOR_UI_CHECK(application->shutdown().has_value());
+    return 0;
+}
 } // namespace
 
 /// @brief UI が正本を直接変えず、実入力を所有 Action と論理 Texture へ変換することを検証する
 int main()
 {
     CUE_EDITOR_UI_CHECK(test_unselected_editor() == 0);
+    CUE_EDITOR_UI_CHECK(test_play_view_ui() == 0);
     cue::EditorApplicationConfig config;
     unsigned id = 0;
     config.generateId = [&id]()

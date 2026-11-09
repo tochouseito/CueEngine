@@ -55,6 +55,9 @@ enum class EditorActionKind
     BuildScripts,
     DebugPlay,
     CancelScriptOperation,
+    SetPlayTransform,
+    SetSceneViewCamera,
+    ResetSceneViewCamera,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求
@@ -116,6 +119,9 @@ struct EditorUiContext final
     std::string_view errorText;
     std::string_view noticeText;
     bool isSceneViewEnabled = true;
+    // Editor の表示 Camera だけを切り替え、保存 Scene / 実行 World の Camera は変更しない
+    std::optional<math::floatTransform> sceneViewCamera;
+    math::floatTransform sceneCameraTransform{{0, 0, 3}};
     // true の間は背景操作を抑止し、未保存確認の選択を一度だけ返す
     bool isUnsavedConfirmationRequested = false;
     // Metadata は別 Process から受け取った所有値を draw 中だけ借用する

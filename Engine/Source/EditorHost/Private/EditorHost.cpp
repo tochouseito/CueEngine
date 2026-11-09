@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <new>
+#include <unordered_map>
 #include <utility>
 
 #include <imgui.h>
@@ -15,6 +16,7 @@
 #include <EditorUi/EditorUi.h>
 #include <EngineInstallation/EngineVersion.h>
 #include <Foundation/ScopedFlag.h>
+#include <Math/Projection.h>
 #include <Platform/Diagnostics.h>
 #include <Runtime/World.h>
 #include <SceneRender/SceneRenderer.h>
@@ -211,6 +213,10 @@ struct EditorHost::EditingState final
     std::unique_ptr<PlayClient> play;
     // Play 時点の Scene 設定を保持し、実行中の変更を編集正本へ混ぜない
     std::optional<SceneDescriptor> playScene;
+    std::unordered_map<std::string, std::size_t> playObjectIndices;
+    std::optional<std::uint64_t> appliedViewTick;
+    // Editor の Camera だけを上書きし、編集用 / 実行用 World の Camera は変更しない
+    std::optional<math::floatTransform> sceneViewCamera;
     GameBuildTarget buildTarget;
     std::string buildStatusText;
     std::unique_ptr<EditorScriptController> scripts;
@@ -653,6 +659,9 @@ Result<void> EditorHost::apply_project_change()
     editing.scripts.reset();
     editing.play.reset();
     editing.playScene.reset();
+    editing.playObjectIndices.clear();
+    editing.appliedViewTick.reset();
+    editing.sceneViewCamera.reset();
     m_playExecutable.reset();
     m_scriptModule.reset();
     m_project = std::move(m_pendingProject->project);
@@ -967,6 +976,17 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
                 context.playSessionId = m_editing->play->session_id();
                 context.playScene = m_editing->playScene ? &*m_editing->playScene : nullptr;
             }
+            context.sceneViewCamera = m_editing->sceneViewCamera;
+            const auto *cameraScene = context.playScene;
+            if (!cameraScene && m_editing->application)
+                cameraScene = &m_editing->application->document().scene().descriptor();
+            if (cameraScene)
+                for (const auto &object : cameraScene->objects)
+                    if (object.isActive && object.camera && object.transform)
+                    {
+                        context.sceneCameraTransform = *object.transform;
+                        break;
+                    }
             if (m_gameBuildService)
             {
                 const auto &status = m_gameBuildService->status();
@@ -1021,7 +1041,16 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
     if (m_sceneRenderer)
     {
         SceneRenderSnapshot frameScene;
-        if (auto *world = preview_world())
+        const auto state = play_state();
+        const bool isPlayActive = state == PlayState::Starting || state == PlayState::Running ||
+                                  state == PlayState::Stopping || state == PlayState::WaitingForDebugger;
+        if (isPlayActive)
+        {
+            // ゲーム Code を親へ持ち込まず、検証済みの独立値を既存 SceneRenderer に渡す
+            if (const auto *view = play_view_snapshot())
+                frameScene = view->render;
+        }
+        else if (auto *world = preview_world())
         {
             // Project 選択後だけ World を同期する。未選択 Frame は Camera / Mesh のない所有値を渡す
             auto updated = m_editing->application->synchronize_preview();
@@ -1031,6 +1060,30 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             if (!snapshot.has_value())
                 return Result<void>::failure(*snapshot.try_error());
             frameScene = snapshot.take_value();
+        }
+        if (m_editing && m_editing->sceneViewCamera)
+        {
+            auto view = math::view_from_transform(*m_editing->sceneViewCamera);
+            if (!view.has_value())
+                return Result<void>::failure(*view.try_error());
+            if (!frameScene.camera)
+                frameScene.camera.emplace();
+            frameScene.camera->view = view.take_value();
+        }
+        if (isPlayActive && m_editing && m_editing->window)
+        {
+            const auto size = m_editing->window->client_size();
+            auto valid = validate_editor_play_view(frameScene, float((std::max)(size.width, 1u)) /
+                                                                   float((std::max)(size.height, 1u)));
+            if (!valid.has_value())
+            {
+                // 有限な入力同士でも積で Overflow する。ゲーム値の異常を Editor の描画失敗へ伝播させない
+                m_editing->error = valid.try_error()->operation;
+                auto stopped = stop_play();
+                if (!stopped.has_value())
+                    m_editing->error += ": " + stopped.try_error()->operation;
+                frameScene = {};
+            }
         }
         auto published = m_sceneRenderer->publish_frame(a_frame, std::move(frameScene));
         if (!published.has_value())
@@ -1136,6 +1189,7 @@ Result<void> EditorHost::execute_document_change(DocumentChangeKind a_kind, cons
                        : editing.application->new_scene();
     if (changed.has_value())
     {
+        editing.sceneViewCamera.reset();
         editing.ui->reset();
         // 保存してから新規作成した場合も、新しい Document の未保存表示を隠さない
         editing.notice.clear();
@@ -1377,6 +1431,64 @@ bool EditorHost::has_play_configuration() const noexcept
            (m_project && m_project->descriptor().gameTarget.has_value());
 }
 
+Result<void> EditorHost::start_play()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.play.owner_thread"});
+    if (m_isClosed || m_isInitializing || !m_editing || !m_editing->window || !m_editing->application ||
+        m_editing->pendingChange || m_pendingProject ||
+        (m_editing->scripts && m_editing->scripts->status().isBusy))
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.unavailable"});
+    if (m_gameBuildService)
+    {
+        const auto state = m_gameBuildService->status().state;
+        if (state == GameBuildState::Configuring || state == GameBuildState::Building ||
+            m_gameBuildService->status().isApplicationRunning)
+            return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.busy"});
+    }
+    auto prepared = prepare_play();
+    if (!prepared.has_value())
+        return prepared;
+    auto candidate = m_editing->application->document().scene().descriptor();
+    auto started = m_editing->play->start(m_editing->application->document().scene());
+    if (started.has_value())
+    {
+        m_editing->playScene = std::move(candidate);
+        m_editing->error.clear();
+        m_editing->ui->reset();
+    }
+    return started;
+}
+
+Result<void> EditorHost::stop_play()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.play.owner_thread"});
+    return m_editing && m_editing->play ? m_editing->play->stop() : Result<void>::success();
+}
+
+PlayState EditorHost::play_state() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_editing && m_editing->play ? m_editing->play->state()
+                                                                                   : PlayState::Idle;
+}
+
+const PlayViewSnapshot *EditorHost::play_view_snapshot() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_editing && m_editing->play ? m_editing->play->view_snapshot()
+                                                                                   : nullptr;
+}
+
+Result<void> EditorHost::request_play_transform(std::string_view a_objectId, const math::floatTransform &a_transform)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.play.owner_thread"});
+    if (!m_editing || !m_editing->play || m_isClosed)
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.not_running"});
+    auto requested = m_editing->play->set_transform(a_objectId, a_transform);
+    return requested.has_value() ? Result<void>::success() : Result<void>::failure(*requested.try_error());
+}
+
 Result<void> EditorHost::prepare_play()
 {
     if (!m_editing)
@@ -1391,6 +1503,8 @@ Result<void> EditorHost::prepare_play()
     // 検証失敗で以前の DLL / Metadata を再利用しない。稼働している子は上の判定で保全する
     m_editing->play.reset();
     m_editing->playScene.reset();
+    m_editing->playObjectIndices.clear();
+    m_editing->appliedViewTick.reset();
     auto *files = m_windows.file_system();
     if (!files)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.file_system"});
@@ -1447,8 +1561,33 @@ void EditorHost::poll_play()
                             *found = ack.value;
                     }
     }
-    if (play.state() == PlayState::Stopped || play.state() == PlayState::Failed)
+    for (const auto &ack : play.take_transform_acknowledgements())
+        if (!ack.isAccepted)
+            editing.error = ack.error;
+    // Pose の表示値を実行側から更新する。SceneDocument / Preview World / 保存 Data は変更しない
+    if (const auto *view = play.view_snapshot(); view && editing.playScene && editing.appliedViewTick != view->tick)
+    {
+        if (editing.playObjectIndices.empty())
+        {
+            const auto &objects = editing.playScene->objects;
+            editing.playObjectIndices.reserve(objects.size());
+            for (std::size_t index = 0; index < objects.size(); ++index)
+                editing.playObjectIndices.emplace(objects[index].objectId, index);
+        }
+        for (const auto &pose : view->transforms)
+            if (const auto found = editing.playObjectIndices.find(pose.objectId);
+                found != editing.playObjectIndices.end())
+                editing.playScene->objects[found->second].transform = pose.transform;
+        editing.appliedViewTick = view->tick;
+    }
+    if ((play.state() == PlayState::Stopped || play.state() == PlayState::Failed) && editing.playScene)
+    {
         editing.playScene.reset();
+        editing.playObjectIndices.clear();
+        editing.appliedViewTick.reset();
+        // Play 中の Widget の Draft を次の編集 / 再 Play へ持ち越さない
+        editing.ui->reset();
+    }
 }
 
 /// @brief UI の所有値要求を Main 上で順に処理し、回復可能な操作失敗は通知に留める
@@ -1480,6 +1619,9 @@ Result<void> EditorHost::apply_editor_actions()
                                                     editing.play->state() == PlayState::WaitingForDebugger);
             // Play は起動時の Snapshot を所有する。実行中の通常編集を混ぜない
             if (isPlaying && action.kind != EditorActionKind::Stop &&
+                action.kind != EditorActionKind::SetPlayTransform &&
+                action.kind != EditorActionKind::SetSceneViewCamera &&
+                action.kind != EditorActionKind::ResetSceneViewCamera &&
                 action.kind != EditorActionKind::SetScriptProperty && action.kind != EditorActionKind::SelectObject &&
                 action.kind != EditorActionKind::ToggleDiagnostics && action.kind != EditorActionKind::Exit &&
                 action.kind != EditorActionKind::OpenIde && action.kind != EditorActionKind::OpenScriptSource &&
@@ -1487,6 +1629,19 @@ Result<void> EditorHost::apply_editor_actions()
                 return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.edit_locked"});
             switch (action.kind)
             {
+            case EditorActionKind::SetPlayTransform:
+                return request_play_transform(action.objectId, action.transform);
+            case EditorActionKind::SetSceneViewCamera:
+            {
+                auto view = math::view_from_transform(action.transform);
+                if (!view.has_value())
+                    return Result<void>::failure(*view.try_error());
+                editing.sceneViewCamera = action.transform;
+                return Result<void>::success();
+            }
+            case EditorActionKind::ResetSceneViewCamera:
+                editing.sceneViewCamera.reset();
+                return Result<void>::success();
             case EditorActionKind::OpenProject:
             {
                 if (!can_open_project())
@@ -1556,18 +1711,15 @@ Result<void> EditorHost::apply_editor_actions()
                         if (state == GameBuildState::Configuring || state == GameBuildState::Building)
                             return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.busy"});
                     }
-                    // Reload / Play の直前に成果物を再検証し、古い Hash / Path での起動を拒否する
-                    auto prepared = prepare_play();
-                    if (!prepared.has_value())
-                        return prepared;
                     if (action.kind == EditorActionKind::ReloadScripts)
+                    {
+                        // Reload の直前も成果物を再検証し、古い Hash / Path を再利用しない
+                        auto prepared = prepare_play();
+                        if (!prepared.has_value())
+                            return prepared;
                         return editing.play->describe();
-                    // 保存は要求せず、検証済みの現在の所有 Scene を子 Process へ送る
-                    auto candidate = app->document().scene().descriptor();
-                    auto started = editing.play->start(app->document().scene());
-                    if (started.has_value())
-                        editing.playScene = std::move(candidate);
-                    return started;
+                    }
+                    return start_play();
                 }();
                 if (!requested.has_value())
                 {

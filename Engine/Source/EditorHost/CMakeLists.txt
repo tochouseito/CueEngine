@@ -20,7 +20,7 @@ add_library(Cue.EditorHost STATIC
 )
 
 target_include_directories(Cue.EditorHost PUBLIC Public)
-target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost Cue.Profiler Cue.Project Cue.SceneRuntime Cue.ProjectBuild Cue.EditorIde PRIVATE Cue.Editor Cue.Editor.Ui Cue.ScriptPlay imgui::imgui Cue.Platform.Windows Cue.Foundation.Windows Cue.Renderer.DX12 Cue.Renderer.SceneRender ole32 shell32)
+target_link_libraries(Cue.EditorHost PUBLIC Cue.WindowsHost Cue.Profiler Cue.Project Cue.SceneRuntime Cue.ProjectBuild Cue.EditorIde Cue.ScriptPlay PRIVATE Cue.Editor Cue.Editor.Ui imgui::imgui Cue.Platform.Windows Cue.Foundation.Windows Cue.Renderer.DX12 Cue.Renderer.SceneRender ole32 shell32)
 target_compile_features(Cue.EditorHost PUBLIC cxx_std_20)
 target_link_libraries(Cue.EditorHost PRIVATE Cue.EngineVersion)
 

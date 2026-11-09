@@ -228,7 +228,7 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
             }
             else
                 draw_empty_project_panels(context);
-            draw_scene_view(context);
+            draw_scene_view(context, actions);
             draw_editor_status(a_document, context);
             // Panel より後に Menu を構築し、旧 Layout から移行する Frame でも入力領域を確保する
             draw_scene_menu(a_document, *m_state, actions, context, !context.isUnsavedConfirmationRequested);
@@ -257,6 +257,8 @@ void EditorUi::reset() noexcept
     m_state->activeInputId = 0;
     m_state->needsSync = true;
     m_state->hasInvalidRotationInput = false;
+    m_state->playTransform = {};
+    m_state->wasPlaying = false;
     // 応答消費直後の次 Pump が別の確認を開始しても、false Frame を挟まず再表示できるようにする
     m_state->shouldCloseUnsavedPopup |= m_state->wasUnsavedConfirmationRequested && !m_state->hasUnsavedResponse;
     m_state->wasUnsavedConfirmationRequested = false;

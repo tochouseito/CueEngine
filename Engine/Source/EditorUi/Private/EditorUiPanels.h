@@ -22,6 +22,18 @@ namespace cue
 /// @brief Scene の正本から独立した入力 Buffer。Panel 構築中だけ Main Thread で使う
 struct EditorUiState
 {
+    /// @brief Play 専用の入力 Buffer。Session / 選択の変更で破棄し、Document の編集 Transaction と共有しない
+    struct PlayTransformInput
+    {
+        std::string objectId;
+        std::uint64_t session = 0;
+        math::floatTransform transform;
+        math::floatTransform initial;
+        math::float3 rotationDegrees;
+        int activeField = -1;
+        ImGuiID activeInputId = 0;
+        bool hasEdit = false;
+    } playTransform;
     std::string selectedId;
     std::uint64_t sourceRevision = 0;
     math::floatTransform transform;
@@ -33,6 +45,7 @@ struct EditorUiState
     bool needsSync = true;
     bool hasInvalidRotationInput = false;
     bool isBuildPanelVisible = false;
+    bool wasPlaying = false;
 };
 
 /// @brief 入力抑止の Stack を例外・早期 Return でも対応させる
@@ -114,7 +127,7 @@ void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_
 void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUiContext &a_context,
                            std::vector<EditorAction> &a_actions);
 /// @brief Host から借用した論理 Texture ID の Image を描画する
-void draw_scene_view(const EditorUiContext &a_context);
+void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction> &a_actions);
 /// @brief 保存状態と回復可能な操作エラーを表示する
 void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context);
 /// @brief 対応対象の選択と Build 結果を表示し、Host が実行する所有値の要求を返す

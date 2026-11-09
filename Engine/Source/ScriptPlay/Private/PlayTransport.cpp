@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,8 +15,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <Assets/BuiltinMesh.h>
 #include <Foundation/Uuid.h>
 #include <Foundation/Windows/UtfConversion.h>
+#include <Math/Projection.h>
 #include <Scene/Scene.h>
 
 namespace cue
@@ -23,7 +26,7 @@ namespace cue
 namespace
 {
 constexpr std::uint32_t k_magic = 0x4355504c;
-constexpr std::uint32_t k_version = 1;
+constexpr std::uint32_t k_version = 2;
 constexpr std::size_t k_headerBytes = 32;
 constexpr std::size_t k_maxMessageBytes = 5 * 1024 * 1024;
 constexpr std::size_t k_maxQueueBytes = 8 * 1024 * 1024;
@@ -38,11 +41,15 @@ enum class Message : std::uint32_t
     Stop = 2,
     SetProperty = 3,
     ContinueDebug = 4,
+    RequestView = 5,
+    SetTransform = 6,
     Types = 101,
     Ready = 102,
     Ack = 103,
     Error = 104,
-    DebugWaiting = 105
+    DebugWaiting = 105,
+    View = 106,
+    TransformAck = 107
 };
 
 /// @brief Win32 Handle の一意所有。所有 Job の Close は子 Process の回収にもなる
@@ -107,6 +114,34 @@ struct Writer final
         for (unsigned shift = 0; shift < 64; shift += 8)
             bytes.push_back(static_cast<std::uint8_t>(a_value >> shift));
     }
+    /// @brief Float の bit 表現を固定幅の Little Endian 値へする
+    void real(float a_value)
+    {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &a_value, sizeof(bits));
+        u32(bits);
+    }
+    /// @brief Matrix の要素を行優先で書き、C++ の Padding を Protocol に含めない
+    void matrix(const math::float4x4 &a_value)
+    {
+        for (const auto &row : a_value.values)
+            for (const auto value : row)
+                real(value);
+    }
+    /// @brief Local Transform を S / R / T の値として複写する
+    void transform(const math::floatTransform &a_value)
+    {
+        real(a_value.position.x);
+        real(a_value.position.y);
+        real(a_value.position.z);
+        real(a_value.rotation.x);
+        real(a_value.rotation.y);
+        real(a_value.rotation.z);
+        real(a_value.rotation.w);
+        real(a_value.scale.x);
+        real(a_value.scale.y);
+        real(a_value.scale.z);
+    }
     /// @brief 長さ付き UTF-8 文字列を書き込む
     void text(std::string_view a_value)
     {
@@ -151,6 +186,38 @@ struct Reader final
         const auto low = u32();
         const auto high = u32();
         return low | (static_cast<std::uint64_t>(high) << 32);
+    }
+    /// @brief Float を固定幅で読み、NaN / Inf を境界で拒否する
+    float real()
+    {
+        const auto bits = u32();
+        float value = 0;
+        std::memcpy(&value, &bits, sizeof(value));
+        if (!std::isfinite(value))
+            valid = false;
+        return value;
+    }
+    /// @brief 行優先の Matrix を読み、World / View の affine 条件も確認する
+    math::float4x4 matrix()
+    {
+        math::float4x4 value;
+        for (auto &row : value.values)
+            for (auto &element : row)
+                element = real();
+        if (value.values[0][3] != 0 || value.values[1][3] != 0 || value.values[2][3] != 0 || value.values[3][3] != 1)
+            valid = false;
+        return value;
+    }
+    /// @brief 無効な Quaternion・非有限値・行列化の Overflow を公開しない
+    math::floatTransform transform()
+    {
+        math::floatTransform value;
+        value.position = {real(), real(), real()};
+        value.rotation = {real(), real(), real(), real()};
+        value.scale = {real(), real(), real()};
+        if (!value.to_matrix().has_value())
+            valid = false;
+        return value;
     }
     /// @brief 上限付き文字列を複写する。空文字列の許可は利用側で判断する
     std::string text(std::size_t a_limit = 4096)
@@ -407,6 +474,68 @@ Result<std::vector<ScriptTypeDescriptor>> read_types(Reader &a_reader)
         return Result<std::vector<ScriptTypeDescriptor>>::failure({ErrorCategory::InvalidArgument, "Play.types"});
     return Result<std::vector<ScriptTypeDescriptor>>::success(std::move(types));
 }
+
+/// @brief GPU に渡す行列の有限値と affine 形状を検証する
+bool is_valid_affine(const math::float4x4 &a_matrix)
+{
+    return math::is_finite(a_matrix) && a_matrix.values[0][3] == 0 && a_matrix.values[1][3] == 0 &&
+           a_matrix.values[2][3] == 0 && a_matrix.values[3][3] == 1;
+}
+
+/// @brief 更新値の数・Identity・数学的前提を確かめ、壊れた子の値を描画側へ公開しない
+bool is_valid_view(const PlayViewSnapshot &a_snapshot)
+{
+    if (a_snapshot.render.objects.size() > Scene::k_maxObjects || a_snapshot.transforms.size() > Scene::k_maxObjects ||
+        (!a_snapshot.render.objects.empty() && !a_snapshot.render.camera))
+        return false;
+    if (const auto &camera = a_snapshot.render.camera)
+    {
+        if (!is_valid_affine(camera->view) ||
+            !math::perspective_rh_zo(camera->verticalFovRadians, 1.0f, camera->nearClip, camera->farClip).has_value())
+            return false;
+    }
+    for (const auto &object : a_snapshot.render.objects)
+        if (!is_valid_affine(object.world) || object.meshId != k_cubeMeshId)
+            return false;
+    std::unordered_set<std::string> ids;
+    for (const auto &object : a_snapshot.transforms)
+        if (!is_valid_uuid_text(object.objectId) || !ids.insert(object.objectId).second ||
+            !object.transform.to_matrix().has_value())
+            return false;
+    return true;
+}
+
+/// @brief 描画値と Local Transform を所有 Payload から読み、部分 Snapshot は返さない
+Result<PlayViewSnapshot> read_view(Reader &a_reader)
+{
+    PlayViewSnapshot snapshot;
+    snapshot.tick = a_reader.u64();
+    const auto hasCamera = a_reader.u32();
+    if (hasCamera > 1)
+        a_reader.valid = false;
+    if (hasCamera == 1)
+    {
+        RenderCameraData camera;
+        camera.view = a_reader.matrix();
+        camera.verticalFovRadians = a_reader.real();
+        camera.nearClip = a_reader.real();
+        camera.farClip = a_reader.real();
+        snapshot.render.camera = camera;
+    }
+    const auto objects = a_reader.u32();
+    if (objects > Scene::k_maxObjects)
+        a_reader.valid = false;
+    for (std::uint32_t index = 0; index < objects && a_reader.valid; ++index)
+        snapshot.render.objects.push_back({a_reader.matrix(), a_reader.text(256)});
+    const auto transforms = a_reader.u32();
+    if (transforms > Scene::k_maxObjects)
+        a_reader.valid = false;
+    for (std::uint32_t index = 0; index < transforms && a_reader.valid; ++index)
+        snapshot.transforms.push_back({a_reader.text(128), a_reader.transform()});
+    if (!a_reader.complete() || !is_valid_view(snapshot))
+        return Result<PlayViewSnapshot>::failure({ErrorCategory::InvalidArgument, "Play.view_payload"});
+    return Result<PlayViewSnapshot>::success(std::move(snapshot));
+}
 } // namespace
 
 struct PlayClient::State final
@@ -422,6 +551,11 @@ struct PlayClient::State final
     std::vector<ScriptTypeDescriptor> types;
     std::vector<PlayPropertyAck> acks;
     std::unordered_map<std::uint64_t, PlayPropertyAck> pending;
+    std::vector<PlayTransformAck> transformAcks;
+    std::unordered_map<std::uint64_t, PlayTransformAck> pendingTransforms;
+    std::optional<PlayViewSnapshot> view;
+    std::uint64_t viewRequest = 0;
+    std::uint64_t viewDeadline = 0;
     std::string error;
     bool isDescribe = false;
     bool hasMetadata = false;
@@ -436,6 +570,10 @@ struct PlayClient::State final
     {
         error = std::move(a_error);
         state = PlayState::Failed;
+        view.reset();
+        viewRequest = 0;
+        pendingTransforms.clear();
+        transformAcks.clear();
         job.reset();
         endpoint.pipe.reset();
         process.reset();
@@ -451,6 +589,8 @@ Result<std::unique_ptr<PlayClient>> PlayClient::create(PlayClientConfig a_config
 {
     if (!a_config.executable.is_absolute() || !a_config.module.is_absolute())
         return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.absolute_paths"});
+    if (a_config.isEmbedded && !a_config.isHeadless)
+        return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.embedded_headless"});
     try
     {
         return Result<std::unique_ptr<PlayClient>>::success(
@@ -497,6 +637,11 @@ Result<void> PlayClient::launch(bool a_describe, bool a_isDebug)
     state.nextRequest = 1;
     state.acks.clear();
     state.pending.clear();
+    state.transformAcks.clear();
+    state.pendingTransforms.clear();
+    state.view.reset();
+    state.viewRequest = 0;
+    state.viewDeadline = 0;
     state.error.clear();
     state.isDescribe = a_describe;
     state.hasMetadata = false;
@@ -533,6 +678,8 @@ Result<void> PlayClient::launch(bool a_describe, bool a_isDebug)
         command += L" --debug-wait";
     if (state.config.isHeadless)
         command += L" --headless";
+    if (state.config.isEmbedded)
+        command += L" --embedded";
     if (state.config.maxTicks)
         command += L" --max-ticks " + std::to_wstring(state.config.maxTicks);
     STARTUPINFOW startup{};
@@ -736,6 +883,39 @@ Result<void> PlayClient::poll()
                     state.pending.erase(expected);
                     state.acks.push_back(std::move(ack));
                 }
+                else if (packet.kind == Message::View && state.config.isEmbedded && state.hasReady &&
+                         !state.isDescribe && packet.request != 0 && packet.request == state.viewRequest)
+                {
+                    auto snapshot = read_view(reader);
+                    if (!snapshot.has_value() || (state.view && snapshot.try_value()->tick < state.view->tick))
+                    {
+                        state.fail("Play.view_protocol");
+                        return Result<void>::success();
+                    }
+                    state.viewRequest = 0;
+                    // Stop 中に遅着した確定値は検証だけ行い、古い実行画面を再公開しない
+                    if (state.state == PlayState::Running)
+                        state.view = snapshot.take_value();
+                }
+                else if (packet.kind == Message::TransformAck && packet.request != 0 && !state.isDescribe)
+                {
+                    PlayTransformAck ack;
+                    ack.requestId = packet.request;
+                    const auto accepted = reader.u32();
+                    ack.isAccepted = accepted == 1;
+                    ack.objectId = reader.text(128);
+                    ack.transform = reader.transform();
+                    ack.error = reader.text();
+                    const auto expected = state.pendingTransforms.find(packet.request);
+                    if (!reader.complete() || accepted > 1 || state.transformAcks.size() >= 4096 ||
+                        expected == state.pendingTransforms.end() || expected->second.objectId != ack.objectId)
+                    {
+                        state.fail("Play.transform_ack_protocol");
+                        return Result<void>::success();
+                    }
+                    state.pendingTransforms.erase(expected);
+                    state.transformAcks.push_back(std::move(ack));
+                }
                 else if (packet.kind == Message::Error && packet.request == 0)
                 {
                     auto error = reader.text();
@@ -763,6 +943,8 @@ Result<void> PlayClient::poll()
             else
             {
                 state.state = PlayState::Stopped;
+                state.view.reset();
+                state.viewRequest = 0;
                 state.process.reset();
                 state.endpoint.pipe.reset();
                 state.job.reset();
@@ -776,6 +958,30 @@ Result<void> PlayClient::poll()
             state.fail(state.state == PlayState::Stopping             ? "Play.stop_timeout"
                        : state.state == PlayState::WaitingForDebugger ? "Play.debugger_timeout"
                                                                       : "Play.start_timeout");
+        // 取得要求は常に一件だけ保つ。Editor 停止中に子から Frame を蓄積させない
+        if (state.state == PlayState::Running && state.config.isEmbedded)
+        {
+            if (state.viewRequest && state.isDebug && is_debugger_attached())
+                state.viewDeadline = GetTickCount64() + k_startTimeoutMs;
+            if (state.viewRequest && GetTickCount64() >= state.viewDeadline)
+                state.fail("Play.view_timeout");
+            else if (!state.viewRequest)
+            {
+                if (!state.nextRequest)
+                    state.fail("Play.request_overflow");
+                else
+                {
+                    auto queued = state.endpoint.queue(Message::RequestView, state.nextRequest, {});
+                    if (!queued.has_value())
+                        state.fail(queued.try_error()->operation);
+                    else
+                    {
+                        state.viewRequest = state.nextRequest++;
+                        state.viewDeadline = GetTickCount64() + k_startTimeoutMs;
+                    }
+                }
+            }
+        }
         return Result<void>::success();
     }
     catch (...)
@@ -797,6 +1003,7 @@ Result<void> PlayClient::stop()
         auto queued = state.endpoint.queue(Message::Stop, 0, {});
         // Queue が満杯でも停止期限を設定し、操作不能な子を必ず Job から回収する
         state.state = PlayState::Stopping;
+        state.view.reset();
         state.wasStopRequested = true;
         state.deadline = GetTickCount64() + k_stopTimeoutMs;
         return queued;
@@ -816,7 +1023,8 @@ Result<std::uint64_t> PlayClient::set_property(std::string_view a_objectId, std:
         return Result<std::uint64_t>::failure({ErrorCategory::WrongThread, "Play.set_property"});
     if (state.state != PlayState::Running || !is_valid_uuid_text(a_objectId) ||
         !is_valid_uuid_text(a_scriptInstanceId) || !is_valid_script_id(a_value.propertyId) ||
-        !std::isfinite(a_value.number) || state.pending.size() >= 256 || !state.nextRequest ||
+        !std::isfinite(a_value.number) || state.pending.size() + state.pendingTransforms.size() >= 256 ||
+        !state.nextRequest ||
         (a_value.kind != ScriptPropertyKind::Number && a_value.kind != ScriptPropertyKind::Boolean))
         return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "Play.set_property"});
     try
@@ -842,6 +1050,45 @@ Result<std::uint64_t> PlayClient::set_property(std::string_view a_objectId, std:
         state.pending.erase(state.nextRequest);
         return Result<std::uint64_t>::failure({ErrorCategory::PlatformFailure, "Play.set_property.exception"});
     }
+}
+
+Result<std::uint64_t> PlayClient::set_transform(std::string_view a_objectId, const math::floatTransform &a_transform)
+{
+    auto &state = *m_state;
+    if (std::this_thread::get_id() != state.owner)
+        return Result<std::uint64_t>::failure({ErrorCategory::WrongThread, "Play.set_transform"});
+    if (state.state != PlayState::Running || !state.config.isEmbedded || !is_valid_uuid_text(a_objectId) ||
+        !a_transform.to_matrix().has_value() || state.pending.size() + state.pendingTransforms.size() >= 256 ||
+        !state.nextRequest)
+        return Result<std::uint64_t>::failure({ErrorCategory::InvalidArgument, "Play.set_transform"});
+    try
+    {
+        Writer payload;
+        payload.text(a_objectId);
+        payload.transform(a_transform);
+        const auto request = state.nextRequest;
+        state.pendingTransforms.emplace(request,
+                                        PlayTransformAck{request, false, std::string(a_objectId), a_transform, {}});
+        auto queued = state.endpoint.queue(Message::SetTransform, request, payload);
+        if (!queued.has_value())
+            state.pendingTransforms.erase(request);
+        else
+            ++state.nextRequest;
+        return queued.has_value() ? Result<std::uint64_t>::success(request)
+                                  : Result<std::uint64_t>::failure(*queued.try_error());
+    }
+    catch (...)
+    {
+        state.pendingTransforms.erase(state.nextRequest);
+        return Result<std::uint64_t>::failure({ErrorCategory::PlatformFailure, "Play.set_transform.exception"});
+    }
+}
+
+const PlayViewSnapshot *PlayClient::view_snapshot() const noexcept
+{
+    return std::this_thread::get_id() == m_state->owner && m_state->state == PlayState::Running && m_state->view
+               ? &*m_state->view
+               : nullptr;
 }
 
 PlayState PlayClient::state() const noexcept
@@ -885,6 +1132,13 @@ std::vector<PlayPropertyAck> PlayClient::take_acknowledgements()
     return std::exchange(m_state->acks, {});
 }
 
+std::vector<PlayTransformAck> PlayClient::take_transform_acknowledgements()
+{
+    if (std::this_thread::get_id() != m_state->owner)
+        return {};
+    return std::exchange(m_state->transformAcks, {});
+}
+
 struct PlayServer::State final
 {
     Endpoint endpoint;
@@ -893,6 +1147,8 @@ struct PlayServer::State final
     bool isDebug = false;
     bool hasDebugWaiting = false;
     bool hasDebugContinued = false;
+    bool hasReady = false;
+    std::uint64_t viewRequest = 0;
 };
 
 PlayServer::PlayServer(ConstructionKey, std::unique_ptr<State> a_state) : m_state(std::move(a_state))
@@ -974,6 +1230,20 @@ Result<std::vector<PlayCommand>> PlayServer::poll()
                 if (!is_valid_uuid_text(command.objectId) || !is_valid_uuid_text(command.scriptInstanceId))
                     reader.valid = false;
             }
+            else if (packet.kind == Message::RequestView && m_state->hasReady && packet.request != 0 &&
+                     !m_state->viewRequest)
+            {
+                command.kind = PlayCommand::Kind::RequestView;
+                m_state->viewRequest = packet.request;
+            }
+            else if (packet.kind == Message::SetTransform && m_state->hasReady && packet.request != 0)
+            {
+                command.kind = PlayCommand::Kind::SetTransform;
+                command.objectId = reader.text(128);
+                command.transform = reader.transform();
+                if (!is_valid_uuid_text(command.objectId))
+                    reader.valid = false;
+            }
             else
                 return Result<std::vector<PlayCommand>>::failure({ErrorCategory::InvalidArgument, "Play.command"});
             if (!reader.complete())
@@ -1022,7 +1292,10 @@ Result<void> PlayServer::send_ready()
         return Result<void>::failure({ErrorCategory::WrongThread, "PlayServer.send_ready"});
     if (m_state->isDebug && !m_state->hasDebugContinued)
         return Result<void>::failure({ErrorCategory::InvalidState, "Play.debug_not_continued"});
-    return m_state->endpoint.queue(Message::Ready, 0, {});
+    auto queued = m_state->endpoint.queue(Message::Ready, 0, {});
+    if (queued.has_value())
+        m_state->hasReady = true;
+    return queued;
 }
 
 Result<void> PlayServer::send_debug_waiting()
@@ -1048,6 +1321,71 @@ Result<void> PlayServer::send_ack(const PlayPropertyAck &a_ack)
     payload.property(a_ack.value);
     payload.text(a_ack.error);
     return m_state->endpoint.queue(Message::Ack, a_ack.requestId, payload);
+}
+
+Result<void> PlayServer::send_view(std::uint64_t a_requestId, const PlayViewSnapshot &a_snapshot)
+{
+    if (std::this_thread::get_id() != m_state->owner)
+        return Result<void>::failure({ErrorCategory::WrongThread, "PlayServer.send_view"});
+    if (!a_requestId || a_requestId != m_state->viewRequest || !m_state->hasReady)
+        return Result<void>::failure({ErrorCategory::InvalidState, "PlayServer.view_request"});
+    try
+    {
+        if (!is_valid_view(a_snapshot))
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "PlayServer.view_payload"});
+        Writer payload;
+        payload.u64(a_snapshot.tick);
+        payload.u32(a_snapshot.render.camera ? 1 : 0);
+        if (const auto &camera = a_snapshot.render.camera)
+        {
+            payload.matrix(camera->view);
+            payload.real(camera->verticalFovRadians);
+            payload.real(camera->nearClip);
+            payload.real(camera->farClip);
+        }
+        payload.u32(static_cast<std::uint32_t>(a_snapshot.render.objects.size()));
+        for (const auto &object : a_snapshot.render.objects)
+        {
+            payload.matrix(object.world);
+            payload.text(object.meshId);
+        }
+        payload.u32(static_cast<std::uint32_t>(a_snapshot.transforms.size()));
+        for (const auto &object : a_snapshot.transforms)
+        {
+            payload.text(object.objectId);
+            payload.transform(object.transform);
+        }
+        auto queued = m_state->endpoint.queue(Message::View, a_requestId, payload);
+        if (queued.has_value())
+            m_state->viewRequest = 0;
+        return queued;
+    }
+    catch (...)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "PlayServer.send_view.exception"});
+    }
+}
+
+Result<void> PlayServer::send_transform_ack(const PlayTransformAck &a_ack)
+{
+    if (std::this_thread::get_id() != m_state->owner)
+        return Result<void>::failure({ErrorCategory::WrongThread, "PlayServer.send_transform_ack"});
+    if (!a_ack.requestId || !is_valid_uuid_text(a_ack.objectId) || !a_ack.transform.to_matrix().has_value() ||
+        a_ack.error.size() > 4096 || (!a_ack.error.empty() && !is_valid_utf8_text(a_ack.error)))
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "PlayServer.transform_ack"});
+    try
+    {
+        Writer payload;
+        payload.u32(a_ack.isAccepted ? 1 : 0);
+        payload.text(a_ack.objectId);
+        payload.transform(a_ack.transform);
+        payload.text(a_ack.error);
+        return m_state->endpoint.queue(Message::TransformAck, a_ack.requestId, payload);
+    }
+    catch (...)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "PlayServer.send_transform_ack.exception"});
+    }
 }
 
 Result<void> PlayServer::send_error(std::string_view a_message)

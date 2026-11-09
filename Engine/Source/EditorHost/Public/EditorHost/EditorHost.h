@@ -16,6 +16,7 @@
 #include <ProjectBuild/GameBuildService.h>
 #include <Runtime/WorldHandle.h>
 #include <Scene/Scene.h>
+#include <ScriptPlay/PlayClient.h>
 #include <WindowsHost/WindowsHost.h>
 
 namespace cue
@@ -125,6 +126,19 @@ class EditorHost final
     [[nodiscard]] World *preview_world() noexcept;
     /// @brief 編集 Scene の実体を Owner Thread へ返す。Handle は次の Project 切替・停止までの非所有参照
     [[nodiscard]] std::optional<SceneInstanceHandle> preview_instance() const noexcept;
+
+    /// @brief 未保存 Scene を別 Process で開始する。Owner Thread 専用、初期化後かつ他の操作が停止中に呼ぶ
+    /// Game DLL は読み込まず、Play の変更を編集 Document に反映しない。失敗時は編集内容を維持する
+    [[nodiscard]] Result<void> start_play();
+    /// @brief 所有 Play の停止を予約する。完了まで step で回収し、無応答の子だけを期限後に終了する
+    [[nodiscard]] Result<void> stop_play();
+    /// @brief 所有 Play の現在状態を返す。Owner 以外・未接続では Idle
+    [[nodiscard]] PlayState play_state() const noexcept;
+    /// @brief 最新の実行描画値を Owner に借用する。次の step / 停止 / Project 切替で失効する
+    [[nodiscard]] const PlayViewSnapshot *play_view_snapshot() const noexcept;
+    /// @brief 実行中 Object の姿勢を次の更新前に変更する。編集正本 / Undo は変更しない
+    [[nodiscard]] Result<void> request_play_transform(std::string_view a_objectId,
+                                                      const math::floatTransform &a_transform);
 
     /// @brief 選択対象を検証し、未保存なら ImGui 確認を予約する。Owner 専用、初期化後に呼ぶ
     /// 確認待ち・Build / Play / 製品の実行中は拒否する。保存前には外部 Process を開始しない

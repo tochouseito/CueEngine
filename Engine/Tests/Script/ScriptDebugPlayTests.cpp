@@ -139,7 +139,7 @@ int test_untrusted_continue()
         for (const unsigned kind : {1u, 4u})
         {
             append(bytes, 0x4355504c, 4);
-            append(bytes, 1, 4);
+            append(bytes, 2, 4);
             append(bytes, kind, 4);
             append(bytes, kind == 1 ? 4 : 0, 4);
             append(bytes, wrongSession && kind == 4 ? 732 : 731, 8);
@@ -274,7 +274,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto executable = argument_path(a_arguments[1]);
     auto module = argument_path(a_arguments[2]);
     CHECK(executable.has_value() && module.has_value());
-    auto created = cue::PlayClient::create({executable.take_value(), module.take_value(), true, 0});
+    auto created = cue::PlayClient::create({executable.take_value(), module.take_value(), true, 0, true});
     CHECK(created.has_value());
     auto client = created.take_value();
     auto scene = make_scene();
@@ -311,6 +311,13 @@ int wmain(int a_count, wchar_t **a_arguments)
         Sleep(1);
     }
     CHECK(client->state() == cue::PlayState::Running && client->types().size() == 1);
+    deadline = GetTickCount64() + 8000;
+    while (!client->view_snapshot() && GetTickCount64() < deadline)
+    {
+        CHECK(debugger.pump() && client->poll().has_value() && client->state() == cue::PlayState::Running);
+        Sleep(1);
+    }
+    CHECK(client->view_snapshot());
     CHECK(!client->continue_debug().has_value());
     CHECK(client->stop().has_value());
     deadline = GetTickCount64() + 8000;

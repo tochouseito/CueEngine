@@ -1,4 +1,7 @@
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -22,7 +25,7 @@ void message(std::vector<std::uint8_t> &a_bytes, std::uint32_t a_kind, std::uint
              std::uint64_t a_request = 0, bool a_isValid = true)
 {
     append(a_bytes, a_isValid ? 0x4355504c : 0, 4);
-    append(a_bytes, 1, 4);
+    append(a_bytes, 2, 4);
     append(a_bytes, a_kind, 4);
     append(a_bytes, a_length, 4);
     append(a_bytes, a_session, 8);
@@ -34,6 +37,58 @@ void text(std::vector<std::uint8_t> &a_bytes, const std::string &a_value)
 {
     append(a_bytes, a_value.size(), 4);
     a_bytes.insert(a_bytes.end(), a_value.begin(), a_value.end());
+}
+
+/// @brief Test 用の Float 値を Protocol の固定幅へ変換する
+void real(std::vector<std::uint8_t> &a_bytes, float a_value)
+{
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &a_value, sizeof(bits));
+    append(a_bytes, bits, 4);
+}
+
+/// @brief Test の Header を境界確認済み Buffer から読む
+std::uint64_t integer(const std::vector<std::uint8_t> &a_bytes, std::size_t a_offset, unsigned a_count)
+{
+    std::uint64_t value = 0;
+    for (unsigned index = 0; index < a_count; ++index)
+        value |= static_cast<std::uint64_t>(a_bytes[a_offset + index]) << (index * 8);
+    return value;
+}
+
+/// @brief 親の取得要求を期限付きで受け、その Request ID を不正 Payload の応答に使う
+std::uint64_t wait_view(HANDLE a_pipe)
+{
+    const auto deadline = GetTickCount64() + 5000;
+    std::vector<std::uint8_t> bytes;
+    while (GetTickCount64() < deadline)
+    {
+        DWORD available = 0;
+        if (!PeekNamedPipe(a_pipe, nullptr, 0, nullptr, &available, nullptr))
+            return 0;
+        if (available)
+        {
+            const auto previous = bytes.size();
+            if (previous + available > 5 * 1024 * 1024)
+                return 0;
+            bytes.resize(previous + available);
+            DWORD received = 0;
+            if (!ReadFile(a_pipe, bytes.data() + previous, available, &received, nullptr))
+                return 0;
+            bytes.resize(previous + received);
+            while (bytes.size() >= 32)
+            {
+                const auto length = integer(bytes, 12, 4);
+                if (bytes.size() - 32 < length)
+                    break;
+                if (integer(bytes, 8, 4) == 5)
+                    return integer(bytes, 24, 8);
+                bytes.erase(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(32 + length));
+            }
+        }
+        Sleep(1);
+    }
+    return 0;
 }
 } // namespace
 
@@ -92,7 +147,49 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         message(bytes, 101, 4, session);
         append(bytes, 0, 4);
         message(bytes, 102, 0, session);
-        if (module.find(L"bad-ack") != std::wstring::npos)
+        if (module.find(L"bad-view-") != std::wstring::npos)
+        {
+            DWORD written = 0;
+            if (!WriteFile(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) ||
+                written != bytes.size())
+            {
+                CloseHandle(pipe);
+                return 1;
+            }
+            bytes.clear();
+            const auto request = wait_view(pipe);
+            if (!request)
+            {
+                CloseHandle(pipe);
+                return 1;
+            }
+            std::vector<std::uint8_t> payload;
+            append(payload, 1, 8);
+            append(payload, 1, 4);
+            for (unsigned row = 0; row < 4; ++row)
+                for (unsigned column = 0; column < 4; ++column)
+                    real(payload, row == column ? 1.0f : 0.0f);
+            real(payload, module.find(L"nan") != std::wstring::npos ? std::numeric_limits<float>::quiet_NaN() : 1.0f);
+            real(payload, 0.1f);
+            real(payload, 1000.0f);
+            append(payload, module.find(L"count") != std::wstring::npos ? 4097 : 0, 4);
+            append(payload, 0, 4);
+            message(bytes, 106, static_cast<std::uint32_t>(payload.size()), session,
+                    module.find(L"request") != std::wstring::npos ? request + 1 : request);
+            bytes.insert(bytes.end(), payload.begin(), payload.end());
+        }
+        else if (module.find(L"bad-transform-ack") != std::wstring::npos)
+        {
+            std::vector<std::uint8_t> payload;
+            append(payload, 1, 4);
+            text(payload, "9a00d731-7759-424c-9ade-fd086d624551");
+            for (unsigned index = 0; index < 10; ++index)
+                real(payload, index >= 6 ? 1.0f : 0.0f);
+            text(payload, "");
+            message(bytes, 107, static_cast<std::uint32_t>(payload.size()), session, 999);
+            bytes.insert(bytes.end(), payload.begin(), payload.end());
+        }
+        else if (module.find(L"bad-ack") != std::wstring::npos)
         {
             std::vector<std::uint8_t> payload;
             append(payload, 1, 4);

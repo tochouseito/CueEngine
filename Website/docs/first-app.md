@@ -42,9 +42,13 @@ sidebar_position: 2
 
 4. **Script → Build Scripts** を実行し、ビルドが終わるまで待ちます。
 5. Cube を選び、Inspector の **Add Script** で **Empty Behaviour** を選びます。これは生成時に用意された Script 型の表示名です。
-6. **File → Save Scene** で保存します。**Play** を押すと別ウィンドウで回転を確認できます。確認後は **Stop** を押します。
+6. **File → Save Scene** で保存します。**Play** を押すと **Scene View** 内で Cube の回転を確認できます。確認後は **Stop** を押します。
 
-![Editor から Play を開始し、別ウィンドウで Cube を表示した例](./images/rotate-cube-play.png)
+Engine Preview 5 以降では、ゲームは別プロセスで実行しながら Editor 内に表示します。ゲームがクラッシュした場合も Play を終了し、編集中の Scene を保持します。以前の Preview では別ウィンドウで表示します。
+
+Play 中も Inspector で Transform と Script の設定を変更できます。これらは実行中の値だけに反映し、**Stop** 後は編集用の Scene に戻ります。Play 中の変更は Scene に保存されません。
+
+Scene View の画像上では、右マウスボタンを押しながら **WASD / QE** で移動、右ドラッグで向きを変更、ホイールで前後移動できます。**Scene camera** で Scene の Camera 表示へ戻ります。この操作で Scene に保存した Camera は変更されません。
 
 :::note 起動シーン
 
