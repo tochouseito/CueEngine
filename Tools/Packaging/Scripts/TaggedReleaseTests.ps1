@@ -16,6 +16,7 @@ $global:CueTaggedReleaseTestMockState = @{
     Exists = $false
     CreateExitCode = 0
     EditExitCode = 0
+    UploadExitCode = 0
 }
 
 # Source の Version と Tag を対応させ、Test の都合で正本を書き換えない
@@ -39,7 +40,7 @@ function gh
 {
     $arguments = [string[]]$args
     if ($arguments.Count -lt 2 -or $arguments[0] -cne 'release' -or
-        $arguments[1] -cnotin @('view', 'create', 'edit'))
+        $arguments[1] -cnotin @('view', 'create', 'upload', 'edit'))
     {
         throw 'Unexpected command reached the offline gh fixture'
     }
@@ -52,6 +53,7 @@ function gh
         }
         'create' { $global:LASTEXITCODE = $global:CueTaggedReleaseTestMockState.CreateExitCode }
         'edit' { $global:LASTEXITCODE = $global:CueTaggedReleaseTestMockState.EditExitCode }
+        'upload' { $global:LASTEXITCODE = $global:CueTaggedReleaseTestMockState.UploadExitCode }
     }
 }
 
@@ -61,10 +63,11 @@ function Reset-CueReleaseMock
     $global:CueTaggedReleaseTestMockState.Exists = $false
     $global:CueTaggedReleaseTestMockState.CreateExitCode = 0
     $global:CueTaggedReleaseTestMockState.EditExitCode = 0
+    $global:CueTaggedReleaseTestMockState.UploadExitCode = 0
 }
 
 # 小さい実 ZIP を作り、パッケージの検証と公開段階の検証を分離する
-function New-CueReleaseFixture([string]$Product)
+function New-CueReleaseFixture([string]$Product, [switch]$Multipart)
 {
     $directory = Join-Path $root ($Product + '-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($directory) | Out-Null
@@ -96,7 +99,16 @@ function New-CueReleaseFixture([string]$Product)
     $manifest.packageFileName = $name
     $manifest.packageSha256 = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest.packageSize = (Get-Item -LiteralPath $package).Length
-    if ($Product -ceq 'engine') { $manifest.expandedSize = 3 }
+    if ($Product -ceq 'engine')
+    {
+        $manifest.expandedSize = 3
+        if ($Multipart)
+        {
+            $manifest.schemaVersion = 2
+            $manifest.packageParts = @(Split-CuePackage $package 31 32)
+            [IO.File]::Delete($package)
+        }
+    }
     else
     {
         $feed = Join-Path $directory 'releases.win.json'
@@ -224,6 +236,73 @@ try
         $bad = New-CueReleaseFixture $product
         Assert-CueRejectedBeforeGh $bad "$product Tag mismatch" ($product + '-v999.0.0')
     }
+
+    # 分割 ZIP だけを同一 Release に添付し、論理 ZIP 名を Asset として要求しない
+    $multipart = New-CueReleaseFixture engine -Multipart
+    Reset-CueReleaseMock
+    $null = Invoke-CueReleaseFixture $multipart
+    $create = $global:CueTaggedReleaseTestMockState.Calls[1]
+    Assert-CueReleaseTest ($create -cnotcontains $multipart.Package) 'Multipart logical ZIP must not be uploaded'
+    foreach ($part in $multipart.Manifest.packageParts)
+    {
+        $path = Join-Path $multipart.Directory $part.fileName
+        $upload = @($global:CueTaggedReleaseTestMockState.Calls | Where-Object { $_[1] -ceq 'upload' -and $_ -ccontains $path })
+        Assert-CueReleaseTest ($upload.Count -eq 1) 'Multipart release omitted a part'
+    }
+    Assert-CueReleaseTest ($global:CueTaggedReleaseTestMockState.Calls[-1][1] -ceq 'edit' -and
+        $global:CueTaggedReleaseTestMockState.Calls.Count -eq ($multipart.Manifest.packageParts.Count + 3)) 'Multipart publication must follow every upload'
+    Reset-CueReleaseMock
+    $global:CueTaggedReleaseTestMockState.UploadExitCode = 1
+    $rejected = $false
+    try { $null = Invoke-CueReleaseFixture $multipart } catch { $rejected = $true }
+    Assert-CueReleaseTest ($rejected -and $global:CueTaggedReleaseTestMockState.Calls.Count -eq 3 -and
+        $global:CueTaggedReleaseTestMockState.Calls[-1][1] -ceq 'upload') 'Failed part upload did not preserve the draft boundary'
+    foreach ($failure in @('missing', 'hash', 'combinedHash', 'total', 'order', 'unsafeName', 'extraField',
+        'stringSize', 'oversize', 'expandedLimit', 'empty', 'tooMany', 'nestedDuplicate', 'logicalZip', 'schemaString'))
+    {
+        $bad = New-CueReleaseFixture engine -Multipart
+        $part = $bad.Manifest.packageParts[0]
+        $partFile = Join-Path $bad.Directory $part.fileName
+        switch ($failure)
+        {
+            'missing' { [IO.File]::Delete($partFile) }
+            'hash' {
+                $bytes = [IO.File]::ReadAllBytes($partFile)
+                $bytes[0] = $bytes[0] -bxor 1
+                [IO.File]::WriteAllBytes($partFile, $bytes)
+            }
+            'combinedHash' { $bad.Manifest.packageSha256 = '0' * 64 }
+            'total' { $bad.Manifest.packageSize++ }
+            'order' { [array]::Reverse($bad.Manifest.packageParts) }
+            'unsafeName' { $part.fileName = '../outside.zip.001' }
+            'extraField' { $part.unexpected = 'extra' }
+            'stringSize' { $part.size = [string]$part.size }
+            'oversize' { $part.size = [long]2147483648 }
+            'expandedLimit' { $bad.Manifest.expandedSize = [long]1099511627777 }
+            'empty' { $bad.Manifest.packageParts = @() }
+            'tooMany' { $bad.Manifest.packageParts = @($part) * 513 }
+            'logicalZip' { [IO.File]::WriteAllBytes($bad.Package, [byte[]](1)) }
+            'schemaString' { $bad.Manifest.schemaVersion = '2' }
+        }
+        Write-CueJson $bad.ManifestFile $bad.Manifest
+        if ($failure -ceq 'nestedDuplicate')
+        {
+            $json = [IO.File]::ReadAllText($bad.ManifestFile)
+            $json = $json.Replace('"size": 31', '"size": 31, "SIZE": 31')
+            [IO.File]::WriteAllText($bad.ManifestFile, $json)
+        }
+        Protect-CueManifest $bad.ManifestFile $privateFile
+        Assert-CueRejectedBeforeGh $bad "Multipart $failure"
+    }
+
+    # v2 最大個数の署名 JSON は旧 64KiB 上限を超えるが、限定した 256KiB 以内で検証できる
+    $large = New-CueReleaseFixture engine -Multipart
+    $large.Manifest.packageParts = @($large.Manifest.packageParts[0]) * 512
+    Write-CueJson $large.ManifestFile $large.Manifest
+    Protect-CueManifest $large.ManifestFile $privateFile
+    $parsedLarge = Read-CueSignedManifest $large.ManifestFile $publicFile
+    Assert-CueReleaseTest ((Get-Item -LiteralPath $large.ManifestFile).Length -gt 65536 -and
+        $parsedLarge.packageParts.Count -eq 512) '512-part signed manifest capacity'
 
     $missingFeed = New-CueReleaseFixture hub
     Remove-Item -LiteralPath (Join-Path $missingFeed.Directory 'releases.win.json')

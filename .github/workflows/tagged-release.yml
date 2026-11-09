@@ -124,12 +124,11 @@ jobs:
 
   refresh-downloads:
     needs: release
-    if: startsWith(inputs.tag || github.ref_name, 'hub-v')
     runs-on: ubuntu-latest
     permissions:
       actions: write
     steps:
-      - name: Refresh CueHub download links
+      - name: Refresh signed Engine and Hub download catalogs
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

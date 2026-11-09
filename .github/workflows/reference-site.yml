@@ -37,6 +37,7 @@ jobs:
         env:
           CUE_REQUIRE_RELEASE_CATALOG: '1'
           GH_TOKEN: ${{ github.token }}
+          CUE_PACKAGE_SIGNING_KEY_PEM: ${{ secrets.CUE_PACKAGE_SIGNING_KEY_PEM }}
       - uses: actions/upload-pages-artifact@v4
         with:
           path: Website/build

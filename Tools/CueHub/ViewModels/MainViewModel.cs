@@ -80,6 +80,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public HubCommand OpenProject { get; }
     public HubCommand RemoveProject { get; }
     public HubCommand RefreshCatalog { get; }
+    public HubCommand LoadCatalog { get; }
     public HubCommand InstallEngine { get; }
     public HubCommand ImportEngine { get; }
     public HubCommand RepairEngine { get; }
@@ -138,8 +139,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RemoveProject = command(async _ => { new ProjectService(m_store).unregister(SelectedProject!); reload(); Status = "一覧から登録を外しました。Project のファイルは保持しています"; await Task.CompletedTask; }, () => SelectedProject != null);
         RefreshCatalog = command(async token =>
         {
-            await load_catalog_async(token);
+            await load_catalog_async(token, true);
         });
+        LoadCatalog = command(token => load_catalog_async(token));
         InstallEngine = command(async token =>
         {
             var service = installer(); var release = SelectedRelease!; var report = progress();
@@ -147,11 +149,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }, () => SelectedRelease != null);
         ImportEngine = command(async token =>
         {
-            var zip = m_dialogs.file("Engine パッケージを選択", "Engine Package|*.zip");
+            var zip = m_dialogs.file("Engine パッケージを選択", "Engine Package|*.zip;*.zip.*");
             if (zip == null) return;
             var directory = Path.GetDirectoryName(zip)!;
             var service = installer(); var report = progress();
-            var manifest = read_small_file(Path.Combine(directory, "engine-release.json"), 65536);
+            var manifest = read_small_file(Path.Combine(directory, "engine-release.json"), DistributionLimits.ManifestBytes);
             var signature = System.Text.Encoding.ASCII.GetString(read_small_file(Path.Combine(directory, "engine-release.json.sig"), 4096));
             var identity = verifier().verify(manifest, signature);
             var repair = m_store.load().Engines.FirstOrDefault(item => item.IsManaged && item.Version == identity.Version);
@@ -229,10 +231,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             (EngineSearch.Length == 0 || engine.Display.Contains(EngineSearch, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task load_catalog_async(CancellationToken a_token)
+    private async Task load_catalog_async(CancellationToken a_token, bool a_forceRefresh = false)
     {
-        var service = new EngineCatalogService(m_http, m_store);
-        var result = await service.refresh_async(a_token);
+        var service = new EngineCatalogService(m_http, m_store, verifier());
+        var result = await service.refresh_async(a_token, a_forceRefresh);
         Releases.Clear();
         foreach (var item in result.Where(item => IncludePreview || !item.IsPreview)) Releases.Add(item);
         Status = service.LastWarning ?? $"公開 Engine {Releases.Count} 件を取得しました（正式版・Preview 合計最大 10 世代）";

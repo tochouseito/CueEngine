@@ -58,16 +58,28 @@ Engine の指定は Project に Version として保存し、PC の絶対 Path �
 
 ## Engine 配布物
 
-公開済みの `engine-v<SemVer>` Release を列挙し、正式版と Preview を合計して公開日時順の最新 10 世代を表示する。
-Hub Release / Draft / 必須 Asset の欠損は除外する。取得失敗時は保存済み一覧と診断を表示する。
-Release 一覧と配布 File は Hub 内の `HttpClient` から GitHub REST API へ直接要求し、Git / GitHub CLI / Token を要求しない。
-Asset ID と自 Repository の API URL、公開 Tag / File 名の対応を確認し、File 取得には `Accept: application/octet-stream` を指定する。
-GitHub が返す 302 は標準 Handler で追跡し、取得後の署名 / Hash / サイズの検証は維持する。
-公開一覧 Cache は `engine-catalog-v2.json` を使う。旧 `engine-catalog.json` は保全し、更新後の初回だけはオンラインで一覧を取得し直す。
-この変更は導入済み Engine / Project の登録には影響しない。
-API 自体の障害や回数制限は引き続き発生し得るため、取得失敗時は手動のパッケージ導入も利用できる。
-11 世代目以前の配布物は GitHub から取得し、同じフォルダに ZIP / `engine-release.json` /
-`engine-release.json.sig` を置いて「パッケージから導入」を使用する。
+Hub は GitHub Pages の `distribution/catalog-v1.json` と `.sig` を取得し、既定の発行者公開鍵で検証する。
+正式版と Preview を合計して公開日時順の最新 10 世代を表示する。
+一覧内の通常 HTTPS URL から GitHub Releases の配布 File を取得し、実行中の Hub は GitHub REST API を使用しない。
+Git / GitHub CLI / GitHub アカウント / Token は利用者に要求しない。API を利用するのは公開 CI のみ。
+GitHub の共有 IP 単位の匿名 REST 回数制限を通常導入から外すが、通信障害や配信元の制限は発生し得る。
+
+署名付き一覧 Cache は `%LOCALAPPDATA%/CueEngine/Hub/distribution-catalog-v1.cache.json`。
+一覧を開くときは署名を再検証した Cache を 30 分利用し、「一覧を更新」でオンライン取得を明示要求する。
+取得失敗時は検証済み Cache と警告を表示する。未署名の旧 API Cache は移行元に使わず保全する。
+導入済み Engine / Project の登録には影響しない。新方式の初回取得には新 Catalog を公開した Pages が必要。
+
+圧縮 ZIP が 2 GiB 未満なら ZIP 1 個を使う。超過時だけ公開工程で 1 GiB の `.zip.001` 等へ自動分割する。
+同じ Release / 同じ Engine バージョンとして扱い、Hub が Part を順番に取得する。
+`Downloads/engine-<version>/<SHA256>/<署名された File 名>` に Cache を残し、中断時は次回の導入で途中から再開する。
+Server が Range に対応しない場合は先頭から取り直す。個別 SHA-256 / Size と ZIP 全体の SHA-256 を検証してから展開する。
+巨大 ZIP の再結合 File は作らず、固定 Buffer と連結読み取り Stream を使う。
+取得済み Cache は再利用用に保持し、導入先の空き容量が不足する場合は導入を拒否する。
+最大 512 Part、各 Part は 2 GiB 未満、ZIP / 展開容量はそれぞれ 1 TiB 以下。100 GB を実際に転送する負荷試験は別途必要。
+
+11 世代目以前やオフライン導入は GitHub から配布物を取得し、同じフォルダに ZIP または全 Part、
+`engine-release.json`、`engine-release.json.sig` を置いて「パッケージから導入」を使う。
+分割版ではいずれかの Part を選ぶと署名一覧の名前から全 Part を解決する。欠損や改変があれば展開しない。
 
 署名検証の信頼鍵は Hub 横の `PublisherPublicKey.pem` を既定とする。
 Settings で別の発行者鍵を明示設定できるが、パッケージ内の鍵を自動登録しない。
@@ -78,7 +90,8 @@ Hash / サイズ / Path / Reparse Point / Zip Slip / 大文字小文字の重複
 ## Hub 自身の更新
 
 Settings の「Hub 更新を確認・準備」で `hub-v` Release だけを調べる。
-Hub の Manifest / 署名 / Feed / Full Package も、Engine と同じ Asset API から取得する。
+Hub の候補も署名付き静的 Catalog から選び、Manifest / 署名 / Feed / Full Package を通常 HTTPS URL から取得する。
+Full Package は固定 Buffer で Cache へ保存し、中断した取得を再開できる。
 `hub-release.json` と署名、署名対象の `releases.win.json` と Full Package を検証した後、
 ローカルの検証済み Feed を Velopack に渡す。適用直前にも取得済み Package の SHA-256 を確認する。
 Engine Release や署名されていない Delta は利用しない。
@@ -98,9 +111,11 @@ dotnet run --project Tools/CueHub.UiTests/CueHub.UiTests.csproj -c Debug
 Core の検証は一時鍵と所有 Temp Root を使う。WPF 検証は STA で全 Tab を実生成し、
 Binding Error と起動時 Command の抑止を確認する。
 実更新の任意検証は Test exe の `--hub-update <installedRoot> <feed> <publicKey> <currentVersion> <proofFile>`。
-API 取得の任意検証は Test exe の `--github-api <publicKey の絶対 Path> <新しい検証 Root の絶対 Path>`。
+公開後の取得の任意検証は Test exe の `--distribution <publicKey の絶対 Path> <新しい検証 Root の絶対 Path>`。
 専用 Root に公開 Engine を実導入し、Hub Feed を検証する。既存の Hub / Engine 登録には触れず、更新適用も行わない。
 製品 Main には検証専用の起動引数を追加しない。
 
 インストーラー生成は `Tools/Packaging/Hub/README.md` を参照。
 本番証明書 / GitHub Secret の設定、Tag Push / Release 公開はローカル検証と区別する。
+Engine / Hub 公開後は reference-site Workflow が Catalog を再生成・署名して Pages へ配置する。
+無料の既存 GitHub 配信経路を利用する設計であり、100 人同時取得の速度・帯域・可用性は保証しない。

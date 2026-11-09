@@ -23,30 +23,85 @@ public sealed class PackageVerifier
     {
         verify_signature(a_bytes, a_signature);
         using var json = JsonDocument.Parse(a_bytes.ToArray());
-        if (json.RootElement.ValueKind != JsonValueKind.Object || json.RootElement.EnumerateObject().Select(item => item.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != json.RootElement.EnumerateObject().Count())
-            throw new InvalidDataException("Manifest 項目が重複しています");
+        var root = json.RootElement;
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("schemaVersion", out var schema) ||
+            schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out var version) || version is not (1 or 2))
+            throw new InvalidDataException("未対応の配布 Manifest です");
+        string[] fields = ["schemaVersion", "product", "version", "tag", "platform", "architecture", "configuration",
+            "buildId", "packageFileName", "packageSha256", "packageSize", "expandedSize"];
+        require_fields(root, version == 2 ? [.. fields, "packageParts"] : fields);
+        require_size(root, "packageSize", version == 1 ? DistributionLimits.PartBytes : DistributionLimits.PackageBytes);
+        require_size(root, "expandedSize", DistributionLimits.ExpandedBytes);
+        if (version == 2)
+        {
+            var parts = root.GetProperty("packageParts");
+            if (parts.ValueKind != JsonValueKind.Array || parts.GetArrayLength() is < 1 or > DistributionLimits.Parts)
+                throw new InvalidDataException("Package Part 数が許容範囲外です");
+            foreach (var part in parts.EnumerateArray())
+            {
+                require_fields(part, ["fileName", "sha256", "size"]);
+                require_size(part, "size", DistributionLimits.PartBytes);
+            }
+        }
         var result = JsonSerializer.Deserialize<ReleasePackageManifest>(a_bytes, HubStateStore.JsonOptions) ?? throw new InvalidDataException("Manifest が空です");
         if (new[] { result.Product, result.Version, result.Tag, result.Platform, result.Architecture, result.Configuration, result.BuildId, result.PackageFileName, result.PackageSha256 }.Any(string.IsNullOrWhiteSpace))
             throw new InvalidDataException("Manifest の必須文字列がありません");
-        if (result.SchemaVersion != 1 || result.Product != "engine" || !SafePaths.is_version(result.Version) || result.Tag != "engine-v" + result.Version ||
+        if (result.Product != "engine" || !SafePaths.is_version(result.Version) || result.Tag != "engine-v" + result.Version ||
             result.Platform != "Windows" || result.Architecture != "x64" || result.Configuration != "Development" ||
-            string.IsNullOrWhiteSpace(result.BuildId) || result.BuildId.Length > 256 || result.BuildId.Any(char.IsControl) ||
+            result.BuildId.Length > 128 || result.BuildId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '_' or '+' or '-')) ||
             result.PackageFileName != $"CueEngine-{result.Version}-windows-x64.zip" ||
-            result.PackageSha256.Length != 64 || result.PackageSha256.Any(c => !char.IsAsciiHexDigit(c)) ||
-            result.PackageSize is <= 0 or > 8L * 1024 * 1024 * 1024 || result.ExpandedSize is <= 0 or > 24L * 1024 * 1024 * 1024)
+            !is_hash(result.PackageSha256))
             throw new InvalidDataException("未対応または不正な配布 Manifest です");
+        if (version == 2)
+        {
+            if (result.PackageParts == null) throw new InvalidDataException("Package Part がありません");
+            long total = 0;
+            for (var index = 0; index < result.PackageParts.Count; ++index)
+            {
+                var part = result.PackageParts[index];
+                var name = result.PackageFileName + "." + (index + 1).ToString("D3", System.Globalization.CultureInfo.InvariantCulture);
+                if (part == null || part.FileName != name || !is_hash(part.Sha256))
+                    throw new InvalidDataException("Package Part の File 名または Hash が不正です");
+                total = checked(total + part.Size);
+            }
+            if (total != result.PackageSize) throw new InvalidDataException("Package Part の合計容量が一致しません");
+        }
         return result;
     }
 
-    public void verify_signature(ReadOnlySpan<byte> a_bytes, string a_signature)
+    public void verify_signature(ReadOnlySpan<byte> a_bytes, string a_signature, int a_limit = DistributionLimits.ManifestBytes)
     {
-        if (a_bytes.Length is 0 or > 65536 || a_signature.Length > 4096) throw new InvalidDataException("Manifest の上限を超えました");
+        if (a_limit <= 0 || a_bytes.Length == 0 || a_bytes.Length > a_limit || a_signature.Length > DistributionLimits.SignatureBytes)
+            throw new InvalidDataException("Manifest の上限を超えました");
         var signature = Convert.FromBase64String(a_signature.Trim());
         using var key = ECDsa.Create();
         key.ImportFromPem(m_publicKey);
         if (signature.Length != 64 || !key.VerifyData(a_bytes, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
             throw new CryptographicException("配布 Manifest の署名を確認できません");
     }
+
+    /// <summary>未知項目と大文字小文字違いを含む重複項目を、型への変換前に拒否する</summary>
+    private static void require_fields(JsonElement a_object, IReadOnlyList<string> a_fields)
+    {
+        if (a_object.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Manifest 項目は Object が必要です");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in a_object.EnumerateObject())
+        {
+            if (!a_fields.Contains(property.Name, StringComparer.Ordinal) || !names.Add(property.Name))
+                throw new InvalidDataException("Manifest に未知または重複した項目があります");
+        }
+        if (names.Count != a_fields.Count) throw new InvalidDataException("Manifest の必須項目がありません");
+    }
+
+    /// <summary>JSON Number の整数だけを受け入れ、文字列や小数の暗黙変換を防ぐ</summary>
+    private static void require_size(JsonElement a_object, string a_name, long a_maximum)
+    {
+        var value = a_object.GetProperty(a_name);
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var size) || size <= 0 || size > a_maximum)
+            throw new InvalidDataException("Manifest の容量が許容範囲外です");
+    }
+
+    private static bool is_hash(string? a_hash) => a_hash is { Length: 64 } && a_hash.All(char.IsAsciiHexDigit);
 }
 
 /// <summary>配布元 / 展開処理と独立して、Hub が作った導入先だけを識別する</summary>
@@ -56,7 +111,7 @@ internal sealed record InstallReceipt(string ReceiptId, string EngineId, string 
 public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_http, PackageVerifier a_verifier, string? a_leaseDirectory = null)
 {
     private readonly HubStateStore m_store = a_store;
-    private readonly GitHubReleaseClient m_github = new(a_http);
+    private readonly DistributionClient m_distribution = new(a_http);
     private readonly PackageVerifier m_verifier = a_verifier;
     private readonly string? m_leaseDirectory = a_leaseDirectory;
     private readonly SemaphoreSlim m_operation = new(1, 1);
@@ -65,25 +120,59 @@ public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_htt
     public async Task<EngineRegistration> install_release_async(PublishedRelease a_release, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel, EngineRegistration? a_repair = null)
     {
         foreach (var pair in a_release.Assets)
-            if (!GitHubReleaseClient.is_asset_url(pair.Value)) throw new InvalidDataException("配布 API の URL が不正です");
-        var manifestBytes = await download_small_async(a_release.Assets["engine-release.json"], 65536, a_cancel);
-        var signature = Encoding.ASCII.GetString(await download_small_async(a_release.Assets["engine-release.json.sig"], 4096, a_cancel));
+            if (!DistributionClient.is_asset_url(pair.Value, a_release.Tag, pair.Key)) throw new InvalidDataException("配布 URL が Release と一致しません");
+        if (!a_release.Assets.TryGetValue("engine-release.json", out var manifestUrl) ||
+            !a_release.Assets.TryGetValue("engine-release.json.sig", out var signatureUrl))
+            throw new InvalidDataException("署名付き配布 Manifest がありません");
+        var manifestBytes = await m_distribution.get_bytes_async(manifestUrl, DistributionLimits.ManifestBytes, a_cancel);
+        var signature = Encoding.ASCII.GetString(await m_distribution.get_bytes_async(signatureUrl, DistributionLimits.SignatureBytes, a_cancel));
         var manifest = m_verifier.verify(manifestBytes, signature);
-        if (a_release.Tag != manifest.Tag || a_release.Version != manifest.Version || !a_release.Assets.TryGetValue(manifest.PackageFileName, out var url))
+        if (a_release.Tag != manifest.Tag || a_release.Version != manifest.Version)
             throw new InvalidDataException("Release と Manifest が一致しません");
-        var basePath = prepare_base();
-        var downloadRoot = Path.Combine(basePath, ".download-" + Guid.NewGuid().ToString("N"));
+        var parts = manifest.Parts;
+        if (parts.Any(part => !a_release.Assets.ContainsKey(part.FileName)))
+            throw new InvalidDataException("署名付き Package Part が Release にありません");
+        require_free_space(prepare_base(), manifest.ExpandedSize);
+        // 署名済み Version / Hash ごとに保持し、取消や再起動で検証済みの取得結果を失わない
+        var downloadRoot = SafePaths.child(m_store.DirectoryPath, "Downloads/engine-" + manifest.Version);
+        SafePaths.no_links(downloadRoot);
         Directory.CreateDirectory(downloadRoot);
-        try
+        var archives = new List<string>(parts.Count);
+        long completed = 0;
+        foreach (var part in parts)
         {
-            var archive = Path.Combine(downloadRoot, manifest.PackageFileName);
-            await download_package_async(url, archive, manifest.PackageSize, a_progress, a_cancel);
-            return await install_local_async(archive, manifestBytes, signature, a_progress, a_cancel, a_repair);
+            a_cancel.ThrowIfCancellationRequested();
+            var directory = SafePaths.child(downloadRoot, part.Sha256.ToLowerInvariant());
+            SafePaths.no_links(directory);
+            Directory.CreateDirectory(directory);
+            var archive = SafePaths.child(directory, part.FileName);
+            var before = completed;
+            var partProgress = a_progress == null ? null : new InlineProgress(progress =>
+                a_progress.Report(new(progress.Message, progress.Percent.HasValue ?
+                    (before + part.Size * progress.Percent.Value / 100.0) * 100.0 / manifest.PackageSize : null)));
+            await m_distribution.download_async(a_release.Assets[part.FileName], archive, part.Size, part.Sha256, partProgress, a_cancel);
+            completed += part.Size;
+            archives.Add(archive);
         }
-        finally { SafePaths.delete_owned_tree(downloadRoot, basePath); }
+        return await install_archives_async(archives, manifestBytes, signature, a_progress, a_cancel, a_repair);
     }
 
-    public async Task<EngineRegistration> install_local_async(string a_archive, byte[] a_manifest, string a_signature, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel, EngineRegistration? a_repair = null)
+    public Task<EngineRegistration> install_local_async(string a_archive, byte[] a_manifest, string a_signature, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel, EngineRegistration? a_repair = null)
+    {
+        var manifest = m_verifier.verify(a_manifest, a_signature);
+        var selected = SafePaths.regular_file(a_archive);
+        IReadOnlyList<string> archives = [selected];
+        if (manifest.SchemaVersion == 2)
+        {
+            if (!manifest.Parts.Any(part => part.FileName == Path.GetFileName(selected)))
+                throw new InvalidDataException("選択した File は署名済み Package Part ではありません");
+            var directory = Path.GetDirectoryName(selected)!;
+            archives = manifest.Parts.Select(part => SafePaths.regular_file(SafePaths.child(directory, part.FileName))).ToArray();
+        }
+        return install_archives_async(archives, a_manifest, a_signature, a_progress, a_cancel, a_repair);
+    }
+
+    private async Task<EngineRegistration> install_archives_async(IReadOnlyList<string> a_archives, byte[] a_manifest, string a_signature, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel, EngineRegistration? a_repair)
     {
         var basePath = prepare_base();
         if (!await m_operation.WaitAsync(0, a_cancel)) throw new InvalidOperationException("Engine 操作が進行中です");
@@ -104,13 +193,12 @@ public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_htt
             }
             else if (Directory.Exists(target) || File.Exists(target)) throw new IOException("この Version は既に導入されています");
             SafePaths.no_links(target);
-            using (var archive = new FileStream(SafePaths.regular_file(a_archive), FileMode.Open, FileAccess.Read, FileShare.Read))
+            require_free_space(basePath, manifest.ExpandedSize);
+            using (var archive = new PackagePartsStream(a_archives))
             {
                 if (archive.Length != manifest.PackageSize) throw new InvalidDataException("パッケージの容量が一致しません");
                 a_progress?.Report(new("パッケージを検証しています"));
-                var digest = Convert.ToHexString(await SHA256.HashDataAsync(archive, a_cancel));
-                if (!digest.Equals(manifest.PackageSha256, StringComparison.OrdinalIgnoreCase)) throw new CryptographicException("パッケージの Hash が一致しません");
-                archive.Position = 0;
+                await archive.verify_async(manifest.Parts, manifest.PackageSha256, a_cancel);
                 staging = Path.Combine(basePath, ".staging-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(staging);
                 await extract_async(archive, staging, manifest.ExpandedSize, a_progress, a_cancel);
@@ -245,27 +333,17 @@ public sealed class EngineInstallService(HubStateStore a_store, HttpClient a_htt
         if (a_engine.LeaseId != $"engine-{a_engine.Version}-windows-x64") throw new InvalidDataException("Lease ID が不正です");
     }
 
-    private async Task<byte[]> download_small_async(string a_url, int a_limit, CancellationToken a_cancel)
+    /// <summary>既存版を残したまま新しい Payload を展開できる容量を、配置先 Volume で確認する</summary>
+    private static void require_free_space(string a_directory, long a_size)
     {
-        using var response = await m_github.get_asset_async(a_url, a_cancel);
-        return await EngineCatalogService.read_bounded_async(response.Content, a_limit, a_cancel);
+        var volume = Path.GetPathRoot(SafePaths.full(a_directory)) ?? throw new InvalidDataException("配置先 Volume がありません");
+        if (new DriveInfo(volume).AvailableFreeSpace < a_size)
+            throw new IOException("Engine の展開に必要な空き容量がありません");
     }
 
-    private async Task download_package_async(string a_url, string a_file, long a_size, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel)
+    /// <summary>取得 Thread 上で同期的に進捗を中継し、Part 間の通知順を維持する</summary>
+    private sealed class InlineProgress(Action<InstallProgress> a_report) : IProgress<InstallProgress>
     {
-        using var response = await m_github.get_asset_async(a_url, a_cancel);
-        if (response.Content.Headers.ContentLength is long length && length != a_size) throw new InvalidDataException("取得する容量が一致しません");
-        await using var input = await response.Content.ReadAsStreamAsync(a_cancel);
-        await using var output = new FileStream(a_file, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
-        var buffer = new byte[65536];
-        long received = 0;
-        for (int count; (count = await input.ReadAsync(buffer, a_cancel)) != 0;)
-        {
-            received = checked(received + count);
-            if (received > a_size) throw new InvalidDataException("ダウンロード容量の上限を超えました");
-            await output.WriteAsync(buffer.AsMemory(0, count), a_cancel);
-            a_progress?.Report(new("Engine を取得しています", received * 100.0 / a_size));
-        }
-        if (received != a_size) throw new InvalidDataException("ダウンロードが途中で切れています");
+        public void Report(InstallProgress a_value) => a_report(a_value);
     }
 }

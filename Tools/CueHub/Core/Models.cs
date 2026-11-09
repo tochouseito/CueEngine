@@ -38,7 +38,8 @@ public sealed record HubState
     public string LocalHubFeed { get; set; } = "";
 }
 
-/// <summary>GitHub から取得した公開 Asset の所有値。任意の API Token を保持しない</summary>
+/// <summary>署名付き配布一覧の所有値。認証情報を保持しない</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PublishedRelease
 {
     public string Version { get; init; } = "";
@@ -46,7 +47,7 @@ public sealed record PublishedRelease
     public bool IsPreview { get; init; }
     public DateTimeOffset PublishedUtc { get; init; }
     public string PageUrl { get; init; } = "";
-    /// <summary>Asset 名と自 Repository の Asset API URL の対応。Browser 向け URL を取得に使わない</summary>
+    /// <summary>Asset 名と自 Repository の通常 HTTPS ダウンロード URL の対応</summary>
     public Dictionary<string, string> Assets { get; init; } = new(StringComparer.Ordinal);
     [JsonIgnore] public string Display => $"{Version}  {(IsPreview ? "Preview" : "正式版")}  {PublishedUtc.LocalDateTime:yyyy-MM-dd}";
 }
@@ -66,6 +67,39 @@ public sealed record ReleasePackageManifest
     public string PackageSha256 { get; init; } = "";
     public long PackageSize { get; init; }
     public long ExpandedSize { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ReleasePackagePart>? PackageParts { get; init; }
+    [JsonIgnore] public IReadOnlyList<ReleasePackagePart> Parts => PackageParts ??
+        [new() { FileName = PackageFileName, Sha256 = PackageSha256, Size = PackageSize }];
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ReleasePackagePart
+{
+    public string FileName { get; init; } = "";
+    public string Sha256 { get; init; } = "";
+    public long Size { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DistributionCatalog
+{
+    public int SchemaVersion { get; init; }
+    public DateTimeOffset GeneratedAt { get; init; }
+    public List<PublishedRelease> Engines { get; init; } = [];
+    public List<PublishedRelease> Hubs { get; init; } = [];
+}
+
+/// <summary>受信・展開時の上限。巨大な入力による無制限確保を防ぐ</summary>
+public static class DistributionLimits
+{
+    public const int CatalogBytes = 4 * 1024 * 1024;
+    public const int ManifestBytes = 256 * 1024;
+    public const int SignatureBytes = 4096;
+    public const long PackageBytes = 1L << 40;
+    public const long ExpandedBytes = 1L << 40;
+    public const long PartBytes = (2L << 30) - 1;
+    public const int Parts = 512;
 }
 
 public sealed record InstallProgress(string Message, double? Percent = null);

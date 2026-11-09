@@ -1,5 +1,7 @@
-const k_repository = 'https://github.com/tochouseito/CueEngine';
-const k_releaseApi = 'https://api.github.com/repos/tochouseito/CueEngine/releases';
+import {mkdir, writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {build_distribution_catalog, create_github_source, k_repository} from './distribution-catalog.mjs';
+
 const k_version = /^hub-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 // Engine や更新専用 Asset を除き、実際に添付された Windows x64 の Setup だけを案内する
@@ -40,39 +42,26 @@ export function select_hub_releases(a_releases)
 
 export default function hub_releases()
 {
+    let distribution = null;
     return {
         name: 'cue-hub-releases',
         async loadContent()
         {
             try
             {
-                const releases = [];
-                const headers = {Accept: 'application/vnd.github+json', 'User-Agent': 'CueEngine-reference'};
-                if (process.env.GH_TOKEN)
-                {
-                    headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
-                }
-                for (let page = 1; page <= 10; ++page)
-                {
-                    const response = await fetch(`${k_releaseApi}?per_page=100&page=${page}`, {
-                        headers, signal: AbortSignal.timeout(10000),
-                    });
-                    if (!response.ok)
-                    {
-                        throw new Error(`GitHub Releases HTTP ${response.status}`);
-                    }
-                    const batch = await response.json();
-                    if (!Array.isArray(batch))
-                    {
-                        throw new Error('GitHub Releases の応答が配列ではありません');
-                    }
-                    releases.push(...batch);
-                    if (batch.length < 100)
-                    {
-                        return {...select_hub_releases(releases), unavailable: false};
-                    }
-                }
-                throw new Error('GitHub Releases の取得上限に達しました');
+                distribution = null;
+                if (process.env.GITHUB_ACTIONS !== 'true' || !process.env.CUE_PACKAGE_SIGNING_KEY_PEM)
+                    throw new Error('署名付き配布 Catalog は署名鍵を設定した公開 CI で生成してください');
+                const source = create_github_source(process.env.GH_TOKEN);
+                distribution = await build_distribution_catalog({
+                    releases: await source.listReleases(), source, signingKeyPem: process.env.CUE_PACKAGE_SIGNING_KEY_PEM,
+                });
+                const releases = distribution.catalog.hubs.map(a_release => ({
+                    tag_name: a_release.tag, published_at: a_release.publishedUtc, prerelease: a_release.isPreview,
+                    draft: false, assets: [{name: 'CueEngine.Hub-win-Setup.exe', state: 'uploaded', size: 1,
+                        browser_download_url: a_release.assets['CueEngine.Hub-win-Setup.exe']}],
+                }));
+                return {...select_hub_releases(releases), unavailable: false};
             }
             catch (error)
             {
@@ -88,6 +77,14 @@ export default function hub_releases()
         async contentLoaded({content, actions})
         {
             actions.setGlobalData(content);
+        },
+        async postBuild({outDir})
+        {
+            if (!distribution) return;
+            const directory = join(outDir, 'distribution');
+            await mkdir(directory, {recursive: true});
+            await writeFile(join(directory, 'catalog-v1.json'), distribution.bytes);
+            await writeFile(join(directory, 'catalog-v1.json.sig'), distribution.signature);
         },
     };
 }

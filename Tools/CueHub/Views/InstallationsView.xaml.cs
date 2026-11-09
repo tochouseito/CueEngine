@@ -38,7 +38,7 @@ public partial class InstallationsView : UserControl
     {
         if (DataContext is not MainViewModel model || model.IsBusy) return;
         if (!model.IncludePreview) model.CatalogChannel = 0;
-        model.RefreshCatalog.Execute(null);
+        model.LoadCatalog.Execute(null);
         new EngineInstallWindow(model) { Owner = Window.GetWindow(this) }.ShowDialog();
     }
 }

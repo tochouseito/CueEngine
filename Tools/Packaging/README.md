@@ -28,8 +28,14 @@ pwsh -NoProfile -File Tools/Packaging/Hub/New-HubPackage.ps1 `
 Hub の `-VersionOverride` はローカル更新試験用であり、公開 Version の正本を変更する手段ではない。
 
 Engine 出力は署名付き Manifest と ZIP、Hub は `Release/` に Setup / Full Package / Feed / 署名付き Manifest を持つ。
+Engine の ZIP が 2 GiB − 1 Byte を超えた場合は、1 GiB 単位の `.zip.001` 形式へ自動分割し、Manifest v2 に各 Part の Hash / Size を署名する。
+小さい SDK の Manifest v1 と ZIP 1 個は維持する。分割時の論理 ZIP は添付せず、Part を同一 Release に添付する。
+ローカル Fixture は `-PartSizeBytes 1024 -SinglePackageLimitBytes 2048` のような小さい値で検証できる。
+各 Part は 2 GiB 未満、最大 512 個、合計と展開容量はそれぞれ 1 TiB 以下に制限する。
+大容量生成には Payload / 一時 ZIP / Part を同時に置ける空き容量が必要になる。
 License / Third-party Notice は実際の Payload に対応するものを収録する。
-詳細は [配布契約](../../Docs/Decisions/0021-hub-and-engine-distribution.md) と
+詳細は [配布契約](../../Docs/Decisions/0021-hub-and-engine-distribution.md)、
+[大容量配布契約](../../Docs/Decisions/0030-large-engine-packages.md)、
 [Hub パッケージ生成](Hub/README.md) を参照する。
 
 ## Tag から公開
@@ -37,6 +43,7 @@ License / Third-party Notice は実際の Payload に対応するものを収録
 `.github/workflows/tagged-release.yml` は `engine-v<version>` / `hub-v<version>` の Push を受ける。
 定義 Version との一致、Build / Test、署名・Hash を検証し、Draft に Asset を添付してから公開する。
 Preview は GitHub Pre-release にし、既存 Tag の Release の上書きを拒否する。
+Engine / Hub のいずれを公開した場合も reference-site を再生成し、署名付き静的 Catalog を更新する。
 
 実行前に GitHub Actions Secret `CUE_PACKAGE_SIGNING_KEY_PEM` を設定する。
 公開鍵はその鍵から生成し、Hub の信頼設定に同じ鍵を使う。鍵のローテーションは既存 Hub の信頼更新と合わせて計画する。

@@ -28,33 +28,24 @@ public sealed record HubUpdateOffer(UpdateManager Manager, IVelopackLocator Loca
 /// <summary>Engine Release を除外し、署名した Hub 用 Feed だけを Updater へ渡す</summary>
 public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, PackageVerifier a_verifier, IVelopackLocator? a_locator = null)
 {
-    private readonly GitHubReleaseClient m_github = new(a_http);
+    private readonly DistributionClient m_downloads = new(a_http);
+    private readonly DistributionCatalogService m_catalog = new(a_http, a_store, a_verifier);
     private readonly HubStateStore m_store = a_store;
     private readonly PackageVerifier m_verifier = a_verifier;
     private readonly IVelopackLocator? m_locator = a_locator;
 
     public async Task<HubUpdateOffer?> prepare_github_async(bool a_includePreview, IProgress<InstallProgress>? a_progress, CancellationToken a_cancel)
     {
-        var releases = new List<PublishedRelease>();
-        var completed = false;
-        for (var page = 1; page <= 100; ++page)
-        {
-            using var response = await m_github.get_releases_async(page, a_cancel);
-            using var document = JsonDocument.Parse(await EngineCatalogService.read_bounded_async(response.Content, 4 * 1024 * 1024, a_cancel));
-            foreach (var item in document.RootElement.EnumerateArray())
-            {
-                var release = EngineCatalogService.parse_release(item, "hub-v", false);
-                if (release != null && (a_includePreview || !release.IsPreview) && release.Assets.ContainsKey("hub-release.json") && release.Assets.ContainsKey("hub-release.json.sig")) releases.Add(release);
-            }
-            if (document.RootElement.GetArrayLength() < 100) { completed = true; break; }
-        }
-        if (!completed) throw new InvalidDataException("Hub Release 一覧の上限を超えました");
-        var selected = releases.OrderByDescending(item => item.PublishedUtc).FirstOrDefault();
+        var catalog = await m_catalog.load_async(a_cancel, true);
+        if (m_catalog.LastWarning != null) a_progress?.Report(new(m_catalog.LastWarning));
+        var selected = catalog.Hubs.Where(item => a_includePreview || !item.IsPreview)
+            .OrderByDescending(item => item.PublishedUtc).FirstOrDefault();
         if (selected == null) return null;
         var bytes = await download_async(selected.Assets["hub-release.json"], 65536, a_cancel);
         var signature = Encoding.ASCII.GetString(await download_async(selected.Assets["hub-release.json.sig"], 4096, a_cancel));
         var manifest = read_manifest(bytes, signature);
-        if (manifest.Tag != selected.Tag || manifest.Version != selected.Version || !selected.Assets.ContainsKey(manifest.PackageFileName))
+        if (manifest.Tag != selected.Tag || manifest.Version != selected.Version ||
+            !selected.Assets.ContainsKey(manifest.PackageFileName) || !selected.Assets.ContainsKey(manifest.FeedFileName))
             throw new InvalidDataException("Hub Release の内容が一致しません");
         var feed = await download_async(selected.Assets[manifest.FeedFileName], 1024 * 1024, a_cancel);
         verify_hash(feed, manifest.FeedSha256, manifest.FeedSize);
@@ -64,9 +55,8 @@ public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, P
         HubStateStore.atomic_write(Path.Combine(cache, manifest.FeedFileName), feed);
         a_progress?.Report(new("Hub 更新パッケージを取得しています"));
         // Full Package だけを扱い、署名対象外 Delta を自動取得させない
-        var package = await download_async(selected.Assets[manifest.PackageFileName], checked((int)Math.Min(manifest.PackageSize, int.MaxValue)), a_cancel);
-        verify_hash(package, manifest.PackageSha256, manifest.PackageSize);
-        HubStateStore.atomic_write(Path.Combine(cache, manifest.PackageFileName), package);
+        await m_downloads.download_async(selected.Assets[manifest.PackageFileName], Path.Combine(cache, manifest.PackageFileName),
+            manifest.PackageSize, manifest.PackageSha256, a_progress, a_cancel);
         return await prepare_verified_feed_async(cache, manifest, a_progress, a_cancel);
     }
 
@@ -141,7 +131,6 @@ public sealed class HubUpdateService(HttpClient a_http, HubStateStore a_store, P
 
     private async Task<byte[]> download_async(string a_url, int a_limit, CancellationToken a_cancel)
     {
-        using var response = await m_github.get_asset_async(a_url, a_cancel);
-        return await EngineCatalogService.read_bounded_async(response.Content, a_limit, a_cancel);
+        return await m_downloads.get_bytes_async(a_url, a_limit, a_cancel);
     }
 }

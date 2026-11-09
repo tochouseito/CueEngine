@@ -117,7 +117,7 @@ function Protect-CueManifest([string]$File, [string]$PrivateKeyFile)
 function Read-CueSignedManifest([string]$File, [string]$PublicKeyFile)
 {
     $manifestFile = Assert-CuePlainPath $File
-    if ((Get-Item -LiteralPath $manifestFile).Length -gt 65536) { throw 'Release manifest is too large' }
+    if ((Get-Item -LiteralPath $manifestFile).Length -gt 262144) { throw 'Release manifest is too large' }
     $bytes = [IO.File]::ReadAllBytes($manifestFile)
     $signatureText = [IO.File]::ReadAllText($manifestFile + '.sig')
     if ($signatureText.Length -gt 4096) { throw 'Release signature is too large' }
@@ -142,14 +142,135 @@ function Read-CueSignedManifest([string]$File, [string]$PublicKeyFile)
     try
     {
         if ($document.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'Release manifest must be an object' }
-        $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($property in $document.RootElement.EnumerateObject())
-        {
-            if (-not $keys.Add($property.Name)) { throw 'Release manifest has duplicate fields' }
-        }
+        Assert-CueJsonUniqueFields $document.RootElement
     }
     finally { $document.Dispose() }
     return $text | ConvertFrom-Json -AsHashtable
+}
+
+# 入れ子の Part も含め、解釈側によって意味が変わる重複 Key を拒否する
+function Assert-CueJsonUniqueFields([Text.Json.JsonElement]$Element)
+{
+    if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object)
+    {
+        $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in $Element.EnumerateObject())
+        {
+            if (-not $keys.Add($property.Name)) { throw 'Release manifest has duplicate fields' }
+            Assert-CueJsonUniqueFields $property.Value
+        }
+    }
+    elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array)
+    {
+        foreach ($item in $Element.EnumerateArray()) { Assert-CueJsonUniqueFields $item }
+    }
+}
+
+# JSON Number の整数だけを受け入れ、文字列や小数の暗黙変換を避ける
+function Test-CuePositiveSize([object]$Value, [long]$Maximum = 1099511627776)
+{
+    return ($Value -is [int] -or $Value -is [long] -or $Value -is [System.Numerics.BigInteger]) -and
+        $Value -gt 0 -and $Value -le $Maximum
+}
+
+# 元 ZIP を固定 Buffer で分割する。既存 File は上書きせず、失敗時は元 ZIP と部分生成物を保持する
+function Split-CuePackage([string]$ZipFile, [long]$PartSizeBytes = 1073741824,
+    [long]$SinglePackageLimitBytes = 2147483647)
+{
+    if (-not (Test-CuePositiveSize $PartSizeBytes 2147483647) -or
+        -not (Test-CuePositiveSize $SinglePackageLimitBytes 2147483647)) { throw 'Invalid package part limits' }
+    $source = Assert-CuePlainPath $ZipFile
+    $size = (Get-Item -LiteralPath $source).Length
+    if (-not (Test-CuePositiveSize $size)) { throw 'Package size exceeds the supported limit' }
+    if ($size -le $SinglePackageLimitBytes) { return @() }
+    $count = [long][Math]::Ceiling($size / [double]$PartSizeBytes)
+    if ($count -gt 512) { throw 'Package requires more than 512 parts' }
+    $targets = @(for ($index = 1; $index -le $count; $index++) { $source + '.' + $index.ToString('000') })
+    foreach ($target in $targets)
+    {
+        $null = Assert-CuePlainPath $target
+        if (Test-Path -LiteralPath $target) { throw 'A package part already exists' }
+    }
+    $parts = [Collections.Generic.List[object]]::new()
+    $inputStream = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $buffer = [byte[]]::new(1048576)
+    try
+    {
+        foreach ($target in $targets)
+        {
+            $remaining = [Math]::Min($PartSizeBytes, $size - $inputStream.Position)
+            $partLength = $remaining
+            $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+            $outputStream = $null
+            try
+            {
+                $outputStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                while ($remaining -gt 0)
+                {
+                    $read = $inputStream.Read($buffer, 0, [int][Math]::Min($buffer.Length, $remaining))
+                    if ($read -eq 0) { throw 'Package changed during splitting' }
+                    $outputStream.Write($buffer, 0, $read)
+                    $hash.AppendData($buffer, 0, $read)
+                    $remaining -= $read
+                }
+                $parts.Add([ordered]@{ fileName = [IO.Path]::GetFileName($target);
+                    sha256 = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant(); size = $partLength })
+            }
+            finally { if ($null -ne $outputStream) { $outputStream.Dispose() }; $hash.Dispose() }
+        }
+        if ($inputStream.Position -ne $inputStream.Length) { throw 'Package changed during splitting' }
+    }
+    finally { $inputStream.Dispose() }
+    return $parts.ToArray()
+}
+
+# 公開前に Part ごとの Hash と結合順の Hash を同時に検証し、巨大な結合コピーを作らない
+function Assert-CuePackageParts([Collections.IDictionary]$Manifest, [string]$Root)
+{
+    if ($Manifest.packageParts -isnot [array] -or $Manifest.packageParts.Count -lt 1 -or
+        $Manifest.packageParts.Count -gt 512) { throw 'Invalid package part count' }
+    $combined = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    $buffer = [byte[]]::new(1048576)
+    $total = [long]0
+    $assets = [Collections.Generic.List[string]]::new()
+    try
+    {
+        for ($index = 0; $index -lt $Manifest.packageParts.Count; $index++)
+        {
+            $part = $Manifest.packageParts[$index]
+            $expectedName = $Manifest.packageFileName + '.' + ($index + 1).ToString('000')
+            if ($part -isnot [Collections.IDictionary] -or $part.Count -ne 3 -or
+                $part.Keys.Where({ @('fileName', 'sha256', 'size') -cnotcontains $_ }).Count -ne 0 -or
+                $part.fileName -cne $expectedName -or $part.sha256 -isnot [string] -or
+                $part.sha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+                -not (Test-CuePositiveSize $part.size 2147483647)) { throw 'Invalid package part metadata' }
+            $file = Assert-CuePlainPath (Join-Path $Root $part.fileName)
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+                (Get-Item -LiteralPath $file).Length -ne $part.size) { throw 'Package part is missing or has an invalid size' }
+            $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+            $stream = [IO.File]::OpenRead($file)
+            try
+            {
+                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0)
+                {
+                    $combined.AppendData($buffer, 0, $read)
+                    $hash.AppendData($buffer, 0, $read)
+                }
+                if ([Convert]::ToHexString($hash.GetHashAndReset()) -ine $part.sha256) { throw 'Package part hash mismatch' }
+            }
+            finally { $stream.Dispose(); $hash.Dispose() }
+            $total += $part.size
+            if ($total -gt 1099511627776) { throw 'Combined package exceeds the supported limit' }
+            $assets.Add($file)
+        }
+        if ($total -ne $Manifest.packageSize -or
+            [Convert]::ToHexString($combined.GetHashAndReset()) -ine $Manifest.packageSha256)
+        {
+            throw 'Combined package no longer matches its signed manifest'
+        }
+    }
+    finally { $combined.Dispose() }
+    return $assets.ToArray()
 }
 
 # File をストリームで圧縮し、大きい SDK 全体をメモリへ読み込まない
@@ -166,6 +287,7 @@ function New-CueZip([string]$SourceDirectory, [string]$ZipFile)
             $null = Assert-CuePlainPath $item.FullName
             $relative = [IO.Path]::GetRelativePath($source, $item.FullName).Replace('\', '/')
             if ($relative -eq '.cue-package-owner') { continue }
+            if ($item.Length -gt 1099511627776 - $total) { throw 'Expanded package exceeds the supported limit' }
             $entry = $zip.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
             $inputStream = [IO.File]::OpenRead($item.FullName)
             $outputStream = $entry.Open()

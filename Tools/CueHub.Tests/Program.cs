@@ -25,9 +25,9 @@ internal static partial class Program
 
     public static async Task<int> Main(string[] a_arguments)
     {
-        if (a_arguments.Length == 3 && a_arguments[0] == "--github-api")
+        if (a_arguments.Length == 3 && a_arguments[0] == "--distribution")
         {
-            return await test_live_github_downloads(a_arguments[1], a_arguments[2]);
+            return await test_live_distribution_downloads(a_arguments[1], a_arguments[2]);
         }
         if (a_arguments.Length == 6 && a_arguments[0] == "--hub-update")
         {
@@ -45,7 +45,9 @@ internal static partial class Program
         {
             await test_packages(root);
             await test_catalog(root);
-            await test_github_downloads(root);
+            await test_distribution_downloads(root);
+            await test_distribution_transfers(root);
+            await test_package_parts(root);
             await test_hub_feed_validation(root);
             test_state_and_paths(root);
             if (a_arguments.Length == 2 && a_arguments[0] == "--engine-root") await test_real_project(a_arguments[1], root);
@@ -165,29 +167,7 @@ internal static partial class Program
 
     private static async Task test_catalog(string a_root)
     {
-        var first = new List<object>();
-        // Hub や Draft が 1 ページ目を埋めても、次ページの Engine を取得する
-        for (var index = 0; index < 100; ++index) first.Add(release($"hub-v0.0.{index}", false, false, index));
-        var second = new List<object>();
-        for (var index = 0; index < 14; ++index) second.Add(release($"engine-v0.1.{index}", false, index == 13, index));
-        second.Add(release("engine-v0.2.0-preview.1", true, false, 20));
-        second.Add(release("engine-v0.4.0", false, false, 30, true));
-        var handler = new FixtureHandler([JsonSerializer.Serialize(first), JsonSerializer.Serialize(second)]);
-        using var http = new HttpClient(handler);
-        var store = new HubStateStore(Path.Combine(a_root, "Catalog"));
-        var service = new EngineCatalogService(http, store);
-        var list = await service.refresh_async(CancellationToken.None);
-        check(handler.Calls == 2 && list.Count == 10, "catalog pagination and total ten");
-        check(list[0].Version == "0.2.0-preview.1" && list[0].IsPreview, "preview classification and publish ordering");
-        check(list.All(item => item.Tag.StartsWith("engine-v", StringComparison.Ordinal) && item.Version != "0.1.13" && item.Version != "0.4.0"), "exclude hub draft incomplete");
-        using var offline = new HttpClient(new FixtureHandler([]));
-        var cachedService = new EngineCatalogService(offline, store);
-        var cached = await cachedService.refresh_async(CancellationToken.None);
-        check(cached.Count == 10 && cachedService.LastWarning != null, "offline catalog retained");
-        check(list.All(item => item.Assets.Values.All(GitHubReleaseClient.is_asset_url)), "catalog stores asset API URLs");
-        check(!GitHubReleaseClient.is_asset_url("https://evil.example/package.zip"), "foreign URL rejected");
-        check(!GitHubReleaseClient.is_asset_url("http://api.github.com/repos/tochouseito/CueEngine/releases/assets/1"), "http URL rejected");
-        check(!GitHubReleaseClient.is_asset_url("https://api.github.com/repos/other/repo/releases/assets/1"), "foreign repository rejected");
+        await test_signed_distribution_catalog(a_root);
     }
 
     private static void test_state_and_paths(string a_root)
@@ -261,13 +241,6 @@ internal static partial class Program
         service.unregister(unavailable);
         new EngineRegistryService(store).unregister_local(engine);
         check(File.Exists(engine.Editor), "unregister local engine preserved executable");
-    }
-
-    private static object release(string a_tag, bool a_preview, bool a_draft, int a_day, bool a_missing = false)
-    {
-        var version = a_tag[8..];
-        var names = new[] { $"CueEngine-{version}-windows-x64.zip", "engine-release.json", "engine-release.json.sig" };
-        return new { tag_name = a_tag, prerelease = a_preview, draft = a_draft, published_at = DateTimeOffset.UtcNow.AddDays(a_day).ToString("O"), assets = names.Take(a_missing ? 1 : 3).Select((name, index) => new { name, id = 1000L + a_day * 10 + index, url = GitHubReleaseClient.asset_url(1000L + a_day * 10 + index), browser_download_url = EngineCatalogService.RepositoryUrl + "/releases/download/" + a_tag + "/" + name }).ToArray() };
     }
 
     private static string sign(ECDsa a_key, byte[] a_bytes) => Convert.ToBase64String(a_key.SignData(a_bytes, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));

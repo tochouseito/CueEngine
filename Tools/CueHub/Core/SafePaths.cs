@@ -61,8 +61,14 @@ public static partial class SafePaths
         var current = full(a_path);
         while (true)
         {
-            if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("リンクを含む配置は使用できません: " + current);
+            // Exists は参照先のない Link を見落とすため、配置要素自体の属性を確認する
+            try
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("リンクを含む配置は使用できません: " + current);
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
             var parent = Directory.GetParent(current)?.FullName;
             if (parent == null || StringComparer.OrdinalIgnoreCase.Equals(parent, current)) break;
             current = parent;

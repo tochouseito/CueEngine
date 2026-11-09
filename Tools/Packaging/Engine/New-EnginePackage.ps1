@@ -4,7 +4,9 @@ param(
     [Parameter(Mandatory)][string]$SigningKeyFile,
     [string]$CrtDirectory,
     [switch]$SkipBuild,
-    [switch]$AllowDirtyLocal
+    [switch]$AllowDirtyLocal,
+    [long]$PartSizeBytes = 1073741824,
+    [long]$SinglePackageLimitBytes = 2147483647
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +18,8 @@ if (-not $BuildDirectory) { $BuildDirectory = Join-Path $engineRoot 'out/build/w
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $engineRoot "out/packages/Engine/$version" }
 $buildRoot = Assert-CuePlainPath $BuildDirectory
 $outputRoot = Assert-CuePlainPath $OutputDirectory
+if (-not (Test-CuePositiveSize $PartSizeBytes 2147483647) -or
+    -not (Test-CuePositiveSize $SinglePackageLimitBytes 2147483647)) { throw 'Invalid package part limits' }
 if (-not (Test-Path -LiteralPath $SigningKeyFile -PathType Leaf)) { throw 'Package signing key is required' }
 if (Test-Path -LiteralPath $outputRoot) { throw "Package output already exists: $outputRoot" }
 
@@ -164,13 +168,33 @@ try
     $packageName = "CueEngine-$version-windows-x64.zip"
     $packageFile = Join-Path $stage $packageName
     $expandedSize = New-CueZip $payload $packageFile
+    if (-not (Test-CuePositiveSize $expandedSize)) { throw 'Expanded package exceeds the supported limit' }
+    $packageSize = (Get-Item -LiteralPath $packageFile).Length
+    $packageHash = (Get-FileHash -LiteralPath $packageFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    $parts = @(Split-CuePackage $packageFile $PartSizeBytes $SinglePackageLimitBytes)
     $manifestFile = Join-Path $stage 'engine-release.json'
-    Write-CueJson $manifestFile ([ordered]@{
-        schemaVersion = 1; product = 'engine'; version = $version; tag = "engine-v$version";
+    $manifest = [ordered]@{
+        schemaVersion = $(if ($parts.Count -gt 0) { 2 } else { 1 }); product = 'engine'; version = $version; tag = "engine-v$version";
         platform = 'Windows'; architecture = 'x64'; configuration = 'Development'; buildId = $buildId;
-        packageFileName = $packageName; packageSha256 = (Get-FileHash -LiteralPath $packageFile -Algorithm SHA256).Hash.ToLowerInvariant();
-        packageSize = (Get-Item -LiteralPath $packageFile).Length; expandedSize = $expandedSize
-    })
+        packageFileName = $packageName; packageSha256 = $packageHash;
+        packageSize = $packageSize; expandedSize = $expandedSize
+    }
+    if ($parts.Count -gt 0)
+    {
+        $manifest.packageParts = $parts
+        $null = Assert-CuePackageParts $manifest $stage
+        # この呼出しで生成した ZIP だけを削除する。Stage 外や Link は削除しない
+        $ownedStage = Assert-CuePlainPath $stage
+        $ownedZip = Assert-CuePlainPath $packageFile
+        if ([IO.Path]::GetDirectoryName($ownedZip) -ine $ownedStage -or
+            [IO.Path]::GetFileName($ownedZip) -cne $packageName -or
+            -not (Test-Path -LiteralPath (Join-Path $ownedStage '.cue-package-owner') -PathType Leaf))
+        {
+            throw 'Refusing to remove a ZIP outside its owned package stage'
+        }
+        [IO.File]::Delete($ownedZip)
+    }
+    Write-CueJson $manifestFile $manifest
     Protect-CueManifest $manifestFile $SigningKeyFile
     $null = Assert-CuePlainPath $outputRoot
     if (Test-Path -LiteralPath $outputRoot) { throw 'Another package writer has published this output' }
