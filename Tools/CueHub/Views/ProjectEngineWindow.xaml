@@ -1,0 +1,20 @@
+<Window x:Class="Cue.Hub.ProjectEngineWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Engine バージョンを変更" Width="560" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="#F3F5F8" FontFamily="Yu Gothic UI" FontSize="14">
+    <StackPanel Margin="24">
+        <TextBlock Text="Engine バージョンを変更" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,20" />
+        <TextBlock x:Name="ProjectNameText" TextWrapping="Wrap" FontWeight="SemiBold" />
+        <TextBlock x:Name="CurrentEngineText" Margin="0,8,0,20" />
+        <TextBlock Text="変更先の Engine" Margin="0,0,0,8" />
+        <ComboBox x:Name="ProjectEngineSelector" DisplayMemberPath="Display" SelectionChanged="on_engine_selected"
+                  AutomationProperties.Name="変更先の Engine バージョン" />
+        <TextBlock Text="対象プロジェクトの Editor と Play を終了してから変更してください。Engine バージョンの指定だけを置き換えます。互換性確認・データ変換は行いません。"
+                   TextWrapping="Wrap" Foreground="#586273" Margin="0,20,0,20" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="キャンセル" IsCancel="True" />
+            <Button x:Name="ApplyEngineButton" Content="変更" Click="on_apply" IsDefault="True" IsEnabled="False" FontWeight="SemiBold" Margin="8,0,0,0" />
+        </StackPanel>
+    </StackPanel>
+</Window>

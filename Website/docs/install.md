@@ -29,8 +29,10 @@ Hub は発行者の署名とファイルのハッシュを検証してから Eng
 既存 Project は `.cueproj` の `engineVersion` で利用版を固定しています。
 
 1. Project を開いている Editor を終了し、Hub で切り替え先の Engine を導入します。
-2. `.cueproj` の `engineVersion` を導入した版へ変更します。例: `engineVersion=0.1.0-preview.3`。
-3. Hub の **プロジェクト → 追加** で同じ `.cueproj` を選び直し、保存済みの Engine バージョン情報を更新します。
+2. Hub の **プロジェクト** 一覧で対象を選び、**Engine バージョンを変更** を押します。
+3. 導入済みの Engine を選び、**変更** を押します。`.cueproj` と Hub の登録情報が更新されます。
 4. 一覧から **Editor で開く** を押します。
 
-`.cueproj` を編集した後は、Hub への再追加まで行ってください。新規 Project では作成時に選んだ版が自動で保存されます。
+この操作は Engine の指定だけを置き換え、互換性確認やデータ変換は行いません。Engine 未指定の旧形式 Project の変換は未対応です。新規 Project では作成時に選んだ版が自動で保存されます。
+
+変更ボタンのない旧版 Hub では、`.cueproj` の `engineVersion` を手動で変更し、**プロジェクト → 追加** で同じ `.cueproj` を再登録してください。

@@ -49,13 +49,16 @@ internal static class Program
                     item.TranslatePoint(new Point(), window).X + item.ActualWidth)
                     throw new InvalidOperationException("Hub のナビゲーションと選択画面が重なっています");
             }
-            if (model.CreateProject.CanExecute(null) || !model.RegisterEngine.CanExecute(null) || model.Cancel.CanExecute(null))
+            if (model.CreateProject.CanExecute(null) || !model.RegisterEngine.CanExecute(null) || model.Cancel.CanExecute(null) || model.ChangeProjectEngine.CanExecute(null))
                 throw new InvalidOperationException("起動直後の操作制限が不正です");
             tabs.SelectedIndex = 0;
             window.UpdateLayout();
             var projects = (ListView)window.FindName("ProjectList");
             var add = (Button)window.FindName("AddProjectButton");
             var create = (Button)window.FindName("NewProjectButton");
+            var changeEngine = (Button)window.FindName("ChangeProjectEngineButton");
+            if (changeEngine.Command != model.ChangeProjectEngine)
+                throw new InvalidOperationException("Engine バージョン変更ボタンが接続されていません");
             var listPage = (Grid)window.FindName("ProjectListPage");
             var creationPage = (ProjectCreationView)window.FindName("ProjectCreationPage");
             var engineSelector = (ComboBox)creationPage.FindName("CreationEngineSelector");
@@ -119,6 +122,14 @@ internal static class Program
             model.SelectedProject = new ProjectRegistration { EngineVersion = required.Version };
             if (model.SelectedEngine != required || !model.OpenProject.CanExecute(null) || model.SelectedCreationEngine != local)
                 throw new InvalidOperationException("Project に一致する Engine が自動選択されません");
+            // 選択の取消では File 操作へ進まず、Project と他の Engine 選択を保つ
+            var beforeProject = model.SelectedProject;
+            var beforeStatus = model.Status;
+            model.ChangeProjectEngine.Execute(null);
+            if (model.SelectedProject != beforeProject || model.SelectedEngine != required || model.SelectedCreationEngine != local ||
+                model.IsBusy || model.Status != beforeStatus || dialogs.EngineChoices?.Count != 2)
+                throw new InvalidOperationException("Engine 変更の取消で状態が変化しました");
+            test_project_engine_window(remembered, local, required);
             // 作成失敗時は作成ページに留まり、入力と Engine の選択を保つ
             model.ShowProjectCreation.Execute(null);
             var previousDirectory = model.ProjectDirectory;
@@ -218,12 +229,39 @@ internal static class Program
         return null;
     }
 
+    private static void test_project_engine_window(ProjectRegistration a_project, EngineRegistration a_other, EngineRegistration a_current)
+    {
+        var dialog = new ProjectEngineWindow(a_project, [a_other, a_current])
+        { Left = -10000, Top = -10000, WindowStartupLocation = WindowStartupLocation.Manual, ShowInTaskbar = false };
+        try
+        {
+            dialog.Show();
+            dialog.UpdateLayout();
+            var selector = (ComboBox)dialog.FindName("ProjectEngineSelector");
+            var apply = (Button)dialog.FindName("ApplyEngineButton");
+            if (selector.Items.Count != 2 || selector.DisplayMemberPath != "Display" || dialog.SelectedEngine != a_current || apply.IsEnabled)
+                throw new InvalidOperationException("変更先の候補または現在の Engine 表示が不正です");
+            selector.SelectedItem = a_other;
+            if (dialog.SelectedEngine != a_other || !apply.IsEnabled)
+                throw new InvalidOperationException("異なる Engine を変更先に選べません");
+            selector.SelectedItem = null;
+            if (apply.IsEnabled) throw new InvalidOperationException("Engine 未選択でも変更できます");
+        }
+        finally { dialog.Close(); }
+    }
+
     private sealed class NoDialogs : IUserDialogs
     {
         public string? SelectedFolder { get; set; }
+        public IReadOnlyList<EngineRegistration>? EngineChoices { get; private set; }
         public string? folder(string a_title) => SelectedFolder;
         public string? file(string a_title, string a_filter) => null;
         public bool confirm(string a_message) => false;
+        public EngineRegistration? project_engine(ProjectRegistration a_project, IReadOnlyList<EngineRegistration> a_engines)
+        {
+            EngineChoices = a_engines;
+            return null;
+        }
     }
 
     private sealed class BindingErrors : TraceListener

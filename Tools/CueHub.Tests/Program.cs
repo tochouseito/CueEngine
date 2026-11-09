@@ -18,7 +18,7 @@ internal static partial class Program
     private static async Task rejected(Func<Task> a_action, string a_message)
     {
         try { await a_action(); }
-        catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException or InvalidOperationException or FormatException or JsonException or OperationCanceledException or HttpRequestException)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or CryptographicException or InvalidOperationException or FormatException or JsonException or OperationCanceledException or HttpRequestException)
         { ++s_checks; return; }
         throw new InvalidOperationException("Expected rejection: " + a_message);
     }
@@ -260,6 +260,7 @@ internal static partial class Program
         var unavailable = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
         check(unavailable.EngineVersion == futureVersion && store.load().Projects.Any(item => item.ProjectId == created.ProjectId), "register project with unavailable engine version");
         await rejected(() => service.open_async(engine, unavailable, CancellationToken.None), "do not open project in another engine version");
+        await test_project_engine_change(store, engine, unavailable);
         service.unregister(unavailable);
         new EngineRegistryService(store).unregister_local(engine);
         check(File.Exists(engine.Editor), "unregister local engine preserved executable");

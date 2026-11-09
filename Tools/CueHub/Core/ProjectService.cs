@@ -63,15 +63,111 @@ public sealed class ProjectService(HubStateStore a_store)
 
     public void unregister(ProjectRegistration a_project) => m_store.update(state => state.Projects.RemoveAll(item => SafePaths.same(item.ProjectFile, a_project.ProjectFile)));
 
+    /// <summary>UI Thread から呼び、v2 の Engine 指定だけを置換する。取消は保存前まで、保存失敗は元の File へ戻す</summary>
+    public async Task<ProjectRegistration> change_engine_async(EngineRegistration a_engine, ProjectRegistration a_project, CancellationToken a_cancel)
+    {
+        a_cancel.ThrowIfCancellationRequested();
+        var state = m_store.load();
+        if (!state.Engines.Contains(a_engine) || !SafePaths.is_version(a_engine.Version))
+            throw new InvalidOperationException("変更先の Engine をインストール・登録してください");
+        SafePaths.regular_file(a_engine.Editor);
+        var path = SafePaths.regular_file(a_project.ProjectFile);
+        var original = read_project_bytes(path);
+        // Target の ProjectTool は形式の検証だけに使い、互換性判定やデータ変換は行わない
+        var result = await run_tool_async(a_engine, ["validate", "--project", path], a_cancel);
+        var validated = registration(result);
+        if (!SafePaths.same(validated.ProjectFile, path) || validated.ProjectId != a_project.ProjectId ||
+            validated.EngineVersion != a_project.EngineVersion)
+            throw new InvalidOperationException("Project の情報が変わっています。一覧へ再登録してから変更してください");
+        var updated = replace_engine_version(original, validated.EngineVersion, a_engine.Version);
+        var changed = validated with { EngineVersion = a_engine.Version };
+        var wasReplaced = false;
+        try
+        {
+            // Hub の設定を排他取得してから File と登録情報を更新し、同じ Hub の操作との競合を避ける
+            m_store.update(current =>
+            {
+                var index = current.Projects.FindIndex(item => SafePaths.same(item.ProjectFile, path));
+                if (!current.Engines.Contains(a_engine) || index < 0 || current.Projects[index] != a_project)
+                    throw new InvalidOperationException("Hub の登録情報が変わっています。選択し直してください");
+                if (!read_project_bytes(path).SequenceEqual(original))
+                    throw new IOException("Project が他の処理で変更されました。保存せずに中止します");
+                a_cancel.ThrowIfCancellationRequested();
+                changed = changed with { LastOpenedUtc = current.Projects[index].LastOpenedUtc };
+                // 保存開始後は取消を挟まず、両方の更新または File の復旧を完了させる
+                if (!original.SequenceEqual(updated))
+                {
+                    HubStateStore.atomic_write(path, updated);
+                    wasReplaced = true;
+                }
+                current.Projects[index] = changed;
+            });
+        }
+        catch (Exception error)
+        {
+            if (wasReplaced)
+            {
+                try
+                {
+                    if (!read_project_bytes(path).SequenceEqual(updated))
+                        throw new IOException("保存後に Project が他の処理で変更されました");
+                    HubStateStore.atomic_write(path, original);
+                }
+                catch (Exception rollback)
+                {
+                    throw new AggregateException("Engine 指定の復旧に失敗しました。.cueproj を確認して Hub へ再登録してください", error, rollback);
+                }
+            }
+            throw;
+        }
+        return changed;
+    }
+
+    /// <summary>正本の UTF-8、BOM、改行、コメントを保ち、既存の engineVersion の値だけを差し替える</summary>
+    private static byte[] replace_engine_version(byte[] a_original, string a_previous, string a_version)
+    {
+        if (a_previous.Length == 0)
+            throw new InvalidDataException("この Project は Engine 未指定の旧形式です。形式変換はまだ対応していません");
+        var utf8 = new UTF8Encoding(false, true);
+        var text = utf8.GetString(a_original);
+        for (var offset = 0; offset < text.Length;)
+        {
+            var end = text.IndexOf('\n', offset);
+            if (end < 0) end = text.Length;
+            var start = offset == 0 && text[0] == '\uFEFF' ? 1 : offset;
+            var line = text[start..end];
+            var equals = line.IndexOf('=');
+            if (equals >= 0 && line[..equals].Trim(' ', '\t', '\r') == "engineVersion")
+            {
+                var valueStart = start + equals + 1;
+                while (valueStart < end && " \t\r".Contains(text[valueStart])) ++valueStart;
+                var valueEnd = end;
+                while (valueEnd > valueStart && " \t\r".Contains(text[valueEnd - 1])) --valueEnd;
+                if (text[valueStart..valueEnd] != a_previous) break;
+                var updated = utf8.GetBytes(text[..valueStart] + a_version + text[valueEnd..]);
+                if (updated.Length > 65536) throw new InvalidDataException("Project File が大きすぎます");
+                return updated;
+            }
+            offset = end + 1;
+        }
+        throw new InvalidDataException("Project の Engine 指定を読み取れませんでした");
+    }
+
+    private static byte[] read_project_bytes(string a_path)
+    {
+        using var file = new FileStream(SafePaths.regular_file(a_path), FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (file.Length > 65536) throw new InvalidDataException("Project File が大きすぎます");
+        var bytes = new byte[(int)file.Length];
+        file.ReadExactly(bytes);
+        return bytes;
+    }
+
     private ProjectRegistration register_result(ProjectToolResult a_result, EngineRegistration a_engine, bool a_requireVersion)
     {
         if (a_requireVersion && a_result.EngineVersion.Length != 0 && a_result.EngineVersion != a_engine.Version)
             throw new InvalidOperationException($"Project は Engine {a_result.EngineVersion} を指定しています。対応版を選択してください");
-        if (a_result.SchemaVersion != 1 || !a_result.Success || !Guid.TryParseExact(a_result.ProjectId, "D", out var id) || id == Guid.Empty || string.IsNullOrWhiteSpace(a_result.Name))
-            throw new InvalidDataException("ProjectTool 応答が不正です");
-        var path = SafePaths.regular_file(a_result.ProjectFile);
-        if (!Path.GetExtension(path).Equals(".cueproj", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(".cueproj を選択してください");
-        var registration = new ProjectRegistration { ProjectFile = path, ProjectId = a_result.ProjectId, Name = a_result.Name, EngineVersion = a_result.EngineVersion };
+        var registration = ProjectService.registration(a_result);
+        var path = registration.ProjectFile;
         m_store.update(state =>
         {
             var existing = state.Projects.FindIndex(item => SafePaths.same(item.ProjectFile, path));
@@ -80,6 +176,15 @@ public sealed class ProjectService(HubStateStore a_store)
             state.Projects.Add(registration);
         });
         return registration;
+    }
+
+    private static ProjectRegistration registration(ProjectToolResult a_result)
+    {
+        if (a_result.SchemaVersion != 1 || !a_result.Success || !Guid.TryParseExact(a_result.ProjectId, "D", out var id) || id == Guid.Empty || string.IsNullOrWhiteSpace(a_result.Name))
+            throw new InvalidDataException("ProjectTool 応答が不正です");
+        var path = SafePaths.regular_file(a_result.ProjectFile);
+        if (!Path.GetExtension(path).Equals(".cueproj", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException(".cueproj を選択してください");
+        return new ProjectRegistration { ProjectFile = path, ProjectId = a_result.ProjectId, Name = a_result.Name, EngineVersion = a_result.EngineVersion };
     }
 
     private static async Task<ProjectToolResult> run_tool_async(EngineRegistration a_engine, IReadOnlyList<string> a_arguments, CancellationToken a_cancel)

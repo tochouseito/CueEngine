@@ -8,6 +8,7 @@ public interface IUserDialogs
     string? folder(string a_title);
     string? file(string a_title, string a_filter);
     bool confirm(string a_message);
+    EngineRegistration? project_engine(ProjectRegistration a_project, IReadOnlyList<EngineRegistration> a_engines);
 }
 
 /// <summary>OS の選択 UI を ViewModel と File 操作から分離する</summary>
@@ -24,4 +25,10 @@ public sealed class UserDialogs : IUserDialogs
         return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
     public bool confirm(string a_message) => MessageBox.Show(a_message, "CueEngine Hub", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+
+    public EngineRegistration? project_engine(ProjectRegistration a_project, IReadOnlyList<EngineRegistration> a_engines)
+    {
+        var dialog = new ProjectEngineWindow(a_project, a_engines) { Owner = Application.Current.MainWindow };
+        return dialog.ShowDialog() == true ? dialog.SelectedEngine : null;
+    }
 }

@@ -89,6 +89,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public HubCommand ShowProjectCreation { get; }
     public HubCommand HideProjectCreation { get; }
     public HubCommand OpenProject { get; }
+    public HubCommand ChangeProjectEngine { get; }
     public HubCommand RemoveProject { get; }
     public HubCommand RefreshCatalog { get; }
     public HubCommand LoadCatalog { get; }
@@ -148,6 +149,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var pid = await new ProjectService(m_store).open_async(require_engine(), SelectedProject!, token);
             reload(); Status = "Editor を起動しました (PID " + pid + ")";
         }, () => SelectedEngine != null && SelectedProject != null && (SelectedProject.EngineVersion.Length == 0 || SelectedProject.EngineVersion == SelectedEngine.Version));
+        ChangeProjectEngine = command(async token =>
+        {
+            var project = SelectedProject!;
+            var engine = m_dialogs.project_engine(project, Engines.ToArray());
+            if (engine == null) return;
+            var changed = await new ProjectService(m_store).change_engine_async(engine, project, token);
+            reload();
+            SelectedProject = Projects.FirstOrDefault(item => item.ProjectFile == changed.ProjectFile);
+            SelectedEngine = Engines.FirstOrDefault(item => item.Id == engine.Id);
+            Status = $"Engine バージョンを {engine.Version} に変更しました";
+        }, () => SelectedProject != null && Engines.Count > 0);
         RemoveProject = command(async _ => { new ProjectService(m_store).unregister(SelectedProject!); reload(); Status = "一覧から登録を外しました。Project のファイルは保持しています"; await Task.CompletedTask; }, () => SelectedProject != null);
         RefreshCatalog = command(async token =>
         {

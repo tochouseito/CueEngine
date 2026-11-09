@@ -100,7 +100,11 @@
                                         FontWeight="SemiBold" Margin="0" />
                             </StackPanel>
                         </Grid>
-                        <WrapPanel Grid.Row="1"><Button Content="Editor で開く" Command="{Binding OpenProject}" /><Button Content="一覧から外す" Command="{Binding RemoveProject}" /></WrapPanel>
+                        <WrapPanel Grid.Row="1">
+                            <Button Content="Editor で開く" Command="{Binding OpenProject}" />
+                            <Button x:Name="ChangeProjectEngineButton" Content="Engine バージョンを変更" Command="{Binding ChangeProjectEngine}" />
+                            <Button Content="一覧から外す" Command="{Binding RemoveProject}" />
+                        </WrapPanel>
                         <Grid Grid.Row="2" MinHeight="120">
                             <ListView x:Name="ProjectList" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}"
                                       SelectionMode="Single" AutomationProperties.Name="登録済みプロジェクト">
