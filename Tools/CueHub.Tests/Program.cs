@@ -235,10 +235,16 @@ internal static partial class Program
         var store = new HubStateStore(Path.Combine(a_testRoot, "RealProject"));
         var engine = new EngineRegistryService(store).register_local(SafePaths.full(a_engineRoot));
         var service = new ProjectService(store);
-        var parent = Path.Combine(a_testRoot, "ProjectParent");
-        Directory.CreateDirectory(parent);
+        var parent = Path.Combine(a_testRoot, "ProjectParent", "未作成の保存先");
         var directory = ProjectService.project_directory(parent, "回転 Cube");
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            await rejected(() => service.create_async(engine, directory, "回転 Cube", "NewProject", cancelled.Token), "cancelled creation does not prepare the parent");
+            check(!Directory.Exists(Path.Combine(a_testRoot, "ProjectParent")), "cancellation leaves missing parent hierarchy untouched");
+        }
         var created = await service.create_async(engine, directory, "回転 Cube", "NewProject", CancellationToken.None);
+        check(Directory.Exists(parent), "missing parent hierarchy created before ProjectTool runs");
         check(SafePaths.same(Path.GetDirectoryName(created.ProjectFile)!, directory) && !Directory.Exists(Path.Combine(parent, "NewProject")), "project created under display-name folder independently of application identifier");
         var loaded = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
         check(loaded.EngineVersion == engine.Version && loaded.ProjectId == created.ProjectId, "real project create validate without template selection");

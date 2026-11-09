@@ -21,8 +21,18 @@ public sealed class ProjectService(HubStateStore a_store)
 
     public async Task<ProjectRegistration> create_async(EngineRegistration a_engine, string a_directory, string a_name, string a_applicationName, CancellationToken a_cancel)
     {
+        a_cancel.ThrowIfCancellationRequested();
+        var directory = SafePaths.full(a_directory);
+        var parent = Directory.GetParent(directory)?.FullName ?? throw new InvalidDataException("プロジェクトの保存先に親フォルダがありません");
+        SafePaths.regular_file(a_engine.ProjectTool);
+        SafePaths.no_links(directory);
+        // ProjectTool が新規作成する Project Folder は空けたまま、未作成の親階層だけを用意する
+        // 親 Folder は他の Project と共有され得るため、失敗や取消でも削除しない
+        Directory.CreateDirectory(parent);
+        SafePaths.no_links(parent);
+        a_cancel.ThrowIfCancellationRequested();
         // 公開済み ProjectTool の必須引数を満たし、Hub からは空 Project だけを作成する
-        var result = await run_tool_async(a_engine, ["create", "--directory", SafePaths.full(a_directory), "--name", a_name, "--application-name", a_applicationName, "--template", "Empty3D", "--engine-version", a_engine.Version], a_cancel);
+        var result = await run_tool_async(a_engine, ["create", "--directory", directory, "--name", a_name, "--application-name", a_applicationName, "--template", "Empty3D", "--engine-version", a_engine.Version], a_cancel);
         return register_result(result, a_engine, true);
     }
 
