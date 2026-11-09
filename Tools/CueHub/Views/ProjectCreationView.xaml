@@ -26,13 +26,14 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
-                <TextBlock Text="表示名" />
-                <TextBox Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 表示名" />
+                <TextBlock Text="プロジェクト名" />
+                <TextBox x:Name="ProjectNameBox" Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 名" />
                 <TextBlock Text="アプリ識別名" />
                 <TextBox Text="{Binding ApplicationName, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="アプリ識別名" />
-                <TextBlock Text="作成先（新しいフォルダ）" />
-                <TextBox Text="{Binding ProjectDirectory, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 作成先" />
+                <TextBlock Text="保存先（親フォルダ）" />
+                <TextBox x:Name="ProjectParentDirectoryBox" Text="{Binding ProjectDirectory, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 保存先の親フォルダ" />
                 <Button Content="保存先を選択" Command="{Binding ChooseProjectDirectory}" HorizontalAlignment="Left" />
+                <TextBlock x:Name="ProjectCreationPathText" Text="{Binding ProjectCreationPath, StringFormat=作成先: {0}}" TextWrapping="Wrap" Foreground="#586273" Margin="0,8,0,0" />
                 <WrapPanel HorizontalAlignment="Right" Margin="0,16,0,0">
                     <Button Content="キャンセル" Command="{Binding HideProjectCreation}" />
                     <Button Content="作成" Command="{Binding CreateProject}" FontWeight="SemiBold" />

@@ -25,7 +25,8 @@ internal static class Program
             // Hub の保存済み履歴は Engine 未導入でも一覧に復元する
             var remembered = new ProjectRegistration { Name = "RememberedProject", ProjectFile = Path.Combine(root, "Game.cueproj"), EngineVersion = "0.2.0" };
             store.update(state => state.Projects.Add(remembered));
-            var model = new MainViewModel(store, new NoDialogs());
+            var dialogs = new NoDialogs();
+            var model = new MainViewModel(store, dialogs);
             window = new MainWindow(model) { Left = -10000, Top = -10000, ShowInTaskbar = false };
             window.Show();
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
@@ -70,6 +71,31 @@ internal static class Program
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             if (creationPage.Visibility != Visibility.Visible || listPage.Visibility != Visibility.Collapsed || model.IsBusy)
                 throw new InvalidOperationException("新しい Project の作成ページへ切り替わりません");
+            // 入力は親 Folder のままとし、表示する作成先だけを Project 名へ追従させる
+            var initialParent = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            if (model.ProjectDirectory != initialParent) throw new InvalidOperationException("初期保存先に固定の Project 名が含まれています");
+            var nameBox = (TextBox)creationPage.FindName("ProjectNameBox");
+            var parentBox = (TextBox)creationPage.FindName("ProjectParentDirectoryBox");
+            var destinationText = (TextBlock)creationPage.FindName("ProjectCreationPathText");
+            nameBox.Text = "名前を変えたProject";
+            parentBox.Text = Path.Combine(root, "ProjectParent");
+            model.ApplicationName = "DifferentExecutable";
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            var expected = Path.Combine(parentBox.Text, nameBox.Text);
+            if (model.ProjectCreationPath != expected || !destinationText.Text.Contains(expected, StringComparison.Ordinal))
+                throw new InvalidOperationException("Project 名の変更が作成先へ反映されません");
+            dialogs.SelectedFolder = Path.Combine(root, "ChosenParent");
+            model.ChooseProjectDirectory.Execute(null);
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            expected = Path.Combine(dialogs.SelectedFolder, nameBox.Text);
+            if (model.ProjectDirectory != dialogs.SelectedFolder || model.ProjectCreationPath != expected ||
+                !destinationText.Text.Contains(expected, StringComparison.Ordinal))
+                throw new InvalidOperationException("保存先の選択で Project 名以外の Folder を付加しています");
+            nameBox.Text = "MyGame";
+            parentBox.Text = initialParent;
+            model.ApplicationName = "MyGame";
+            dialogs.SelectedFolder = null;
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             model.HideProjectCreation.Execute(null);
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             if (creationPage.Visibility != Visibility.Collapsed || listPage.Visibility != Visibility.Visible ||
@@ -194,7 +220,8 @@ internal static class Program
 
     private sealed class NoDialogs : IUserDialogs
     {
-        public string? folder(string a_title) => null;
+        public string? SelectedFolder { get; set; }
+        public string? folder(string a_title) => SelectedFolder;
         public string? file(string a_title, string a_filter) => null;
         public bool confirm(string a_message) => false;
     }

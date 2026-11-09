@@ -9,6 +9,16 @@ public sealed class ProjectService(HubStateStore a_store)
 {
     private readonly HubStateStore m_store = a_store;
 
+    /// <summary>選択した親 Directory の直下へ Project 名の Folder を作る。表示名を Path として解釈しない</summary>
+    public static string project_directory(string a_parentDirectory, string a_projectName)
+    {
+        if (string.IsNullOrWhiteSpace(a_projectName) || a_projectName != a_projectName.Trim() ||
+            a_projectName.Contains('/') || a_projectName.Contains('\\'))
+            throw new InvalidDataException("プロジェクト名にはフォルダ名として使える名前を指定してください");
+        SafePaths.validate_relative(a_projectName);
+        return SafePaths.child(a_parentDirectory, a_projectName);
+    }
+
     public async Task<ProjectRegistration> create_async(EngineRegistration a_engine, string a_directory, string a_name, string a_applicationName, CancellationToken a_cancel)
     {
         // 公開済み ProjectTool の必須引数を満たし、Hub からは空 Project だけを作成する

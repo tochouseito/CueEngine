@@ -50,6 +50,7 @@ internal static partial class Program
             await test_package_parts(root);
             await test_hub_feed_validation(root);
             test_state_and_paths(root);
+            await test_project_locations(root);
             if (a_arguments.Length == 2 && a_arguments[0] == "--engine-root") await test_real_project(a_arguments[1], root);
             Console.WriteLine($"CueHub checks passed: {s_checks}");
             return 0;
@@ -181,6 +182,17 @@ internal static partial class Program
         check(shared.CanRead && second.CanRead, "shared engine users coexist");
     }
 
+    /// <summary>表示名を一つの Folder 名に限定し、指定先の外へ作成しない</summary>
+    private static async Task test_project_locations(string a_root)
+    {
+        var parent = Path.Combine(a_root, "ExistingParent");
+        Directory.CreateDirectory(parent);
+        check(ProjectService.project_directory(parent, "回転 Cube") == Path.Combine(parent, "回転 Cube"), "project folder follows Unicode display name");
+        foreach (var name in new[] { "", "..", ".", "../Outside", "Nested/Project", @"Nested\Project", @"C:\Outside", "Bad:Name", "CON", "Trailing.", " Padded " })
+            await rejected(() => Task.FromResult(ProjectService.project_directory(parent, name)), "invalid project folder name rejected");
+        check(!Directory.EnumerateFileSystemEntries(parent).Any(), "path validation does not create a partial project");
+    }
+
     private static async Task test_hub_feed_validation(string a_root)
     {
         var feedRoot = Path.Combine(a_root, "HubFeed");
@@ -223,7 +235,11 @@ internal static partial class Program
         var store = new HubStateStore(Path.Combine(a_testRoot, "RealProject"));
         var engine = new EngineRegistryService(store).register_local(SafePaths.full(a_engineRoot));
         var service = new ProjectService(store);
-        var created = await service.create_async(engine, Path.Combine(a_testRoot, "NewProject"), "NewProject", "NewProject", CancellationToken.None);
+        var parent = Path.Combine(a_testRoot, "ProjectParent");
+        Directory.CreateDirectory(parent);
+        var directory = ProjectService.project_directory(parent, "回転 Cube");
+        var created = await service.create_async(engine, directory, "回転 Cube", "NewProject", CancellationToken.None);
+        check(SafePaths.same(Path.GetDirectoryName(created.ProjectFile)!, directory) && !Directory.Exists(Path.Combine(parent, "NewProject")), "project created under display-name folder independently of application identifier");
         var loaded = await service.register_async(engine, created.ProjectFile, CancellationToken.None);
         check(loaded.EngineVersion == engine.Version && loaded.ProjectId == created.ProjectId, "real project create validate without template selection");
         var scene = File.ReadAllText(Path.Combine(Path.GetDirectoryName(created.ProjectFile)!, "Content", "Scenes", "Main.cuescene"));

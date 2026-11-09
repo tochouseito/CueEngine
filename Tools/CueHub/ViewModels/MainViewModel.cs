@@ -42,10 +42,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string EngineSearch { get => m_engineSearch; set { set(ref m_engineSearch, value); InstalledEngines.Refresh(); } }
     public int InstalledChannel { get => m_installedChannel; set { set(ref m_installedChannel, value); InstalledEngines.Refresh(); } }
     public int CatalogChannel { get => m_catalogChannel; set { set(ref m_catalogChannel, value); AvailableReleases.Refresh(); } }
-    public string ProjectName { get; set; } = "MyGame";
+    private string m_projectName = "MyGame";
+    public string ProjectName { get => m_projectName; set { set(ref m_projectName, value); changed(nameof(ProjectCreationPath)); } }
     public string ApplicationName { get; set; } = "MyGame";
-    private string m_projectDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "CueProjects", "MyGame");
-    public string ProjectDirectory { get => m_projectDirectory; set => set(ref m_projectDirectory, value); }
+    private string m_projectDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    public string ProjectDirectory { get => m_projectDirectory; set { set(ref m_projectDirectory, value); changed(nameof(ProjectCreationPath)); } }
+    /// <summary>入力と同じ規則で作成先を表示し、名前や親 Directory の編集に追従する</summary>
+    public string ProjectCreationPath
+    {
+        get
+        {
+            try { return ProjectService.project_directory(ProjectDirectory, ProjectName); }
+            catch (Exception error) when (error is InvalidDataException or ArgumentException or NotSupportedException or PathTooLongException)
+            { return "保存先とプロジェクト名を確認してください"; }
+        }
+    }
     public EngineRegistration? SelectedEngine { get => m_selectedEngine; set { set(ref m_selectedEngine, value); refresh_commands(); } }
     public EngineRegistration? SelectedCreationEngine { get => m_selectedCreationEngine; set { set(ref m_selectedCreationEngine, value); refresh_commands(); } }
     public ProjectRegistration? SelectedProject
@@ -123,7 +134,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         CreateProject = command(async token =>
         {
             var engine = SelectedCreationEngine ?? throw new InvalidOperationException("使用する Engine を選択してください");
-            var created = await new ProjectService(m_store).create_async(engine, ProjectDirectory, ProjectName, ApplicationName, token);
+            var directory = ProjectService.project_directory(ProjectDirectory, ProjectName);
+            var created = await new ProjectService(m_store).create_async(engine, directory, ProjectName, ApplicationName, token);
             reload();
             SelectedProject = Projects.FirstOrDefault(item => item.ProjectFile == created.ProjectFile);
             IsProjectCreationOpen = false;
@@ -195,7 +207,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Status = "設定を保存しました"; await Task.CompletedTask;
         });
         ChooseEngineDirectory = command(async _ => { var folder = m_dialogs.folder("Engine 保存先"); if (folder != null) EngineDirectory = folder; await Task.CompletedTask; });
-        ChooseProjectDirectory = command(async _ => { var folder = m_dialogs.folder("新規 Project の親フォルダ"); if (folder != null) ProjectDirectory = Path.Combine(folder, ApplicationName); await Task.CompletedTask; });
+        ChooseProjectDirectory = command(async _ => { var folder = m_dialogs.folder("新規 Project の保存先（親フォルダ）"); if (folder != null) ProjectDirectory = folder; await Task.CompletedTask; });
         ChooseKeyFile = command(async _ => { var file = m_dialogs.file("信頼する発行者の公開鍵を選択", "PEM Public Key|*.pem"); if (file != null) KeyFile = file; await Task.CompletedTask; });
         ChooseLocalFeed = command(async _ => { var folder = m_dialogs.folder("署名済み Hub 更新 Feed"); if (folder != null) LocalFeed = folder; await Task.CompletedTask; });
         UpdateHub = command(async token =>
@@ -284,10 +296,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private void refresh_commands() { foreach (var command in m_commands) command.refresh(); }
+    private void changed(string? a_name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(a_name));
     private void set<T>(ref T a_field, T a_value, [CallerMemberName] string? a_name = null)
     {
         if (EqualityComparer<T>.Default.Equals(a_field, a_value)) return;
-        a_field = a_value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(a_name));
+        a_field = a_value; changed(a_name);
     }
     public void Dispose() { m_operation?.Cancel(); m_http.Dispose(); }
 }
