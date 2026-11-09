@@ -23,3 +23,14 @@ sidebar_position: 1
 Hub は発行者の署名とファイルのハッシュを検証してから Engine を登録します。公開版一覧を利用できない場合は、同じ Release の Engine ZIP、`engine-release.json`、`engine-release.json.sig` を同じフォルダに置き、**リストに追加 → パッケージから導入** で選択できます。
 
 導入済み Engine は検索と **すべて／正式リリース／Preview** で絞り込めます。修復やアンインストールは各 Engine の **管理** メニューから行います。
+
+## 既存 Project の Engine を切り替える
+
+既存 Project は `.cueproj` の `engineVersion` で利用版を固定しています。
+
+1. Project を開いている Editor を終了し、Hub で切り替え先の Engine を導入します。
+2. `.cueproj` の `engineVersion` を導入した版へ変更します。例: `engineVersion=0.1.0-preview.3`。
+3. Hub の **プロジェクト → 追加** で同じ `.cueproj` を選び直し、保存済みの Engine バージョン情報を更新します。
+4. 一覧から **Editor で開く** を押します。
+
+`.cueproj` を編集した後は、Hub への再追加まで行ってください。新規 Project では作成時に選んだ版が自動で保存されます。

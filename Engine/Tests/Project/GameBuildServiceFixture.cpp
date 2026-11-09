@@ -165,6 +165,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         bool isBuild = false;
         std::filesystem::path tree;
         std::filesystem::path project;
+        std::wstring solutionName;
         std::string config = "Debug";
         std::string target;
         for (int index = 1; index < count; ++index)
@@ -191,6 +192,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             }
             else if (value.starts_with(L"-DCUE_GAME_PROJECT="))
                 project = value.substr(std::wstring_view(L"-DCUE_GAME_PROJECT=").size());
+            else if (value.starts_with(L"-DCUE_GAME_SOLUTION_NAME="))
+                solutionName = value.substr(std::wstring_view(L"-DCUE_GAME_SOLUTION_NAME=").size());
         }
         if (tree.empty())
             return 43;
@@ -203,14 +206,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!isBuild)
         {
             write(tree / L"FixtureProject.txt", utf8(project.wstring()));
-            if (mode != "missing-solution")
-                write(tree / L"CueEngine.slnx", "Fixture solution\n");
-            else
-                std::filesystem::remove(tree / L"CueEngine.slnx");
-            if (mode == "ambiguous-solution")
-                write(tree / L"CueEngine.sln", "Fixture old solution\n");
-            else
-                std::filesystem::remove(tree / L"CueEngine.sln");
+            // 旧 Tree の Solution を残し、ゲーム名の Solution だけを選ぶ移行を検証する
+            write(tree / L"CueEngine.slnx", "Fixture old solution\n");
+            if (!solutionName.empty())
+            {
+                const auto solution = tree / (solutionName + L".slnx");
+                const auto legacySolution = tree / (solutionName + L".sln");
+                if (mode != "missing-solution" && mode != "sln-only")
+                    write(solution, "Fixture solution\n");
+                else
+                    std::filesystem::remove(solution);
+                if (mode == "ambiguous-solution" || mode == "sln-only")
+                    write(legacySolution, "Fixture solution\n");
+                else
+                    std::filesystem::remove(legacySolution);
+            }
             std::fputs("CONFIGURE FIXTURE\n", stdout);
             std::fflush(stdout);
             if (mode == "configure-fail")

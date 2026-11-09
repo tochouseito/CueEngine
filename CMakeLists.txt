@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 4.2.0)
 
-project(CueEngine LANGUAGES CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/CueGameSolution.cmake")
+project("${CUE_SOLUTION_NAME}" LANGUAGES CXX)
 
 include("${PROJECT_SOURCE_DIR}/cmake/CueVersion.cmake")
 
@@ -28,6 +29,8 @@ include("${PROJECT_SOURCE_DIR}/cmake/CueHub.cmake")
 if(BUILD_TESTING)
     add_subdirectory(Engine/Tests)
 endif()
+
+cue_set_game_solution_startup()
 
 # Executable の出力 Directory を集め、並列 Build でも同じ DLL を競合して Copy しない
 function(cue_collect_pix_outputs a_directory)

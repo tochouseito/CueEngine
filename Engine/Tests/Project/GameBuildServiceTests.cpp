@@ -310,8 +310,9 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
     CHECK(service->status().purpose == cue::GameBuildPurpose::IdeProject);
-    CHECK(service->status().solutionFile.filename() == "CueEngine.slnx");
+    CHECK(service->status().solutionFile.filename() == "FixturePlayer.slnx");
     CHECK(service->status().solutionFile.utf8().find("/Intermediate/IDE/") != std::string::npos);
+    CHECK(read(files, path(service->status().solutionFile.parent().join("CueEngine.slnx"))) == "Fixture old solution\n");
     CHECK(service->status().log.find("BUILD FIXTURE") == std::string::npos);
     CHECK(service->status().moduleFile.is_empty() && service->status().executable.is_empty());
     CHECK(!service->launch().has_value());
@@ -330,11 +331,24 @@ int wmain(int a_count, wchar_t **a_arguments)
         CHECK(wait(*service, cue::GameBuildState::Failed));
         CHECK(!service->launch().has_value());
     }
+    // VS Generator が従来形式を生成しても、旧 Engine 名の Solution と区別する
+    CHECK(write(files, mode, "sln-only"));
+    CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
+    CHECK(wait(*service, cue::GameBuildState::Succeeded));
+    CHECK(service->status().solutionFile.filename() == "FixturePlayer.sln");
     for (const auto *failure : {"missing-solution", "ambiguous-solution"})
     {
         CHECK(write(files, mode, failure));
         CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
         CHECK(wait(*service, cue::GameBuildState::Failed));
+        CHECK(read(files, path(solution.parent().join("CueEngine.slnx"))) == "Fixture old solution\n");
+        if (std::string_view(failure) == "missing-solution")
+            CHECK(read(files, solution).empty());
+        else
+        {
+            CHECK(!read(files, solution).empty());
+            CHECK(!read(files, path(solution.parent().join("FixturePlayer.sln"))).empty());
+        }
     }
     // 起動 Scene のない Project でも IDE / DLL は作れる。製品要求だけを拒否する
     auto descriptor = read(files, projectFile);
@@ -353,6 +367,9 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto otherDescriptor = descriptor;
     otherDescriptor.replace(otherDescriptor.find("8f533c49-d416-47ea-98c1-026822b1e6ed"), 36,
                             "3f533c49-d416-47ea-98c1-026822b1e6ed");
+    otherDescriptor.replace(otherDescriptor.find("applicationName=FixturePlayer"),
+                            std::string("applicationName=FixturePlayer").size(),
+                            "applicationName=OtherFixturePlayer");
     CHECK(write(files, path(otherRoot.join("Source/CMakeLists.txt")), "# fixture\n"));
     CHECK(files.create_directories(path(otherRoot.join("Content"))).has_value());
     CHECK(write(files, otherFile, otherDescriptor));
@@ -361,6 +378,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->start(*otherProject.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
     CHECK(service->status().solutionFile.utf8().starts_with(otherRoot.utf8() + '/'));
+    CHECK(service->status().solutionFile.filename() == "OtherFixturePlayer.slnx");
     CHECK(service->status().moduleFile.is_empty() && !service->launch().has_value());
     CHECK(service->shutdown().has_value());
     CHECK(!service->reset_project().has_value());

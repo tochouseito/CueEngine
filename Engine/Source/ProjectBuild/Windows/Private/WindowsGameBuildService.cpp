@@ -132,13 +132,13 @@ Result<void> check_replaceable(IFileSystem &a_files, const Path &a_executable)
                  : Result<void>::failure(detail::build_process_error("GameBuild.player_running_or_locked"));
 }
 
-/// @brief CMake が生成した Engine Solution だけを選び、複数形式の残存を曖昧に解決しない
-Result<Path> find_solution(IFileSystem &a_files, const Path &a_tree)
+/// @brief 対象ゲームの Solution だけを選び、旧 Engine 名や別 Project の生成物へ切り替えない
+Result<Path> find_solution(IFileSystem &a_files, const Path &a_tree, std::string_view a_applicationName)
 {
     std::optional<Path> selected;
-    for (const auto *name : {"CueEngine.slnx", "CueEngine.sln"})
+    for (const auto *extension : {".slnx", ".sln"})
     {
-        auto file = a_tree.join(name);
+        auto file = a_tree.join(std::string(a_applicationName) + extension);
         if (!file.has_value())
             return Result<Path>::failure(*file.try_error());
         auto info = a_files.stat(*file.try_value());
@@ -419,6 +419,10 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
                                            "-DCUE_GAME_PROJECT=" + a_project.file().utf8(),
                                            "-DCUE_GAME_PLATFORM=" + a_target.platform,
                                            "-DCUE_GAME_ARCHITECTURE=" + a_target.architecture,
+                                           "-DCUE_GAME_SOLUTION_NAME=" +
+                                               (a_purpose == GameBuildPurpose::Player
+                                                    ? std::string{}
+                                                    : a_project.descriptor().applicationName),
                                            "-DCMAKE_TOOLCHAIN_FILE=" + m_tools.toolchainFile.utf8(),
                                            "-DBUILD_TESTING=OFF",
                                            "-DCUE_BUILD_PERFORMANCE_TOOLS=OFF"};
@@ -601,7 +605,7 @@ Result<void> WindowsGameBuildService::poll()
         {
             if (m_status.purpose != GameBuildPurpose::Player)
             {
-                auto solution = find_solution(*m_files, m_tree);
+                auto solution = find_solution(*m_files, m_tree, m_project->descriptor().applicationName);
                 if (!solution.has_value())
                     return fail(*solution.try_error());
                 m_status.solutionFile = solution.take_value();

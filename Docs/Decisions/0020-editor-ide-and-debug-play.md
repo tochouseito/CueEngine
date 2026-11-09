@@ -43,7 +43,10 @@ UI は File / Process / COM を操作しない。Host は ImGui の借用を終�
 | ScriptModule | IDE と共通 | `Cue.GameProjectBuild` と DLL / Static / Manifest / PDB の検証 |
 
 IDE と Script Build は同じ CMake 正本・Tree を使う。Engine 自身を開いた生成 Tree を書き換えない。
-生成先直下の `CueEngine.slnx` / `CueEngine.sln` を確認し、不在・曖昧な結果を成功としない。
+生成先直下の `<applicationName>.slnx` / `<applicationName>.sln` を確認し、不在・曖昧な結果を成功としない。
+Editor は Configure に `CUE_GAME_SOLUTION_NAME` を渡し、CMake が Project のアプリ識別名と照合する。
+ゲーム Script Target を生成 Solution の既定 Target とする。通常の Engine 開発 Solution 名は `CueEngine` のままとする。
+旧 `CueEngine.slnx` が生成先に残っていても選択せず、ファイルの削除や手動の Solution 改名は行わない。
 Configure は `BUILD_TESTING=OFF` とし、Test / 性能 Tool を要求しない。
 IDE / ScriptModule は `gameTarget` を必要とするが、製品用 `startupScene` は要求しない。
 `Run` は Player 成功時だけに許可し、IDE / DLL の成功を製品の起動許可へ流用しない。
