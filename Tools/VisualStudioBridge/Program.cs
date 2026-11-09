@@ -12,7 +12,7 @@ namespace Cue.VisualStudioBridge
     internal sealed class BridgeRequest
     {
         public string Command = "none";
-        public string Solution = "";
+        public string Workspace = "";
         public string Source = "";
         public string ExpectedExecutable = "";
         public ulong RequestId;
@@ -23,7 +23,7 @@ namespace Cue.VisualStudioBridge
         /// <summary>絶対 Path の通常 File を検証し、全親の Reparse Point を拒否する</summary>
         public static string validate_file(string value)
         {
-            if (String.IsNullOrWhiteSpace(value) || !Path.IsPathRooted(value))
+            if (String.IsNullOrWhiteSpace(value) || !Path.IsPathRooted(value) || Path.GetPathRoot(value).Length < 3)
                 throw new ArgumentException("An absolute file path is required.");
             string full = Path.GetFullPath(value);
             if (!File.Exists(full) || (File.GetAttributes(full) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
@@ -34,11 +34,25 @@ namespace Cue.VisualStudioBridge
             return full;
         }
 
+        /// <summary>ゲーム Root の通常 Directory と CMake 入口を検証し、Link を辿らない</summary>
+        public static string validate_workspace(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || !Path.IsPathRooted(value) || Path.GetPathRoot(value).Length < 3)
+                throw new ArgumentException("An absolute workspace path is required.");
+            string full = Path.GetFullPath(value);
+            if (!Directory.Exists(full)) throw new ArgumentException("The requested workspace is missing.");
+            for (var current = new DirectoryInfo(full); current != null; current = current.Parent)
+                if ((current.Attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new ArgumentException("The workspace or a parent directory is a link.");
+            validate_file(Path.Combine(full, "CMakeLists.txt"));
+            return full;
+        }
+
         /// <summary>既知の個別引数だけを受け取り、Shell の文字列として解釈しない</summary>
         public static BridgeRequest parse(string[] args)
         {
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
-            var known = new HashSet<string>(new[] { "--command", "--solution", "--request-id", "--source", "--line", "--process-id", "--expected-executable", "--ide-process-id" }, StringComparer.Ordinal);
+            var known = new HashSet<string>(new[] { "--command", "--workspace", "--request-id", "--source", "--line", "--process-id", "--expected-executable", "--ide-process-id" }, StringComparer.Ordinal);
             if (args.Length == 0 || args.Length > 16 || args.Length % 2 != 0)
                 throw new ArgumentException("Invalid bridge arguments.");
             for (int index = 0; index < args.Length; index += 2)
@@ -49,16 +63,13 @@ namespace Cue.VisualStudioBridge
             }
             var request = new BridgeRequest();
             if (!values.TryGetValue("--command", out request.Command) ||
-                !values.TryGetValue("--solution", out request.Solution) ||
+                !values.TryGetValue("--workspace", out request.Workspace) ||
                 !values.TryGetValue("--request-id", out string id) ||
                 !UInt64.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out request.RequestId) || request.RequestId == 0)
-                throw new ArgumentException("Missing command, solution or request identifier.");
-            if (request.Command != "open-solution" && request.Command != "open-source" && request.Command != "attach-debugger")
+                throw new ArgumentException("Missing command, workspace or request identifier.");
+            if (request.Command != "open-folder" && request.Command != "open-source" && request.Command != "attach-debugger")
                 throw new ArgumentException("Unsupported bridge command.");
-            request.Solution = validate_file(request.Solution);
-            string extension = Path.GetExtension(request.Solution);
-            if (!String.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !String.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("A Visual Studio solution is required.");
+            request.Workspace = validate_workspace(request.Workspace);
             if (values.TryGetValue("--ide-process-id", out string ide) &&
                 (!Int32.TryParse(ide, NumberStyles.None, CultureInfo.InvariantCulture, out request.IdeProcessId) || request.IdeProcessId <= 0))
                 throw new ArgumentException("Invalid IDE process identifier.");

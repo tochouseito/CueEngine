@@ -165,7 +165,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         bool isBuild = false;
         std::filesystem::path tree;
         std::filesystem::path project;
-        std::wstring solutionName;
+        std::filesystem::path sourceRoot;
         std::string config = "Debug";
         std::string target;
         for (int index = 1; index < count; ++index)
@@ -192,8 +192,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             }
             else if (value.starts_with(L"-DCUE_GAME_PROJECT="))
                 project = value.substr(std::wstring_view(L"-DCUE_GAME_PROJECT=").size());
-            else if (value.starts_with(L"-DCUE_GAME_SOLUTION_NAME="))
-                solutionName = value.substr(std::wstring_view(L"-DCUE_GAME_SOLUTION_NAME=").size());
+            else if (value == L"-S")
+            {
+                if (++index >= count)
+                    return 47;
+                sourceRoot = arguments[index];
+            }
         }
         if (tree.empty())
             return 43;
@@ -202,25 +206,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (project.empty() || !std::filesystem::exists(project))
             return 44;
         const auto root = project.parent_path();
+        if (std::filesystem::current_path() != root || (!isBuild && sourceRoot != root))
+            return 48;
         const auto mode = read(root / L"Mode.txt");
         if (!isBuild)
         {
             write(tree / L"FixtureProject.txt", utf8(project.wstring()));
-            // 旧 Tree の Solution を残し、ゲーム名の Solution だけを選ぶ移行を検証する
+            // 旧 Solution が残る場合も、IDE に返すのはゲーム Root Directory とする
             write(tree / L"CueEngine.slnx", "Fixture old solution\n");
-            if (!solutionName.empty())
-            {
-                const auto solution = tree / (solutionName + L".slnx");
-                const auto legacySolution = tree / (solutionName + L".sln");
-                if (mode != "missing-solution" && mode != "sln-only")
-                    write(solution, "Fixture solution\n");
-                else
-                    std::filesystem::remove(solution);
-                if (mode == "ambiguous-solution" || mode == "sln-only")
-                    write(legacySolution, "Fixture solution\n");
-                else
-                    std::filesystem::remove(legacySolution);
-            }
+            if (mode == "ambiguous-solution")
+                write(tree / L"CueEngine.sln", "Another old solution\n");
             std::fputs("CONFIGURE FIXTURE\n", stdout);
             std::fflush(stdout);
             if (mode == "configure-fail")

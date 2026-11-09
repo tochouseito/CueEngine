@@ -94,14 +94,14 @@ struct BuildFixture final : cue::IGameBuildService
         return current;
     }
     /// @brief 外部 Build の完了を再現する
-    void succeed(const cue::Path &a_solution)
+    void succeed(const cue::Path &a_workspace)
     {
         current.state = cue::GameBuildState::Succeeded;
-        current.solutionFile = a_solution;
+        current.workspaceDirectory = a_workspace;
     }
 };
 
-/// @brief Bridge を起動せず、Source / Solution の要求内容と完了待ちを確認する
+/// @brief Bridge を起動せず、Source / Workspace の要求内容と完了待ちを確認する
 struct IdeFixture final : cue::IEditorIdeService
 {
     cue::IdeStatus current;
@@ -110,23 +110,24 @@ struct IdeFixture final : cue::IEditorIdeService
     unsigned attaches = 0;
     unsigned cancels = 0;
 
-    /// @brief 生成完了後の Solution の所有 Path を保持する
-    cue::Result<void> open_solution(const cue::Path &a_solution) override
+    /// @brief 生成完了後の Workspace の所有 Path を保持する
+    cue::Result<void> open_folder(const cue::Path &a_workspace) override
     {
         ++opens;
         current = {};
-        current.operation = cue::IdeOperation::OpenSolution;
-        current.solution = a_solution;
+        current.operation = cue::IdeOperation::OpenFolder;
+        current.workspaceDirectory = a_workspace;
         current.state = cue::IdeState::Running;
         return cue::Result<void>::success();
     }
     /// @brief Source Map で解決した File と行を保持する
-    cue::Result<void> open_source(const cue::Path &a_solution, const cue::Path &a_source, std::uint32_t a_line) override
+    cue::Result<void> open_source(const cue::Path &a_workspace, const cue::Path &a_source,
+                                  std::uint32_t a_line) override
     {
         ++sources;
         current = {};
         current.operation = cue::IdeOperation::OpenSource;
-        current.solution = a_solution;
+        current.workspaceDirectory = a_workspace;
         current.source = a_source;
         current.sourceLine = a_line;
         current.state = cue::IdeState::Running;
@@ -181,8 +182,8 @@ int main()
                 "applicationName=Controller\nsourceRoot=Source\ncontentRoot=Content\ngameTarget=ControllerGame\n"));
     auto project = cue::Project::load(files, projectFile);
     CHECK(project.has_value());
-    const auto solution = path(fixture.root.join("Intermediate/IDE/CueEngine.slnx"));
-    CHECK(write(files, solution, "Fixture solution\n"));
+    const auto workspace = fixture.root;
+    CHECK(write(files, path(workspace.join("CMakeLists.txt")), "# fixture workspace\n"));
     BuildFixture build;
     IdeFixture ide;
     unsigned reloads = 0;
@@ -204,20 +205,20 @@ int main()
         return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "Fixture.debug_start"});
     };
     cue::EditorScriptController controller(*project.try_value(), files, build, ide, std::move(callbacks));
-    CHECK(controller.open_solution().has_value());
+    CHECK(controller.open_folder().has_value());
     CHECK(build.current.purpose == cue::GameBuildPurpose::IdeProject && build.starts == 1);
-    CHECK(controller.status().state == cue::EditorScriptState::PreparingSolution);
-    CHECK(!controller.open_solution().has_value() && !controller.build_scripts().has_value());
+    CHECK(controller.status().state == cue::EditorScriptState::PreparingWorkspace);
+    CHECK(!controller.open_folder().has_value() && !controller.build_scripts().has_value());
     CHECK(controller.poll().has_value() && ide.opens == 0);
-    build.succeed(solution);
+    build.succeed(workspace);
     CHECK(controller.poll().has_value() && ide.opens == 1);
-    CHECK(ide.current.solution.utf8() == solution.utf8());
+    CHECK(ide.current.workspaceDirectory.utf8() == workspace.utf8());
     CHECK(controller.status().state == cue::EditorScriptState::OpeningIde);
     ide.current.state = cue::IdeState::Succeeded;
     CHECK(controller.poll().has_value() && !controller.status().isBusy);
     CHECK(controller.status().state == cue::EditorScriptState::Succeeded);
 
-    // 同じ Solution を再 Configure せず、明示 Source Map の解決値を渡す
+    // 同じ Workspace を再 Configure せず、明示 Source Map の解決値を渡す
     CHECK(!controller.open_script("unknown.Type").has_value());
     CHECK(controller.open_script("sample.RotateCube").has_value());
     CHECK(build.starts == 1 && ide.sources == 1 && ide.current.sourceLine == 1);
@@ -234,7 +235,7 @@ int main()
     CHECK(!controller.poll().has_value());
     CHECK(controller.status().state == cue::EditorScriptState::Failed && reloads == 0);
     CHECK(controller.build_scripts().has_value());
-    build.succeed(solution);
+    build.succeed(workspace);
     CHECK(controller.poll().has_value() && reloads == 1);
     CHECK(controller.status().state == cue::EditorScriptState::ReloadingScripts);
     // Play 接続の poll は Host の責務。ここでは Callback の直後で取消する
@@ -242,7 +243,7 @@ int main()
     CHECK(controller.status().state == cue::EditorScriptState::Cancelled);
     shouldFailReload = true;
     CHECK(controller.build_scripts().has_value());
-    build.succeed(solution);
+    build.succeed(workspace);
     CHECK(!controller.poll().has_value() && reloads == 2);
     CHECK(controller.status().state == cue::EditorScriptState::Failed);
     shouldFailReload = false;
@@ -255,7 +256,7 @@ int main()
     CHECK(controller.debug_play(*scene.try_value()).has_value());
     scene = cue::Scene::parse("formatVersion=1\nsceneId=8d94c2b1-9b6a-435c-ade7-c01f473c3951\nname=Changed\n");
     CHECK(scene.has_value());
-    build.succeed(solution);
+    build.succeed(workspace);
     CHECK(!controller.poll().has_value() && startsDebug == 1 && debugSceneName == "Captured");
     CHECK(controller.status().state == cue::EditorScriptState::Failed);
 
@@ -263,11 +264,11 @@ int main()
     build.shouldFailStart = true;
     CHECK(!controller.build_scripts().has_value() && !controller.status().isBusy);
     build.shouldFailStart = false;
-    CHECK(controller.open_solution().has_value());
+    CHECK(controller.open_folder().has_value());
     const auto cancels = build.cancels;
     CHECK(controller.cancel().has_value() && build.cancels == cancels + 1);
-    CHECK(controller.open_solution().has_value());
-    build.succeed(solution);
+    CHECK(controller.open_folder().has_value());
+    build.succeed(workspace);
     CHECK(controller.poll().has_value());
     ide.current.state = cue::IdeState::Failed;
     ide.current.error = cue::Error{cue::ErrorCategory::PlatformFailure, "Fixture.ide"};
@@ -288,7 +289,7 @@ int main()
         [&]()
         {
             rejectedThread =
-                !controller.open_solution().has_value() && !controller.open_script("sample.RotateCube").has_value() &&
+                !controller.open_folder().has_value() && !controller.open_script("sample.RotateCube").has_value() &&
                 !controller.build_scripts().has_value() && !controller.debug_play(*scene.try_value()).has_value() &&
                 !controller.poll().has_value() && !controller.cancel().has_value();
         });

@@ -26,6 +26,7 @@
         <Compile Include="Program.cs" />
         <Compile Include="VisualStudioAutomation.cs" />
         <Compile Include="NativeMethods.cs" />
+        <Compile Include="FolderWorkspace.cs" />
         <None Include="App.config" />
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

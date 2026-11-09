@@ -22,6 +22,7 @@
 #include <Scene/Scene.h>
 
 #include "BuildProcess.h"
+#include "GameWorkspace.h"
 
 namespace cue
 {
@@ -100,7 +101,8 @@ Result<void> validate_tools(IFileSystem &a_files, const GameBuildTools &a_tools,
         if (!valid.has_value())
             return valid;
     }
-    for (const auto *name : {"CMakeLists.txt", "CMakePresets.json"})
+    for (const auto *name : {"cmake/CueGameSdk.cmake", "Templates/GameWorkspace/CMakeLists.txt",
+                             "Templates/GameWorkspace/CMakePresets.json"})
     {
         auto file = a_tools.engineRoot.join(name);
         if (!file.has_value())
@@ -130,29 +132,6 @@ Result<void> check_replaceable(IFileSystem &a_files, const Path &a_executable)
                                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     return probe ? Result<void>::success()
                  : Result<void>::failure(detail::build_process_error("GameBuild.player_running_or_locked"));
-}
-
-/// @brief 対象ゲームの Solution だけを選び、旧 Engine 名や別 Project の生成物へ切り替えない
-Result<Path> find_solution(IFileSystem &a_files, const Path &a_tree, std::string_view a_applicationName)
-{
-    std::optional<Path> selected;
-    for (const auto *extension : {".slnx", ".sln"})
-    {
-        auto file = a_tree.join(std::string(a_applicationName) + extension);
-        if (!file.has_value())
-            return Result<Path>::failure(*file.try_error());
-        auto info = a_files.stat(*file.try_value());
-        if (!info.has_value())
-            return Result<Path>::failure(*info.try_error());
-        if (!*info.try_value())
-            continue;
-        if ((**info.try_value()).type != FileType::Regular || selected)
-            return Result<Path>::failure({ErrorCategory::InvalidState, "GameBuild.solution_kind_or_ambiguous"});
-        selected = file.take_value();
-    }
-    if (!selected)
-        return Result<Path>::failure({ErrorCategory::InvalidState, "GameBuild.solution_missing"});
-    return Result<Path>::success(std::move(*selected));
 }
 
 /// @brief Process 出力の一行を ImGui に渡せる UTF-8 へ揃え、埋込 NUL / 制御文字を除く
@@ -401,28 +380,44 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
                 return replaceable;
             executable = file.take_value();
         }
-        auto tree = a_project.root().join(
-            std::string(a_purpose == GameBuildPurpose::Player ? "Intermediate/EditorBuild/" : "Intermediate/IDE/") +
-            detail::build_path_identity(m_tools.engineRoot) + '/' + a_target.platform + '/' + a_target.architecture);
-        if (!tree.has_value())
-            return Result<void>::failure(*tree.try_error());
-        auto directory = prepare_directory(*m_files, *tree.try_value());
-        if (!directory.has_value())
-            return directory;
+        // Engine を Root としていた旧 Cache は残し、Source Root が異なる新契約の Tree を使う
+        const auto treeSuffix = "WorkspaceV1/" + detail::build_path_identity(m_tools.engineRoot) + '/' +
+                                a_target.platform + '/' + a_target.architecture;
+        auto ideTree = a_project.root().join("Intermediate/IDE/" + treeSuffix);
+        auto playerTree = a_project.root().join("Intermediate/EditorBuild/" + treeSuffix);
+        if (!ideTree.has_value() || !playerTree.has_value())
+            return Result<void>::failure(!ideTree.has_value() ? *ideTree.try_error() : *playerTree.try_error());
+        const auto &tree = a_purpose == GameBuildPurpose::Player ? *playerTree.try_value() : *ideTree.try_value();
+        auto intermediate = a_project.root().join("Intermediate");
+        if (!intermediate.has_value())
+            return Result<void>::failure(*intermediate.try_error());
+        auto prepared = prepare_directory(*m_files, *intermediate.try_value());
+        if (!prepared.has_value())
+            return prepared;
         auto lock = detail::acquire_build_lock(a_project.root());
         if (!lock.has_value())
             return Result<void>::failure(*lock.try_error());
+        auto workspace =
+            detail::prepare_game_workspace(*m_files, a_project, m_tools.engineRoot, *ideTree.try_value(),
+                                           *playerTree.try_value(), a_target.platform, a_target.architecture);
+        if (!workspace.has_value())
+            return workspace;
+        auto directory = prepare_directory(*m_files, tree);
+        if (!directory.has_value())
+            return directory;
+        // Configure の Root と作業 Directory をゲーム側に揃え、Engine は SDK 依存として渡す
         std::vector<std::string> arguments{"--preset",
-                                           "windows-vs2026",
+                                           a_purpose == GameBuildPurpose::Player ? "cue-player" : "cue-engine",
+                                           "-S",
+                                           a_project.root().utf8(),
                                            "-B",
-                                           tree.try_value()->utf8(),
+                                           tree.utf8(),
                                            "-DCUE_GAME_PROJECT=" + a_project.file().utf8(),
+                                           "-DCUE_ENGINE_ROOT=" + m_tools.engineRoot.utf8(),
                                            "-DCUE_GAME_PLATFORM=" + a_target.platform,
                                            "-DCUE_GAME_ARCHITECTURE=" + a_target.architecture,
-                                           "-DCUE_GAME_SOLUTION_NAME=" +
-                                               (a_purpose == GameBuildPurpose::Player
-                                                    ? std::string{}
-                                                    : a_project.descriptor().applicationName),
+                                           std::string("-DCUE_GAME_BUILD_PLAYER=") +
+                                               (a_purpose == GameBuildPurpose::Player ? "ON" : "OFF"),
                                            "-DCMAKE_TOOLCHAIN_FILE=" + m_tools.toolchainFile.utf8(),
                                            "-DBUILD_TESTING=OFF",
                                            "-DCUE_BUILD_PERFORMANCE_TOOLS=OFF"};
@@ -437,12 +432,12 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
             arguments.push_back("-DCUE_DISTRIBUTION_BUILD=ON");
         }
         auto process =
-            detail::start_build_process(m_tools.cmakeExecutable, arguments, m_tools.engineRoot, m_tools.vcpkgRoot);
+            detail::start_build_process(m_tools.cmakeExecutable, arguments, a_project.root(), m_tools.vcpkgRoot);
         if (!process.has_value())
             return Result<void>::failure(*process.try_error());
         // 全準備の成功後に旧結果を切り替え、開始前の入力失敗では再利用可能な結果を保つ
         m_project = a_project;
-        m_tree = tree.take_value();
+        m_tree = tree;
         m_lock = lock.take_value();
         m_build = process.take_value();
         m_pendingLog.clear();
@@ -605,15 +600,12 @@ Result<void> WindowsGameBuildService::poll()
         {
             if (m_status.purpose != GameBuildPurpose::Player)
             {
-                auto solution = find_solution(*m_files, m_tree, m_project->descriptor().applicationName);
-                if (!solution.has_value())
-                    return fail(*solution.try_error());
-                m_status.solutionFile = solution.take_value();
+                m_status.workspaceDirectory = m_project->root();
                 if (m_status.purpose == GameBuildPurpose::IdeProject)
                 {
                     m_status.state = GameBuildState::Succeeded;
                     detail::release_build_lock(m_lock);
-                    append_log("[Solution ready] " + m_status.solutionFile.utf8() + '\n');
+                    append_log("[Workspace ready] " + m_status.workspaceDirectory.utf8() + '\n');
                     return Result<void>::success();
                 }
             }
@@ -626,7 +618,7 @@ Result<void> WindowsGameBuildService::poll()
                 m_status.purpose == GameBuildPurpose::Player ? "Cue.GamePlayerPackage" : "Cue.GameProjectBuild",
                 "--parallel"};
             auto process =
-                detail::start_build_process(m_tools.cmakeExecutable, arguments, m_tools.engineRoot, m_tools.vcpkgRoot);
+                detail::start_build_process(m_tools.cmakeExecutable, arguments, m_project->root(), m_tools.vcpkgRoot);
             if (!process.has_value())
                 return fail(*process.try_error());
             m_build = process.take_value();

@@ -56,6 +56,14 @@ int test_templates(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_tem
     CHECK(project.has_value() && project.try_value()->descriptor().formatVersion == 2);
     CHECK(project.try_value()->descriptor().engineVersion == "0.1.0-preview.1");
     CHECK(project.try_value()->descriptor().gameTarget == "CueGame_123Game");
+    for (const auto *name : {"CMakeLists.txt", "CMakePresets.json"})
+    {
+        auto rootFile = files.read_all(path(descriptor.directory.join(name)));
+        auto expected = files.read_all(path(a_templates.join(std::string("GameWorkspace/") + name)));
+        CHECK(rootFile.has_value() && expected.has_value() && *rootFile.try_value() == *expected.try_value());
+    }
+    auto userPresets = files.exists(path(descriptor.directory.join("CMakeUserPresets.json")));
+    CHECK(userPresets.has_value() && !*userPresets.try_value());
     auto scene = cue::Scene::load(files, *project.try_value()->startup_scene_file());
     CHECK(scene.has_value() && scene.try_value()->descriptor().objects.size() == 2);
     const auto &cube = scene.try_value()->descriptor().objects.front();

@@ -1160,7 +1160,7 @@ Result<void> EditorHost::open_ide()
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.ide.owner"});
     if (m_isClosed || !m_editing || !m_editing->scripts || m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.ide.unavailable"});
-    return m_editing->scripts->open_solution();
+    return m_editing->scripts->open_folder();
 }
 
 Result<void> EditorHost::edit_script(std::string_view a_typeId)

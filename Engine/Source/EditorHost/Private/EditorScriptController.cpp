@@ -51,19 +51,20 @@ void EditorScriptController::transition(EditorScriptState a_state, const char *a
 
 Result<void> EditorScriptController::start(Request a_request)
 {
-    auto access = check_start(a_request == Request::OpenSource || a_request == Request::OpenSolution);
+    auto access = check_start(a_request == Request::OpenSource || a_request == Request::OpenFolder);
     if (!access.has_value())
         return access;
     auto target = current_native_game_build_target();
     if (!target.has_value())
         return Result<void>::failure(*target.try_error());
-    // Source を開く操作は、既に確認した Solution を再利用し、毎回 Configure しない
-    if (a_request == Request::OpenSource && !m_solution.is_empty())
+    // Source を開く操作は、既に確認した Workspace を再利用し、毎回 Configure しない
+    if (a_request == Request::OpenSource && !m_workspace.is_empty())
     {
-        auto info = m_files.stat(m_solution);
-        if (info.has_value() && *info.try_value() && (**info.try_value()).type == FileType::Regular)
+        auto info = m_files.stat(m_workspace);
+        if (info.has_value() && *info.try_value() && (**info.try_value()).type == FileType::Directory &&
+            m_workspace.utf8() == m_project.root().utf8())
         {
-            auto opened = m_ide.open_source(m_solution, m_source, 1);
+            auto opened = m_ide.open_source(m_workspace, m_source, 1);
             if (!opened.has_value())
                 return opened;
             m_request = a_request;
@@ -71,9 +72,9 @@ Result<void> EditorScriptController::start(Request a_request)
             transition(EditorScriptState::OpeningIde, "Opening script source", true);
             return Result<void>::success();
         }
-        m_solution = {};
+        m_workspace = {};
     }
-    const auto purpose = a_request == Request::OpenSource || a_request == Request::OpenSolution
+    const auto purpose = a_request == Request::OpenSource || a_request == Request::OpenFolder
                              ? GameBuildPurpose::IdeProject
                              : GameBuildPurpose::ScriptModule;
     auto started = m_build.start(m_project, *target.try_value(), purpose);
@@ -83,16 +84,16 @@ Result<void> EditorScriptController::start(Request a_request)
     m_request = a_request;
     m_status.error.reset();
     m_status.processId = 0;
-    transition(purpose == GameBuildPurpose::IdeProject ? EditorScriptState::PreparingSolution
+    transition(purpose == GameBuildPurpose::IdeProject ? EditorScriptState::PreparingWorkspace
                                                        : EditorScriptState::BuildingScripts,
-               purpose == GameBuildPurpose::IdeProject ? "Generating Visual Studio solution" : "Building game DLL",
+               purpose == GameBuildPurpose::IdeProject ? "Preparing Visual Studio workspace" : "Building game DLL",
                true);
     return Result<void>::success();
 }
 
-Result<void> EditorScriptController::open_solution()
+Result<void> EditorScriptController::open_folder()
 {
-    return start(Request::OpenSolution);
+    return start(Request::OpenFolder);
 }
 
 Result<void> EditorScriptController::open_script(std::string_view a_typeId)
@@ -132,7 +133,7 @@ Result<void> EditorScriptController::fail(Error a_error)
     a_error.category = ErrorCategory::PlatformFailure;
     m_status.error = a_error;
     transition(EditorScriptState::Failed, "Script / IDE operation failed", false);
-    m_solution = {};
+    m_workspace = {};
     return Result<void>::failure(std::move(a_error));
 }
 
@@ -212,7 +213,7 @@ Result<void> EditorScriptController::poll()
         return fail(*ide.try_error());
     if (!m_status.isBusy && m_status.state != EditorScriptState::Debugging)
         return Result<void>::success();
-    if (m_status.state == EditorScriptState::PreparingSolution || m_status.state == EditorScriptState::BuildingScripts)
+    if (m_status.state == EditorScriptState::PreparingWorkspace || m_status.state == EditorScriptState::BuildingScripts)
     {
         const auto &build = m_build.status();
         if (build.state == GameBuildState::Failed)
@@ -222,9 +223,9 @@ Result<void> EditorScriptController::poll()
         if (build.state != GameBuildState::Succeeded)
             return Result<void>::success();
         m_ownsBuild = false;
-        m_solution = build.solutionFile;
-        if (m_solution.is_empty())
-            return fail({ErrorCategory::InvalidState, "EditorScript.solution_missing"});
+        m_workspace = build.workspaceDirectory;
+        if (m_workspace.is_empty() || m_workspace.utf8() != m_project.root().utf8())
+            return fail({ErrorCategory::InvalidState, "EditorScript.workspace_mismatch"});
         if (m_request == Request::DebugPlay)
             return start_debug_child();
         if (m_request == Request::BuildScripts)
@@ -237,8 +238,8 @@ Result<void> EditorScriptController::poll()
             transition(EditorScriptState::ReloadingScripts, "Reloading script types", true);
             return Result<void>::success();
         }
-        auto opened = m_request == Request::OpenSource ? m_ide.open_source(m_solution, m_source, 1)
-                                                       : m_ide.open_solution(m_solution);
+        auto opened = m_request == Request::OpenSource ? m_ide.open_source(m_workspace, m_source, 1)
+                                                       : m_ide.open_folder(m_workspace);
         if (!opened.has_value())
             return fail(*opened.try_error());
         transition(EditorScriptState::OpeningIde, "Opening Visual Studio", true);
@@ -276,7 +277,7 @@ Result<void> EditorScriptController::poll()
         else if (play->state() == PlayState::WaitingForDebugger && m_status.state == EditorScriptState::StartingDebug)
         {
             m_status.processId = play->process_id();
-            auto attached = m_ide.attach_debugger(m_solution, m_status.processId, m_callbacks.playExecutable);
+            auto attached = m_ide.attach_debugger(m_workspace, m_status.processId, m_callbacks.playExecutable);
             if (!attached.has_value())
                 return fail(*attached.try_error());
             transition(EditorScriptState::AttachingDebugger, "Attaching Visual Studio debugger", true);

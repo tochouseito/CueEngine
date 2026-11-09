@@ -14,7 +14,7 @@ sidebar_position: 2
 ## Editor で Cube を追加する
 
 1. Editor で起動シーン `Main` を開きます。**Objects → Add Cube** で Cube を追加します。
-2. **Script → Open Visual Studio** でゲーム用ソリューションを開きます。Engine SDK Preview 3 以降ではアプリ識別名の `.slnx` が生成されます。Project の `Source/Game.cpp` を開き、先頭に `#include <chrono>` と `#include <Math/Quaternion.h>` を追加します。
+2. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。Editor が独立した CMake の設定とローカル SDK の Preset を準備します。Project の `Source/Game.cpp` を開き、先頭に `#include <chrono>` と `#include <Math/Quaternion.h>` を追加します。
 3. `EmptyBehaviour` の `update()` を下記の実装へ置き換えて保存します。
 
 ```cpp

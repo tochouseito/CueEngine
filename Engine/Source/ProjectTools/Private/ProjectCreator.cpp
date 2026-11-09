@@ -273,9 +273,12 @@ Result<ProjectCreation> create_project(IFileSystem &a_files, const Path &a_templ
             return Result<ProjectCreation>::failure(*templateDirectory.try_error());
         std::vector<PlannedFile> planned;
         for (const auto *relative : {"Source/CMakeLists.txt.in", "Source/Game.cpp", "Source/ScriptSources.cueide",
-                                     "Content/Scenes/Main.cuescene.in"})
+                                     "Content/Scenes/Main.cuescene.in", "CMakeLists.txt", "CMakePresets.json"})
         {
-            auto source = templateDirectory.try_value()->join(relative);
+            const std::string_view relativeName(relative);
+            const bool isWorkspace = relativeName == "CMakeLists.txt" || relativeName == "CMakePresets.json";
+            auto source = isWorkspace ? a_templates.join("GameWorkspace/" + std::string(relativeName))
+                                      : templateDirectory.try_value()->join(relative);
             if (!source.has_value())
                 return Result<ProjectCreation>::failure(*source.try_error());
             auto sourceParent = validate_directory(a_files, source.try_value()->parent());

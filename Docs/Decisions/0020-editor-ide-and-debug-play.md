@@ -4,13 +4,14 @@
 
 Script の編集と Debugger 接続を Editor から要求する。Runtime の Process 分離と製品の静的リンク方式は維持する。
 Visual Studio は現在の Windows 用 Provider とし、共通契約へ COM / DTE / Windows の型を持ち込まない。
-生成 Solution と Project は CMake から生成し、手書きや管理対象への追加は行わない。
+ゲームの Root を独立した CMake Project とし、Visual Studio は Open Folder でその Directory を開く。
+SDK は source-backed の限定入口を提供し、Script 用依存と Player 用 Runtime を目的に応じて追加する。
 
 | 所有する層 | 責務 |
 | --- | --- |
 | `Cue.EditorIde` | `IEditorIdeService`、要求・状態、Script Type ID から Source への解決 |
 | `Cue.EditorIde.Windows` | `create_windows_ide_service`、Bridge Process / Pipe / Job、PID と実行 File の検証 |
-| `Tools/VisualStudioBridge` | C# / STA / DTE による Solution 表示、Source 表示、Native Debugger 接続 |
+| `Tools/VisualStudioBridge` | C# / STA / VS Shell による Folder 照合、Source 表示、Native Debugger 接続 |
 | `Cue.ProjectBuild` / `.Windows` | IDE 用 Configure、開発用 DLL Build、生成物検証と Project 単位排他 |
 | `Cue.EditorHost` | Owner Thread 上の `EditorScriptController`、Build → Reload / Debug 起動の順序 |
 | `Cue.Editor.Ui` | メニューと Inspector の表示、所有 Action の返却 |
@@ -18,15 +19,15 @@ Visual Studio は現在の Windows 用 Provider とし、共通契約へ COM / D
 
 ## Editor の操作
 
-- `Script > Open Visual Studio`: 専用 Tree を Configure し、その Solution を開く。
-- Inspector の `Edit Source`: Script Type ID を Source Map で解決して開く。確認済み Solution が残っていれば再利用する。
+- `Script > Open Visual Studio`: ゲーム Root を Configure し、その Folder を開く。
+- Inspector の `Edit Source`: Script Type ID を Source Map で解決して開く。確認済み Workspace が残っていれば再利用する。
 - `Script > Build Scripts`: 開発 DLL を Build / 検証し、成功時だけ Script Types Reload を要求する。
 - `Debug Play`: DLL の Build 成功後、Debug 待機子を起動して Visual Studio を接続する。
 - `Script > Cancel Script Operation`: 現在所有している要求を取り消す。
 - 既存の `Reload Script Types`、通常の `Play` / `Stop`、製品の `Build Settings...` / `Run` は別の操作とする。
 
 UI は File / Process / COM を操作しない。Host は ImGui の借用を終えてから要求を実行する。
-`EditorScriptController` は `open_solution` / `open_script` / `build_scripts` / `debug_play` / `cancel` / `poll` を持つ。
+`EditorScriptController` は `open_folder` / `open_script` / `build_scripts` / `debug_play` / `cancel` / `poll` を持つ。
 重複要求、Owner Thread 違反、DLL の置換と Play が重なる要求を拒否する。Source 表示は通常 Play 中も許可する。
 失敗は Editor の状態と診断に残し、失敗した Build の DLL を Reload / 起動しない。
 
@@ -34,19 +35,22 @@ UI は File / Process / COM を操作しない。Host は ImGui の借用を終�
 
 `GameBuildPurpose` を `Player` / `ScriptModule` / `IdeProject` に分ける。
 旧 `start(Project, Target)` は Player として維持し、目的付き overload を追加する。
-`GameBuildStatus` は目的に加えて `solutionFile` / `moduleFile` / `symbolsFile` を所有する。
+`GameBuildStatus` は目的に加えて `workspaceDirectory` / `moduleFile` / `symbolsFile` を所有する。
 
 | 目的 | CMake Tree | 終了条件 |
 | --- | --- | --- |
-| Player | `Intermediate/EditorBuild/<Engine識別値>/Windows/x64` | `Cue.GamePlayerPackage` の完成物検証 |
-| IdeProject | `Intermediate/IDE/<Engine識別値>/Windows/x64` | Configure と生成 Solution の検証 |
+| Player | `Intermediate/EditorBuild/WorkspaceV1/<Engine識別値>/Windows/x64` | `Cue.GamePlayerPackage` の完成物検証 |
+| IdeProject | `Intermediate/IDE/WorkspaceV1/<Engine識別値>/Windows/x64` | Configure の成功とゲーム Root の公開 |
 | ScriptModule | IDE と共通 | `Cue.GameProjectBuild` と DLL / Static / Manifest / PDB の検証 |
 
-IDE と Script Build は同じ CMake 正本・Tree を使う。Engine 自身を開いた生成 Tree を書き換えない。
-生成先直下の `<applicationName>.slnx` / `<applicationName>.sln` を確認し、不在・曖昧な結果を成功としない。
-Editor は Configure に `CUE_GAME_SOLUTION_NAME` を渡し、CMake が Project のアプリ識別名と照合する。
-ゲーム Script Target を生成 Solution の既定 Target とする。通常の Engine 開発 Solution 名は `CueEngine` のままとする。
-旧 `CueEngine.slnx` が生成先に残っていても選択せず、ファイルの削除や手動の Solution 改名は行わない。
+IDE と Script Build は同じ CMake 正本・Tree を使い、`-S` と作業 Directory をゲーム Root に揃える。
+Root の `CMakeLists.txt` は SDK の `cmake/CueGameSdk.cmake` を参照する。Script は Script API の依存だけ、
+Player は描画を含む Runtime を追加し、Editor / Tool の Target を含めない。
+共有 `CMakePresets.json` と、選択 SDK・Platform・生成先を保存する管理印付き `CMakeUserPresets.json` を分ける。
+後者の `cue-engine` / `cue-player` Preset を Editor と Visual Studio が共用する。
+既存の共有 CMake は保持する。管理外の UserPresets は上書きせず診断し、利用者による統合を必要とする。
+Engine が Root だった旧 Cache / Solution は保持し、別 namespace の Tree に新規 Configure する。
+VS Generator が内部で生成する Solution は IDE の起動先に使わない。
 Configure は `BUILD_TESTING=OFF` とし、Test / 性能 Tool を要求しない。
 IDE / ScriptModule は `gameTarget` を必要とするが、製品用 `startupScene` は要求しない。
 `Run` は Player 成功時だけに許可し、IDE / DLL の成功を製品の起動許可へ流用しない。
@@ -81,7 +85,7 @@ Source Map 自体も読込時点で親 Directory を含めて確認する。Insp
 1. 編集 Scene を所有 Snapshot として保持し、ScriptModule を Build / 検証する。
 2. `PlayClient::start_debug` で所有 Play 子を起動する。
 3. 子はゲーム DLL を読み込む前に `WaitingForDebugger` を通知する。
-4. `IEditorIdeService::attach_debugger` に Solution、所有子 PID、期待する Play Host 実行 File を渡す。
+4. `IEditorIdeService::attach_debugger` にゲーム Root、所有子 PID、期待する Play Host 実行 File を渡す。
 5. Bridge は Native Debugger 接続を確認する。親は所有 Session / PID が変わっていないことも確認する。
 6. `PlayClient::continue_debug` と子側の接続確認を経て DLL 読込・Script 開始へ進む。
 
@@ -101,8 +105,9 @@ VS の MSBuild とインストール済み Reference Assemblies で Build し、
 
 Native Provider は非同期で一要求ずつ Bridge を起動する。結果は要求 ID / 操作 / 対象 PID と照合し、
 上限付き応答と期限を持つ。既定期限は `WindowsIdeConfig::timeoutMilliseconds = 120000`。
-STA 上の DTE 呼出しは Bridge に閉じ込め、既存 VS を完全な Solution Path で照合する。
-別 Solution を開いている Instance の内容を勝手に置き換えず、必要なら別 Instance を起動する。
+STA 上の DTE / VS Shell 呼出しは Bridge に閉じ込め、Open Folder Mode と Root の完全な Path で既存 VS を照合する。
+`IVsSolution.GetProperty(VSPROPID_IsInOpenFolderMode)` と `GetSolutionInfo` を使い、Solution.FullName から推測しない。
+別 Folder / Solution を開いている Instance の内容を勝手に置き換えず、必要なら別 Instance を起動する。
 取消は Bridge を回収するが Visual Studio 自体を終了しない。
 接続対象は PID だけで信用せず、保持した Process Handle と実行 File を確認する。
 

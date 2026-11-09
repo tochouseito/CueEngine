@@ -10,7 +10,7 @@ using Microsoft.CSharp.RuntimeBinder;
 
 namespace Cue.VisualStudioBridge
 {
-    /// <summary>一回の IDE 操作を所有する。既存の別 Solution は閉じず、IDE 自身は終了させない</summary>
+    /// <summary>一回の IDE 操作を所有する。既存の別 Workspace は閉じず、IDE 自身は終了させない</summary>
     internal sealed class VisualStudioAutomation : IDisposable
     {
         private readonly Stopwatch m_timer = Stopwatch.StartNew();
@@ -19,20 +19,20 @@ namespace Cue.VisualStudioBridge
 
         internal VisualStudioAutomation() { m_filter = new ComMessageFilter(m_timer); }
 
-        /// <summary>正確な Solution / PID を選択してから Source 表示または Native 接続を実行する</summary>
+        /// <summary>正確な Workspace / PID を選択してから Source 表示または Native 接続を実行する</summary>
         internal int execute(BridgeRequest request)
         {
             int idePid;
-            m_dte = find_running(request.Solution, request.IdeProcessId, 0, out idePid);
+            m_dte = find_running(request.Workspace, request.IdeProcessId, 0, out idePid);
             if (m_dte == null)
             {
-                int launched = NativeMethods.launch_ide(find_devenv(), request.Solution);
+                int launched = NativeMethods.launch_ide(find_devenv(), request.Workspace);
                 do
                 {
                     Thread.Sleep(100);
-                    m_dte = find_running(request.Solution, launched, launched, out idePid);
+                    m_dte = find_running(request.Workspace, launched, launched, out idePid);
                 } while (m_dte == null && m_timer.ElapsedMilliseconds < 100000);
-                if (m_dte == null) throw new TimeoutException("Visual Studio did not publish the requested solution.");
+                if (m_dte == null) throw new TimeoutException("Visual Studio did not publish the requested workspace.");
             }
             dynamic dte = m_dte;
             dte.UserControl = true;
@@ -87,8 +87,8 @@ namespace Cue.VisualStudioBridge
             return false;
         }
 
-        /// <summary>Solution の絶対 Path と実行中 VS の PID を照合し、同名 Project の誤選択を防ぐ</summary>
-        private object find_running(string solution, int preferredPid, int requiredPid, out int selectedPid)
+        /// <summary>Workspace の絶対 Path と実行中 VS の PID を照合し、同名 Project の誤選択を防ぐ</summary>
+        private object find_running(string workspace, int preferredPid, int requiredPid, out int selectedPid)
         {
             selectedPid = 0;
             IRunningObjectTable table = null;
@@ -114,9 +114,7 @@ namespace Cue.VisualStudioBridge
                         if (colon < 0 || !Int32.TryParse(display.Substring(colon + 1), out int pid) || pid <= 0 ||
                             (requiredPid != 0 && pid != requiredPid)) continue;
                         table.GetObject(monikers[0], out candidate);
-                        dynamic dte = candidate;
-                        string current = dte.Solution.FullName as string;
-                        if (String.IsNullOrWhiteSpace(current) || !same_path(current, solution)) continue;
+                        if (!FolderWorkspace.matches(candidate, workspace)) continue;
                         if (selected != null && selectedPid != pid)
                         {
                             if (selectedPid == preferredPid) continue;
@@ -142,7 +140,7 @@ namespace Cue.VisualStudioBridge
                     }
                 }
                 if (isAmbiguous && selectedPid != preferredPid)
-                    throw new InvalidOperationException("Multiple Visual Studio instances have this solution open.");
+                    throw new InvalidOperationException("Multiple Visual Studio instances have this workspace open.");
                 return selected;
             }
             catch

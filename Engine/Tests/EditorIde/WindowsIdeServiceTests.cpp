@@ -57,47 +57,57 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto created = cue::create_windows_ide_service({bridge, 1000});
     CHECK(created.has_value());
     auto service = created.take_value();
-    auto solution = [&](const char *a_name)
+    auto workspace = [&](const char *a_name)
     {
         auto value = path(fixture.root.join(a_name));
-        auto written = files.write_all(value, {}, true);
+        auto directory = files.create_directories(value);
+        if (!directory.has_value())
+            throw std::runtime_error("fixture workspace directory");
+        auto cmake = path(value.join("CMakeLists.txt"));
+        auto written = files.write_all(cmake, {}, true);
         if (!written.has_value())
-            throw std::runtime_error("fixture solution");
+            throw std::runtime_error("fixture workspace");
         return value;
     };
-    const auto good = solution("Good.slnx");
-    const auto hang = solution("Hang.slnx");
-    const auto bad = solution("BadIdentity.slnx");
-    const auto large = solution("Large.slnx");
-    const auto failed = solution("Failed.slnx");
-    const auto source = solution("日本語 Source.cpp");
-    CHECK(service->open_solution(good).has_value());
-    CHECK(!service->open_solution(good).has_value());
+    const auto good = workspace("日本語 Good");
+    const auto hang = workspace("Hang");
+    const auto bad = workspace("BadIdentity");
+    const auto large = workspace("Large");
+    const auto failed = workspace("Failed");
+    const auto source = path(fixture.root.join("日本語 Source.cpp"));
+    CHECK(files.write_all(source, {}, true).has_value());
+    const auto missing = path(fixture.root.join("Missing"));
+    CHECK(!service->open_folder(missing).has_value());
+    CHECK(!service->open_folder(source).has_value());
+    CHECK(!service->open_folder(fixture.root).has_value());
+    CHECK(service->open_folder(good).has_value());
+    CHECK(!service->open_folder(good).has_value());
     CHECK(wait(*service, cue::IdeState::Succeeded));
     CHECK(service->status().ideProcessId == 1234 && service->status().requestId == 1);
+    CHECK(service->status().workspaceDirectory.utf8() == good.utf8());
     CHECK(service->open_source(good, source, 12).has_value());
     CHECK(wait(*service, cue::IdeState::Succeeded));
     CHECK(service->status().sourceLine == 12);
     CHECK(!service->open_source(good, source, 0).has_value());
     bool rejected = false;
-    std::thread wrong([&]() { rejected = !service->open_solution(good).has_value(); });
+    std::thread wrong([&]() { rejected = !service->open_folder(good).has_value(); });
     wrong.join();
     CHECK(rejected);
     for (const auto *value : {&bad, &large, &failed})
     {
-        CHECK(service->open_solution(*value).has_value());
+        CHECK(service->open_folder(*value).has_value());
         CHECK(wait(*service, cue::IdeState::Failed) && service->status().error);
     }
-    CHECK(service->open_solution(hang).has_value());
+    CHECK(service->open_folder(hang).has_value());
     CHECK(wait(*service, cue::IdeState::Failed));
     CHECK(service->status().error->operation == "EditorIde.timeout");
-    CHECK(service->open_solution(hang).has_value());
+    CHECK(service->open_folder(hang).has_value());
     CHECK(service->cancel().has_value());
     CHECK(wait(*service, cue::IdeState::Cancelled));
-    CHECK(service->open_solution(good).has_value());
+    CHECK(service->open_folder(good).has_value());
     CHECK(wait(*service, cue::IdeState::Succeeded));
     CHECK(!service->attach_debugger(good, GetCurrentProcessId(), bridge).has_value());
     CHECK(service->shutdown().has_value());
-    CHECK(!service->open_solution(good).has_value());
+    CHECK(!service->open_folder(good).has_value());
     return 0;
 }

@@ -34,8 +34,8 @@ class EditorScriptController final
     /// @brief 新規要求と対象を複製しない
     EditorScriptController(const EditorScriptController &) = delete;
     EditorScriptController &operator=(const EditorScriptController &) = delete;
-    /// @brief 専用 Solution を再生成して Visual Studio へ開く
-    [[nodiscard]] Result<void> open_solution();
+    /// @brief 専用 Workspace を再生成して Visual Studio へ開く
+    [[nodiscard]] Result<void> open_folder();
     /// @brief Editor 専用 Source Map から解決し、対応 Source を開く
     [[nodiscard]] Result<void> open_script(std::string_view a_typeId);
     /// @brief Native Editor 構成の DLL を Build し、成功後だけ型情報を再読込する
@@ -52,7 +52,7 @@ class EditorScriptController final
   private:
     enum class Request
     {
-        OpenSolution,
+        OpenFolder,
         OpenSource,
         BuildScripts,
         DebugPlay
@@ -74,8 +74,8 @@ class EditorScriptController final
     EditorScriptCallbacks m_callbacks;
     std::thread::id m_owner;
     EditorScriptStatus m_status;
-    Request m_request = Request::OpenSolution;
-    Path m_solution;
+    Request m_request = Request::OpenFolder;
+    Path m_workspace;
     Path m_source;
     std::optional<Scene> m_scene;
     bool m_ownsBuild = false;

@@ -551,6 +551,14 @@ if(WIN32)
     get_property(taskVisualStudioBridge GLOBAL PROPERTY CUE_VISUAL_STUDIO_BRIDGE_EXE)
     add_test(NAME Cue.EditorIde.BridgeInvalidArguments COMMAND "${taskVisualStudioBridge}" --invalid)
     set_tests_properties(Cue.EditorIde.BridgeInvalidArguments PROPERTIES WILL_FAIL TRUE TIMEOUT 10)
+    add_test(NAME Cue.EditorIde.BridgeWorkspace COMMAND pwsh -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/EditorIde/BridgeWorkspaceTests.ps1" -Bridge "${taskVisualStudioBridge}")
+    set_tests_properties(Cue.EditorIde.BridgeWorkspace PROPERTIES TIMEOUT 15)
+    # 実 VS 検証は明示 Mode だけで行う。通常 Build でも診断用の入口を作る
+    add_executable(CueScriptDebugPlayTests Script/ScriptDebugPlayTests.cpp)
+    target_link_libraries(CueScriptDebugPlayTests PRIVATE Cue.ScriptPlay Cue.EditorIde.Windows
+        Cue.Platform.Windows Cue.Foundation.Windows)
+    add_dependencies(CueScriptDebugPlayTests CuePlayHost)
     add_executable(CueEditorScriptControllerTests EditorHost/EditorScriptControllerTests.cpp)
     target_include_directories(CueEditorScriptControllerTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
     target_link_libraries(CueEditorScriptControllerTests PRIVATE Cue.EditorHost Cue.EditorIde Cue.ProjectBuild
@@ -598,6 +606,16 @@ if(WIN32)
         "-DCUE_CONFIGURATION=$<CONFIG>"
         -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GamePlayerCMakeTests.cmake")
     set_tests_properties(Cue.Project.GamePlayerCMake PROPERTIES TIMEOUT 90)
+    add_test(NAME Cue.Project.GameSdkCMake COMMAND "${CMAKE_COMMAND}"
+        "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DCUE_FIXTURE_ROOT=${PROJECT_SOURCE_DIR}/out/tests/GameSdk"
+        "-DCUE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCUE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DCUE_CONFIGURATION=$<CONFIG>"
+        "-DCUE_PIX_ARCHIVE=${CUE_PIX_ARCHIVE}"
+        "-DCUE_DXC_ARCHIVE=${CUE_DXC_ARCHIVE}"
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GameSdkCMakeTests.cmake")
+    set_tests_properties(Cue.Project.GameSdkCMake PROPERTIES TIMEOUT 180)
 
     # 選択 Project が Sample 以外でも Engine のテスト群を構成できるよう、Sample 固有検証だけを条件化する
     if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed"
@@ -639,9 +657,6 @@ if(WIN32)
         add_test(NAME Cue.Script.Play COMMAND CueScriptPlayTests $<TARGET_FILE:CuePlayHost>
                  $<TARGET_FILE:RotateCubeGame> $<TARGET_FILE:CuePlayFailureGame> $<TARGET_FILE:CuePlayProtocolFixture>)
         set_tests_properties(Cue.Script.Play PROPERTIES TIMEOUT 40)
-        add_executable(CueScriptDebugPlayTests Script/ScriptDebugPlayTests.cpp)
-        target_link_libraries(CueScriptDebugPlayTests PRIVATE Cue.ScriptPlay Cue.EditorIde.Windows
-            Cue.Platform.Windows Cue.Foundation.Windows)
         add_dependencies(CueScriptDebugPlayTests CuePlayHost RotateCubeGame)
         add_test(NAME Cue.Script.DebugPlay COMMAND CueScriptDebugPlayTests
             $<TARGET_FILE:CuePlayHost> $<TARGET_FILE:RotateCubeGame>)
@@ -658,6 +673,12 @@ if(WIN32)
     add_executable(CueProjectCreatorTests ProjectTools/ProjectCreatorTests.cpp)
     target_link_libraries(CueProjectCreatorTests PRIVATE Cue.ProjectTools Cue.Scene Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.ProjectTools.Create COMMAND CueProjectCreatorTests "${PROJECT_SOURCE_DIR}/Templates")
+    add_executable(CueGameWorkspaceTests ProjectTools/GameWorkspaceTests.cpp)
+    target_link_libraries(CueGameWorkspaceTests PRIVATE
+        Cue.ProjectBuild.Windows Cue.Platform.Windows Cue.Foundation.Windows)
+    target_include_directories(CueGameWorkspaceTests PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/Source/ProjectBuild/Windows/Private")
+    add_test(NAME Cue.Project.GameWorkspace COMMAND CueGameWorkspaceTests "${PROJECT_SOURCE_DIR}")
     set_tests_properties(Cue.ProjectTools.Create PROPERTIES TIMEOUT 30)
     add_test(NAME Cue.ProjectTools.CMakeVersion COMMAND "${CMAKE_COMMAND}"
         "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"

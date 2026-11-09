@@ -21,8 +21,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     std::map<std::wstring, std::wstring> values;
     for (int index = 1; index + 1 < count; index += 2)
         values.emplace(raw[index], raw[index + 1]);
-    const auto solution = values[L"--solution"];
-    if (solution.find(L"Hang") != std::wstring::npos)
+    const auto workspace = values[L"--workspace"];
+    if (workspace.empty() || values.contains(L"--solution"))
+        return 1;
+    if (workspace.find(L"Hang") != std::wstring::npos)
     {
         Sleep(30000);
         return 1;
@@ -31,16 +33,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     std::string command(operation.begin(), operation.end());
     const auto request = values[L"--request-id"];
     std::string id(request.begin(), request.end());
-    if (solution.find(L"BadIdentity") != std::wstring::npos)
+    if (workspace.find(L"BadIdentity") != std::wstring::npos)
         id = "999999";
-    if (solution.find(L"Large") != std::wstring::npos)
+    if (workspace.find(L"Large") != std::wstring::npos)
     {
         std::string big(100000, 'x');
         DWORD written = 0;
         WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), big.data(), static_cast<DWORD>(big.size()), &written, nullptr);
         return 0;
     }
-    const bool failed = solution.find(L"Failed") != std::wstring::npos;
+    const bool failed = workspace.find(L"Failed") != std::wstring::npos;
     const auto target = values[L"--process-id"];
     std::string pid(target.begin(), target.end());
     if (pid.empty())

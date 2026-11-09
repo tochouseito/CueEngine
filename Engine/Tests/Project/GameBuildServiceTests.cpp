@@ -170,6 +170,9 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto toolchain = path(vcpkg.join("scripts/buildsystems/vcpkg.cmake"));
     CHECK(write(files, path(engine.join("CMakeLists.txt")), "# fixture\n"));
     CHECK(write(files, path(engine.join("CMakePresets.json")), "{}\n"));
+    CHECK(write(files, path(engine.join("cmake/CueGameSdk.cmake")), "# fixture SDK\n"));
+    CHECK(write(files, path(engine.join("Templates/GameWorkspace/CMakeLists.txt")), "# fixture workspace\n"));
+    CHECK(write(files, path(engine.join("Templates/GameWorkspace/CMakePresets.json")), "{}\n"));
     CHECK(write(files, toolchain, "# fixture\n"));
     CHECK(write(files, path(root.join("Source/CMakeLists.txt")), "# fixture\n"));
     auto sceneFile = path(root.join("Content/Scenes/Start.cuescene"));
@@ -263,7 +266,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->status().state == cue::GameBuildState::Idle && service->status().log.empty());
     CHECK(!service->status().error && !service->status().exitCode && !service->status().applicationExitCode);
     CHECK(service->status().outputDirectory.is_empty() && service->status().executable.is_empty());
-    CHECK(service->status().solutionFile.is_empty() && service->status().moduleFile.is_empty() &&
+    CHECK(service->status().workspaceDirectory.is_empty() && service->status().moduleFile.is_empty() &&
           service->status().symbolsFile.is_empty() && !service->status().isLogTruncated);
     CHECK(!service->launch().has_value());
     for (const auto *failure : {"wrong-config", "wrong-scene"})
@@ -301,7 +304,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->start(*project.try_value(), target).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
     CHECK(service->shutdown().has_value());
-    // IDE は Configure だけで完了し、開発 DLL と同じ Tree / Solution を再利用する
+    // IDE はゲーム Root を返し、Solution の生成形式や残存 File を選択の根拠にしない
     auto toolsService = cue::create_windows_game_build_service(tools);
     CHECK(toolsService.has_value());
     service = toolsService.take_value();
@@ -310,17 +313,18 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
     CHECK(service->status().purpose == cue::GameBuildPurpose::IdeProject);
-    CHECK(service->status().solutionFile.filename() == "FixturePlayer.slnx");
-    CHECK(service->status().solutionFile.utf8().find("/Intermediate/IDE/") != std::string::npos);
-    CHECK(read(files, path(service->status().solutionFile.parent().join("CueEngine.slnx"))) == "Fixture old solution\n");
+    CHECK(service->status().workspaceDirectory.utf8() == root.utf8());
+    CHECK(service->status().log.find("/Intermediate/IDE/WorkspaceV1/") != std::string::npos);
+    CHECK(read(files, path(root.join("CMakeLists.txt"))) == "# fixture workspace\n");
+    CHECK(read(files, path(root.join("CMakeUserPresets.json"))).find(engine.utf8()) != std::string::npos);
     CHECK(service->status().log.find("BUILD FIXTURE") == std::string::npos);
     CHECK(service->status().moduleFile.is_empty() && service->status().executable.is_empty());
     CHECK(!service->launch().has_value());
-    const auto solution = service->status().solutionFile;
+    const auto workspace = service->status().workspaceDirectory;
     CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::ScriptModule).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
     CHECK(service->status().purpose == cue::GameBuildPurpose::ScriptModule);
-    CHECK(service->status().solutionFile.utf8() == solution.utf8());
+    CHECK(service->status().workspaceDirectory.utf8() == workspace.utf8());
     CHECK(service->status().moduleFile.filename() == "FixtureGame.dll");
     CHECK(service->status().symbolsFile.filename() == "FixtureGame.pdb");
     CHECK(!service->launch().has_value());
@@ -331,25 +335,25 @@ int wmain(int a_count, wchar_t **a_arguments)
         CHECK(wait(*service, cue::GameBuildState::Failed));
         CHECK(!service->launch().has_value());
     }
-    // VS Generator が従来形式を生成しても、旧 Engine 名の Solution と区別する
-    CHECK(write(files, mode, "sln-only"));
+    for (const auto *legacy : {"sln-only", "missing-solution", "ambiguous-solution"})
+    {
+        CHECK(write(files, mode, legacy));
+        CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
+        CHECK(wait(*service, cue::GameBuildState::Succeeded));
+        CHECK(service->status().workspaceDirectory.utf8() == root.utf8());
+    }
+    // 既存のユーザー定義 CMake は保ち、所有していない Local Presets は上書きせず診断する
+    auto localPresets = path(root.join("CMakeUserPresets.json"));
+    const auto ownedPresets = read(files, localPresets);
+    CHECK(write(files, path(root.join("CMakeLists.txt")), "# user workspace\n"));
+    CHECK(write(files, localPresets, "{\"version\":9}\n"));
+    CHECK(!service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
+    CHECK(read(files, localPresets) == "{\"version\":9}\n");
+    CHECK(read(files, path(root.join("CMakeLists.txt"))) == "# user workspace\n");
+    CHECK(write(files, localPresets, ownedPresets));
     CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
-    CHECK(service->status().solutionFile.filename() == "FixturePlayer.sln");
-    for (const auto *failure : {"missing-solution", "ambiguous-solution"})
-    {
-        CHECK(write(files, mode, failure));
-        CHECK(service->start(*project.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
-        CHECK(wait(*service, cue::GameBuildState::Failed));
-        CHECK(read(files, path(solution.parent().join("CueEngine.slnx"))) == "Fixture old solution\n");
-        if (std::string_view(failure) == "missing-solution")
-            CHECK(read(files, solution).empty());
-        else
-        {
-            CHECK(!read(files, solution).empty());
-            CHECK(!read(files, path(solution.parent().join("FixturePlayer.sln"))).empty());
-        }
-    }
+    CHECK(read(files, path(root.join("CMakeLists.txt"))) == "# user workspace\n");
     // 起動 Scene のない Project でも IDE / DLL は作れる。製品要求だけを拒否する
     auto descriptor = read(files, projectFile);
     descriptor.erase(descriptor.find("startupScene="), std::string("startupScene=Scenes/Start.cuescene\n").size());
@@ -377,8 +381,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(otherProject.has_value());
     CHECK(service->start(*otherProject.try_value(), target, cue::GameBuildPurpose::IdeProject).has_value());
     CHECK(wait(*service, cue::GameBuildState::Succeeded));
-    CHECK(service->status().solutionFile.utf8().starts_with(otherRoot.utf8() + '/'));
-    CHECK(service->status().solutionFile.filename() == "OtherFixturePlayer.slnx");
+    CHECK(service->status().workspaceDirectory.utf8() == otherRoot.utf8());
     CHECK(service->status().moduleFile.is_empty() && !service->launch().has_value());
     CHECK(service->shutdown().has_value());
     CHECK(!service->reset_project().has_value());

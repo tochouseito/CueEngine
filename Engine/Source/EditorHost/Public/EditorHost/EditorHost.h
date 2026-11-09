@@ -139,7 +139,7 @@ class EditorHost final
     [[nodiscard]] const GameBuildStatus *game_build_status() const noexcept;
     /// @brief Build の未保存確認が保留中か返す。Owner Thread 以外では false
     [[nodiscard]] bool has_pending_game_build_confirmation() const noexcept;
-    /// @brief IDE Solution の生成と起動を非待機で要求する。Owner Thread、初期化後専用
+    /// @brief IDE Workspace の準備と起動を非待機で要求する。Owner Thread、初期化後専用
     [[nodiscard]] Result<void> open_ide();
     /// @brief Script の型 ID を Authoring Source へ解決して開く。Scene は変更しない
     [[nodiscard]] Result<void> edit_script(std::string_view a_typeId);

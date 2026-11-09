@@ -23,7 +23,7 @@ enum class GameBuildState
     Cancelled
 };
 
-/// @brief 同じ Project の生成対象。IDE と Script は共有する開発 Tree、製品は専用 Tree を使う
+/// @brief ゲームを Root とする生成対象。IDE と Script は開発 Tree、製品は専用 Tree を使う
 enum class GameBuildPurpose
 {
     Player,
@@ -46,7 +46,7 @@ struct GameBuildStatus final
     bool isApplicationRunning = false;
     std::optional<std::uint32_t> applicationExitCode;
     GameBuildPurpose purpose = GameBuildPurpose::Player;
-    Path solutionFile;
+    Path workspaceDirectory;
     Path moduleFile;
     Path symbolsFile;
 };

@@ -12,7 +12,7 @@ namespace cue
 enum class EditorScriptState
 {
     Idle,
-    PreparingSolution,
+    PreparingWorkspace,
     OpeningIde,
     BuildingScripts,
     ReloadingScripts,

@@ -40,14 +40,14 @@ namespace Cue.VisualStudioBridge
         private static extern bool CloseHandle(IntPtr handle);
 
         /// <summary>自分の Bridge Job から離して IDE を起動し、取消や完了で IDE を終了させない</summary>
-        internal static int launch_ide(string executable, string solution)
+        internal static int launch_ide(string executable, string workspace)
         {
             var startup = new StartupInfo();
             startup.cb = (uint)Marshal.SizeOf(startup);
             ProcessInfo process;
-            var line = new StringBuilder(quote(executable) + " " + quote(solution));
+            var line = new StringBuilder(quote(executable) + " " + quote(workspace));
             if (!CreateProcessW(executable, line, IntPtr.Zero, IntPtr.Zero, false, 0x01000000, IntPtr.Zero,
-                System.IO.Path.GetDirectoryName(solution), ref startup, out process))
+                workspace, ref startup, out process))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Visual Studio could not be launched independently.");
             CloseHandle(process.thread);
             CloseHandle(process.process);

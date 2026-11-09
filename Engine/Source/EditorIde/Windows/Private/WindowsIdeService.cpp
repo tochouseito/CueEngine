@@ -23,8 +23,8 @@ const char *operation_name(IdeOperation a_operation)
 {
     switch (a_operation)
     {
-    case IdeOperation::OpenSolution:
-        return "open-solution";
+    case IdeOperation::OpenFolder:
+        return "open-folder";
     case IdeOperation::OpenSource:
         return "open-source";
     case IdeOperation::AttachDebugger:
@@ -40,12 +40,12 @@ template <class Number> bool parse_number(std::string_view a_text, Number &a_num
     return result.ec == std::errc{} && result.ptr == a_text.data() + a_text.size();
 }
 /// @brief 全親要素を確認し、File / Directory の Link 別名を受け付けない
-Result<void> validate_file(IFileSystem &a_files, const Path &a_file)
+Result<void> validate_path(IFileSystem &a_files, const Path &a_file, FileType a_type)
 {
     if (!a_file.is_absolute())
         return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorIde.absolute_file_required"});
     auto current = a_file;
-    auto type = FileType::Regular;
+    auto type = a_type;
     for (;;)
     {
         auto info = a_files.stat(current);
@@ -60,6 +60,11 @@ Result<void> validate_file(IFileSystem &a_files, const Path &a_file)
         type = FileType::Directory;
     }
     return Result<void>::success();
+}
+/// @brief 実行 File と Source の通常 File 制約を共有する
+Result<void> validate_file(IFileSystem &a_files, const Path &a_file)
+{
+    return validate_path(a_files, a_file, FileType::Regular);
 }
 /// @brief 入力された PID を生存中の Play Host と照合し、応答まで Handle を保持する
 Result<ide_detail::IdeHandle> validate_target(std::uint32_t a_processId, const Path &a_executable)
@@ -102,20 +107,20 @@ class WindowsIdeService final : public IEditorIdeService
     {
         m_process = {};
     }
-    /// @brief 指定 Solution の VS を再利用または起動する
-    Result<void> open_solution(const Path &a_solution) override
+    /// @brief 指定ゲーム Folder の VS を再利用または起動する
+    Result<void> open_folder(const Path &a_workspace) override
     {
-        return start(IdeOperation::OpenSolution, a_solution, {}, 1, 0, {});
+        return start(IdeOperation::OpenFolder, a_workspace, {}, 1, 0, {});
     }
     /// @brief Source 表示要求を独立した所有値にする
-    Result<void> open_source(const Path &a_solution, const Path &a_source, std::uint32_t a_line) override
+    Result<void> open_source(const Path &a_workspace, const Path &a_source, std::uint32_t a_line) override
     {
-        return start(IdeOperation::OpenSource, a_solution, a_source, a_line, 0, {});
+        return start(IdeOperation::OpenSource, a_workspace, a_source, a_line, 0, {});
     }
     /// @brief 自分で起動した Play Host にだけ接続する
-    Result<void> attach_debugger(const Path &a_solution, std::uint32_t a_processId, const Path &a_expected) override
+    Result<void> attach_debugger(const Path &a_workspace, std::uint32_t a_processId, const Path &a_expected) override
     {
-        return start(IdeOperation::AttachDebugger, a_solution, {}, 1, a_processId, a_expected);
+        return start(IdeOperation::AttachDebugger, a_workspace, {}, 1, a_processId, a_expected);
     }
     /// @brief 一回の出力予算と終了状態を待機せず読む
     Result<void> poll() override;
@@ -131,7 +136,7 @@ class WindowsIdeService final : public IEditorIdeService
 
   private:
     /// @brief Owner / 停止 / 二重要求の前提を検証して Bridge を開始する
-    Result<void> start(IdeOperation a_operation, const Path &a_solution, const Path &a_source, std::uint32_t a_line,
+    Result<void> start(IdeOperation a_operation, const Path &a_workspace, const Path &a_source, std::uint32_t a_line,
                        std::uint32_t a_pid, const Path &a_expected);
     /// @brief 要求 ID と Operation を照合し、成功値を部分公開しない
     Result<void> parse_response(DWORD a_exitCode);
@@ -145,7 +150,7 @@ class WindowsIdeService final : public IEditorIdeService
     IdeStatus m_status;
     std::uint64_t m_nextRequest = 0;
     std::uint64_t m_deadline = 0;
-    Path m_pinnedSolution;
+    Path m_pinnedWorkspace;
     std::uint32_t m_pinnedIde = 0;
     ide_detail::IdeHandle m_target;
     ide_detail::IdeProcess m_process;
@@ -162,7 +167,7 @@ Result<void> WindowsIdeService::check_access() const
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorIde.closed"});
     return Result<void>::success();
 }
-Result<void> WindowsIdeService::start(IdeOperation a_operation, const Path &a_solution, const Path &a_source,
+Result<void> WindowsIdeService::start(IdeOperation a_operation, const Path &a_workspace, const Path &a_source,
                                       std::uint32_t a_line, std::uint32_t a_pid, const Path &a_expected)
 {
     auto access = check_access();
@@ -172,11 +177,15 @@ Result<void> WindowsIdeService::start(IdeOperation a_operation, const Path &a_so
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorIde.busy"});
     try
     {
-        auto checked = validate_file(*m_files, a_solution);
+        auto checked = validate_path(*m_files, a_workspace, FileType::Directory);
         if (!checked.has_value())
             return checked;
-        if (a_solution.extension() != ".sln" && a_solution.extension() != ".slnx")
-            return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorIde.solution_extension"});
+        auto cmake = a_workspace.join("CMakeLists.txt");
+        if (!cmake.has_value())
+            return Result<void>::failure(*cmake.try_error());
+        checked = validate_file(*m_files, *cmake.try_value());
+        if (!checked.has_value())
+            return checked;
         if (a_line == 0 || a_line > 10000000)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorIde.source_line"});
         if (a_operation == IdeOperation::OpenSource)
@@ -204,9 +213,10 @@ Result<void> WindowsIdeService::start(IdeOperation a_operation, const Path &a_so
         if (!checked.has_value())
             return checked;
         const auto request = ++m_nextRequest;
-        std::vector<std::string> arguments{"--command",    operation_name(a_operation), "--solution", a_solution.utf8(),
+        std::vector<std::string> arguments{"--command",    operation_name(a_operation),
+                                           "--workspace",  a_workspace.utf8(),
                                            "--request-id", std::to_string(request)};
-        if (m_pinnedIde && m_pinnedSolution.utf8() == a_solution.utf8())
+        if (m_pinnedIde && m_pinnedWorkspace.utf8() == a_workspace.utf8())
         {
             arguments.insert(arguments.end(), {"--ide-process-id", std::to_string(m_pinnedIde)});
         }
@@ -222,7 +232,7 @@ Result<void> WindowsIdeService::start(IdeOperation a_operation, const Path &a_so
         auto process = ide_detail::start_bridge(m_config.bridgeExecutable, arguments);
         if (!process.has_value())
             return Result<void>::failure(*process.try_error());
-        m_status = {a_operation, IdeState::Running, request, a_solution, a_source, a_line, a_pid};
+        m_status = {a_operation, IdeState::Running, request, a_workspace, a_source, a_line, a_pid};
         m_process = process.take_value();
         m_target = std::move(target);
         m_response.clear();
@@ -285,7 +295,7 @@ Result<void> WindowsIdeService::parse_response(DWORD a_exitCode)
         return fail({ErrorCategory::PlatformFailure, "EditorIde.bridge_failed:" + std::string(values[6]), a_exitCode});
     m_status.ideProcessId = ide;
     m_status.message = values[6];
-    m_pinnedSolution = m_status.solution;
+    m_pinnedWorkspace = m_status.workspaceDirectory;
     m_pinnedIde = ide;
     m_status.state = IdeState::Succeeded;
     return Result<void>::success();

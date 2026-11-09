@@ -13,7 +13,7 @@ namespace cue
 enum class IdeOperation
 {
     None,
-    OpenSolution,
+    OpenFolder,
     OpenSource,
     AttachDebugger
 };
@@ -31,7 +31,7 @@ struct IdeStatus final
     IdeOperation operation = IdeOperation::None;
     IdeState state = IdeState::Idle;
     std::uint64_t requestId = 0;
-    Path solution;
+    Path workspaceDirectory;
     Path source;
     std::uint32_t sourceLine = 1;
     std::uint32_t targetProcessId = 0;
@@ -46,13 +46,13 @@ class IEditorIdeService
   public:
     /// @brief Platform 実装を一意所有する
     virtual ~IEditorIdeService() = default;
-    /// @brief 指定 Solution を開く。既存の別 Solution は置き換えない
-    [[nodiscard]] virtual Result<void> open_solution(const Path &a_solution) = 0;
+    /// @brief 指定ゲーム Folder を開く。既存の別 Workspace は置き換えない
+    [[nodiscard]] virtual Result<void> open_folder(const Path &a_workspace) = 0;
     /// @brief Project 内で解決済みの Source を指定行で開く
-    [[nodiscard]] virtual Result<void> open_source(const Path &a_solution, const Path &a_source,
+    [[nodiscard]] virtual Result<void> open_source(const Path &a_workspace, const Path &a_source,
                                                    std::uint32_t a_line = 1) = 0;
-    /// @brief 対象 Solution の IDE を選び、実行 File を照合した指定 Process へ Native 接続する
-    [[nodiscard]] virtual Result<void> attach_debugger(const Path &a_solution, std::uint32_t a_processId,
+    /// @brief 対象 Workspace の IDE を選び、実行 File を照合した指定 Process へ Native 接続する
+    [[nodiscard]] virtual Result<void> attach_debugger(const Path &a_workspace, std::uint32_t a_processId,
                                                        const Path &a_expectedExecutable) = 0;
     /// @brief 出力と終了を期限付き・非待機で回収する
     [[nodiscard]] virtual Result<void> poll() = 0;
