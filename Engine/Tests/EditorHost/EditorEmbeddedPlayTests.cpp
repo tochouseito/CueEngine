@@ -87,6 +87,7 @@ int test_editor(const cue::Path &a_executable, const cue::Path &a_module, double
     config.initialScene = scene.take_value();
     config.playExecutable = a_executable;
     config.scriptModule = a_module;
+    config.gameConfiguration = cue::current_game_build_configuration();
     config.imgui.settingsFile.clear();
     config.logging.isFileEnabled = false;
     config.buildUi = [] { return cue::Result<void>::success(); };

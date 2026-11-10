@@ -58,6 +58,8 @@ enum class EditorActionKind
     SetPlayTransform,
     SetSceneViewCamera,
     ResetSceneViewCamera,
+    SetGameConfiguration,
+    CreateScript,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求
@@ -71,6 +73,9 @@ struct EditorAction final
     ScriptPropertyValue property;
     bool isEnabled = true;
     GameBuildTarget buildTarget;
+    // Play 用 Game DLL の構成。製品アプリの Build Target とは独立して選ぶ
+    GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
+    std::string scriptName;
 };
 
 /// @brief Build の表示用 Snapshot。View / Span は draw の間だけ Host から借用する
@@ -105,6 +110,10 @@ struct EditorScriptContext final
     bool isDebuggerAttached = false;
     std::uint32_t processId = 0;
     std::string_view statusText;
+    GameBuildConfiguration configuration = GameBuildConfiguration::Development;
+    bool canSelectConfiguration = false;
+    bool isBuildRequired = false;
+    bool canCreate = false;
 };
 
 /// @brief Host が UI の構築中だけ渡す表示値。Texture ID は Native Descriptor ではなく論理参照

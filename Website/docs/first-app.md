@@ -14,8 +14,8 @@ sidebar_position: 2
 ## Editor で Cube を追加する
 
 1. Editor で起動シーン `Main` を開きます。**Objects → Add Cube** で Cube を追加します。
-2. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。Editor が独立した CMake の設定とローカル SDK の Preset を準備します。Project の `Source/Game.cpp` を開き、先頭に `#include <chrono>` と `#include <Math/Quaternion.h>` を追加します。
-3. `EmptyBehaviour` の `update()` を下記の実装へ置き換えて保存します。
+2. **Script → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.cpp` と型登録が生成され、ビルド対象へ自動的に加わります。`Game.cpp` は不要です。
+3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` の先頭に `#include <chrono>` と `#include <Math/Quaternion.h>` を追加し、`RotateCube` の `update()` を下記の実装へ置き換えて保存します。
 
 ```cpp
 [[nodiscard]] cue::Result<void> update(cue::GameObject &a_object,
@@ -41,7 +41,7 @@ sidebar_position: 2
 ```
 
 4. **Script → Build Scripts** を実行し、ビルドが終わるまで待ちます。
-5. Cube を選び、Inspector の **Add Script** で **Empty Behaviour** を選びます。これは生成時に用意された Script 型の表示名です。
+5. Cube を選び、Inspector の **Add Script** で **RotateCube** を選びます。
 6. **File → Save Scene** で保存します。**Play** を押すと **Scene View** 内で Cube の回転を確認できます。確認後は **Stop** を押します。
 
 Engine Preview 5 以降では、ゲームは別プロセスで実行しながら Editor 内に表示します。ゲームがクラッシュした場合も Play を終了し、編集中の Scene を保持します。以前の Preview では別ウィンドウで表示します。
@@ -60,5 +60,5 @@ Scene View の画像上では、右マウスボタンを押しながら **WASD /
 
 1. **Build → Build Settings...** を開き、**Windows**、**x64**、**Release** を選びます。
 2. **Build** を押し、完了まで待ちます。失敗した場合は **Build Log** で詳細を確認できます。
-3. **Run** で生成アプリを開き、追加した Cube が回り続けることを確認します。生成されたアプリは、Project の `Build/Windows/x64/Release/Player` にあります。
+3. **Run** で生成アプリを開き、追加した Cube が回り続けることを確認します。生成されたアプリは、Project の `Build/Windows/x64/Release/App` にあります。
 4. Editor を閉じた後もアプリが動くことを確認し、最後にアプリのウィンドウを閉じます。

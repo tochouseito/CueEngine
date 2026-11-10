@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 4.2)
+
+# Release は PIX を Link しないため、解析用 DLL とその License を配置しない
+if(CUE_PIX_CONFIGURATION STREQUAL "Release")
+    return()
+endif()
+if(NOT CUE_PIX_CONFIGURATION MATCHES "^(Debug|Development)$")
+    message(FATAL_ERROR "PIX runtime copy requires a supported configuration")
+endif()
+foreach(taskRequired IN ITEMS CUE_PIX_SOURCE CUE_PIX_LICENSE_DIRECTORY CUE_PIX_OUTPUT_DIRECTORY)
+    if(NOT DEFINED ${taskRequired} OR "${${taskRequired}}" STREQUAL "")
+        message(FATAL_ERROR "PIX runtime copy argument is missing: ${taskRequired}")
+    endif()
+endforeach()
+file(MAKE_DIRECTORY "${CUE_PIX_OUTPUT_DIRECTORY}")
+file(COPY_FILE "${CUE_PIX_SOURCE}" "${CUE_PIX_OUTPUT_DIRECTORY}/WinPixEventRuntime.dll" ONLY_IF_DIFFERENT)
+foreach(taskLicense IN ITEMS WinPixEventRuntime-MIT.txt WinPixEventRuntime-ThirdPartyNotices.txt)
+    file(COPY_FILE "${CUE_PIX_LICENSE_DIRECTORY}/${taskLicense}"
+        "${CUE_PIX_OUTPUT_DIRECTORY}/${taskLicense}" ONLY_IF_DIFFERENT)
+endforeach()

@@ -40,7 +40,7 @@ Editor 自身を開いている生成 Solution を Configure で書き換えな�
 同じ Tree は構成ごとに再利用し、構成は `--config` で指定する。
 
 1. `cmake --preset windows-vs2026 -B <専用Tree>` に Project / Platform / Architecture / Toolchain を渡す。
-2. Configure 成功後に `cmake --build <専用Tree> --config <構成> --target Cue.GamePlayerPackage --parallel` を実行する。
+2. Configure 成功後に `cmake --build <専用Tree> --config <構成> --target Cue.GameAppPackage --parallel` を実行する。
 3. 完成 Marker、設定識別、起動 Scene、exe、必須 Runtime / Shader の通常 File を再検証し、成功を公開する。
 
 Configure は Test / 手動性能 Tool を無効にし、製品だけを Build する。

@@ -8,9 +8,11 @@ set_property(GLOBAL PROPERTY CUE_GAME_Windows_APPLICATION_SUFFIX .exe)
 set_property(GLOBAL PROPERTY CUE_GAME_Windows_HOST_TARGET Cue.GameHost.Windows)
 set_property(GLOBAL PROPERTY CUE_GAME_Windows_MAIN_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../Engine/Source/GameHost/Windows/Main.cpp")
 set_property(GLOBAL PROPERTY CUE_GAME_Windows_APPLICATION_FACTORY cue_add_windows_game_application)
-set_property(GLOBAL PROPERTY CUE_GAME_Windows_RUNTIME_FILES "dxcompiler.dll;dxil.dll;WinPixEventRuntime.dll")
+set_property(GLOBAL PROPERTY CUE_GAME_Windows_RUNTIME_FILES
+    dxcompiler.dll dxil.dll "$<$<NOT:$<CONFIG:Release>>:WinPixEventRuntime.dll>")
 set_property(GLOBAL PROPERTY CUE_GAME_Windows_LICENSE_FILES
-    WinPixEventRuntime-MIT.txt WinPixEventRuntime-ThirdPartyNotices.txt
+    "$<$<NOT:$<CONFIG:Release>>:WinPixEventRuntime-MIT.txt>"
+    "$<$<NOT:$<CONFIG:Release>>:WinPixEventRuntime-ThirdPartyNotices.txt>"
     DirectXShaderCompiler-MS.txt DirectXShaderCompiler-LLVM.txt
     DirectXShaderCompiler-MIT.txt DirectXShaderCompiler-HLSL.txt)
 

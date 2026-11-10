@@ -39,6 +39,7 @@ struct Options final
     bool isHeadless = false;
     bool isEmbedded = false;
     bool isDebug = false;
+    std::optional<cue::ScriptConfiguration> moduleConfiguration;
 };
 
 /// @brief OS の Command Line 分割を利用し、未知引数・欠損値・重複を拒否する
@@ -105,6 +106,18 @@ cue::Result<Options> read_options()
             if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || !options.maxTicks)
                 return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.max_ticks"});
             hasMaxTicks = true;
+        }
+        else if (key == "--module-configuration" && !options.moduleConfiguration)
+        {
+            if (text == "debug")
+                options.moduleConfiguration = cue::ScriptConfiguration::Debug;
+            else if (text == "development")
+                options.moduleConfiguration = cue::ScriptConfiguration::Development;
+            else if (text == "release")
+                options.moduleConfiguration = cue::ScriptConfiguration::Release;
+            else
+                return cue::Result<Options>::failure(
+                    {cue::ErrorCategory::InvalidArgument, "Play.module_configuration"});
         }
         else
             return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.argument"});
@@ -237,7 +250,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
         if (!debugScene)
             return 0;
     }
-    auto module = cue::RuntimeGameModule::load(a_options.module);
+    auto module = cue::RuntimeGameModule::load(a_options.module, a_options.moduleConfiguration);
     if (!module.has_value())
         return fail(a_server, *module.try_error());
     auto described = a_server.send_types((*module.try_value())->types());

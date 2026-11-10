@@ -12,6 +12,7 @@ add_library(Cue.EditorHost STATIC
     Private/EditorLaunchOptions.cpp
     Private/EditorWindowsServices.cpp
     Private/EditorPlayServices.cpp
+    Private/EditorGameSettings.cpp
     Private/EditorScriptController.cpp
     Private/ImGuiManager.cpp
     Private/EditorFonts.h

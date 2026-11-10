@@ -6,7 +6,9 @@
 #include <new>
 #include <vector>
 
+#if !defined(CUE_SHIPPING)
 #include <pix3.h>
+#endif
 #include <wrl/client.h>
 
 #include <DX12/DX12CommandPool.h>
@@ -452,12 +454,16 @@ Result<void> DX12FrameGraphExecutor::record_prepared(const FrameGraphPlan &a_pla
         const auto &before = a_prepared.before[index];
         if (!before.empty())
             list.ResourceBarrier(static_cast<UINT>(before.size()), before.data());
-        // Native Event 名を Plan の Pass 名へ揃え、Timestamp の区間と同じ範囲を Capture で識別する
+#if !defined(CUE_SHIPPING)
+        // Native Event 名を Plan の Pass 名へ揃え、製品構成には PIX の依存を残さない
         const auto &name = a_plan.passes()[index].name;
         PIXBeginEvent(&list, PIX_COLOR_DEFAULT, "%s", name.c_str());
+#endif
         // 抽象 Pass の実行結果を受け取り、失敗時は後続を記録しない
         auto callback = a_callbacks[index - a_firstPass](list, passContext);
+#if !defined(CUE_SHIPPING)
         PIXEndEvent(&list);
+#endif
         if (!callback.has_value())
             return callback;
         const auto &after = a_prepared.after[index];

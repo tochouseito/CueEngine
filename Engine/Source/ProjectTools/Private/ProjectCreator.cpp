@@ -272,7 +272,9 @@ Result<ProjectCreation> create_project(IFileSystem &a_files, const Path &a_templ
         if (!templateDirectory.has_value())
             return Result<ProjectCreation>::failure(*templateDirectory.try_error());
         std::vector<PlannedFile> planned;
-        for (const auto *relative : {"Source/CMakeLists.txt.in", "Source/Game.cpp", "Source/ScriptSources.cueide",
+        const auto scriptFile = a_desc.projectTemplate == ProjectTemplate::RotateCube ? "Source/RotateCube.cpp"
+                                                                                      : "Source/EmptyBehaviour.cpp";
+        for (const auto *relative : {"Source/CMakeLists.txt.in", scriptFile, "Source/ScriptSources.cueide",
                                      "Content/Scenes/Main.cuescene.in", "CMakeLists.txt", "CMakePresets.json"})
         {
             const std::string_view relativeName(relative);

@@ -145,6 +145,106 @@ void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRe
         a_hasResponse = true;
     }
 }
+
+/// @brief File 名の入力段階で Path と非 ASCII 文字を拒否し、最終的な予約語検証は Creator に委ねる
+bool is_script_name_input(std::string_view a_name) noexcept
+{
+    const auto isLetter = [](char a_character)
+    { return (a_character >= 'A' && a_character <= 'Z') || (a_character >= 'a' && a_character <= 'z'); };
+    if (a_name.empty() || !isLetter(a_name.front()))
+        return false;
+    return std::all_of(
+        a_name.begin(), a_name.end(), [&](char a_character)
+        { return isLetter(a_character) || (a_character >= '0' && a_character <= '9') || a_character == '_'; });
+}
+
+/// @brief Source 作成を所有値の Action にし、FileSystem と Project の更新を Host へ委ねる
+void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_state,
+                          std::vector<EditorAction> &a_actions)
+{
+    constexpr const char *k_popupName = "New Script##EditorCreateScript";
+    if (!can_create_editor_script(a_context))
+    {
+        a_state.shouldCloseScriptCreationPopup |= a_state.isScriptCreationRequested;
+        a_state.isScriptCreationRequested = false;
+        a_state.shouldOpenScriptCreationPopup = false;
+        a_state.needsScriptNameFocus = false;
+        a_state.scriptName.fill(0);
+    }
+    // Project 切替や外部からの操作開始で取り消した Popup を、ImGui Context のある境界で回収する
+    if (a_state.shouldCloseScriptCreationPopup)
+    {
+        if (ImGui::BeginPopupModal(k_popupName))
+        {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        a_state.shouldCloseScriptCreationPopup = false;
+    }
+    if (!a_state.isScriptCreationRequested)
+        return;
+    if (a_state.shouldOpenScriptCreationPopup)
+    {
+        ImGui::OpenPopup(k_popupName);
+        a_state.shouldOpenScriptCreationPopup = false;
+    }
+    const auto *viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    bool isOpen = true;
+    const bool isVisible = ImGui::BeginPopupModal(k_popupName, &isOpen,
+                                                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                                      ImGuiWindowFlags_NoDocking);
+    if (isVisible)
+    {
+        struct PopupScope final
+        {
+            /// @brief Action の確保失敗でも Popup Stack を対応させる
+            ~PopupScope()
+            {
+                ImGui::EndPopup();
+            }
+        } popup;
+        ImGui::TextUnformatted("Create a C++ Behaviour with script registration.");
+        if (a_state.needsScriptNameFocus)
+        {
+            ImGui::SetKeyboardFocusHere();
+            a_state.needsScriptNameFocus = false;
+        }
+        ImGui::SetNextItemWidth(320);
+        const bool isSubmitted = ImGui::InputText("Name", a_state.scriptName.data(), a_state.scriptName.size(),
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+        const std::string_view name(a_state.scriptName.data());
+        const bool isValid = is_script_name_input(name);
+        ImGui::Text("Source/%s.cpp", a_state.scriptName.data());
+        if (!name.empty() && !isValid)
+            ImGui::TextUnformatted("Use ASCII letters, digits and underscores; start with a letter.");
+        bool isCreated = false;
+        {
+            EditorDisabledScope disabled(!isValid);
+            isCreated = ImGui::Button("Create", {100, 0});
+        }
+        ImGui::SameLine();
+        const bool isCancelled = ImGui::Button("Cancel", {100, 0}) ||
+                                 ImGui::IsKeyPressed(ImGuiKey_Escape, ImGuiInputFlags_None, ImGuiKeyOwner_Any);
+        if (!isCancelled && (isCreated || isSubmitted) && isValid)
+        {
+            EditorAction action;
+            action.kind = EditorActionKind::CreateScript;
+            action.scriptName = name;
+            a_actions.push_back(std::move(action));
+            isOpen = false;
+        }
+        if (isCancelled)
+            isOpen = false;
+        if (!isOpen)
+            ImGui::CloseCurrentPopup();
+    }
+    if (!isOpen)
+    {
+        a_state.isScriptCreationRequested = false;
+        a_state.scriptName.fill(0);
+    }
+}
 } // namespace
 
 struct EditorUi::State final : EditorUiState
@@ -203,8 +303,9 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
         }
         std::vector<EditorAction> actions;
         actions.reserve(16);
+        const bool wasScriptCreationRequested = m_state->isScriptCreationRequested;
         // Modal の初回 Frame も無効化し、Popup がまだ開く前の背景入力を処理しない
-        ImGui::BeginDisabled(context.isUnsavedConfirmationRequested);
+        ImGui::BeginDisabled(context.isUnsavedConfirmationRequested || wasScriptCreationRequested);
         struct DisabledScope final
         {
             /// @brief Panel の失敗・例外でも Disabled の Stack を対応させる
@@ -231,10 +332,12 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
             draw_scene_view(context, actions);
             draw_editor_status(a_document, context);
             // Panel より後に Menu を構築し、旧 Layout から移行する Frame でも入力領域を確保する
-            draw_scene_menu(a_document, *m_state, actions, context, !context.isUnsavedConfirmationRequested);
+            draw_scene_menu(a_document, *m_state, actions, context,
+                            !context.isUnsavedConfirmationRequested && !wasScriptCreationRequested);
         }
-        if (context.isUnsavedConfirmationRequested)
+        if (context.isUnsavedConfirmationRequested || wasScriptCreationRequested)
             actions.clear();
+        draw_script_creation(context, *m_state, actions);
         draw_unsaved_confirmation(context.isUnsavedConfirmationRequested, context.isBuildConfirmationRequested,
                                   m_state->wasUnsavedConfirmationRequested, m_state->hasUnsavedResponse,
                                   m_state->shouldCloseUnsavedPopup, actions);
@@ -259,6 +362,11 @@ void EditorUi::reset() noexcept
     m_state->hasInvalidRotationInput = false;
     m_state->playTransform = {};
     m_state->wasPlaying = false;
+    m_state->shouldCloseScriptCreationPopup |= m_state->isScriptCreationRequested;
+    m_state->isScriptCreationRequested = false;
+    m_state->shouldOpenScriptCreationPopup = false;
+    m_state->needsScriptNameFocus = false;
+    m_state->scriptName.fill(0);
     // 応答消費直後の次 Pump が別の確認を開始しても、false Frame を挟まず再表示できるようにする
     m_state->shouldCloseUnsavedPopup |= m_state->wasUnsavedConfirmationRequested && !m_state->hasUnsavedResponse;
     m_state->wasUnsavedConfirmationRequested = false;

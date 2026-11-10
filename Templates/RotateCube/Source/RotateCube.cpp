@@ -1,9 +1,8 @@
+#include <chrono>
 #include <cmath>
-#include <memory>
-#include <utility>
 
 #include <Math/Quaternion.h>
-#include <Script/Module.h>
+#include <Script/ModuleEntry.h>
 
 namespace
 {
@@ -54,36 +53,13 @@ class RotateCubeBehaviour final : public cue::Behaviour
     bool m_isRotating = true;
 };
 
-/// @brief Scene へ保存する安定 ID と Inspector の表示項目を明示登録する
-cue::Result<std::unique_ptr<cue::ScriptModule>> create_module()
-{
-    cue::ScriptTypeDescriptor type{"sample.RotateCube",
-                                   "Rotate Cube",
-                                   1,
-                                   {{"speed", "Speed (degrees/sec)", cue::ScriptPropertyKind::Number, 90, false},
-                                    {"isRotating", "Rotate", cue::ScriptPropertyKind::Boolean, 0, true}}};
-    std::vector<cue::ScriptRegistration> registrations;
-    registrations.push_back(cue::make_script_registration<RotateCubeBehaviour>(std::move(type)));
-    return cue::ScriptModule::create(std::move(registrations));
-}
 } // namespace
 
-/// @brief DLL / Static Link に共通の C 入口。登録時の例外も Game Module の内側で Status へ変換する
-extern "C" CUE_SCRIPT_EXPORT CueScriptStatus CUE_SCRIPT_CALL CueScriptGetModule(std::uint32_t a_version,
-                                                                                CueScriptModuleApi *a_api) noexcept
-{
-    try
-    {
-        if (!a_api)
-            return cue::script_status({cue::ErrorCategory::InvalidArgument, "RotateCube.api_null"});
-        // Module 自身の登録だけを保持する。Current World / Project は Global に置かない
-        static auto module = create_module();
-        if (!module.has_value())
-            return cue::script_status(*module.try_error());
-        return (*module.try_value())->get_api(a_version, *a_api);
-    }
-    catch (...)
-    {
-        return cue::script_exception_status();
-    }
-}
+// 共通 Module 入口から呼ぶ、この Script の型登録を定義する
+CUE_DEFINE_SCRIPT(RotateCubeBehaviour,
+                  cue::make_script_registration<RotateCubeBehaviour>(
+                      {"sample.RotateCube",
+                       "Rotate Cube",
+                       1,
+                       {{"speed", "Speed (degrees/sec)", cue::ScriptPropertyKind::Number, 90, false},
+                        {"isRotating", "Rotate", cue::ScriptPropertyKind::Boolean, 0, true}}}))

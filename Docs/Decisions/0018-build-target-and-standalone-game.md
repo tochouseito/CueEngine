@@ -33,18 +33,27 @@ Engine の生成 Solution に独立したアプリ Target を追加し、Editor 
 ## 配布物
 
 ```text
-Project/Build/<Platform>/<Architecture>/<Configuration>/Player/
+Project/Build/<Platform>/<Architecture>/<Configuration>/App/
   <applicationName>.exe
   GameStartup.cueapp
   GamePackage.cuepackage
   Content/<startupScene>
   EngineResources/Shader/...
-  dxcompiler.dll / dxil.dll / WinPixEventRuntime.dll
+  dxcompiler.dll / dxil.dll
+  WinPixEventRuntime.dll (Debug / Development のみ)
   Runtime の License File
 ```
 
-Link の直接出力は Project の Intermediate 配下とし、Player へ配布物だけをコピーする。
-ゲーム DLL / Library、Editor / PlayHost、Source は Player に含めない。
+Link の直接出力は Project の Intermediate 配下とし、App へ配布物だけをコピーする。
+配布先は旧 `Player` から `App` へ統一する。既存の `Player` Directory は移動・削除せず、次回 Build で `App` を生成する。
+Build Target は `Cue.GameAppPackage`、Script の単独製品指定は `-AppOnly` を使う。
+SDK の構成 Option は `CUE_GAME_BUILD_APP`、Editor が管理する製品 Preset は `cue-app` とする。
+ゲーム DLL / Library、Editor / PlayHost、Source は App に含めない。
+Release は PIX を Link せず、PIX DLL とその License も配布しない。
+Debug / Development は PIX Marker と解析用 Runtime を維持する。
+PDB / Import Library / 静的 Library は開発用の出力に保持し、App には配置しない。
+HLSL と DXC は現行の実行時 Shader Compile に必要なため、Release でも保持する。
+所有印と所有 File 一覧は再 Package の安全な更新に使うため、Release でも保持する。
 OS / DirectX / C++ Runtime など外部 Runtime の導入条件までは静的ゲームリンクで解消しない。
 
 `GameStartup.cueapp` は実行開始 Scene・Window・FPS と Build 識別情報を持つ機械生成設定。
@@ -52,10 +61,10 @@ OS / DirectX / C++ Runtime など外部 Runtime の導入条件までは静的�
 Platform Host は Build 時の識別値との一致と必須 Shader / Compiler の存在を検証する。
 GameStartup Parser は Platform を勝手に選択しない。
 
-Package は専用 Player Directory の所有印と所有 File 一覧を使う。
+Package は専用 App Directory の所有印と所有 File 一覧を使う。
 既存の他用途 Directory や Link を拒否し、以前自分が配置した不要 File だけを回収する。
 コピー前に完成 Marker を無効化し、全配置後に最後の `GamePackage.cuepackage` を公開する。
-失敗時は不完全な Package として次回起動を拒否する。以前の Player 一式の保存は保証しない。
+失敗時は不完全な Package として次回起動を拒否する。以前の App 一式の保存は保証しない。
 Source / Content / Editor の保存データは Package の削除対象にしない。
 実行中の Package 置換は非対応であり、Stop → Build / Package → 起動とする。
 
@@ -63,7 +72,7 @@ Source / Content / Editor の保存データは Package の削除対象にしな
 
 ```powershell
 pwsh -NoProfile -File scripts/codex_build.ps1 -Configuration Release `
-    -GamePlatform Windows -GameArchitecture x64 -PlayerOnly
+    -GamePlatform Windows -GameArchitecture x64 -AppOnly
 ```
 
 別 Project は `-GameProject <absolute .cueproj path>` で選択する。

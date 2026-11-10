@@ -1,2 +1,3 @@
-formatVersion=1
+formatVersion=2
 script.sample.RotateCube=RotateCube.cpp
+registration.sample.RotateCube=RotateCubeBehaviour

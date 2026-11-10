@@ -77,9 +77,11 @@ struct EditorHostConfig final
     // 起動前に検証した保存用 Scene。Preview World は Editor の Owner Thread で生成する
     std::optional<Scene> initialScene;
     // Library / Test は両方を明示して Project 成果物の解決を上書きできる。片方だけの指定は拒否する
-    // 未指定時は Project の Game Target と現在構成の検証済み Manifest から解決する
+    // 未指定時は Project の Game Target と選択 Game 構成の検証済み Manifest から解決する
     std::optional<Path> playExecutable;
     std::optional<Path> scriptModule;
+    // Library / Test の初期選択。未指定なら Project のローカル設定、未保存なら Development
+    std::optional<GameBuildConfiguration> gameConfiguration;
     // Authoring 用の非同期 Build を所有する。未指定でも Scene 編集と Play は利用できる
     std::unique_ptr<IGameBuildService> gameBuildService;
     std::string gameBuildUnavailableReason;
@@ -130,6 +132,16 @@ class EditorHost final
     /// @brief 未保存 Scene を別 Process で開始する。Owner Thread 専用、初期化後かつ他の操作が停止中に呼ぶ
     /// Game DLL は読み込まず、Play の変更を編集 Document に反映しない。失敗時は編集内容を維持する
     [[nodiscard]] Result<void> start_play();
+    /// @brief Game の構成だけを切り替え、Project 別ローカル設定へ保存する。Owner Thread 専用
+    /// Build / Play / IDE / 保存確認中は拒否する。保存失敗時は元の選択・接続を保全する
+    [[nodiscard]] Result<void> request_game_configuration(GameBuildConfiguration a_configuration);
+    /// @brief Play / Script Build の選択を Owner に返す。Owner 以外・未初期化は Development
+    [[nodiscard]] GameBuildConfiguration game_configuration() const noexcept;
+    /// @brief 操作と Project の状態から構成変更の可否を返す。File I/O は行わない
+    [[nodiscard]] bool can_select_game_configuration() const noexcept;
+    /// @brief 名前を検証して Source と登録表を公開する。Owner 専用、Scene / Undo は変更しない
+    /// Play / Build / IDE / 確認中は拒否する。失敗時は既存 Source と登録表を保持する
+    [[nodiscard]] Result<void> request_script_creation(std::string_view a_name);
     /// @brief 所有 Play の停止を予約する。完了まで step で回収し、無応答の子だけを期限後に終了する
     [[nodiscard]] Result<void> stop_play();
     /// @brief 所有 Play の現在状態を返す。Owner 以外・未接続では Idle
@@ -297,6 +309,7 @@ class EditorHost final
     std::optional<Scene> m_scene;
     std::optional<Path> m_playExecutable;
     std::optional<Path> m_scriptModule;
+    std::optional<GameBuildConfiguration> m_initialGameConfiguration;
     std::unique_ptr<IGameBuildService> m_gameBuildService;
     std::string m_gameBuildUnavailableReason;
     std::unique_ptr<IEditorIdeService> m_ideService;

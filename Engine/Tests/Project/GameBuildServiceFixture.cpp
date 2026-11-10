@@ -76,9 +76,9 @@ std::filesystem::path self()
 void package(const std::filesystem::path &a_project, std::string_view a_config, std::string_view a_mode)
 {
     const auto root = a_project.parent_path();
-    const auto output = root / L"Build" / L"Windows" / L"x64" / from_utf8(a_config) / L"Player";
+    const auto output = root / L"Build" / L"Windows" / L"x64" / from_utf8(a_config) / L"App";
     std::filesystem::create_directories(output / L"Content" / L"Scenes");
-    std::filesystem::copy_file(self(), output / L"FixturePlayer.exe",
+    std::filesystem::copy_file(self(), output / L"FixtureApp.exe",
                                std::filesystem::copy_options::overwrite_existing);
     auto scene = read(root / L"Content" / L"Scenes" / L"Start.cuescene");
     const std::string sceneName = a_mode == "wrong-scene" ? "Other.cuescene" : "Start.cuescene";
@@ -86,7 +86,7 @@ void package(const std::filesystem::path &a_project, std::string_view a_config, 
     const auto config = a_mode == "wrong-config" ? std::string("Development") : std::string(a_config);
     const std::string identity =
         "formatVersion=1\nprojectId=8f533c49-d416-47ea-98c1-026822b1e6ed\ngameTarget=FixtureGame\n"
-        "applicationName=FixturePlayer\nplatform=Windows\narchitecture=x64\nconfiguration=" +
+        "applicationName=FixtureApp\nplatform=Windows\narchitecture=x64\nconfiguration=" +
         config + '\n';
     write(output / L"GameStartup.cueapp",
           identity + "startupScene=Content/Scenes/" + sceneName +
@@ -229,7 +229,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             return 23;
         if (target == "Cue.GameProjectBuild")
             module(project, config, mode);
-        else if (target == "Cue.GamePlayerPackage")
+        else if (target == "Cue.GameAppPackage")
             package(project, config, mode);
         else
             return 47;

@@ -93,14 +93,14 @@ int engine_smoke(int a_count, wchar_t **a_arguments)
     const auto selected = configuration == L"Debug"         ? cue::GameBuildConfiguration::Debug
                           : configuration == L"Development" ? cue::GameBuildConfiguration::Development
                                                             : cue::GameBuildConfiguration::Release;
-    cue::GameBuildPurpose purpose = cue::GameBuildPurpose::Player;
+    cue::GameBuildPurpose purpose = cue::GameBuildPurpose::App;
     if (a_count == 9)
     {
         const std::wstring_view value(a_arguments[8]);
-        CHECK(value == L"player" || value == L"script" || value == L"ide");
+        CHECK(value == L"app" || value == L"script" || value == L"ide");
         purpose = value == L"script" ? cue::GameBuildPurpose::ScriptModule
                   : value == L"ide"  ? cue::GameBuildPurpose::IdeProject
-                                     : cue::GameBuildPurpose::Player;
+                                     : cue::GameBuildPurpose::App;
     }
     auto files = cue::create_windows_file_system();
     CHECK(files.has_value());
@@ -180,7 +180,7 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto projectFile = path(root.join("Fixture.cueproj"));
     CHECK(write(
         files, projectFile,
-        "formatVersion=1\nprojectId=8f533c49-d416-47ea-98c1-026822b1e6ed\nname=Fixture\napplicationName=FixturePlayer\n"
+        "formatVersion=1\nprojectId=8f533c49-d416-47ea-98c1-026822b1e6ed\nname=Fixture\napplicationName=FixtureApp\n"
         "sourceRoot=Source\ncontentRoot=Content\nstartupScene=Scenes/Start.cuescene\ngameTarget=FixtureGame\n"));
     auto project = cue::Project::load(files, projectFile);
     CHECK(project.has_value());
@@ -213,8 +213,9 @@ int wmain(int a_count, wchar_t **a_arguments)
     CHECK(service->status().log.find("CONFIGURE FIXTURE") != std::string::npos);
     CHECK(service->status().log.find("BUILD FIXTURE") != std::string::npos);
     CHECK(service->status().exitCode == 0);
-    CHECK(service->status().purpose == cue::GameBuildPurpose::Player);
+    CHECK(service->status().purpose == cue::GameBuildPurpose::App);
     const auto output = service->status().outputDirectory;
+    CHECK(output.filename() == "App");
     CHECK(service->launch().has_value());
     CHECK(service->status().isApplicationRunning && !service->launch().has_value());
     CHECK(!service->reset_project().has_value());
@@ -371,9 +372,9 @@ int wmain(int a_count, wchar_t **a_arguments)
     auto otherDescriptor = descriptor;
     otherDescriptor.replace(otherDescriptor.find("8f533c49-d416-47ea-98c1-026822b1e6ed"), 36,
                             "3f533c49-d416-47ea-98c1-026822b1e6ed");
-    otherDescriptor.replace(otherDescriptor.find("applicationName=FixturePlayer"),
-                            std::string("applicationName=FixturePlayer").size(),
-                            "applicationName=OtherFixturePlayer");
+    otherDescriptor.replace(otherDescriptor.find("applicationName=FixtureApp"),
+                            std::string("applicationName=FixtureApp").size(),
+                            "applicationName=OtherFixtureApp");
     CHECK(write(files, path(otherRoot.join("Source/CMakeLists.txt")), "# fixture\n"));
     CHECK(files.create_directories(path(otherRoot.join("Content"))).has_value());
     CHECK(write(files, otherFile, otherDescriptor));

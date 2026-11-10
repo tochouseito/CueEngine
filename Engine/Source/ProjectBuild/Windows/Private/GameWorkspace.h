@@ -16,7 +16,7 @@ namespace detail
 /// 既存の共有設定は保持する。管理外の UserPresets は変更せず失敗し、保存途中の失敗は新規 File だけを回収する
 [[nodiscard]] Result<void> prepare_game_workspace(IFileSystem &a_files, const Project &a_project,
                                                   const Path &a_engineRoot, const Path &a_ideTree,
-                                                  const Path &a_playerTree, std::string_view a_platform,
+                                                  const Path &a_appTree, std::string_view a_platform,
                                                   std::string_view a_architecture);
 } // namespace detail
 } // namespace cue

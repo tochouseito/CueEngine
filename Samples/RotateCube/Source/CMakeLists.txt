@@ -1,2 +1,2 @@
-# Source の一覧は一箇所だけで定義し、開発 DLL と製品用 Static Library へ共用する
-cue_add_game_module(RotateCubeGame SOURCES RotateCube.cpp)
+# Script の追加は対応表から自動的に Build へ反映する
+cue_add_game_scripts(RotateCubeGame)

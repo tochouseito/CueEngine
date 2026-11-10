@@ -61,12 +61,12 @@ int test_workspace(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_eng
     CHECK(loaded.has_value());
     const auto &project = *loaded.try_value();
     const auto ide = path(root.join("Intermediate/IDE/sdk/Windows/x64"));
-    const auto player = path(root.join("Intermediate/EditorBuild/sdk/Windows/x64"));
+    const auto app = path(root.join("Intermediate/EditorBuild/sdk/Windows/x64"));
     const auto entry = path(root.join("CMakeLists.txt"));
     const auto shared = path(root.join("CMakePresets.json"));
     const auto user = path(root.join("CMakeUserPresets.json"));
     const auto prepare = [&](cue::IFileSystem &a_system, const cue::Path &a_sdk)
-    { return cue::detail::prepare_game_workspace(a_system, project, a_sdk, ide, player, "Windows", "x64"); };
+    { return cue::detail::prepare_game_workspace(a_system, project, a_sdk, ide, app, "Windows", "x64"); };
 
     // 三番目の新規 File に失敗しても、作成済みの入口を残さない
     cue::tests::FileSystemProbe probe(files);
@@ -84,9 +84,11 @@ int test_workspace(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_eng
     CHECK(originalUser.find("cueengine.dev/Workspace/1.0") != std::string::npos);
     CHECK(originalUser.find(a_engineRoot.utf8()) != std::string::npos);
     CHECK(originalUser.find(projectFile.utf8()) != std::string::npos);
-    CHECK(originalUser.find(ide.utf8()) != std::string::npos && originalUser.find(player.utf8()) != std::string::npos);
-    CHECK(originalUser.find("\"CUE_GAME_BUILD_PLAYER\": true") != std::string::npos);
-    CHECK(originalUser.find("\"CUE_GAME_BUILD_PLAYER\": false") != std::string::npos);
+    CHECK(originalUser.find(ide.utf8()) != std::string::npos && originalUser.find(app.utf8()) != std::string::npos);
+    CHECK(originalUser.find("\"CUE_GAME_BUILD_APP\": true") != std::string::npos);
+    CHECK(originalUser.find("\"CUE_GAME_BUILD_APP\": false") != std::string::npos);
+    CHECK(originalUser.find("\"cue-app\"") != std::string::npos);
+    CHECK(originalUser.find("cue-player") == std::string::npos);
     CHECK(prepare(files, a_engineRoot).has_value() && read(files, user) == originalUser);
 
     // 共有 CMake は利用者が編集でき、SDK 選択を更新しても上書きしない

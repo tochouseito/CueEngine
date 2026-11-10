@@ -64,6 +64,13 @@ RuntimeGameModule::~RuntimeGameModule() = default;
 
 Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_static(CueScriptGetModuleFunction a_entry)
 {
+    // Static Link は同じ構成・CRT の一つの実行 Binary に閉じ、交差構成を許可しない
+    return from_entry(a_entry, static_cast<ScriptConfiguration>(CUE_SCRIPT_CONFIGURATION));
+}
+
+Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_entry(CueScriptGetModuleFunction a_entry,
+                                                                         ScriptConfiguration a_configuration)
+{
     using ModuleResult = Result<std::unique_ptr<RuntimeGameModule>>;
     try
     {
@@ -75,9 +82,9 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_static(CueScr
             return ModuleResult::failure(status_error(status));
         const auto &api = state->api;
         if (api.abiVersion != CUE_SCRIPT_ABI_VERSION || api.structSize != sizeof(CueScriptModuleApi) ||
-            api.pointerSize != sizeof(void *) || api.configuration != CUE_SCRIPT_CONFIGURATION || !api.context ||
-            !api.type_count || !api.type_info || !api.property_info || !api.create || !api.set_property || !api.start ||
-            !api.update || !api.stop || !api.destroy)
+            api.pointerSize != sizeof(void *) || api.configuration != static_cast<std::uint32_t>(a_configuration) ||
+            !api.context || !api.type_count || !api.type_info || !api.property_info || !api.create ||
+            !api.set_property || !api.start || !api.update || !api.stop || !api.destroy)
             return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.abi_mismatch"});
         const auto count = api.type_count(api.context);
         if (count > k_maxScriptTypes)
@@ -124,9 +131,12 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_static(CueScr
     }
 }
 
-Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::load(const Path &a_file)
+Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::load(const Path &a_file,
+                                                                   std::optional<ScriptConfiguration> a_configuration)
 {
     using ModuleResult = Result<std::unique_ptr<RuntimeGameModule>>;
+    if (a_configuration && !is_valid_script_configuration(*a_configuration))
+        return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.configuration"});
 #if defined(_WIN32)
     try
     {
@@ -143,7 +153,9 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::load(const Path &a
             return ModuleResult::failure({ErrorCategory::PlatformFailure, "GameModule.LoadLibraryExW", GetLastError()});
         const auto entry =
             reinterpret_cast<CueScriptGetModuleFunction>(GetProcAddress(owner->library, "CueScriptGetModule"));
-        auto module = from_static(entry);
+        // C ABI の POD / 借用 / Module 内破棄を維持して、選択した Game 構成だけを受け入れる
+        auto module =
+            from_entry(entry, a_configuration.value_or(static_cast<ScriptConfiguration>(CUE_SCRIPT_CONFIGURATION)));
         if (!module.has_value())
             return module;
         (*module.try_value())->m_state->library = std::exchange(owner->library, nullptr);

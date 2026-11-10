@@ -17,7 +17,7 @@ Editor 内で実行中の Scene を観察・操作しながら、Native Game Cod
 - 更新の開始頻度は既存 FrameController の単一 Thread / 60 FPS 構成で制御する。
   現行の埋込み Play は採用 Frame ごとに 16,666,667 ns の更新を一回行う。
   過負荷や Debugger 停止中の時間を大量の追い付き更新へ変換しない。
-- Window を表示する従来の PlayHost 起動設定、製品 Player の実行は維持する。
+- Window を表示する従来の PlayHost 起動設定、製品 App の実行は維持する。
 
 ## SceneView
 

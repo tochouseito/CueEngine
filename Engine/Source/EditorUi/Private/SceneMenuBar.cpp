@@ -1,5 +1,8 @@
 #include "EditorUiPanels.h"
 
+#include <array>
+#include <utility>
+
 namespace cue
 {
 namespace
@@ -28,6 +31,54 @@ class MenuBarScope final
         ImGui::EndMainMenuBar();
     }
 };
+
+/// @brief 選択要求の所有値確保に失敗しても、開いた Combo の Stack を戻す
+class ConfigurationComboScope final
+{
+  public:
+    /// @brief BeginCombo 成功後の Scope だけを受け持つ
+    ConfigurationComboScope() = default;
+    /// @brief 構成選択の Popup を閉じる
+    ~ConfigurationComboScope()
+    {
+        ImGui::EndCombo();
+    }
+};
+
+/// @brief Host が所有する Game 構成を表示し、変更を所有 Action だけで要求する
+void draw_game_configuration(const EditorUiContext &a_context, bool a_isInputEnabled, EditorUiState &a_state,
+                             std::vector<EditorAction> &a_actions)
+{
+    const bool canSelect = a_isInputEnabled && a_context.isProjectOpen && a_context.script.canSelectConfiguration &&
+                           !a_context.isPlaying && !a_context.isPlayBusy && !a_context.script.isBusy &&
+                           !a_context.build.isBuilding && !a_context.build.isApplicationRunning;
+    EditorDisabledScope disabled(!canSelect);
+    ImGui::TextUnformatted("Game:");
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Development").x + ImGui::GetFrameHeight() +
+                            ImGui::GetStyle().FramePadding.x * 2);
+    const auto current = game_build_configuration_name(a_context.script.configuration);
+    if (!ImGui::BeginCombo("##GameConfiguration", current.empty() ? "Select configuration" : current.data()))
+        return;
+    ConfigurationComboScope combo;
+    constexpr std::array configurations{GameBuildConfiguration::Debug, GameBuildConfiguration::Development,
+                                        GameBuildConfiguration::Release};
+    for (const auto configuration : configurations)
+    {
+        const auto label = game_build_configuration_name(configuration);
+        const bool isSelected = configuration == a_context.script.configuration;
+        if (ImGui::Selectable(label.data(), isSelected) && !isSelected)
+        {
+            finish_transform_input(a_state, a_actions);
+            EditorAction action;
+            action.kind = EditorActionKind::SetGameConfiguration;
+            action.gameConfiguration = configuration;
+            a_actions.push_back(std::move(action));
+        }
+        if (isSelected)
+            ImGui::SetItemDefaultFocus();
+    }
+}
 } // namespace
 
 void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
@@ -81,6 +132,16 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
         if (ImGui::BeginMenu("Script", a_context.isProjectOpen))
         {
             MenuScope menu;
+            if (ImGui::MenuItem("New Script...", nullptr, false,
+                                a_isInputEnabled && can_create_editor_script(a_context)))
+            {
+                finish_transform_input(a_state, a_actions);
+                a_state.scriptName.fill(0);
+                a_state.isScriptCreationRequested = true;
+                a_state.shouldOpenScriptCreationPopup = true;
+                a_state.needsScriptNameFocus = true;
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Open Visual Studio", nullptr, false, a_context.script.canOpenIde))
                 request(EditorActionKind::OpenIde);
             if (ImGui::MenuItem("Build Scripts", nullptr, false, a_context.script.canBuild))
@@ -131,6 +192,13 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
             request(EditorActionKind::Play);
         if (ImGui::MenuItem("Debug Play", nullptr, false, a_context.isProjectOpen && a_context.script.canDebugPlay))
             request(EditorActionKind::DebugPlay);
+        draw_game_configuration(a_context, a_isInputEnabled, a_state, a_actions);
+        if (a_context.isProjectOpen && a_context.script.isBuildRequired)
+        {
+            ImGui::TextDisabled("Build required");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Use Script > Build Scripts to build the selected Game configuration.");
+        }
         if (a_context.script.isWaitingForDebugger)
             ImGui::Text("Debugger wait (PID %u)", static_cast<unsigned>(a_context.script.processId));
         if (a_context.isPlayBusy)

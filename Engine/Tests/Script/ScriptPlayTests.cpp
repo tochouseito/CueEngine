@@ -190,6 +190,17 @@ int test_failure(const cue::Path &a_executable, const cue::Path &a_fixture)
 /// @brief 子が Code 0 で終了しても未知 Request / 不正 Header の応答を受理しない
 int test_protocol(const cue::Path &a_executable)
 {
+    // 不正な選択構成を子へ送る前に拒否し、既存の既定構成指定なしは維持する
+    auto invalidModule = a_executable.parent().join("invalid-configuration.dll");
+    if (!invalidModule.has_value())
+        return __LINE__;
+    for (const auto value : {0u, 4u})
+    {
+        auto invalid = cue::PlayClient::create(
+            {a_executable, *invalidModule.try_value(), true, 0, false, static_cast<cue::ScriptConfiguration>(value)});
+        if (invalid.has_value() || invalid.try_error()->operation != "Play.module_configuration")
+            return __LINE__;
+    }
     for (const auto *name : {"bad-ack.dll", "bad-header.dll", "bad-truncated.dll"})
     {
         auto module = a_executable.parent().join(name);

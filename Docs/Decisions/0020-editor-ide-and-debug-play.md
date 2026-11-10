@@ -5,7 +5,7 @@
 Script の編集と Debugger 接続を Editor から要求する。Runtime の Process 分離と製品の静的リンク方式は維持する。
 Visual Studio は現在の Windows 用 Provider とし、共通契約へ COM / DTE / Windows の型を持ち込まない。
 ゲームの Root を独立した CMake Project とし、Visual Studio は Open Folder でその Directory を開く。
-SDK は source-backed の限定入口を提供し、Script 用依存と Player 用 Runtime を目的に応じて追加する。
+SDK は source-backed の限定入口を提供し、Script 用依存と App 用 Runtime を目的に応じて追加する。
 
 | 所有する層 | 責務 |
 | --- | --- |
@@ -33,27 +33,27 @@ UI は File / Process / COM を操作しない。Host は ImGui の借用を終�
 
 ## IDE と開発用 Build
 
-`GameBuildPurpose` を `Player` / `ScriptModule` / `IdeProject` に分ける。
-旧 `start(Project, Target)` は Player として維持し、目的付き overload を追加する。
+`GameBuildPurpose` を `App` / `ScriptModule` / `IdeProject` に分ける。
+旧 `start(Project, Target)` は App として維持し、目的付き overload を追加する。
 `GameBuildStatus` は目的に加えて `workspaceDirectory` / `moduleFile` / `symbolsFile` を所有する。
 
 | 目的 | CMake Tree | 終了条件 |
 | --- | --- | --- |
-| Player | `Intermediate/EditorBuild/WorkspaceV1/<Engine識別値>/Windows/x64` | `Cue.GamePlayerPackage` の完成物検証 |
+| App | `Intermediate/EditorBuild/WorkspaceV1/<Engine識別値>/Windows/x64` | `Cue.GameAppPackage` の完成物検証 |
 | IdeProject | `Intermediate/IDE/WorkspaceV1/<Engine識別値>/Windows/x64` | Configure の成功とゲーム Root の公開 |
 | ScriptModule | IDE と共通 | `Cue.GameProjectBuild` と DLL / Static / Manifest / PDB の検証 |
 
 IDE と Script Build は同じ CMake 正本・Tree を使い、`-S` と作業 Directory をゲーム Root に揃える。
 Root の `CMakeLists.txt` は SDK の `cmake/CueGameSdk.cmake` を参照する。Script は Script API の依存だけ、
-Player は描画を含む Runtime を追加し、Editor / Tool の Target を含めない。
+App は描画を含む Runtime を追加し、Editor / Tool の Target を含めない。
 共有 `CMakePresets.json` と、選択 SDK・Platform・生成先を保存する管理印付き `CMakeUserPresets.json` を分ける。
-後者の `cue-engine` / `cue-player` Preset を Editor と Visual Studio が共用する。
+後者の `cue-engine` / `cue-app` Preset を Editor と Visual Studio が共用する。
 既存の共有 CMake は保持する。管理外の UserPresets は上書きせず診断し、利用者による統合を必要とする。
 Engine が Root だった旧 Cache / Solution は保持し、別 namespace の Tree に新規 Configure する。
 VS Generator が内部で生成する Solution は IDE の起動先に使わない。
 Configure は `BUILD_TESTING=OFF` とし、Test / 性能 Tool を要求しない。
 IDE / ScriptModule は `gameTarget` を必要とするが、製品用 `startupScene` は要求しない。
-`Run` は Player 成功時だけに許可し、IDE / DLL の成功を製品の起動許可へ流用しない。
+`Run` は App 成功時だけに許可し、IDE / DLL の成功を製品の起動許可へ流用しない。
 
 開発 DLL は実行中 Editor の Native 構成に合わせる。製品 Build Panel の構成選択とは独立する。
 DLL の MSVC Build は `/Zi` / `/DEBUG:FULL` を指定し、PDB を DLL と同じ Runtime Directory に出す。
@@ -67,18 +67,20 @@ IDE の Build Event への排他組込み、外部 Build の完了検知と自�
 
 ## Script Source Map
 
-`Source/ScriptSources.cueide` を Editor 専用の対応表とする。
+`Source/ScriptSources.cueide` を型 ID と Source の対応表とする。v2 は登録 Symbol も持ち、Build に共用する。
 `.cuescene` / Script ABI へ絶対 Source Path を追加しない。
 
 ```ini
-formatVersion=1
+formatVersion=2
 script.sample.RotateCube=RotateCube.cpp
+registration.sample.RotateCube=RotateCubeBehaviour
 ```
 
 値は Project の Source Directory 基準の相対 Path。`resolve_script_source` は最大 64 KiB の UTF-8 を読み、
 未知 ID、未知 Version、重複 Key、絶対 Path、`..`、Source 外参照、Link、存在しない通常 File を拒否する。
 Source Map 自体も読込時点で親 Directory を含めて確認する。Inspector からの表示位置は現在 1 行目とする。
-自動生成・Source 変更監視・型の定義行の解析は行わない。
+`Script > New Script...` は v2 の Source と対応表を作る。CMake は対応表の変更時に登録入口を再生成する。
+任意の C++ Source から型や定義行を解析・自動収集する処理は行わない。
 
 ## Debug Play の起動 Gate
 

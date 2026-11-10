@@ -120,12 +120,12 @@ Result<void> write_new(IFileSystem &a_files, const Path &a_path, std::string_vie
 
 /// @brief Editor と Visual Studio が同じ SDK・構成・生成先を使うローカル Preset を作る
 std::string user_presets(const Project &a_project, const Path &a_engineRoot, const Path &a_ideTree,
-                         const Path &a_playerTree, std::string_view a_platform, std::string_view a_architecture)
+                         const Path &a_appTree, std::string_view a_platform, std::string_view a_architecture)
 {
     std::string text = "{\n    \"version\": 9,\n    \"vendor\": {\n        " + quoted(k_vendor) +
                        ": {\n            \"projectId\": " + quoted(a_project.descriptor().projectId) +
                        "\n        }\n    },\n    \"configurePresets\": [\n";
-    const auto append = [&](std::string_view a_name, const Path &a_tree, bool a_isPlayer)
+    const auto append = [&](std::string_view a_name, const Path &a_tree, bool a_isApp)
     {
         text +=
             "        {\n            \"name\": " + quoted(a_name) +
@@ -135,15 +135,15 @@ std::string user_presets(const Project &a_project, const Path &a_engineRoot, con
             ",\n                \"CUE_GAME_PROJECT\": " + quoted(a_project.file().utf8()) +
             ",\n                \"CUE_GAME_PLATFORM\": " + quoted(a_platform) +
             ",\n                \"CUE_GAME_ARCHITECTURE\": " + quoted(a_architecture) +
-            ",\n                \"CUE_GAME_BUILD_PLAYER\": " + (a_isPlayer ? "true" : "false") +
+            ",\n                \"CUE_GAME_BUILD_APP\": " + (a_isApp ? "true" : "false") +
             "\n            }\n        }";
     };
     append("cue-engine", a_ideTree, false);
     text += ",\n";
-    append("cue-player", a_playerTree, true);
+    append("cue-app", a_appTree, true);
     text += "\n    ],\n    \"buildPresets\": [\n";
     bool isFirst = true;
-    for (const auto *preset : {"cue-engine", "cue-player"})
+    for (const auto *preset : {"cue-engine", "cue-app"})
     {
         for (const auto *configuration : {"Debug", "Development", "Release"})
         {
@@ -159,7 +159,7 @@ std::string user_presets(const Project &a_project, const Path &a_engineRoot, con
 } // namespace
 
 Result<void> prepare_game_workspace(IFileSystem &a_files, const Project &a_project, const Path &a_engineRoot,
-                                    const Path &a_ideTree, const Path &a_playerTree, std::string_view a_platform,
+                                    const Path &a_ideTree, const Path &a_appTree, std::string_view a_platform,
                                     std::string_view a_architecture)
 {
     struct PendingFile
@@ -184,9 +184,9 @@ Result<void> prepare_game_workspace(IFileSystem &a_files, const Project &a_proje
     try
     {
         if (!is_preset_path(a_project.file()) || !is_preset_path(a_engineRoot) || !is_preset_path(a_ideTree) ||
-            !is_preset_path(a_playerTree))
+            !is_preset_path(a_appTree))
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameWorkspace.preset_path"});
-        for (const auto &directory : {a_project.root(), a_engineRoot, a_ideTree, a_playerTree})
+        for (const auto &directory : {a_project.root(), a_engineRoot, a_ideTree, a_appTree})
         {
             auto valid = validate_parent_directories(a_files, directory);
             if (!valid.has_value())
@@ -229,7 +229,7 @@ Result<void> prepare_game_workspace(IFileSystem &a_files, const Project &a_proje
                 return Result<void>::failure(*text.try_error());
             pending.push_back({destination.take_value(), text.take_value()});
         }
-        auto presets = user_presets(a_project, a_engineRoot, a_ideTree, a_playerTree, a_platform, a_architecture);
+        auto presets = user_presets(a_project, a_engineRoot, a_ideTree, a_appTree, a_platform, a_architecture);
         if (presets.size() > k_maxWorkspaceBytes)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameWorkspace.preset_size"});
         if (!previous)

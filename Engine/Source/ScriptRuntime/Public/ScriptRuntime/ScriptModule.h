@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -25,8 +26,10 @@ class RuntimeGameModule final
     RuntimeGameModule(CreateToken, std::unique_ptr<State> a_state) noexcept;
     /// @brief Table が不要になった後に DLL を解放する。Instance の停止は ScriptSystem が先に行う
     ~RuntimeGameModule();
-    /// @brief 絶対 Path の Game DLL を安全な検索規則で読み、ABI / 構成 / Metadata を検証する
-    [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> load(const Path &a_file);
+    /// @brief 絶対 Path の Game DLL を安全な検索規則で読み、ABI / 選択構成 / Metadata を検証する
+    /// 構成未指定なら Host と同じ構成を要求する。明示時も選択値との一致を要求し、別構成へ戻らない
+    [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> load(
+        const Path &a_file, std::optional<ScriptConfiguration> a_configuration = std::nullopt);
     /// @brief 静的 Link した登録入口を同じ ABI 検証へ通す。関数の寿命は Module より長くする
     [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> from_static(CueScriptGetModuleFunction a_entry);
     RuntimeGameModule(const RuntimeGameModule &) = delete;
@@ -41,6 +44,9 @@ class RuntimeGameModule final
     void retain_until_process_exit() noexcept;
 
   private:
+    /// @brief C ABI の Table を期待構成で検証する。Static は native 構成、DLL は検証済み選択値を渡す
+    [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> from_entry(CueScriptGetModuleFunction a_entry,
+                                                                               ScriptConfiguration a_configuration);
     std::unique_ptr<State> m_state;
 };
 } // namespace cue

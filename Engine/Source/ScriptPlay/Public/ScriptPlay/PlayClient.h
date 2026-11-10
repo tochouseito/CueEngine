@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +38,8 @@ struct PlayClientConfig final
     std::uint32_t maxTicks = 0;
     // Editor 内表示では Window を生成せず、要求された確定値だけを親へ転送する
     bool isEmbedded = false;
+    // 未指定では PlayHost と同じ構成を使う。Editor は選択した Game 構成を明示する
+    std::optional<ScriptConfiguration> moduleConfiguration;
 };
 
 /// @brief 実行中の Object の Local Transform。永続 ID だけを使い Runtime Handle を共有しない

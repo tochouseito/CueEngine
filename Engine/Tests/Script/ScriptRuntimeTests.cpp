@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -48,6 +49,7 @@ struct Counters final
 // C の登録入口を持つ静的 Module Fixture。各 Test の World より長く所有する
 Counters g_counters;
 std::unique_ptr<cue::ScriptModule> g_module;
+std::optional<std::uint32_t> g_configurationOverride;
 
 class Move final : public cue::Behaviour
 {
@@ -121,13 +123,17 @@ CueScriptStatus CUE_SCRIPT_CALL entry(std::uint32_t a_version, CueScriptModuleAp
         error.code = 1;
         return error;
     }
-    return g_module->get_api(a_version, *a_api);
+    const auto status = g_module->get_api(a_version, *a_api);
+    if (status.code == 0 && g_configurationOverride)
+        a_api->configuration = *g_configurationOverride;
+    return status;
 }
 
 /// @brief 前 Test の全 World 破棄後に静的 Module と観測値を作り直す
 bool reset_module()
 {
     g_module.reset();
+    g_configurationOverride.reset();
     g_counters = {};
     cue::ScriptTypeDescriptor type{
         "test.move", "Move", 1, {{"speed", "Speed", cue::ScriptPropertyKind::Number, 2, false}}};
@@ -383,12 +389,42 @@ int test_failures()
     }
     return 0;
 }
+
+/// @brief Static 登録は交差構成を拒否し、未知の選択構成は DLL を開く前に拒否する
+int test_configurations()
+{
+    CUE_RUNTIME_SCRIPT_CHECK(reset_module());
+    CueScriptModuleApi native{};
+    CUE_RUNTIME_SCRIPT_CHECK(g_module->get_api(CUE_SCRIPT_ABI_VERSION, native).code == 0);
+    CUE_RUNTIME_SCRIPT_CHECK(
+        cue::is_valid_script_configuration(static_cast<cue::ScriptConfiguration>(native.configuration)));
+    for (const auto configuration : {0u, 1u, 2u, 3u, 4u})
+    {
+        g_configurationOverride = configuration;
+        auto checked = cue::RuntimeGameModule::from_static(entry);
+        CUE_RUNTIME_SCRIPT_CHECK(checked.has_value() == (configuration == native.configuration));
+        if (!checked.has_value())
+            CUE_RUNTIME_SCRIPT_CHECK(checked.try_error()->operation == "GameModule.abi_mismatch");
+    }
+    g_configurationOverride.reset();
+    auto missing = cue::Path::create("missing-configuration-fixture.dll");
+    CUE_RUNTIME_SCRIPT_CHECK(missing.has_value());
+    for (const auto invalid : {0u, 4u})
+    {
+        auto rejected =
+            cue::RuntimeGameModule::load(*missing.try_value(), static_cast<cue::ScriptConfiguration>(invalid));
+        CUE_RUNTIME_SCRIPT_CHECK(!rejected.has_value() &&
+                                 rejected.try_error()->operation == "GameModule.configuration");
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief GPU / Editor を起動せず SDK・C ABI・World・Scene の接続契約を検証する
 int main()
 {
-    for (auto test : {test_lifecycle, test_multiple_and_instances, test_diagnostics, test_failures})
+    for (auto test :
+         {test_lifecycle, test_multiple_and_instances, test_diagnostics, test_failures, test_configurations})
     {
         const int result = test();
         if (result)

@@ -1,4 +1,4 @@
-#include "PlayerValidation.h"
+#include "AppValidation.h"
 
 #include <array>
 #include <charconv>
@@ -43,18 +43,18 @@ void append_matrix(std::string &a_text, const char *a_name, const std::optional<
 }
 } // namespace
 
-Result<PlayerValidationOptions> read_player_validation_options()
+Result<AppValidationOptions> read_app_validation_options()
 {
-    using OptionsResult = Result<PlayerValidationOptions>;
+    using OptionsResult = Result<AppValidationOptions>;
     try
     {
         int count = 0;
         auto **arguments = CommandLineToArgvW(GetCommandLineW(), &count);
         if (!arguments)
-            return OptionsResult::failure({ErrorCategory::PlatformFailure, "GamePlayer.arguments", GetLastError()});
+            return OptionsResult::failure({ErrorCategory::PlatformFailure, "GameApp.arguments", GetLastError()});
         const auto release = [](wchar_t **a_values) { LocalFree(a_values); };
         std::unique_ptr<wchar_t *, decltype(release)> owned(arguments, release);
-        PlayerValidationOptions options;
+        AppValidationOptions options;
         options.isRequested = count > 1;
         for (int index = 1; index < count; ++index)
         {
@@ -77,30 +77,30 @@ Result<PlayerValidationOptions> read_player_validation_options()
                     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), options.maxFrames);
                     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || options.maxFrames == 0 ||
                         options.maxFrames > 1'000'000)
-                        return OptionsResult::failure({ErrorCategory::InvalidArgument, "GamePlayer.frames"});
+                        return OptionsResult::failure({ErrorCategory::InvalidArgument, "GameApp.frames"});
                 }
                 else if (key == "--validation-report" && !options.report)
                 {
                     auto file = Path::create(text);
                     if (!file.has_value() || !file.try_value()->is_absolute())
-                        return OptionsResult::failure({ErrorCategory::InvalidArgument, "GamePlayer.report_path"});
+                        return OptionsResult::failure({ErrorCategory::InvalidArgument, "GameApp.report_path"});
                     options.report = file.take_value();
                 }
                 else
-                    return OptionsResult::failure({ErrorCategory::InvalidArgument, "GamePlayer.duplicate_argument"});
+                    return OptionsResult::failure({ErrorCategory::InvalidArgument, "GameApp.duplicate_argument"});
             }
             else
-                return OptionsResult::failure({ErrorCategory::InvalidArgument, "GamePlayer.argument"});
+                return OptionsResult::failure({ErrorCategory::InvalidArgument, "GameApp.argument"});
         }
         return OptionsResult::success(std::move(options));
     }
     catch (...)
     {
-        return OptionsResult::failure({ErrorCategory::Fatal, "GamePlayer.arguments.exception"});
+        return OptionsResult::failure({ErrorCategory::Fatal, "GameApp.arguments.exception"});
     }
 }
 
-void observe_player_snapshot(PlayerValidationMetrics &a_metrics, const SceneRenderSnapshot &a_snapshot)
+void observe_app_snapshot(AppValidationMetrics &a_metrics, const SceneRenderSnapshot &a_snapshot)
 {
     a_metrics.meshCount = a_snapshot.objects.size();
     a_metrics.hasCamera = a_snapshot.camera.has_value();
@@ -112,8 +112,8 @@ void observe_player_snapshot(PlayerValidationMetrics &a_metrics, const SceneRend
     }
 }
 
-Result<void> write_player_validation_report(IFileSystem &a_files, const PlayerValidationOptions &a_options,
-                                            const PlayerValidationMetrics &a_metrics)
+Result<void> write_app_validation_report(IFileSystem &a_files, const AppValidationOptions &a_options,
+                                            const AppValidationMetrics &a_metrics)
 {
     if (!a_options.report)
         return Result<void>::success();
@@ -133,7 +133,7 @@ Result<void> write_player_validation_report(IFileSystem &a_files, const PlayerVa
     }
     catch (...)
     {
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "GamePlayer.report.exception"});
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "GameApp.report.exception"});
     }
 }
 } // namespace cue

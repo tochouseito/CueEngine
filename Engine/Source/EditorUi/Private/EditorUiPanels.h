@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -46,7 +47,20 @@ struct EditorUiState
     bool hasInvalidRotationInput = false;
     bool isBuildPanelVisible = false;
     bool wasPlaying = false;
+    std::array<char, 65> scriptName{};
+    bool isScriptCreationRequested = false;
+    bool shouldOpenScriptCreationPopup = false;
+    bool shouldCloseScriptCreationPopup = false;
+    bool needsScriptNameFocus = false;
 };
+
+/// @brief Source 作成は Project があり、他の操作や確認が動いていない編集境界だけで要求する
+[[nodiscard]] inline bool can_create_editor_script(const EditorUiContext &a_context) noexcept
+{
+    return a_context.isProjectOpen && a_context.script.canCreate && !a_context.isPlaying && !a_context.isPlayBusy &&
+           !a_context.script.isBusy && !a_context.build.isBuilding && !a_context.build.isApplicationRunning &&
+           !a_context.isUnsavedConfirmationRequested && !a_context.isBuildConfirmationRequested;
+}
 
 /// @brief 入力抑止の Stack を例外・早期 Return でも対応させる
 class EditorDisabledScope final

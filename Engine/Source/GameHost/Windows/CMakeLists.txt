@@ -1,5 +1,5 @@
 # Windows の起動と描画だけを具体化する。製品 exe は別途ゲームの Static Library を Link する
-add_library(Cue.GameHost.Windows STATIC Private/WindowsGame.cpp Private/PlayerValidation.cpp)
+add_library(Cue.GameHost.Windows STATIC Private/WindowsGame.cpp Private/AppValidation.cpp)
 target_include_directories(Cue.GameHost.Windows PUBLIC Public)
 target_link_libraries(Cue.GameHost.Windows PUBLIC Cue.GameRuntime PRIVATE
     Cue.WindowsHost Cue.Renderer.DX12 Cue.Renderer.SceneRender Cue.Platform.Windows Cue.Foundation.Windows shell32)

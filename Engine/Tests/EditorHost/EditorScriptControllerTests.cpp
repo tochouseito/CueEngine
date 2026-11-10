@@ -51,7 +51,7 @@ struct BuildFixture final : cue::IGameBuildService
     /// @brief 既存二引数 API は製品要求として扱う
     cue::Result<void> start(const cue::Project &a_project, const cue::GameBuildTarget &a_target) override
     {
-        return start(a_project, a_target, cue::GameBuildPurpose::Player);
+        return start(a_project, a_target, cue::GameBuildPurpose::App);
     }
     /// @brief IDE / Script の選択と Native 構成を保持する
     cue::Result<void> start(const cue::Project &, const cue::GameBuildTarget &a_target,
@@ -191,6 +191,8 @@ int main()
     bool shouldFailReload = false;
     std::string debugSceneName;
     cue::EditorScriptCallbacks callbacks;
+    auto selectedConfiguration = cue::GameBuildConfiguration::Development;
+    callbacks.configuration = [&]() { return selectedConfiguration; };
     callbacks.play = []() -> cue::PlayClient * { return nullptr; };
     callbacks.reload = [&]()
     {
@@ -295,5 +297,23 @@ int main()
         });
     wrong.join();
     CHECK(rejectedThread && build.starts == starts && ide.cancels == cancellations);
+    // Editor の構成と独立して選択し、操作開始後は変更前の対象構成を保持する
+    for (const auto configuration : {cue::GameBuildConfiguration::Debug, cue::GameBuildConfiguration::Development,
+                                     cue::GameBuildConfiguration::Release})
+    {
+        selectedConfiguration = configuration;
+        CHECK(controller.build_scripts().has_value());
+        CHECK(build.current.target.configuration == configuration);
+        selectedConfiguration = cue::GameBuildConfiguration::Development;
+        CHECK(controller.poll().has_value() && build.current.target.configuration == configuration);
+        CHECK(controller.cancel().has_value());
+        selectedConfiguration = configuration;
+        CHECK(controller.debug_play(*scene.try_value()).has_value());
+        CHECK(build.current.target.configuration == configuration);
+        CHECK(controller.cancel().has_value());
+    }
+    selectedConfiguration = static_cast<cue::GameBuildConfiguration>(99);
+    const auto beforeInvalid = build.starts;
+    CHECK(!controller.build_scripts().has_value() && build.starts == beforeInvalid && !controller.status().isBusy);
     return 0;
 }

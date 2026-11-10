@@ -1,2 +1,2 @@
-# Source の正本から開発 DLL と製品 Static Library を生成する
-cue_add_game_module(@GAME_TARGET@ SOURCES Game.cpp)
+# 対応表に載る Script と自動生成する接続入口を Build する
+cue_add_game_scripts(@GAME_TARGET@)

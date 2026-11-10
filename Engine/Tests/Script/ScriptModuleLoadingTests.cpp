@@ -96,5 +96,17 @@ int main(int a_count, char **a_arguments)
         return result;
     auto linked = cue::RuntimeGameModule::from_static(CueScriptGetModule);
     CHECK(linked.has_value());
+    // 同構成の既定 Load を保ち、明示した選択値と DLL の構成が一致した場合だけ公開する
+    const auto nativeConfiguration = linked.try_value()->get()->api().configuration;
+    for (const auto configuration :
+         {cue::ScriptConfiguration::Debug, cue::ScriptConfiguration::Development, cue::ScriptConfiguration::Release})
+    {
+        auto checked = cue::RuntimeGameModule::load(*file.try_value(), configuration);
+        CHECK(checked.has_value() == (static_cast<std::uint32_t>(configuration) == nativeConfiguration));
+        if (!checked.has_value())
+            CHECK(checked.try_error()->operation == "GameModule.abi_mismatch");
+    }
+    auto unknown = cue::RuntimeGameModule::load(*file.try_value(), static_cast<cue::ScriptConfiguration>(99));
+    CHECK(!unknown.has_value() && unknown.try_error()->operation == "GameModule.configuration");
     return verify(linked.take_value());
 }

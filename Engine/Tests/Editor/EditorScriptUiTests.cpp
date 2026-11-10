@@ -1,5 +1,6 @@
 #include <EditorUi/EditorUi.h>
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -32,6 +33,251 @@ cue::Result<std::vector<cue::EditorAction>> frame(cue::EditorUi &a_ui, const cue
     auto result = a_ui.draw(a_document, a_display);
     ImGui::Render();
     return result;
+}
+
+/// @brief Play 用の三構成を独立した Action にし、製品 Target と実行中の選択を変更しないことを確認する
+int test_game_configuration(cue::EditorUi &a_ui, const cue::SceneDocument &a_document,
+                            const cue::EditorUiContext &a_display)
+{
+    auto display = a_display;
+    display.script.canSelectConfiguration = true;
+    display.build.selectedTarget = {"Windows", "x64", cue::GameBuildConfiguration::Release};
+    const auto productTarget = display.build.selectedTarget;
+    CUE_SCRIPT_UI_CHECK(display.script.configuration == cue::GameBuildConfiguration::Development);
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, display).has_value());
+    auto *menuBar = ImGui::FindWindowByName("##MainMenuBar");
+    CUE_SCRIPT_UI_CHECK(menuBar && menuBar->Active);
+    // 表示 Text はメモリだけへ捕捉し、未 Build の案内が操作要求や File I/O を発生させないことを確認する
+    for (const bool isRequired : {false, true})
+    {
+        display.script.isBuildRequired = isRequired;
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        auto status = a_ui.draw(a_document, display);
+        const bool hasNotice = std::strstr(ImGui::GetCurrentContext()->LogBuffer.c_str(), "Build required") != nullptr;
+        ImGui::LogFinish();
+        ImGui::Render();
+        CUE_SCRIPT_UI_CHECK(status.has_value() && status.try_value()->empty());
+        CUE_SCRIPT_UI_CHECK(hasNotice == isRequired);
+    }
+    display.script.isBuildRequired = false;
+    const auto menuBarSeed = ImHashStr("##MenuBar", 0, menuBar->ID);
+    const auto configurationId = ImHashStr("##GameConfiguration", 0, menuBarSeed);
+    constexpr std::array configurations{cue::GameBuildConfiguration::Debug, cue::GameBuildConfiguration::Development,
+                                        cue::GameBuildConfiguration::Release};
+    for (const auto configuration : configurations)
+    {
+        ImGui::ActivateItemByID(configurationId);
+        auto opened = frame(a_ui, a_document, display);
+        CUE_SCRIPT_UI_CHECK(opened.has_value() && opened.try_value()->empty());
+        auto *combo = ImGui::FindWindowByName("##Combo_00");
+        CUE_SCRIPT_UI_CHECK(combo && combo->Active);
+        const auto label = cue::game_build_configuration_name(configuration);
+        ImGui::ActivateItemByID(ImHashStr(label.data(), 0, combo->ID));
+        auto selected = frame(a_ui, a_document, display);
+        CUE_SCRIPT_UI_CHECK(selected.has_value() && selected.try_value()->size() == 1);
+        const auto &action = selected.try_value()->front();
+        CUE_SCRIPT_UI_CHECK(action.kind == cue::EditorActionKind::SetGameConfiguration);
+        CUE_SCRIPT_UI_CHECK(action.gameConfiguration == configuration);
+        CUE_SCRIPT_UI_CHECK(display.script.configuration != configuration);
+        CUE_SCRIPT_UI_CHECK(display.build.selectedTarget == productTarget);
+        // Host による採用を再現し、次の Frame へ選択値だけを返す
+        display.script.configuration = configuration;
+        CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, display).has_value());
+    }
+    // 同じ値を選び直しても再 Build や設定保存の要求を増やさない
+    ImGui::ActivateItemByID(configurationId);
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, display).has_value());
+    auto *combo = ImGui::FindWindowByName("##Combo_00");
+    CUE_SCRIPT_UI_CHECK(combo && combo->Active);
+    ImGui::ActivateItemByID(ImHashStr("Release", 0, combo->ID));
+    auto unchanged = frame(a_ui, a_document, display);
+    CUE_SCRIPT_UI_CHECK(unchanged.has_value() && unchanged.try_value()->empty());
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, display).has_value());
+
+    for (unsigned reason = 0; reason < 8; ++reason)
+    {
+        auto blocked = display;
+        switch (reason)
+        {
+        case 0:
+            blocked.script.canSelectConfiguration = false;
+            break;
+        case 1:
+            blocked.isPlaying = true;
+            break;
+        case 2:
+            blocked.isPlayBusy = true;
+            break;
+        case 3:
+            blocked.script.isBusy = true;
+            break;
+        case 4:
+            blocked.build.isBuilding = true;
+            break;
+        case 5:
+            blocked.build.isApplicationRunning = true;
+            break;
+        case 6:
+            blocked.isProjectOpen = false;
+            break;
+        case 7:
+            blocked.isUnsavedConfirmationRequested = true;
+            break;
+        }
+        CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, blocked).has_value());
+        ImGui::ActivateItemByID(configurationId);
+        auto rejected = frame(a_ui, a_document, blocked);
+        CUE_SCRIPT_UI_CHECK(rejected.has_value() && rejected.try_value()->empty());
+        const auto *popup = ImGui::FindWindowByName("##Combo_00");
+        CUE_SCRIPT_UI_CHECK(!popup || !popup->Active);
+        CUE_SCRIPT_UI_CHECK(blocked.script.configuration == display.script.configuration);
+    }
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, a_display).has_value());
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, a_display).has_value());
+    CUE_SCRIPT_UI_CHECK(a_display.script.configuration == cue::GameBuildConfiguration::Development);
+    return 0;
+}
+
+/// @brief Source 作成 Modal の実入力を所有値の要求へ変換し、取消・無効入力・操作競合を確認する
+int test_script_creation(cue::EditorUi &a_ui, const cue::SceneDocument &a_document,
+                         const cue::EditorUiContext &a_display)
+{
+    auto display = a_display;
+    display.script.canCreate = true;
+    auto &io = ImGui::GetIO();
+    const auto advance = [&]()
+    {
+        auto result = frame(a_ui, a_document, display);
+        return result.has_value() && result.try_value()->empty();
+    };
+    const auto open = [&]()
+    {
+        if (!advance() || !advance())
+            return false;
+        auto *menuBar = ImGui::FindWindowByName("##MainMenuBar");
+        if (!menuBar || !menuBar->Active)
+            return false;
+        float scriptX = menuBar->Pos.x + ImGui::GetStyle().FramePadding.x;
+        for (const char *label : {"File", "Edit", "View"})
+            scriptX += ImGui::CalcTextSize(label).x + ImGui::GetStyle().ItemSpacing.x * 2;
+        scriptX += ImGui::CalcTextSize("Script").x * 0.5f + ImGui::GetStyle().ItemSpacing.x;
+        io.AddMousePosEvent(scriptX, menuBar->Pos.y + menuBar->Size.y * 0.5f);
+        if (!advance())
+            return false;
+        io.AddMouseButtonEvent(0, true);
+        if (!advance())
+            return false;
+        io.AddMouseButtonEvent(0, false);
+        if (!advance())
+            return false;
+        const auto &stack = ImGui::GetCurrentContext()->OpenPopupStack;
+        auto *menu = stack.empty() ? nullptr : stack.back().Window;
+        if (!menu || !menu->Active)
+            return false;
+        ImGui::ActivateItemByID(ImHashStr("New Script...", 0, menu->ID));
+        if (!advance() || !advance())
+            return false;
+        const auto *popup = ImGui::FindWindowByName("New Script##EditorCreateScript");
+        return popup && popup->Active;
+    };
+    const auto type = [&](const char *a_name)
+    {
+        auto *popup = ImGui::FindWindowByName("New Script##EditorCreateScript");
+        if (!popup || !popup->Active)
+            return false;
+        ImGui::ActivateItemByID(ImHashStr("Name", 0, popup->ID));
+        if (!advance())
+            return false;
+        io.AddInputCharactersUTF8(a_name);
+        return advance();
+    };
+    const auto click = [&](const char *a_label)
+    {
+        const auto *popup = ImGui::FindWindowByName("New Script##EditorCreateScript");
+        ImGui::ActivateItemByID(ImHashStr(a_label, 0, popup->ID));
+        return frame(a_ui, a_document, display);
+    };
+
+    CUE_SCRIPT_UI_CHECK(open() && type("../Unsafe"));
+    auto invalid = click("Create");
+    CUE_SCRIPT_UI_CHECK(invalid.has_value() && invalid.try_value()->empty());
+    CUE_SCRIPT_UI_CHECK(ImGui::FindWindowByName("New Script##EditorCreateScript")->Active);
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    CUE_SCRIPT_UI_CHECK(advance());
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    CUE_SCRIPT_UI_CHECK(advance());
+
+    CUE_SCRIPT_UI_CHECK(open() && type("RotateCube"));
+    auto created = click("Create");
+    CUE_SCRIPT_UI_CHECK(created.has_value() && created.try_value()->size() == 1);
+    CUE_SCRIPT_UI_CHECK(created.try_value()->front().kind == cue::EditorActionKind::CreateScript);
+    CUE_SCRIPT_UI_CHECK(created.try_value()->front().scriptName == "RotateCube");
+    CUE_SCRIPT_UI_CHECK(advance() && advance());
+    CUE_SCRIPT_UI_CHECK(!ImGui::FindWindowByName("New Script##EditorCreateScript")->Active);
+
+    CUE_SCRIPT_UI_CHECK(open() && type("Cancelled"));
+    auto cancelled = click("Cancel");
+    CUE_SCRIPT_UI_CHECK(cancelled.has_value() && cancelled.try_value()->empty());
+    CUE_SCRIPT_UI_CHECK(advance());
+
+    CUE_SCRIPT_UI_CHECK(open() && type("PreviousProject"));
+    a_ui.reset();
+    CUE_SCRIPT_UI_CHECK(advance() && advance());
+    CUE_SCRIPT_UI_CHECK(!ImGui::FindWindowByName("New Script##EditorCreateScript")->Active);
+    CUE_SCRIPT_UI_CHECK(open());
+    ImGui::NewFrame();
+    ImGui::LogToBuffer();
+    auto emptyName = a_ui.draw(a_document, display);
+    CUE_SCRIPT_UI_CHECK(std::strstr(ImGui::GetCurrentContext()->LogBuffer.c_str(), "Source/.cpp") != nullptr);
+    ImGui::LogFinish();
+    ImGui::Render();
+    CUE_SCRIPT_UI_CHECK(emptyName.has_value() && emptyName.try_value()->empty());
+    CUE_SCRIPT_UI_CHECK(click("Cancel").has_value() && advance());
+
+    for (unsigned reason = 0; reason < 9; ++reason)
+    {
+        display = a_display;
+        display.script.canCreate = true;
+        CUE_SCRIPT_UI_CHECK(open() && type("Blocked"));
+        switch (reason)
+        {
+        case 0:
+            display.script.canCreate = false;
+            break;
+        case 1:
+            display.isProjectOpen = false;
+            break;
+        case 2:
+            display.isPlaying = true;
+            break;
+        case 3:
+            display.isPlayBusy = true;
+            break;
+        case 4:
+            display.script.isBusy = true;
+            break;
+        case 5:
+            display.build.isBuilding = true;
+            break;
+        case 6:
+            display.build.isApplicationRunning = true;
+            break;
+        case 7:
+            display.isUnsavedConfirmationRequested = true;
+            break;
+        case 8:
+            display.isBuildConfirmationRequested = true;
+            break;
+        }
+        auto rejected = click("Create");
+        CUE_SCRIPT_UI_CHECK(rejected.has_value() && rejected.try_value()->empty());
+        display = a_display;
+        CUE_SCRIPT_UI_CHECK(advance() && advance());
+        CUE_SCRIPT_UI_CHECK(!ImGui::FindWindowByName("New Script##EditorCreateScript")->Active);
+    }
+    CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, a_display).has_value());
+    return 0;
 }
 } // namespace
 
@@ -76,6 +322,8 @@ int main()
     CUE_SCRIPT_UI_CHECK(original.has_value());
     CUE_SCRIPT_UI_CHECK(frame(*ui, app->document(), display).has_value());
     CUE_SCRIPT_UI_CHECK(frame(*ui, app->document(), display).has_value());
+    CUE_SCRIPT_UI_CHECK(test_game_configuration(*ui, app->document(), display) == 0);
+    CUE_SCRIPT_UI_CHECK(test_script_creation(*ui, app->document(), display) == 0);
     auto *inspector = ImGui::FindWindowByName("Inspector##EditorInspector");
     CUE_SCRIPT_UI_CHECK(inspector && inspector->Active);
     const auto authoringSeed = ImHashStr("0", 0, ImHashStr("AuthoringScripts", 0, inspector->ID));

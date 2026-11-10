@@ -1,6 +1,7 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/CueGamePlatforms.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/CueSemVer.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/CueGameScripts.cmake")
 
 # Editor の起動・Build だけでは Sample を選ばず、明示した Project の契約だけを処理する
 set(CUE_GAME_PROJECT ""
@@ -180,7 +181,7 @@ endfunction()
 
 # 選択した .cueproj だけを Build Graph に取り込む。未指定 / gameTarget のない旧 Project はゲームを追加しない
 function(cue_add_game_project a_file)
-    cmake_parse_arguments(PARSE_ARGV 1 taskProject "NO_PLAYER" "" "")
+    cmake_parse_arguments(PARSE_ARGV 1 taskProject "NO_APP" "" "")
     if(taskProject_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "Unsupported Cue game project options")
     endif()
@@ -328,16 +329,16 @@ function(cue_add_game_project a_file)
     set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT "${taskFile}")
     set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT_ID "${task_projectId}")
     # Scene を持たない旧 Project は従来どおり DLL / Static だけを作る
-    if(taskProject_NO_PLAYER OR NOT DEFINED task_startupScene)
+    if(taskProject_NO_APP OR NOT DEFINED task_startupScene)
         message(STATUS "Cue project has no startupScene; only the game module is generated")
         return()
     endif()
-    cue_add_game_player("${taskRoot}" "${taskContent}" "${taskBinary}" "${task_projectId}"
+    cue_add_game_app("${taskRoot}" "${taskContent}" "${taskBinary}" "${task_projectId}"
                         "${task_gameTarget}" "${task_applicationName}" "${task_name}" "${task_startupScene}")
 endfunction()
 
 # 独立アプリとその配布 Target を追加する。Source / Content へは書き込まない
-function(cue_add_game_player a_root a_content a_binary a_projectId a_gameTarget a_applicationName a_title a_startupScene)
+function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_applicationName a_title a_startupScene)
     cue_validate_game_target("${a_applicationName}")
     if(TARGET "${a_applicationName}" OR TARGET "${a_applicationName}.Package")
         message(FATAL_ERROR "Cue applicationName collides with an existing target: ${a_applicationName}")
@@ -353,11 +354,11 @@ function(cue_add_game_player a_root a_content a_binary a_projectId a_gameTarget 
     endif()
     cue_validate_real_path("${taskScene}")
     file(RELATIVE_PATH taskSceneRelative "${a_content}" "${taskScene}")
-    set(taskRuntime "${a_binary}/Player/$<CONFIG>")
-    set(taskPlayer "${_CUE_GAME_OUTPUT}/$<CONFIG>/Player")
+    set(taskRuntime "${a_binary}/App/$<CONFIG>")
+    set(taskApp "${_CUE_GAME_OUTPUT}/$<CONFIG>/App")
     foreach(taskConfiguration IN LISTS CMAKE_CONFIGURATION_TYPES)
-        cue_validate_generated_directory("${a_binary}/Player/${taskConfiguration}")
-        cue_validate_generated_directory("${_CUE_GAME_OUTPUT}/${taskConfiguration}/Player")
+        cue_validate_generated_directory("${a_binary}/App/${taskConfiguration}")
+        cue_validate_generated_directory("${_CUE_GAME_OUTPUT}/${taskConfiguration}/App")
     endforeach()
     cue_add_selected_game_application("${a_applicationName}" "${a_gameTarget}.Static" "${taskRuntime}")
     # 表示名に Generator Expression のような文字列があっても、表示用 Data としてそのまま保存する
@@ -371,31 +372,32 @@ function(cue_add_game_player a_root a_content a_binary a_projectId a_gameTarget 
     get_property(taskLicenseFiles GLOBAL PROPERTY "CUE_GAME_${_CUE_GAME_PLATFORM}_LICENSE_FILES")
     string(REPLACE ";" "\n" taskRuntimeList "${taskRuntimeFiles}")
     string(REPLACE ";" "\n" taskLicenseList "${taskLicenseFiles}")
-    file(WRITE "${a_binary}/PlayerRuntimeFiles.txt" "${taskRuntimeList}\n")
-    file(WRITE "${a_binary}/PlayerLicenseFiles.txt" "${taskLicenseList}\n")
+    # 構成ごとに依存の式を評価し、Release へ開発用 Runtime を混入させない
+    file(GENERATE OUTPUT "${a_binary}/AppLists/$<CONFIG>/Runtime.txt" CONTENT "${taskRuntimeList}\n")
+    file(GENERATE OUTPUT "${a_binary}/AppLists/$<CONFIG>/Licenses.txt" CONTENT "${taskLicenseList}\n")
     set(taskPackageCommand "${CMAKE_COMMAND}"
-        "-DCUE_PLAYER_SOURCE=$<TARGET_FILE_DIR:${a_applicationName}>"
-        "-DCUE_PLAYER_EXECUTABLE=$<TARGET_FILE:${a_applicationName}>"
-        "-DCUE_PLAYER_OUTPUT=${taskPlayer}"
-        "-DCUE_PLAYER_CONFIGURATION=$<CONFIG>"
-        "-DCUE_PLAYER_PROJECT_ID=${a_projectId}"
-        "-DCUE_PLAYER_APPLICATION=${a_applicationName}"
-        "-DCUE_PLAYER_EXECUTABLE_NAME=${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
+        "-DCUE_APP_SOURCE=$<TARGET_FILE_DIR:${a_applicationName}>"
+        "-DCUE_APP_EXECUTABLE=$<TARGET_FILE:${a_applicationName}>"
+        "-DCUE_APP_OUTPUT=${taskApp}"
+        "-DCUE_APP_CONFIGURATION=$<CONFIG>"
+        "-DCUE_APP_PROJECT_ID=${a_projectId}"
+        "-DCUE_APP_APPLICATION=${a_applicationName}"
+        "-DCUE_APP_EXECUTABLE_NAME=${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
         "-DCUE_STARTUP_TEMPLATE=${taskStartupTemplate}"
         "-DCUE_PACKAGE_TEMPLATE=${taskPackageTemplate}"
         "-DCUE_STARTUP_SCENE=${taskScene}"
         "-DCUE_STARTUP_SCENE_RELATIVE=Content/${taskSceneRelative}"
-        "-DCUE_PLAYER_RUNTIME_LIST=${a_binary}/PlayerRuntimeFiles.txt"
-        "-DCUE_PLAYER_LICENSE_LIST=${a_binary}/PlayerLicenseFiles.txt"
-        -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PublishGamePlayer.cmake")
+        "-DCUE_APP_RUNTIME_LIST=${a_binary}/AppLists/$<CONFIG>/Runtime.txt"
+        "-DCUE_APP_LICENSE_LIST=${a_binary}/AppLists/$<CONFIG>/Licenses.txt"
+        -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PublishGameApp.cmake")
     add_custom_command(TARGET ${a_applicationName} POST_BUILD COMMAND ${taskPackageCommand} VERBATIM)
     add_custom_target(${a_applicationName}.Package ALL COMMAND ${taskPackageCommand} DEPENDS ${a_applicationName} VERBATIM)
-    # Player が共有 Static を更新した後も、Editor の成果物検証情報を最新に保つ
-    add_custom_target(Cue.GamePlayerPackage DEPENDS ${a_applicationName}.Package Cue.GameProjectBuild)
+    # App が共有 Static を更新した後も、Editor の成果物検証情報を最新に保つ
+    add_custom_target(Cue.GameAppPackage DEPENDS ${a_applicationName}.Package Cue.GameProjectBuild)
     set_target_properties(${a_applicationName} PROPERTIES
-        VS_DEBUGGER_COMMAND "${taskPlayer}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
-        VS_DEBUGGER_WORKING_DIRECTORY "${taskPlayer}")
+        VS_DEBUGGER_COMMAND "${taskApp}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
+        VS_DEBUGGER_WORKING_DIRECTORY "${taskApp}")
     set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_TARGET "${a_applicationName}")
-    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_PLAYER_DIRECTORY "${taskPlayer}")
-    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_PLAYER_EXECUTABLE "${taskPlayer}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}")
+    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_DIRECTORY "${taskApp}")
+    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_EXECUTABLE "${taskApp}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}")
 endfunction()

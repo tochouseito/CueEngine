@@ -1,7 +1,7 @@
 include_guard(GLOBAL)
 
 # ゲームの Root から明示的に選んだ SDK だけを参照し、Engine の開発用 Root は読み込まない
-option(CUE_GAME_BUILD_PLAYER "Include the standalone game application and runtime SDK" OFF)
+option(CUE_GAME_BUILD_APP "Include the standalone game application and runtime SDK" OFF)
 
 # Source-backed SDK の限定した依存を追加し、ゲームを Configure と IDE の Root に保つ
 function(cue_add_standalone_game_project a_file)
@@ -44,7 +44,7 @@ function(cue_add_standalone_game_project a_file)
         add_subdirectory("${taskSdkRoot}/Engine/Source/${taskModule}" "${PROJECT_BINARY_DIR}/${taskModule}")
     endforeach()
 
-    if(CUE_GAME_BUILD_PLAYER)
+    if(CUE_GAME_BUILD_APP)
         # 製品用だけに描画と Runtime を追加し、Editor / Tool / Play Host は生成しない
         foreach(taskModule IN ITEMS Assets ECS Platform Scene Profiler Logging
                 Renderer/RHI Renderer/FrameGraph Renderer/Passes Runtime SceneRuntime ScriptRuntime
@@ -56,21 +56,21 @@ function(cue_add_standalone_game_project a_file)
     # ゲーム自身の CMake では Source / Binary Root をゲームの値として公開する
     set(PROJECT_SOURCE_DIR "${taskGameSourceRoot}")
     set(PROJECT_BINARY_DIR "${taskGameBinaryRoot}")
-    if(CUE_GAME_BUILD_PLAYER)
+    if(CUE_GAME_BUILD_APP)
         cue_add_game_project("${taskProject}")
         get_property(taskApplication GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_TARGET)
         if(NOT "${taskApplication}" STREQUAL "")
             # Root Engine の実行 Target 一覧は読み込まないため、製品の依存 Target で PIX を先に配置する
             add_custom_command(TARGET "${taskApplication}.ShaderRuntime" POST_BUILD
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                    "$<TARGET_FILE:Cue.WinPixEventRuntime>" "$<TARGET_FILE_DIR:${taskApplication}>"
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                    "${taskSdkRoot}/ThirdParty/Licenses/WinPixEventRuntime-MIT.txt"
-                    "${taskSdkRoot}/ThirdParty/Licenses/WinPixEventRuntime-ThirdPartyNotices.txt"
-                    "$<TARGET_FILE_DIR:${taskApplication}>"
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DCUE_PIX_CONFIGURATION=$<CONFIG>"
+                    "-DCUE_PIX_SOURCE=$<TARGET_FILE:Cue.WinPixEventRuntime>"
+                    "-DCUE_PIX_LICENSE_DIRECTORY=${taskSdkRoot}/ThirdParty/Licenses"
+                    "-DCUE_PIX_OUTPUT_DIRECTORY=$<TARGET_FILE_DIR:${taskApplication}>"
+                    -P "${taskSdkRoot}/cmake/CopyPixRuntime.cmake"
                 VERBATIM)
         endif()
     else()
-        cue_add_game_project("${taskProject}" NO_PLAYER)
+        cue_add_game_project("${taskProject}" NO_APP)
     endif()
 endfunction()

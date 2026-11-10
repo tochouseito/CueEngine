@@ -29,7 +29,7 @@ Build 中は `Cancel Build`、成功後は `Run` で製品アプリを起動で�
 製品を閉じるまで再 Build を抑止し、Editor を閉じても製品は独立して動作する。
 Build の出力と結果は Panel 内の `Build Log` から確認する。
 
-配布先は `Build/Windows/x64/<構成>/Player`。この Directory 一式をコピーする。
+配布先は `Build/Windows/x64/<構成>/App`。この Directory 一式をコピーする。
 Tool の配置を変えた場合は Editor の生成時設定を更新する。
 開発用ゲーム DLL の更新と Script Types Reload は製品 Build と別の操作で行う。
 
@@ -41,9 +41,9 @@ Visual Studio と .NET Framework 4.8 Reference Assemblies が必要。
 連携用 `VisualStudioBridge.exe` は Engine の MSBuild 時に生成して Editor 横へ配置する。
 操作ごとの NuGet Restore / `dotnet run` は行わない。
 
-Script の Source は `Source/RotateCube.cpp`、Editor 用の対応表は `Source/ScriptSources.cueide`。
+Script の Source は `Source/RotateCube.cpp`、型登録と Source の対応表は `Source/ScriptSources.cueide`。
 Inspector で割当済み Script の `Edit Source` を押すと、`sample.RotateCube` に対応する File を開く。
-Source を追加する場合は CMake の Source 定義と対応表も更新する。
+`Script > New Script...` で Source と対応表を作成する。CMake は接続入口を自動生成する。
 Map の Path は Source Directory 基準で、絶対 Path や `..` は指定しない。
 
 編集後は Play を停止して `Script > Build Scripts` を実行する。

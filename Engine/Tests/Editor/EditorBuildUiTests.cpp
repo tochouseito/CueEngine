@@ -171,7 +171,7 @@ int main()
     // ログ内の書式記号は Text として描画し、所有 Buffer は展開しても変更しない
     const std::string log = "日本語 Build output\n%n %s %%\n";
     display.build.logText = log;
-    display.build.outputDirectory = "C:/配布済み Cube/Player";
+    display.build.outputDirectory = "C:/配布済み Cube/App";
     display.build.statusText = "Succeeded";
     display.build.exitCode = 0;
     display.build.isLogTruncated = true;

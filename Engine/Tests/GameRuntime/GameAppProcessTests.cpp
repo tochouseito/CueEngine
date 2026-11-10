@@ -28,7 +28,7 @@ namespace
     {                                                                                                                  \
         if (!(__VA_ARGS__))                                                                                            \
         {                                                                                                              \
-            std::fprintf(stderr, "Game player process test line %d: %s\n", __LINE__, #__VA_ARGS__);                    \
+            std::fprintf(stderr, "Game app process test line %d: %s\n", __LINE__, #__VA_ARGS__);                    \
             return __LINE__;                                                                                           \
         }                                                                                                              \
     } while (false)

@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
+#include <EditorIde/ScriptCreation.h>
 #include <Foundation/Utf8.h>
 #include <Platform/FileSystem.h>
 #include <Project/Project.h>
@@ -96,8 +98,10 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
             return Result<Path>::failure(invalid("EditorIde.source_map_text"));
         if (text.starts_with("\xef\xbb\xbf"))
             text.remove_prefix(3);
-        bool hasVersion = false;
+        unsigned version = 0;
         std::unordered_set<std::string> keys;
+        std::unordered_map<std::string, std::string> scripts;
+        std::unordered_map<std::string, std::string> registrations;
         std::optional<Path> selected;
         for (std::size_t offset = 0; offset < text.size();)
         {
@@ -115,9 +119,16 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
                 return Result<Path>::failure(invalid("EditorIde.source_map_key"));
             if (key == "formatVersion")
             {
-                if (value != "1")
+                if (value != "1" && value != "2")
                     return Result<Path>::failure(invalid("EditorIde.source_map_version"));
-                hasVersion = true;
+                version = value == "1" ? 1 : 2;
+                continue;
+            }
+            if (key.starts_with("registration."))
+            {
+                if (key.size() <= 13 || key.size() > 269 || !is_valid_script_name(value))
+                    return Result<Path>::failure(invalid("EditorIde.source_map_registration"));
+                registrations.emplace(std::string(key.substr(13)), std::string(value));
                 continue;
             }
             if (!key.starts_with("script.") || key.size() <= 7 || key.size() > 263 || !valid_relative(value))
@@ -125,6 +136,7 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
             auto relative = Path::create(value);
             if (!relative.has_value() || relative.try_value()->is_absolute())
                 return Result<Path>::failure(invalid("EditorIde.source_map_path"));
+            scripts.emplace(std::string(key.substr(7)), std::string(value));
             if (key.substr(7) == a_typeId)
             {
                 auto source = a_project.source_directory().join(*relative.try_value());
@@ -133,9 +145,45 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
                 selected = source.take_value();
             }
         }
-        if (!hasVersion || !selected)
+        if (version == 1 && !registrations.empty())
+            return Result<Path>::failure(invalid("EditorIde.source_map_version"));
+        if (version == 2)
+        {
+            if (scripts.size() != registrations.size() || scripts.size() > 256)
+                return Result<Path>::failure(invalid("EditorIde.source_map_pairs"));
+            std::unordered_set<std::string> sourceNames;
+            std::unordered_set<std::string> symbols;
+            std::unordered_set<std::string> typeNames;
+            const auto folded = [](std::string a_value)
+            {
+                for (auto &character : a_value)
+                    if (character >= 'A' && character <= 'Z')
+                        character += 'a' - 'A';
+                return a_value;
+            };
+            for (const auto &[typeId, source] : scripts)
+            {
+                if (typeId.empty() || typeId.size() > 128 ||
+                    !((typeId.front() >= 'A' && typeId.front() <= 'Z') ||
+                      (typeId.front() >= 'a' && typeId.front() <= 'z')) ||
+                    !std::all_of(typeId.begin(), typeId.end(),
+                                 [](char a_character)
+                                 {
+                                     return (a_character >= 'A' && a_character <= 'Z') ||
+                                            (a_character >= 'a' && a_character <= 'z') ||
+                                            (a_character >= '0' && a_character <= '9') || a_character == '_' ||
+                                            a_character == '.';
+                                 }) ||
+                    !registrations.contains(typeId) || !source.ends_with(".cpp") ||
+                    source.find_first_of("\\;$<>") != std::string::npos ||
+                    !sourceNames.emplace(folded(source)).second || !typeNames.emplace(folded(typeId)).second ||
+                    !symbols.emplace(folded(registrations.at(typeId))).second)
+                    return Result<Path>::failure(invalid("EditorIde.source_map_pairs"));
+            }
+        }
+        if (!version || !selected)
             return Result<Path>::failure(
-                invalid(hasVersion ? "EditorIde.script_source_not_found" : "EditorIde.source_map_version"));
+                invalid(version ? "EditorIde.script_source_not_found" : "EditorIde.source_map_version"));
         checked = validate_file(a_files, a_project.source_directory(), *selected);
         if (!checked.has_value())
             return Result<Path>::failure(*checked.try_error());

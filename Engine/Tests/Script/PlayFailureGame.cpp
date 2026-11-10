@@ -1,12 +1,12 @@
+#include <chrono>
 #include <limits>
-#include <memory>
-#include <utility>
+#include <stdexcept>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #include <Math/Quaternion.h>
-#include <Script/Module.h>
+#include <Script/ModuleEntry.h>
 
 namespace
 {
@@ -39,6 +39,8 @@ class FailureBehaviour final : public cue::Behaviour
         ++m_ticks;
         if (m_mode == 3)
             return cue::Result<void>::failure({cue::ErrorCategory::Fatal, "Failure.update"});
+        if (m_mode == 8)
+            throw std::runtime_error("Failure.fixture_exception");
         // Ready と最初の View の後に障害を起こし、実行中の分離・回復を確認する
         if (m_ticks > 20 && m_mode == 4)
             RaiseException(EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, nullptr);
@@ -75,32 +77,8 @@ class FailureBehaviour final : public cue::Behaviour
     std::uint64_t m_ticks = 0;
 };
 
-/// @brief 障害注入用の Metadata と Factory を同じ Module に登録する
-cue::Result<std::unique_ptr<cue::ScriptModule>> create_module()
-{
-    cue::ScriptTypeDescriptor type{
-        "test.Failure", "Failure Fixture", 1, {{"mode", "Mode", cue::ScriptPropertyKind::Number, 0, false}}};
-    std::vector<cue::ScriptRegistration> registrations;
-    registrations.push_back(cue::make_script_registration<FailureBehaviour>(std::move(type)));
-    return cue::ScriptModule::create(std::move(registrations));
-}
 } // namespace
 
-/// @brief 障害 Fixture の登録例外を ABI の内側で Status へ変換する
-extern "C" CUE_SCRIPT_EXPORT CueScriptStatus CUE_SCRIPT_CALL CueScriptGetModule(std::uint32_t a_version,
-                                                                                CueScriptModuleApi *a_api) noexcept
-{
-    try
-    {
-        if (!a_api)
-            return cue::script_status({cue::ErrorCategory::InvalidArgument, "Failure.api_null"});
-        static auto module = create_module();
-        if (!module.has_value())
-            return cue::script_status(*module.try_error());
-        return (*module.try_value())->get_api(a_version, *a_api);
-    }
-    catch (...)
-    {
-        return cue::script_exception_status();
-    }
-}
+// ゲーム Module 全体の登録と接続入口を一つだけ定義する
+CUE_DEFINE_SCRIPT_MODULE(cue::make_script_registration<FailureBehaviour>(
+    {"test.Failure", "Failure Fixture", 1, {{"mode", "Mode", cue::ScriptPropertyKind::Number, 0, false}}}))

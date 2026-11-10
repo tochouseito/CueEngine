@@ -117,7 +117,7 @@ class BuildFixture final : public cue::IGameBuildService
 
 /// @brief Project と Scene を独立 Directory へ作り、破損・版不一致も入力だけで再現する
 bool make_project(cue::IFileSystem &a_files, const cue::Path &a_root, std::string_view a_name, std::string_view a_id,
-                  std::string_view a_scene, bool a_isWrongVersion = false)
+                  std::string_view a_scene, bool a_isWrongVersion = false, bool a_hasGameTarget = false)
 {
     if (!a_files.create_directories(joined(a_root, "Source")).has_value() ||
         !a_files.create_directories(joined(a_root, "Content/Scenes")).has_value())
@@ -126,7 +126,8 @@ bool make_project(cue::IFileSystem &a_files, const cue::Path &a_root, std::strin
         std::string(a_isWrongVersion ? "formatVersion=2\nengineVersion=999.0.0\n" : "formatVersion=1\n") +
         "projectId=" + std::string(a_id) + "\nname=" + std::string(a_name) +
         "\napplicationName=SwitchFixture\nsourceRoot=Source\ncontentRoot=Content\n"
-        "startupScene=Scenes/Start.cuescene\n";
+        "startupScene=Scenes/Start.cuescene\n" +
+        std::string(a_hasGameTarget ? "gameTarget=SwitchFixtureGame\n" : "");
     return write(a_files, joined(a_root, "Source/CMakeLists.txt"), "# Project switch fixture\n") &&
            write(a_files, joined(a_root, "Content/Scenes/Start.cuescene"), a_scene) &&
            write(a_files, joined(a_root, "Project.cueproj"), descriptor);
@@ -182,9 +183,10 @@ int test_switching(bool a_useWorkers)
     const auto brokenRoot = joined(fixture.root, "Broken");
     const auto wrongRoot = joined(fixture.root, "WrongVersion");
     CHECK(make_project(files, firstRoot, "Project A", "7f533c49-d416-47ea-98c1-026822b1e6ed",
-                       render_scene("RotateCube")));
+                       render_scene("RotateCube"), false, true));
     const auto secondScene = render_scene("Project B Scene");
-    CHECK(make_project(files, secondRoot, "Project B", "8f533c49-d416-47ea-98c1-026822b1e6ed", secondScene));
+    CHECK(
+        make_project(files, secondRoot, "Project B", "8f533c49-d416-47ea-98c1-026822b1e6ed", secondScene, false, true));
     CHECK(make_project(files, brokenRoot, "Broken", "9f533c49-d416-47ea-98c1-026822b1e6ed", "broken scene\n"));
     CHECK(
         make_project(files, wrongRoot, "Wrong", "af533c49-d416-47ea-98c1-026822b1e6ed", cue::tests::k_sceneText, true));
@@ -221,6 +223,27 @@ int test_switching(bool a_useWorkers)
     CHECK(host.scene()->descriptor().name == "RotateCube");
     const auto firstScene = host.scene()->serialize();
     CHECK(firstScene.has_value());
+    // Game の構成は Scene / Project の正本と独立し、Project ごとのローカル設定として保持する
+    const auto descriptorBefore = read(files, first);
+    CHECK(host.game_configuration() == cue::GameBuildConfiguration::Development);
+    CHECK(host.can_select_game_configuration());
+    CHECK(host.request_game_configuration(cue::GameBuildConfiguration::Debug).has_value());
+    CHECK(host.game_configuration() == cue::GameBuildConfiguration::Debug);
+    CHECK(!host.request_game_configuration(static_cast<cue::GameBuildConfiguration>(99)).has_value());
+    CHECK(host.game_configuration() == cue::GameBuildConfiguration::Debug);
+    CHECK(read(files, first) == descriptorBefore);
+    // Source の作成は文書や製品 Target を変更せず、同名作成と不正名を拒否する
+    CHECK(write(files, joined(firstRoot, "Source/CMakeLists.txt"), "cue_add_game_scripts(SwitchFixtureGame)\n"));
+    CHECK(write(files, joined(firstRoot, "Source/Existing.cpp"), "// Existing script\n"));
+    CHECK(write(files, joined(firstRoot, "Source/ScriptSources.cueide"),
+                "formatVersion=2\nscript.game.Existing=Existing.cpp\nregistration.game.Existing=Existing\n"));
+    CHECK(host.request_script_creation("CreatedScript").has_value());
+    CHECK(!host.request_script_creation("CreatedScript").has_value());
+    CHECK(!host.request_script_creation("../Escape").has_value());
+    CHECK(read(files, joined(firstRoot, "Source/CreatedScript.cpp")).find("CUE_DEFINE_SCRIPT(CreatedScript") !=
+          std::string::npos);
+    auto afterConfiguration = host.scene()->serialize();
+    CHECK(afterConfiguration.has_value() && *afterConfiguration.try_value() == *firstScene.try_value());
 
     // 不正な候補の失敗は現在の Project、Document、Build 結果を変更しない
     CHECK(!host.request_open_project(joined(brokenRoot, "Project.cueproj")).has_value());
@@ -238,6 +261,8 @@ int test_switching(bool a_useWorkers)
     {
         observedBuild->current.state = state;
         CHECK(!host.can_open_project() && !host.request_open_project(second).has_value());
+        CHECK(!host.can_select_game_configuration() &&
+              !host.request_game_configuration(cue::GameBuildConfiguration::Release).has_value());
         CHECK(host.project()->file().utf8() == first.utf8());
     }
     observedBuild->current = {};
@@ -246,22 +271,31 @@ int test_switching(bool a_useWorkers)
     observedBuild->current = {};
     observedBuild->current.state = cue::GameBuildState::Succeeded;
     observedBuild->current.log = "old Project log";
-    observedBuild->current.executable = joined(firstRoot, "OldPlayer.exe");
+    observedBuild->current.executable = joined(firstRoot, "OldApp.exe");
     CHECK(host.can_open_project() && host.request_open_project(second).has_value());
     CHECK(step_frames(host));
     CHECK(host.project()->file().utf8() == second.utf8() && host.scene()->descriptor().name == "Project B Scene");
+    CHECK(host.game_configuration() == cue::GameBuildConfiguration::Development);
+    CHECK(host.request_game_configuration(cue::GameBuildConfiguration::Release).has_value());
     CHECK(observedBuild->resets >= 2 && observedBuild->current.state == cue::GameBuildState::Idle);
     CHECK(observedBuild->current.log.empty() && observedBuild->current.executable.utf8().empty());
     CHECK(!host.run_game().has_value() && observedBuild->launches == 0);
 
     CHECK(host.request_open_project(first).has_value() && step_frames(host));
     CHECK(host.project()->file().utf8() == first.utf8() && host.scene()->descriptor().name == "RotateCube");
+    CHECK(host.game_configuration() == cue::GameBuildConfiguration::Debug);
     // 同じ Project の再選択も新しい入力を読み、以前の Scene 値を再利用しない
     CHECK(write(files, joined(firstRoot, "Content/Scenes/Start.cuescene"), render_scene("Reloaded A")));
     CHECK(host.request_open_project(first).has_value() && step_frames(host));
     CHECK(host.scene()->descriptor().name == "Reloaded A");
     CHECK(host.shutdown().has_value());
     CHECK(!host.can_open_project() && !host.request_open_project(second).has_value());
+    auto reopenedConfig = host_config(fixture, a_useWorkers, nullptr);
+    cue::EditorHost reopened(std::move(reopenedConfig));
+    CHECK(reopened.initialize().has_value());
+    CHECK(reopened.request_open_project(first).has_value() && step_frames(reopened));
+    CHECK(reopened.game_configuration() == cue::GameBuildConfiguration::Debug);
+    CHECK(reopened.shutdown().has_value());
     return 0;
 }
 

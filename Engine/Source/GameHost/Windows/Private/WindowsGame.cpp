@@ -23,7 +23,7 @@
 #include <ScriptRuntime/ScriptModule.h>
 #include <WindowsHost/WindowsHost.h>
 
-#include "PlayerValidation.h"
+#include "AppValidation.h"
 
 namespace cue
 {
@@ -45,7 +45,7 @@ Result<void> validate_resources(IFileSystem &a_files, const Path &a_directory)
             return Result<void>::failure(*info.try_error());
         if (!*info.try_value() || (**info.try_value()).type != FileType::Regular)
             return Result<void>::failure(
-                {ErrorCategory::InvalidArgument, "GamePlayer.resource_missing:" + file.try_value()->utf8()});
+                {ErrorCategory::InvalidArgument, "GameApp.resource_missing:" + file.try_value()->utf8()});
     }
     return Result<void>::success();
 }
@@ -53,8 +53,8 @@ Result<void> validate_resources(IFileSystem &a_files, const Path &a_directory)
 /// @brief 起動・実行失敗を共通診断へ送り、通常起動の失敗だけ Native Dialog で示す
 void report_failure(const Error &a_error, bool a_showDialog) noexcept
 {
-    report_log_error("GamePlayer", a_error, LogLevel::Error);
-    std::fprintf(stderr, "GamePlayer: %s (%lld)\n", a_error.operation.c_str(),
+    report_log_error("GameApp", a_error, LogLevel::Error);
+    std::fprintf(stderr, "GameApp: %s (%lld)\n", a_error.operation.c_str(),
                  static_cast<long long>(a_error.nativeCode));
     if (a_showDialog)
     {
@@ -83,7 +83,7 @@ void report_script(std::uint32_t a_severity, std::string_view a_message)
 
 /// @brief Platform Host の Frame 制御へ実行 Session と所有 Render Snapshot を接続する
 Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_startup,
-                        const PlayerValidationOptions &a_options, PlayerValidationMetrics &a_metrics)
+                        const AppValidationOptions &a_options, AppValidationMetrics &a_metrics)
 {
     std::unique_ptr<ISceneRenderer> renderer;
     WindowsHostConfig config;
@@ -132,7 +132,7 @@ Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_start
         auto snapshot = a_session.snapshot();
         if (!snapshot.has_value())
             return Result<void>::failure(*snapshot.try_error());
-        observe_player_snapshot(a_metrics, *snapshot.try_value());
+        observe_app_snapshot(a_metrics, *snapshot.try_value());
         return renderer->publish_frame(a_frame.frameIndex, snapshot.take_value());
     };
     config.callbacks.recordFrame = [&](std::uint64_t a_frame, std::stop_token a_stop, const FrameCallback &a_record)
@@ -181,7 +181,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     try
     {
-        auto options = read_player_validation_options();
+        auto options = read_app_validation_options();
         if (!options.has_value())
         {
             report_failure(*options.try_error(), false);
@@ -193,7 +193,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             report_failure(*files.try_error(), !options.try_value()->isRequested);
             return 1;
         }
-        PlayerValidationMetrics metrics;
+        AppValidationMetrics metrics;
         auto executed = [&]() -> Result<void>
         {
             auto directory = (*files.try_value())->executable_directory();
@@ -205,7 +205,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             if (startup.try_value()->platform != a_identity.platform ||
                 startup.try_value()->architecture != a_identity.architecture ||
                 startup.try_value()->configuration != a_identity.configuration)
-                return Result<void>::failure({ErrorCategory::InvalidArgument, "GamePlayer.build_identity"});
+                return Result<void>::failure({ErrorCategory::InvalidArgument, "GameApp.build_identity"});
             auto resources = validate_resources(**files.try_value(), *directory.try_value());
             if (!resources.has_value())
                 return resources;
@@ -226,7 +226,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             auto initial = session->snapshot();
             if (!initial.has_value())
                 return Result<void>::failure(*initial.try_error());
-            observe_player_snapshot(metrics, *initial.try_value());
+            observe_app_snapshot(metrics, *initial.try_value());
             auto played = options.try_value()->isValidateOnly
                               ? Result<void>::success()
                               : run_frames(*session, *startup.try_value(), *options.try_value(), metrics);
@@ -241,7 +241,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             }
             return stopped;
         }();
-        auto report = write_player_validation_report(**files.try_value(), *options.try_value(), metrics);
+        auto report = write_app_validation_report(**files.try_value(), *options.try_value(), metrics);
         if (!report.has_value())
         {
             report_failure(*report.try_error(), !options.try_value()->isRequested);
@@ -257,7 +257,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
     }
     catch (...)
     {
-        report_failure({ErrorCategory::Fatal, "GamePlayer.unexpected_exception"}, false);
+        report_failure({ErrorCategory::Fatal, "GameApp.unexpected_exception"}, false);
         return 2;
     }
 }

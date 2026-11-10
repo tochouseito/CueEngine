@@ -43,12 +43,28 @@ Result<void> validate_editor_play_view(const SceneRenderSnapshot &a_snapshot, fl
 
 Result<PlayClientConfig> resolve_editor_play_config(IFileSystem &a_files, const Project *a_project,
                                                     const std::optional<Path> &a_executable,
-                                                    const std::optional<Path> &a_module)
+                                                    const std::optional<Path> &a_module,
+                                                    GameBuildConfiguration a_configuration)
 {
     if (a_executable.has_value() != a_module.has_value())
         return Result<PlayClientConfig>::failure(
             {ErrorCategory::InvalidArgument, "EditorHost.play.partial_configuration"});
     PlayClientConfig config;
+    switch (a_configuration)
+    {
+    case GameBuildConfiguration::Debug:
+        config.moduleConfiguration = ScriptConfiguration::Debug;
+        break;
+    case GameBuildConfiguration::Development:
+        config.moduleConfiguration = ScriptConfiguration::Development;
+        break;
+    case GameBuildConfiguration::Release:
+        config.moduleConfiguration = ScriptConfiguration::Release;
+        break;
+    default:
+        return Result<PlayClientConfig>::failure(
+            {ErrorCategory::InvalidArgument, "EditorHost.play.game_configuration"});
+    }
     // Editor の SceneView が描画を担当し、Game DLL は表示 Window のない子 Process に隔離する
     config.isHeadless = true;
     config.isEmbedded = true;
@@ -66,7 +82,7 @@ Result<PlayClientConfig> resolve_editor_play_config(IFileSystem &a_files, const 
         if (!a_project || !a_project->descriptor().gameTarget)
             return Result<PlayClientConfig>::failure({ErrorCategory::InvalidState, "EditorHost.play.not_configured"});
         // Build 配置・ABI・構成・Project Identity・Hash の検証は ProjectBuild の契約へ集約する
-        auto artifacts = load_game_build_artifacts(a_files, *a_project, current_game_build_configuration());
+        auto artifacts = load_game_build_artifacts(a_files, *a_project, a_configuration);
         if (!artifacts.has_value())
             return Result<PlayClientConfig>::failure(*artifacts.try_error());
         config.module = artifacts.try_value()->moduleFile;

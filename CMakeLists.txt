@@ -60,13 +60,12 @@ if(TARGET Cue.WinPixEventRuntime)
     list(REMOVE_DUPLICATES taskPixOutputs)
     foreach(taskOutput IN LISTS taskPixOutputs)
         add_custom_command(TARGET Cue.PixRuntime POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E make_directory "${taskOutput}"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_FILE:Cue.WinPixEventRuntime>" "${taskOutput}"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${PROJECT_SOURCE_DIR}/ThirdParty/Licenses/WinPixEventRuntime-MIT.txt"
-                "${PROJECT_SOURCE_DIR}/ThirdParty/Licenses/WinPixEventRuntime-ThirdPartyNotices.txt"
-                "${taskOutput}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DCUE_PIX_CONFIGURATION=$<CONFIG>"
+                "-DCUE_PIX_SOURCE=$<TARGET_FILE:Cue.WinPixEventRuntime>"
+                "-DCUE_PIX_LICENSE_DIRECTORY=${PROJECT_SOURCE_DIR}/ThirdParty/Licenses"
+                "-DCUE_PIX_OUTPUT_DIRECTORY=${taskOutput}"
+                -P "${PROJECT_SOURCE_DIR}/cmake/CopyPixRuntime.cmake"
             VERBATIM
         )
     endforeach()

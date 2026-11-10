@@ -1,2 +1,3 @@
-formatVersion=1
-script.game.Empty=Game.cpp
+formatVersion=2
+script.game.Empty=EmptyBehaviour.cpp
+registration.game.Empty=EmptyBehaviour

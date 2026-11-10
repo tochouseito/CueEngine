@@ -269,12 +269,26 @@ int wmain(int a_count, wchar_t **a_arguments)
 {
     if (a_count > 1 && std::wstring_view(a_arguments[1]) == L"--vs-attach")
         return attach_visual_studio(a_count, a_arguments);
-    CHECK(a_count == 3);
+    CHECK(a_count == 3 || a_count == 4);
     CHECK(test_untrusted_continue() == 0);
     auto executable = argument_path(a_arguments[1]);
     auto module = argument_path(a_arguments[2]);
     CHECK(executable.has_value() && module.has_value());
-    auto created = cue::PlayClient::create({executable.take_value(), module.take_value(), true, 0, true});
+    cue::PlayClientConfig config{executable.take_value(), module.take_value(), true, 0, true};
+    if (a_count == 4)
+    {
+        // Host と異なる Game 構成も、明示した期待値と Debugger 接続後の読込で検証する
+        const std::wstring_view selected(a_arguments[3]);
+        if (selected == L"Debug")
+            config.moduleConfiguration = cue::ScriptConfiguration::Debug;
+        else if (selected == L"Development")
+            config.moduleConfiguration = cue::ScriptConfiguration::Development;
+        else if (selected == L"Release")
+            config.moduleConfiguration = cue::ScriptConfiguration::Release;
+        else
+            CHECK(false);
+    }
+    auto created = cue::PlayClient::create(std::move(config));
     CHECK(created.has_value());
     auto client = created.take_value();
     auto scene = make_scene();

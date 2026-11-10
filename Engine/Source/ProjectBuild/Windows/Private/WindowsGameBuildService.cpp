@@ -123,7 +123,7 @@ Result<void> check_replaceable(IFileSystem &a_files, const Path &a_executable)
     if (!*info.try_value())
         return Result<void>::success();
     if ((**info.try_value()).type != FileType::Regular)
-        return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.player_file_kind"});
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.app_file_kind"});
     auto native = utf8_to_utf16(a_executable.utf8());
     if (!native.has_value())
         return Result<void>::failure(*native.try_error());
@@ -131,7 +131,7 @@ Result<void> check_replaceable(IFileSystem &a_files, const Path &a_executable)
                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     return probe ? Result<void>::success()
-                 : Result<void>::failure(detail::build_process_error("GameBuild.player_running_or_locked"));
+                 : Result<void>::failure(detail::build_process_error("GameBuild.app_running_or_locked"));
 }
 
 /// @brief Process 出力の一行を ImGui に渡せる UTF-8 へ揃え、埋込 NUL / 制御文字を除く
@@ -206,7 +206,7 @@ class WindowsGameBuildService final : public IGameBuildService
     /// @brief 状態を失敗へ確定し、Build Job と Project 排他を回収する
     Result<void> fail(Error a_error);
     /// @brief Marker / Scene / exe と要求時点の Project / Target を再検証する
-    Result<void> validate_player();
+    Result<void> validate_app();
     /// @brief 完成 Manifest と DLL / Static の Hash、隣接する PDB を確認する
     Result<void> validate_module();
     /// @brief 所有製品の終了を非待機で確認する
@@ -324,7 +324,7 @@ Result<void> WindowsGameBuildService::fail(Error a_error)
 
 Result<void> WindowsGameBuildService::start(const Project &a_project, const GameBuildTarget &a_target)
 {
-    return start(a_project, a_target, GameBuildPurpose::Player);
+    return start(a_project, a_target, GameBuildPurpose::App);
 }
 
 Result<void> WindowsGameBuildService::start(const Project &a_project, const GameBuildTarget &a_target,
@@ -343,18 +343,18 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
         auto target = validate_game_build_target(a_target);
         if (!target.has_value())
             return target;
-        if (a_purpose != GameBuildPurpose::Player && a_purpose != GameBuildPurpose::ScriptModule &&
+        if (a_purpose != GameBuildPurpose::App && a_purpose != GameBuildPurpose::ScriptModule &&
             a_purpose != GameBuildPurpose::IdeProject)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.purpose_unsupported"});
         if (!a_project.descriptor().gameTarget ||
-            (a_purpose == GameBuildPurpose::Player && !a_project.startup_scene_file()))
+            (a_purpose == GameBuildPurpose::App && !a_project.startup_scene_file()))
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.project_contract"});
         if (a_project.descriptor().engineVersion && *a_project.descriptor().engineVersion != CUE_ENGINE_VERSION)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.project_engine_version"});
         auto tools = validate_tools(*m_files, m_tools, m_installation.has_value());
         if (!tools.has_value())
             return tools;
-        if (a_purpose == GameBuildPurpose::Player)
+        if (a_purpose == GameBuildPurpose::App)
         {
             auto scene = Scene::load(*m_files, *a_project.startup_scene_file());
             if (!scene.has_value())
@@ -363,12 +363,12 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
         auto build = game_build_directory(a_project, a_target);
         if (!build.has_value())
             return Result<void>::failure(*build.try_error());
-        auto output = a_purpose == GameBuildPurpose::Player ? build.try_value()->join("Player")
+        auto output = a_purpose == GameBuildPurpose::App ? build.try_value()->join("App")
                                                             : Result<Path>::success(*build.try_value());
         if (!output.has_value())
             return Result<void>::failure(*output.try_error());
         Path executable;
-        if (a_purpose == GameBuildPurpose::Player)
+        if (a_purpose == GameBuildPurpose::App)
         {
             const auto *platform = find_game_build_platform(a_target.platform);
             auto file = output.try_value()->join(a_project.descriptor().applicationName +
@@ -384,10 +384,10 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
         const auto treeSuffix = "WorkspaceV1/" + detail::build_path_identity(m_tools.engineRoot) + '/' +
                                 a_target.platform + '/' + a_target.architecture;
         auto ideTree = a_project.root().join("Intermediate/IDE/" + treeSuffix);
-        auto playerTree = a_project.root().join("Intermediate/EditorBuild/" + treeSuffix);
-        if (!ideTree.has_value() || !playerTree.has_value())
-            return Result<void>::failure(!ideTree.has_value() ? *ideTree.try_error() : *playerTree.try_error());
-        const auto &tree = a_purpose == GameBuildPurpose::Player ? *playerTree.try_value() : *ideTree.try_value();
+        auto appTree = a_project.root().join("Intermediate/EditorBuild/" + treeSuffix);
+        if (!ideTree.has_value() || !appTree.has_value())
+            return Result<void>::failure(!ideTree.has_value() ? *ideTree.try_error() : *appTree.try_error());
+        const auto &tree = a_purpose == GameBuildPurpose::App ? *appTree.try_value() : *ideTree.try_value();
         auto intermediate = a_project.root().join("Intermediate");
         if (!intermediate.has_value())
             return Result<void>::failure(*intermediate.try_error());
@@ -399,7 +399,7 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
             return Result<void>::failure(*lock.try_error());
         auto workspace =
             detail::prepare_game_workspace(*m_files, a_project, m_tools.engineRoot, *ideTree.try_value(),
-                                           *playerTree.try_value(), a_target.platform, a_target.architecture);
+                                           *appTree.try_value(), a_target.platform, a_target.architecture);
         if (!workspace.has_value())
             return workspace;
         auto directory = prepare_directory(*m_files, tree);
@@ -407,7 +407,7 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
             return directory;
         // Configure の Root と作業 Directory をゲーム側に揃え、Engine は SDK 依存として渡す
         std::vector<std::string> arguments{"--preset",
-                                           a_purpose == GameBuildPurpose::Player ? "cue-player" : "cue-engine",
+                                           a_purpose == GameBuildPurpose::App ? "cue-app" : "cue-engine",
                                            "-S",
                                            a_project.root().utf8(),
                                            "-B",
@@ -416,8 +416,8 @@ Result<void> WindowsGameBuildService::start(const Project &a_project, const Game
                                            "-DCUE_ENGINE_ROOT=" + m_tools.engineRoot.utf8(),
                                            "-DCUE_GAME_PLATFORM=" + a_target.platform,
                                            "-DCUE_GAME_ARCHITECTURE=" + a_target.architecture,
-                                           std::string("-DCUE_GAME_BUILD_PLAYER=") +
-                                               (a_purpose == GameBuildPurpose::Player ? "ON" : "OFF"),
+                                           std::string("-DCUE_GAME_BUILD_APP=") +
+                                               (a_purpose == GameBuildPurpose::App ? "ON" : "OFF"),
                                            "-DCMAKE_TOOLCHAIN_FILE=" + m_tools.toolchainFile.utf8(),
                                            "-DBUILD_TESTING=OFF",
                                            "-DCUE_BUILD_PERFORMANCE_TOOLS=OFF"};
@@ -476,7 +476,7 @@ Result<void> WindowsGameBuildService::validate_module()
     return Result<void>::success();
 }
 
-Result<void> WindowsGameBuildService::validate_player()
+Result<void> WindowsGameBuildService::validate_app()
 {
     if (!m_project)
         return Result<void>::failure({ErrorCategory::InvalidState, "GameBuild.no_request"});
@@ -598,7 +598,7 @@ Result<void> WindowsGameBuildService::poll()
                          code});
         if (m_status.state == GameBuildState::Configuring)
         {
-            if (m_status.purpose != GameBuildPurpose::Player)
+            if (m_status.purpose != GameBuildPurpose::App)
             {
                 m_status.workspaceDirectory = m_project->root();
                 if (m_status.purpose == GameBuildPurpose::IdeProject)
@@ -615,7 +615,7 @@ Result<void> WindowsGameBuildService::poll()
                 "--config",
                 std::string(game_build_configuration_name(m_status.target.configuration)),
                 "--target",
-                m_status.purpose == GameBuildPurpose::Player ? "Cue.GamePlayerPackage" : "Cue.GameProjectBuild",
+                m_status.purpose == GameBuildPurpose::App ? "Cue.GameAppPackage" : "Cue.GameProjectBuild",
                 "--parallel"};
             auto process =
                 detail::start_build_process(m_tools.cmakeExecutable, arguments, m_project->root(), m_tools.vcpkgRoot);
@@ -627,7 +627,7 @@ Result<void> WindowsGameBuildService::poll()
             append_log("[Build / Package]\n");
             return Result<void>::success();
         }
-        auto completed = m_status.purpose == GameBuildPurpose::Player ? validate_player() : validate_module();
+        auto completed = m_status.purpose == GameBuildPurpose::App ? validate_app() : validate_module();
         if (!completed.has_value())
             return fail(*completed.try_error());
         m_status.state = GameBuildState::Succeeded;
@@ -665,13 +665,13 @@ Result<void> WindowsGameBuildService::launch()
         auto observed = poll_application();
         if (!observed.has_value())
             return observed;
-        if (m_status.purpose != GameBuildPurpose::Player || m_status.state != GameBuildState::Succeeded ||
+        if (m_status.purpose != GameBuildPurpose::App || m_status.state != GameBuildState::Succeeded ||
             m_build.process || m_application || !m_project)
             return Result<void>::failure({ErrorCategory::InvalidState, "GameBuild.launch_requires_success"});
         auto lock = detail::acquire_build_lock(m_project->root());
         if (!lock.has_value())
             return Result<void>::failure(*lock.try_error());
-        auto valid = validate_player();
+        auto valid = validate_app();
         if (!valid.has_value())
             return valid;
         auto process = detail::start_game_process(m_status.executable, m_status.outputDirectory);

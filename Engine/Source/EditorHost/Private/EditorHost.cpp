@@ -13,6 +13,7 @@
 #include <Editor/EditorApplication.h>
 #include <EditorHost/ImGuiPass.h>
 #include <EditorHost/PerformanceSettingsEditing.h>
+#include <EditorIde/ScriptCreation.h>
 #include <EditorUi/EditorUi.h>
 #include <EngineInstallation/EngineVersion.h>
 #include <Foundation/ScopedFlag.h>
@@ -22,6 +23,7 @@
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayClient.h>
 
+#include "EditorGameSettings.h"
 #include "EditorPlayServices.h"
 #include "EditorScriptController.h"
 #include "EditorWindowsServices.h"
@@ -221,6 +223,8 @@ struct EditorHost::EditingState final
     std::string buildStatusText;
     std::unique_ptr<EditorScriptController> scripts;
     std::string scriptStatusText;
+    GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
+    bool isGameBuildRequired = true;
 };
 
 /// @brief 準備中の Project の住所を固定し、Controller の借用を commit の前後で維持する
@@ -229,6 +233,8 @@ struct EditorHost::PreparedProject final
     std::unique_ptr<Project> project;
     std::unique_ptr<EditorApplication> application;
     std::unique_ptr<EditorScriptController> scripts;
+    GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
+    std::string settingsError;
 };
 
 /// @brief Editor の表示設定を保持し、下位基盤へ Editor 型を渡さない
@@ -249,7 +255,8 @@ EditorHost::EditorHost(EditorHostConfig a_config)
       m_ownerId(std::this_thread::get_id()), m_performancePolicy(a_config.performancePolicy),
       m_project(a_config.project ? std::make_unique<Project>(std::move(*a_config.project)) : nullptr),
       m_scene(std::move(a_config.initialScene)), m_playExecutable(std::move(a_config.playExecutable)),
-      m_scriptModule(std::move(a_config.scriptModule)), m_gameBuildService(std::move(a_config.gameBuildService)),
+      m_scriptModule(std::move(a_config.scriptModule)), m_initialGameConfiguration(a_config.gameConfiguration),
+      m_gameBuildService(std::move(a_config.gameBuildService)),
       m_gameBuildUnavailableReason(std::move(a_config.gameBuildUnavailableReason)),
       m_ideService(std::move(a_config.ideService)), m_ideUnavailableReason(std::move(a_config.ideUnavailableReason)),
       m_enableProjectOpening(a_config.enableProjectOpening), m_projectDialog(std::move(a_config.projectDialog)),
@@ -403,6 +410,8 @@ Result<void> EditorHost::initialize()
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.initialize"});
     ScopedFlag initializing(m_isInitializing);
     m_hasInitializeAttempt = true;
+    if (m_initialGameConfiguration && game_build_configuration_name(*m_initialGameConfiguration).empty())
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorHost.game_configuration"});
     if (m_scene || m_project || m_enableProjectOpening)
     {
         m_editing = std::make_unique<EditingState>();
@@ -444,6 +453,19 @@ Result<void> EditorHost::initialize()
         if (!stopped.has_value())
             report_log_error("CueEditorHost scene cleanup", *stopped.try_error(), LogLevel::Error);
         m_editing.reset();
+    }
+    if (windows.has_value() && m_editing)
+    {
+        if (m_initialGameConfiguration)
+            m_editing->gameConfiguration = *m_initialGameConfiguration;
+        else if (m_project)
+        {
+            auto saved = load_editor_game_configuration(*m_windows.file_system(), *m_project);
+            if (saved.has_value())
+                m_editing->gameConfiguration = *saved.try_value();
+            else
+                m_editing->error = saved.try_error()->operation;
+        }
     }
     if (windows.has_value() && m_editing && m_project && m_gameBuildService && m_ideService)
     {
@@ -541,6 +563,11 @@ Result<void> EditorHost::request_open_project(const Path &a_projectFile)
         auto prepared = std::make_unique<PreparedProject>();
         prepared->project = std::make_unique<Project>(project.take_value());
         prepared->application = application.take_value();
+        auto savedConfiguration = load_editor_game_configuration(*m_windows.file_system(), *prepared->project);
+        if (savedConfiguration.has_value())
+            prepared->gameConfiguration = *savedConfiguration.try_value();
+        else
+            prepared->settingsError = savedConfiguration.try_error()->operation;
         auto controller = create_script_controller(*prepared->project, false);
         if (!controller.has_value())
             return Result<void>::failure(*controller.try_error());
@@ -602,6 +629,7 @@ Result<std::unique_ptr<EditorScriptController>> EditorHost::create_script_contro
     try
     {
         EditorScriptCallbacks callbacks;
+        callbacks.configuration = [this]() { return game_configuration(); };
         callbacks.play = [this]() { return m_editing ? m_editing->play.get() : nullptr; };
         callbacks.reload = [this]() -> Result<void>
         {
@@ -667,10 +695,13 @@ Result<void> EditorHost::apply_project_change()
     m_project = std::move(m_pendingProject->project);
     editing.application = std::move(m_pendingProject->application);
     editing.scripts = std::move(m_pendingProject->scripts);
+    editing.gameConfiguration = m_pendingProject->gameConfiguration;
+    editing.isGameBuildRequired = true;
+    auto settingsError = std::move(m_pendingProject->settingsError);
     m_pendingProject.reset();
     editing.ui->reset();
     editing.actions.clear();
-    editing.error.clear();
+    editing.error = std::move(settingsError);
     editing.notice.clear();
     editing.buildStatusText.clear();
     editing.scriptStatusText.clear();
@@ -953,6 +984,10 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.isUnsavedConfirmationRequested = m_editing->pendingChange.has_value();
             context.isBuildConfirmationRequested = has_pending_game_build_confirmation();
             context.script.statusText = m_editing->scriptStatusText;
+            context.script.configuration = m_editing->gameConfiguration;
+            context.script.canSelectConfiguration = can_select_game_configuration();
+            context.script.canCreate = can_select_game_configuration();
+            context.script.isBuildRequired = has_play_configuration() && m_editing->isGameBuildRequired;
             context.build.platforms = supported_game_build_platforms();
             context.build.selectedTarget = m_editing->buildTarget;
             context.build.statusText = m_editing->buildStatusText;
@@ -999,7 +1034,7 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
                                          m_project->startup_scene_file() && !isBuilding &&
                                          !status.isApplicationRunning && !context.isPlaying && !context.isPlayBusy;
                 context.build.canRun = status.state == GameBuildState::Succeeded &&
-                                       status.purpose == GameBuildPurpose::Player &&
+                                       status.purpose == GameBuildPurpose::App &&
                                        status.target == m_editing->buildTarget && !status.isApplicationRunning &&
                                        !context.isPlaying && !context.isPlayBusy;
                 context.build.logText = status.log;
@@ -1373,7 +1408,7 @@ Result<void> EditorHost::run_game()
         m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.unavailable"});
     const auto &status = m_gameBuildService->status();
-    if (status.state != GameBuildState::Succeeded || status.purpose != GameBuildPurpose::Player ||
+    if (status.state != GameBuildState::Succeeded || status.purpose != GameBuildPurpose::App ||
         status.target != m_editing->buildTarget || status.isApplicationRunning ||
         (m_editing->scripts && m_editing->scripts->status().isBusy))
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.selection_changed"});
@@ -1429,6 +1464,68 @@ bool EditorHost::has_play_configuration() const noexcept
         return false;
     return m_playExecutable.has_value() || m_scriptModule.has_value() ||
            (m_project && m_project->descriptor().gameTarget.has_value());
+}
+
+GameBuildConfiguration EditorHost::game_configuration() const noexcept
+{
+    return std::this_thread::get_id() == m_ownerId && m_editing ? m_editing->gameConfiguration
+                                                                : GameBuildConfiguration::Development;
+}
+
+bool EditorHost::can_select_game_configuration() const noexcept
+{
+    return can_open_project() && m_project && m_project->descriptor().gameTarget.has_value();
+}
+
+Result<void> EditorHost::request_script_creation(std::string_view a_name)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.create_script.owner"});
+    if (!can_select_game_configuration() || !m_windows.file_system())
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.create_script.busy"});
+    // 通知用の所有値も公開前に確保し、作成成功後は失敗する外部操作を追加しない
+    auto notice = "Created Source/" + std::string(a_name) + ".cpp - Build Scripts required";
+    auto created = create_script_source(*m_windows.file_system(), *m_project, a_name);
+    if (!created.has_value())
+        return Result<void>::failure(*created.try_error());
+    // 新しい型を含まない DLL の Metadata を Inspector に再利用しない
+    m_editing->play.reset();
+    m_editing->playScene.reset();
+    m_editing->playObjectIndices.clear();
+    m_editing->appliedViewTick.reset();
+    m_editing->isGameBuildRequired = true;
+    m_editing->error.clear();
+    m_editing->notice = std::move(notice);
+    return Result<void>::success();
+}
+
+Result<void> EditorHost::request_game_configuration(GameBuildConfiguration a_configuration)
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.game_configuration.owner"});
+    if (game_build_configuration_name(a_configuration).empty())
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorHost.game_configuration"});
+    if (!can_select_game_configuration())
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.game_configuration.busy"});
+    if (a_configuration == m_editing->gameConfiguration)
+        return Result<void>::success();
+    // 保存成功を先に確認し、File 失敗では選択済み DLL と型情報をそのまま使える状態を維持する
+    auto saved = save_editor_game_configuration(*m_windows.file_system(), *m_project, a_configuration);
+    if (!saved.has_value())
+        return saved;
+    m_editing->gameConfiguration = a_configuration;
+    m_editing->error.clear();
+    m_editing->ui->reset();
+    // 他構成の Metadata / DLL を再利用せず、未 Build ではその構成の Build Scripts を案内する
+    auto prepared = prepare_play();
+    if (prepared.has_value())
+        prepared = m_editing->play->describe();
+    if (!prepared.has_value())
+        m_editing->notice =
+            "Game: " + std::string(game_build_configuration_name(a_configuration)) + " - Build Scripts required";
+    else
+        m_editing->notice = "Game: " + std::string(game_build_configuration_name(a_configuration));
+    return Result<void>::success();
 }
 
 Result<void> EditorHost::start_play()
@@ -1505,19 +1602,21 @@ Result<void> EditorHost::prepare_play()
     m_editing->playScene.reset();
     m_editing->playObjectIndices.clear();
     m_editing->appliedViewTick.reset();
+    m_editing->isGameBuildRequired = true;
     auto *files = m_windows.file_system();
     if (!files)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.file_system"});
     try
     {
-        auto config =
-            resolve_editor_play_config(*files, m_project ? &*m_project : nullptr, m_playExecutable, m_scriptModule);
+        auto config = resolve_editor_play_config(*files, m_project ? &*m_project : nullptr, m_playExecutable,
+                                                 m_scriptModule, m_editing->gameConfiguration);
         if (!config.has_value())
             return Result<void>::failure(*config.try_error());
         auto created = PlayClient::create(config.take_value());
         if (!created.has_value())
             return Result<void>::failure(*created.try_error());
         m_editing->play = created.take_value();
+        m_editing->isGameBuildRequired = false;
         return Result<void>::success();
     }
     catch (...)
@@ -1629,6 +1728,10 @@ Result<void> EditorHost::apply_editor_actions()
                 return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.edit_locked"});
             switch (action.kind)
             {
+            case EditorActionKind::SetGameConfiguration:
+                return request_game_configuration(action.gameConfiguration);
+            case EditorActionKind::CreateScript:
+                return request_script_creation(action.scriptName);
             case EditorActionKind::SetPlayTransform:
                 return request_play_transform(action.objectId, action.transform);
             case EditorActionKind::SetSceneViewCamera:

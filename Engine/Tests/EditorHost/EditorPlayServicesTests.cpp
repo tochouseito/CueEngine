@@ -90,6 +90,21 @@ int main(int a_count, char **a_arguments)
     CUE_PLAY_CONFIG_CHECK(resolved.has_value());
     CUE_PLAY_CONFIG_CHECK(resolved.try_value()->module.utf8() == module.utf8());
     CUE_PLAY_CONFIG_CHECK(resolved.try_value()->executable.utf8() == executable.try_value()->utf8());
+    for (const auto configuration : {cue::GameBuildConfiguration::Debug, cue::GameBuildConfiguration::Development,
+                                     cue::GameBuildConfiguration::Release})
+    {
+        auto explicitConfig =
+            cue::resolve_editor_play_config(probe, nullptr, *executable.try_value(), module, configuration);
+        CUE_PLAY_CONFIG_CHECK(explicitConfig.has_value());
+        const auto expected = configuration == cue::GameBuildConfiguration::Debug ? cue::ScriptConfiguration::Debug
+                              : configuration == cue::GameBuildConfiguration::Development
+                                  ? cue::ScriptConfiguration::Development
+                                  : cue::ScriptConfiguration::Release;
+        CUE_PLAY_CONFIG_CHECK(explicitConfig.try_value()->moduleConfiguration == expected);
+    }
+    CUE_PLAY_CONFIG_CHECK(!cue::resolve_editor_play_config(probe, nullptr, *executable.try_value(), module,
+                                                           static_cast<cue::GameBuildConfiguration>(99))
+                               .has_value());
     probe.isManifestMissing = true;
     const auto readsBeforeExplicit = probe.manifestReads;
     auto half = cue::resolve_editor_play_config(probe, &*project.try_value(), *executable.try_value(), {});
@@ -116,6 +131,7 @@ int main(int a_count, char **a_arguments)
     cue::EditorHostConfig config;
     config.window.title = "CueEngine Project Play Configuration Test";
     config.project = project.take_value();
+    config.gameConfiguration = cue::current_game_build_configuration();
     config.fileSystem = std::move(injected);
     config.createBackend = [](cue::IFileSystem *a_files, cue::Clock &a_clock)
     {

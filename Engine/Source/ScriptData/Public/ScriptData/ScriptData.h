@@ -10,6 +10,21 @@
 
 namespace cue
 {
+/// @brief Game Module の構成。C ABI の既存 configuration 値と対応し、Host の構成とは独立して選択する
+enum class ScriptConfiguration : std::uint32_t
+{
+    Debug = 1,
+    Development = 2,
+    Release = 3
+};
+
+/// @brief 保存値や起動引数から受け取った構成が、既知の Game Module 構成か確認する
+[[nodiscard]] constexpr bool is_valid_script_configuration(ScriptConfiguration a_configuration) noexcept
+{
+    return a_configuration == ScriptConfiguration::Debug || a_configuration == ScriptConfiguration::Development ||
+           a_configuration == ScriptConfiguration::Release;
+}
+
 /// @brief 最初の Inspector / ABI が共有する値種別。型を変更するときは Schema を更新する
 enum class ScriptPropertyKind : std::uint32_t
 {

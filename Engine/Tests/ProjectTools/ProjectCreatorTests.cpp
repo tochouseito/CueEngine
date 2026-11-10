@@ -137,7 +137,7 @@ int test_rollback(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_temp
         if (a_path.filename() == ".cue-create-owner")
         {
             staging = a_path.parent();
-            probe.failedFilename = "Game.cpp";
+            probe.failedFilename = "EmptyBehaviour.cpp";
         }
     };
     auto failed = cue::create_project(probe, a_templates, descriptor, generated);

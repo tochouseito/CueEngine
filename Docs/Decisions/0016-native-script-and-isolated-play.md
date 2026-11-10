@@ -10,6 +10,28 @@
 - ABI Version / Table Size / Pointer Size / Build Configuration / Metadata を検査してから利用する
 - SDK / 公開データ / Runtime の公開契約へ Win32 / DX12 / ImGui 型を含めない。DLL Load と Process / Pipe の具体実装だけを Windows に閉じる
 
+## ゲーム側の登録入口
+
+Editor の `Script > New Script...` が `Source/<Name>.cpp` と v2 の対応表を作る。
+各 cpp は `Script/ModuleEntry.h` の `CUE_DEFINE_SCRIPT(...)` で、自分の型登録だけを定義する。
+ゲーム側の手書き `Game.cpp` は不要とし、CMake が一つの接続入口を Binary Tree へ自動生成する。
+
+```cpp
+CUE_DEFINE_SCRIPT(RotateCube,
+    cue::make_script_registration<game::RotateCube>({"game.RotateCube", "Rotate Cube", 1, {}}))
+```
+
+型 ID / 表示名 / Schema Version / Property は各登録で明示する。
+`cue_add_game_scripts(target)` は v2 の `ScriptSources.cueide` に載る Source と登録 Symbol を検証する。
+生成入口が各登録関数を明示参照するため、Static Link でも登録が除去されない。
+自動生成される `CUE_DEFINE_SCRIPT_MODULE(...)` は `CueScriptGetModule`、Module の寿命と例外境界を共通化する。
+生成済みの Result 失敗は保持し、登録式が例外を投げた場合は次回呼出で初期化を再試行する。
+既存の手書きの入口も利用できるが、同じ Module へ二つの入口を定義しない。
+旧 v1 の対応表と手書き `cue_add_game_module` は利用を継続できる。新規作成機能は v2 への移行を要求する。
+Source 作成は排他取得後に CreateNew し、登録表を最後に原子的に公開する。失敗時は未変更の新規 Source だけを回収する。
+登録式は初回呼出中に評価するため、他 cpp の可変 Global 初期化順序や自動収集に依存させない。
+ABI Version / 型 ID / 所有権 / Instance の破棄手順は変更しない。
+
 ## 所有と Lifecycle
 
 1. 検証済み Scene を実行 World に実体化し、ScriptComponent を追加する

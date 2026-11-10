@@ -12,12 +12,14 @@ file(READ "${CUE_SOURCE_ROOT}/Engine/Version.json" taskVersionJson)
 string(JSON taskVersion GET "${taskVersionJson}" version)
 file(WRITE "${taskGame}/Standalone.cueproj"
     "formatVersion=2\nprojectId=8f533c49-d416-47ea-98c1-026822b1e6ed\nname=SDK Game\napplicationName=SdkGame\nsourceRoot=Source\ncontentRoot=Content\nstartupScene=Scenes/Start.cuescene\ngameTarget=SdkGameModule\nengineVersion=${taskVersion}\n")
-file(COPY_FILE "${CUE_SOURCE_ROOT}/Templates/Empty3D/Source/Game.cpp" "${taskGame}/Source/Game.cpp")
+file(COPY_FILE "${CUE_SOURCE_ROOT}/Templates/Empty3D/Source/EmptyBehaviour.cpp" "${taskGame}/Source/EmptyBehaviour.cpp")
+file(COPY_FILE "${CUE_SOURCE_ROOT}/Templates/Empty3D/Source/ScriptSources.cueide" "${taskGame}/Source/ScriptSources.cueide")
+file(APPEND "${taskGame}/Source/ScriptSources.cueide" "# Comment: ; $ < >\n")
 file(WRITE "${taskGame}/Source/CMakeLists.txt" [=[
 if(NOT PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR OR NOT PROJECT_BINARY_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "The game Source inherited the SDK root instead of its own project root")
 endif()
-cue_add_game_module(SdkGameModule SOURCES "${PROJECT_SOURCE_DIR}/Source/Game.cpp")
+cue_add_game_scripts(SdkGameModule)
 ]=])
 file(WRITE "${taskGame}/Content/Scenes/Start.cuescene" "Fixture scene\n")
 set(taskBootstrap [=[
@@ -26,6 +28,8 @@ project(SdkGame LANGUAGES CXX)
 set(CMAKE_CONFIGURATION_TYPES Debug Development Release)
 include("${CUE_ENGINE_ROOT}/cmake/CueGameSdk.cmake")
 cue_add_standalone_game_project("${CMAKE_SOURCE_DIR}/Standalone.cueproj")
+add_executable(ModuleMetadataProbe Probe.cpp)
+target_link_libraries(ModuleMetadataProbe PRIVATE Cue.Script SdkGameModule.Static)
 if(NOT PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     message(FATAL_ERROR "The SDK changed the game project root")
 endif()
@@ -37,16 +41,35 @@ endforeach()
 if(NOT TARGET Cue.Script OR NOT TARGET SdkGameModule OR NOT TARGET SdkGameModule.Static)
     message(FATAL_ERROR "The game API or module is unavailable")
 endif()
-if(CUE_GAME_BUILD_PLAYER)
+if(CUE_GAME_BUILD_APP)
     if(NOT TARGET SdkGame OR NOT TARGET Cue.GameHost.Windows)
-        message(FATAL_ERROR "The independent Player target is missing")
+        message(FATAL_ERROR "The independent App target is missing")
     endif()
 elseif(TARGET SdkGame OR TARGET Cue.GameHost.Windows OR TARGET Cue.Renderer.DX12)
-    message(FATAL_ERROR "Script editing unexpectedly builds the Player or graphics runtime")
+    message(FATAL_ERROR "Script editing unexpectedly builds the App or graphics runtime")
 endif()
 file(WRITE "${CMAKE_BINARY_DIR}/GameRoot.txt" "${CMAKE_SOURCE_DIR}")
 ]=])
 file(WRITE "${taskGame}/CMakeLists.txt" "${taskBootstrap}")
+file(WRITE "${taskGame}/Probe.cpp" [=[
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <cstdint>
+#include <Script/Abi.h>
+extern "C" CueScriptStatus CUE_SCRIPT_CALL CueScriptGetModule(std::uint32_t, CueScriptModuleApi *) noexcept;
+int wmain(int count, wchar_t **arguments)
+{
+    HMODULE library = count == 2 ? LoadLibraryW(arguments[1]) : nullptr;
+    if (count == 2 && !library) return 1;
+    auto entry = library ? reinterpret_cast<CueScriptGetModuleFunction>(GetProcAddress(library, "CueScriptGetModule"))
+                         : &CueScriptGetModule;
+    CueScriptModuleApi api{};
+    const bool valid = entry && entry(CUE_SCRIPT_ABI_VERSION, &api).code == 0 && api.type_count(api.context) == 2;
+    if (library) FreeLibrary(library);
+    return valid ? 0 : 2;
+}
+]=])
 set(taskConfigure "${CMAKE_COMMAND}" -S "${taskGame}" -B "${taskTree}" -G "${CUE_GENERATOR}"
     "-DCUE_ENGINE_ROOT=${CUE_SOURCE_ROOT}" "-DCUE_GAME_PLATFORM=Windows" "-DCUE_GAME_ARCHITECTURE=x64")
 if(DEFINED CUE_GENERATOR_PLATFORM AND NOT CUE_GENERATOR_PLATFORM STREQUAL "")
@@ -71,7 +94,48 @@ foreach(taskOutput IN ITEMS Runtime/SdkGameModule.dll Runtime/SdkGameModule.pdb 
     endif()
 endforeach()
 
-# 同じ SDK で Player を構成し、Editor の Target を生成しないことも確認する
+# 対応表への追加だけで再構成し、別 cpp の二つの登録が DLL / Static の双方に残ることを確認する
+file(WRITE "${taskGame}/Source/SecondScript.cpp" [=[
+#include <Script/ModuleEntry.h>
+class SecondScript final : public cue::Behaviour
+{
+public:
+    cue::Result<void> update(cue::GameObject &, const cue::ScriptUpdateContext &) override
+    { return cue::Result<void>::success(); }
+};
+CUE_DEFINE_SCRIPT(SecondScript, cue::make_script_registration<SecondScript>({"game.SecondScript", "Second Script", 1, {}}))
+]=])
+file(APPEND "${taskGame}/Source/ScriptSources.cueide"
+    "script.game.SecondScript=SecondScript.cpp\nregistration.game.SecondScript=SecondScript\n")
+execute_process(COMMAND "${CMAKE_COMMAND}" --build "${taskTree}" --config "${CUE_CONFIGURATION}"
+    --target Cue.GameProjectBuild ModuleMetadataProbe RESULT_VARIABLE taskResult OUTPUT_VARIABLE taskOutput ERROR_VARIABLE taskError)
+if(NOT taskResult EQUAL 0)
+    message(FATAL_ERROR "Adding a second script did not regenerate its module: ${taskOutput}\n${taskError}")
+endif()
+foreach(taskMode IN ITEMS static dll)
+    set(taskProbe "${taskTree}/${CUE_CONFIGURATION}/ModuleMetadataProbe.exe")
+    set(taskArguments)
+    if(taskMode STREQUAL "dll")
+        list(APPEND taskArguments "${taskGame}/Build/Windows/x64/${CUE_CONFIGURATION}/Runtime/SdkGameModule.dll")
+    endif()
+    execute_process(COMMAND "${taskProbe}" ${taskArguments} RESULT_VARIABLE taskResult TIMEOUT 10)
+    if(NOT taskResult EQUAL 0)
+        message(FATAL_ERROR "Multiple script registrations were lost in ${taskMode}")
+    endif()
+endforeach()
+# 不正な対応表を Code として実行せず、生成前に拒否する
+file(READ "${taskGame}/Source/ScriptSources.cueide" taskValidCatalog)
+foreach(taskInvalid IN ITEMS "registration.game.SecondScript=Invalid;Token\n" "unknown=value\n"
+        "registration.game.SecondScript=EmptyBehaviour\n")
+    file(WRITE "${taskGame}/Source/ScriptSources.cueide" "${taskValidCatalog}${taskInvalid}")
+    execute_process(COMMAND ${taskConfigure} RESULT_VARIABLE taskRejected OUTPUT_QUIET ERROR_QUIET)
+    if(taskRejected EQUAL 0)
+        message(FATAL_ERROR "An invalid script source map was accepted")
+    endif()
+endforeach()
+file(WRITE "${taskGame}/Source/ScriptSources.cueide" "${taskValidCatalog}")
+
+# 同じ SDK で App を構成し、Editor の Target を生成しないことも確認する
 if(NOT DEFINED CUE_PIX_ARCHIVE OR CUE_PIX_ARCHIVE STREQUAL "")
     file(STRINGS "${CUE_SOURCE_ROOT}/ThirdParty/WinPixEventRuntime.cmake" taskPixDefinition
         REGEX "^set\\(CUE_PIX_VERSION ")
@@ -91,9 +155,9 @@ foreach(taskArchive IN ITEMS CUE_PIX_ARCHIVE CUE_DXC_ARCHIVE)
         list(APPEND taskConfigure "-D${taskArchive}=${${taskArchive}}")
     endif()
 endforeach()
-list(APPEND taskConfigure "-DCUE_GAME_BUILD_PLAYER=ON")
+list(APPEND taskConfigure "-DCUE_GAME_BUILD_APP=ON")
 execute_process(COMMAND ${taskConfigure} RESULT_VARIABLE taskResult OUTPUT_VARIABLE taskOutput ERROR_VARIABLE taskError)
 if(NOT taskResult EQUAL 0)
-    message(FATAL_ERROR "Standalone Player SDK configure failed: ${taskOutput}\n${taskError}")
+    message(FATAL_ERROR "Standalone App SDK configure failed: ${taskOutput}\n${taskError}")
 endif()
-message(STATUS "Standalone game CMake root, Script SDK build, API linkage and Player target isolation passed")
+message(STATUS "Standalone game CMake root, Script SDK build, API linkage and App target isolation passed")

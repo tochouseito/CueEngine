@@ -26,7 +26,7 @@ enum class GameBuildState
 /// @brief ゲームを Root とする生成対象。IDE と Script は開発 Tree、製品は専用 Tree を使う
 enum class GameBuildPurpose
 {
-    Player,
+    App,
     ScriptModule,
     IdeProject
 };
@@ -45,7 +45,7 @@ struct GameBuildStatus final
     bool isLogTruncated = false;
     bool isApplicationRunning = false;
     std::optional<std::uint32_t> applicationExitCode;
-    GameBuildPurpose purpose = GameBuildPurpose::Player;
+    GameBuildPurpose purpose = GameBuildPurpose::App;
     Path workspaceDirectory;
     Path moduleFile;
     Path symbolsFile;
@@ -68,7 +68,7 @@ class IGameBuildService
     [[nodiscard]] virtual Result<void> start(const Project &a_project, const GameBuildTarget &a_target,
                                              GameBuildPurpose a_purpose)
     {
-        if (a_purpose != GameBuildPurpose::Player)
+        if (a_purpose != GameBuildPurpose::App)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "GameBuild.purpose_unsupported"});
         return start(a_project, a_target);
     }

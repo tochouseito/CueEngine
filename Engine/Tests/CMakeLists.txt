@@ -536,6 +536,10 @@ if(WIN32)
     target_link_libraries(CueScriptSourceTests PRIVATE
         Cue.EditorIde Cue.Project Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.EditorIde.ScriptSource COMMAND CueScriptSourceTests)
+    add_executable(CueScriptCreationTests EditorIde/ScriptCreationTests.cpp)
+    target_link_libraries(CueScriptCreationTests PRIVATE
+        Cue.EditorIde Cue.Project Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.EditorIde.ScriptCreation COMMAND CueScriptCreationTests)
     add_executable(CueIdeBridgeFixture WIN32 EditorIde/IdeBridgeFixture.cpp)
     target_link_libraries(CueIdeBridgeFixture PRIVATE shell32)
     target_compile_features(CueIdeBridgeFixture PRIVATE cxx_std_20)
@@ -564,6 +568,11 @@ if(WIN32)
     target_link_libraries(CueEditorScriptControllerTests PRIVATE Cue.EditorHost Cue.EditorIde Cue.ProjectBuild
         Cue.ScriptPlay Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Editor.ScriptController COMMAND CueEditorScriptControllerTests)
+    add_executable(CueEditorGameSettingsTests EditorHost/EditorGameSettingsTests.cpp)
+    target_include_directories(CueEditorGameSettingsTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
+    target_link_libraries(CueEditorGameSettingsTests PRIVATE
+        Cue.EditorHost Cue.ProjectBuild Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.GameSettings COMMAND CueEditorGameSettingsTests)
     add_executable(CueGameStartupTests GameRuntime/GameStartupTests.cpp)
     target_link_libraries(CueGameStartupTests PRIVATE Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Runtime.GameStartup COMMAND CueGameStartupTests)
@@ -574,7 +583,7 @@ if(WIN32)
     get_property(taskConfiguredGame GLOBAL PROPERTY CUE_CONFIGURED_GAME_TARGET)
     get_property(taskConfiguredProject GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT)
     get_property(taskConfiguredProjectId GLOBAL PROPERTY CUE_CONFIGURED_GAME_PROJECT_ID)
-    get_property(taskPlayerDirectory GLOBAL PROPERTY CUE_CONFIGURED_GAME_PLAYER_DIRECTORY)
+    get_property(taskAppDirectory GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_DIRECTORY)
     if(taskConfiguredGame)
         add_dependencies(CueGameBuildArtifactTests Cue.GameProjectBuild)
         add_test(NAME Cue.Project.GameBuildArtifactIntegration COMMAND CueGameBuildArtifactTests
@@ -598,14 +607,14 @@ if(WIN32)
         "-DCUE_CONFIGURATION=$<CONFIG>"
         -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GameProjectCMakeTests.cmake")
     set_tests_properties(Cue.Project.GameCMake PROPERTIES TIMEOUT 90)
-    add_test(NAME Cue.Project.GamePlayerCMake COMMAND "${CMAKE_COMMAND}"
+    add_test(NAME Cue.Project.GameAppCMake COMMAND "${CMAKE_COMMAND}"
         "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
         "-DCUE_FIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/ProjectCMakeFixtures"
         "-DCUE_GENERATOR=${CMAKE_GENERATOR}"
         "-DCUE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
         "-DCUE_CONFIGURATION=$<CONFIG>"
-        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GamePlayerCMakeTests.cmake")
-    set_tests_properties(Cue.Project.GamePlayerCMake PROPERTIES TIMEOUT 90)
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Project/GameAppCMakeTests.cmake")
+    set_tests_properties(Cue.Project.GameAppCMake PROPERTIES TIMEOUT 90)
     add_test(NAME Cue.Project.GameSdkCMake COMMAND "${CMAKE_COMMAND}"
         "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
         "-DCUE_FIXTURE_ROOT=${PROJECT_SOURCE_DIR}/out/tests/GameSdk"
@@ -620,14 +629,14 @@ if(WIN32)
     # 選択 Project が Sample 以外でも Engine のテスト群を構成できるよう、Sample 固有検証だけを条件化する
     if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed"
        AND TARGET RotateCubeGame AND TARGET RotateCubeGame.Static)
-        if(taskPlayerDirectory AND TARGET Cue.GamePlayerPackage)
+        if(taskAppDirectory AND TARGET Cue.GameAppPackage)
             # 配布物だけを別 Directory へ移し、可視描画・静的登録・回転・停止を検証する
-            add_executable(CueGamePlayerProcessTests GameRuntime/GamePlayerProcessTests.cpp)
-            target_link_libraries(CueGamePlayerProcessTests PRIVATE
+            add_executable(CueGameAppProcessTests GameRuntime/GameAppProcessTests.cpp)
+            target_link_libraries(CueGameAppProcessTests PRIVATE
                 Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows user32 psapi)
-            add_dependencies(CueGamePlayerProcessTests Cue.GamePlayerPackage)
-            add_test(NAME Cue.GamePlayer.Relocated COMMAND CueGamePlayerProcessTests "${taskPlayerDirectory}")
-            set_tests_properties(Cue.GamePlayer.Relocated PROPERTIES TIMEOUT 40)
+            add_dependencies(CueGameAppProcessTests Cue.GameAppPackage)
+            add_test(NAME Cue.GameApp.Relocated COMMAND CueGameAppProcessTests "${taskAppDirectory}")
+            set_tests_properties(Cue.GameApp.Relocated PROPERTIES TIMEOUT 40)
         endif()
         add_executable(CueScriptModuleLoadingTests Script/ScriptModuleLoadingTests.cpp)
         target_link_libraries(CueScriptModuleLoadingTests PRIVATE Cue.ScriptRuntime Cue.SceneRuntime RotateCubeGame.Static)
@@ -660,6 +669,19 @@ if(WIN32)
     set_tests_properties(Cue.Editor.EmbeddedPlay PROPERTIES TIMEOUT 60)
     cue_copy_shader_runtime(CueEditorEmbeddedPlayTests)
     cue_copy_editor_fonts(CueEditorEmbeddedPlayTests)
+    # 実際に三構成の Game DLL を作り、同一 Host の C ABI / CRT 境界と構成照合を確認する
+    add_executable(CueGameConfigurationTests Script/GameConfigurationTests.cpp)
+    target_link_libraries(CueGameConfigurationTests PRIVATE Cue.ScriptPlay)
+    add_dependencies(CueGameConfigurationTests CuePlayHost)
+    add_test(NAME Cue.Script.GameConfigurations COMMAND "${CMAKE_COMMAND}"
+        "-DCUE_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DCUE_TEST_ROOT=${PROJECT_SOURCE_DIR}/out/tests/GameConfiguration"
+        "-DCUE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCUE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DCUE_PLAY_HOST=$<TARGET_FILE:CuePlayHost>"
+        "-DCUE_TEST_EXE=$<TARGET_FILE:CueGameConfigurationTests>"
+        -P "${PROJECT_SOURCE_DIR}/Engine/Tests/Script/GameConfigurationBuildTests.cmake")
+    set_tests_properties(Cue.Script.GameConfigurations PROPERTIES TIMEOUT 240)
     if(taskConfiguredProjectId STREQUAL "7f533c49-d416-47ea-98c1-026822b1e6ed" AND TARGET RotateCubeGame)
         add_executable(CueScriptPlayTests Script/ScriptPlayTests.cpp)
         target_link_libraries(CueScriptPlayTests PRIVATE Cue.ScriptPlay)
@@ -669,7 +691,7 @@ if(WIN32)
         set_tests_properties(Cue.Script.Play PROPERTIES TIMEOUT 40)
         add_dependencies(CueScriptDebugPlayTests CuePlayHost RotateCubeGame)
         add_test(NAME Cue.Script.DebugPlay COMMAND CueScriptDebugPlayTests
-            $<TARGET_FILE:CuePlayHost> $<TARGET_FILE:RotateCubeGame>)
+            $<TARGET_FILE:CuePlayHost> $<TARGET_FILE:RotateCubeGame> "$<CONFIG>")
         set_tests_properties(Cue.Script.DebugPlay PROPERTIES TIMEOUT 60)
     endif()
 endif()

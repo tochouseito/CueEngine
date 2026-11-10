@@ -1,4 +1,4 @@
-#include <Script/Module.h>
+#include <Script/ModuleEntry.h>
 
 #include <cmath>
 #include <cstdio>
@@ -190,10 +190,67 @@ int test_module()
     CUE_SCRIPT_CHECK(!duplicate.has_value());
     return 0;
 }
+
+std::uint32_t registrationCalls = 0;
+bool shouldThrowRegistration = true;
+
+/// @brief 登録式の評価時の例外と初期化の一回性を検証する
+cue::ScriptRegistration entry_registration()
+{
+    ++registrationCalls;
+    if (shouldThrowRegistration)
+        throw std::runtime_error("test registration failure");
+    return cue::make_script_registration<Move>(move_type());
+}
+} // namespace
+
+// 二つの型と Property 付き登録を、実際に Export する入口から取得する
+CUE_DEFINE_SCRIPT_MODULE(entry_registration(), cue::make_script_registration<FailedStart>({"test.fail", "Fail", 1, {}}))
+
+namespace
+{
+/// @brief Null 入力・登録例外・ABI 不一致・複数型・借用寿命を共通入口から検証する
+int test_module_entry()
+{
+    static_assert(noexcept(CueScriptGetModule(CUE_SCRIPT_ABI_VERSION, nullptr)));
+    CueScriptModuleApi api{};
+    CUE_SCRIPT_CHECK(CueScriptGetModule(CUE_SCRIPT_ABI_VERSION, nullptr).code == 1);
+    CUE_SCRIPT_CHECK(registrationCalls == 0);
+    const auto exception = CueScriptGetModule(CUE_SCRIPT_ABI_VERSION, &api);
+    CUE_SCRIPT_CHECK(exception.code == 3 && std::string_view(exception.message) == "Script.unhandled_exception");
+    CUE_SCRIPT_CHECK(registrationCalls == 1 && api.context == nullptr);
+
+    // 登録中の例外は Module を公開せず、次の呼出で初期化を再試行する
+    shouldThrowRegistration = false;
+    CUE_SCRIPT_CHECK(CueScriptGetModule(CUE_SCRIPT_ABI_VERSION + 1, &api).code == 1);
+    CUE_SCRIPT_CHECK(api.context == nullptr && registrationCalls == 2);
+    CUE_SCRIPT_CHECK(CueScriptGetModule(CUE_SCRIPT_ABI_VERSION, &api).code == 0);
+    CUE_SCRIPT_CHECK(api.type_count(api.context) == 2);
+    CueScriptTypeInfo type{};
+    CUE_SCRIPT_CHECK(api.type_info(api.context, 0, &type).code == 0);
+    CUE_SCRIPT_CHECK(std::string_view(type.typeId.data, type.typeId.size) == "test.move");
+    CueScriptPropertyInfo property{};
+    CUE_SCRIPT_CHECK(api.property_info(api.context, 0, 0, &property).code == 0);
+    CUE_SCRIPT_CHECK(property.defaultValue.number == 2.5);
+    CUE_SCRIPT_CHECK(api.type_info(api.context, 1, &type).code == 0);
+    CUE_SCRIPT_CHECK(std::string_view(type.typeId.data, type.typeId.size) == "test.fail");
+
+    CueScriptModuleApi repeated{};
+    CUE_SCRIPT_CHECK(CueScriptGetModule(CUE_SCRIPT_ABI_VERSION, &repeated).code == 0);
+    CUE_SCRIPT_CHECK(repeated.context == api.context && registrationCalls == 2);
+    for (std::uint32_t index = 0; index < 2; ++index)
+    {
+        CueScriptInstance instance = 0;
+        CUE_SCRIPT_CHECK(api.create(api.context, index, &instance).code == 0);
+        CUE_SCRIPT_CHECK(repeated.destroy(repeated.context, instance).code == 0);
+    }
+    return 0;
+}
 } // namespace
 
 /// @brief Engine / GPU を起動せず SDK の ABI と所有権契約を検証する
 int main()
 {
-    return test_module();
+    const auto result = test_module();
+    return result != 0 ? result : test_module_entry();
 }

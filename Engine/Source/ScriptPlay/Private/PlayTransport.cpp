@@ -591,6 +591,9 @@ Result<std::unique_ptr<PlayClient>> PlayClient::create(PlayClientConfig a_config
         return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.absolute_paths"});
     if (a_config.isEmbedded && !a_config.isHeadless)
         return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.embedded_headless"});
+    if (a_config.moduleConfiguration && !is_valid_script_configuration(*a_config.moduleConfiguration))
+        return Result<std::unique_ptr<PlayClient>>::failure(
+            {ErrorCategory::InvalidArgument, "Play.module_configuration"});
     try
     {
         return Result<std::unique_ptr<PlayClient>>::success(
@@ -680,6 +683,22 @@ Result<void> PlayClient::launch(bool a_describe, bool a_isDebug)
         command += L" --headless";
     if (state.config.isEmbedded)
         command += L" --embedded";
+    if (state.config.moduleConfiguration)
+    {
+        // 制限された列挙値だけを CLI へ変換し、外部文字列を Command Line へ挿入しない
+        switch (*state.config.moduleConfiguration)
+        {
+        case ScriptConfiguration::Debug:
+            command += L" --module-configuration debug";
+            break;
+        case ScriptConfiguration::Development:
+            command += L" --module-configuration development";
+            break;
+        case ScriptConfiguration::Release:
+            command += L" --module-configuration release";
+            break;
+        }
+    }
     if (state.config.maxTicks)
         command += L" --max-ticks " + std::to_wstring(state.config.maxTicks);
     STARTUPINFOW startup{};

@@ -57,6 +57,11 @@ Result<void> EditorScriptController::start(Request a_request)
     auto target = current_native_game_build_target();
     if (!target.has_value())
         return Result<void>::failure(*target.try_error());
+    if (m_callbacks.configuration)
+        target.try_value()->configuration = m_callbacks.configuration();
+    auto valid = validate_game_build_target(*target.try_value());
+    if (!valid.has_value())
+        return valid;
     // Source を開く操作は、既に確認した Workspace を再利用し、毎回 Configure しない
     if (a_request == Request::OpenSource && !m_workspace.is_empty())
     {

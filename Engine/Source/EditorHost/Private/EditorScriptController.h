@@ -22,6 +22,8 @@ struct EditorScriptCallbacks final
     std::function<Result<void>()> reload;
     std::function<Result<void>(const Scene &)> startDebug;
     Path playExecutable;
+    // 要求開始時だけ採取し、非同期 Build 中は採用した構成を変えない
+    std::function<GameBuildConfiguration()> configuration;
 };
 /// @brief Build / Play / IDE の順序だけを管理する。全操作と破棄は生成 Thread で直列化する
 /// 借用 Service と Project / FileSystem は Controller より長く保持する。Runtime World は所有しない
@@ -38,7 +40,7 @@ class EditorScriptController final
     [[nodiscard]] Result<void> open_folder();
     /// @brief Editor 専用 Source Map から解決し、対応 Source を開く
     [[nodiscard]] Result<void> open_script(std::string_view a_typeId);
-    /// @brief Native Editor 構成の DLL を Build し、成功後だけ型情報を再読込する
+    /// @brief 選択 Game 構成の DLL を Build し、成功後だけ型情報を再読込する
     [[nodiscard]] Result<void> build_scripts();
     /// @brief 要求時の所有 Scene を保持し、Build / 子待機 / Attach / 開始の順に進める
     [[nodiscard]] Result<void> debug_play(const Scene &a_scene);

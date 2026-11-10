@@ -4,7 +4,7 @@ param(
     [string]$GameProject,
     [string]$GamePlatform,
     [string]$GameArchitecture,
-    [switch]$PlayerOnly
+    [switch]$AppOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,9 +46,9 @@ try
     }
 
     $buildArguments = @('--build', '--preset', $buildPreset)
-    if ($PlayerOnly)
+    if ($AppOnly)
     {
-        $buildArguments += @('--target', 'Cue.GamePlayerPackage')
+        $buildArguments += @('--target', 'Cue.GameAppPackage')
     }
     cmake @buildArguments
     exit $LASTEXITCODE
