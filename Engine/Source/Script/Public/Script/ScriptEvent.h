@@ -80,7 +80,7 @@ template <typename... Args> class ScriptEvent final
         {
             if (const auto listener = m_listeners[index].lock(); listener && listener->subscriber->m_isActive)
             {
-                auto result = listener->callback(a_args...);
+                auto result = listener->subscriber->invoke_event([&] { return listener->callback(a_args...); });
                 if (!result.has_value())
                 {
                     return result;

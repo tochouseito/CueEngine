@@ -31,7 +31,8 @@ bool valid_engine(const CueScriptEngineApi *a_api) noexcept
 {
     return a_api && a_api->abiVersion == CUE_SCRIPT_ABI_VERSION && a_api->structSize == sizeof(CueScriptEngineApi) &&
            a_api->is_alive && a_api->get_transform && a_api->set_transform && a_api->find_by_name && a_api->report &&
-           a_api->get_camera && a_api->get_mesh_renderer && a_api->find_script && a_api->get_scene_instance;
+           a_api->get_camera && a_api->get_mesh_renderer && a_api->find_script && a_api->get_scene_instance &&
+           a_api->change_transform;
 }
 /// @brief ABI Property を検証して意味のある成分だけを採用する
 bool valid_property(CueScriptPropertyValue a_value) noexcept
@@ -121,6 +122,12 @@ struct ScriptModule::State final
             a_instance.hasFailed = true;
             clear_subscriptions(*a_instance.behaviour);
             return script_status(*result.try_error());
+        }
+        catch (const Error &a_error)
+        {
+            a_instance.hasFailed = true;
+            clear_subscriptions(*a_instance.behaviour);
+            return script_status(a_error);
         }
         catch (...)
         {
@@ -248,7 +255,12 @@ struct ScriptModule::State final
             found->second.hasStarted = true;
             found->second.behaviour->m_acceptsSubscriptions = true;
             GameObject object(*a_api, a_entity, &state.access);
-            return invoke(found->second, [&]() { return found->second.behaviour->start(object); });
+            return invoke(found->second, [&]()
+            {
+                auto &script = *found->second.behaviour;
+                GameObject::CallbackScope callback(script, object, {});
+                return callback.finish(script.start(object));
+            });
         }
         catch (...)
         {
@@ -271,7 +283,12 @@ struct ScriptModule::State final
                 return invalid_status("Script.update.lifecycle");
             GameObject object(*a_api, a_entity, &state.access);
             const ScriptUpdateContext context{std::chrono::nanoseconds(a_update.deltaNanoseconds), a_update.tick};
-            return invoke(found->second, [&]() { return found->second.behaviour->update(object, context); });
+            return invoke(found->second, [&]()
+            {
+                auto &script = *found->second.behaviour;
+                GameObject::CallbackScope callback(script, object, context);
+                return callback.finish(script.update(object, context));
+            });
         }
         catch (...)
         {
@@ -295,7 +312,12 @@ struct ScriptModule::State final
             found->second.hasStopped = true;
             clear_subscriptions(*found->second.behaviour);
             GameObject object(*a_api, a_entity, &state.access);
-            return invoke(found->second, [&]() { return found->second.behaviour->stop(object); });
+            return invoke(found->second, [&]()
+            {
+                auto &script = *found->second.behaviour;
+                GameObject::CallbackScope callback(script, object, {});
+                return callback.finish(script.stop(object));
+            });
         }
         catch (...)
         {

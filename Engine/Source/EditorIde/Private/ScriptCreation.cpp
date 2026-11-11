@@ -196,8 +196,7 @@ std::string make_source(std::string_view a_name)
            name +
            " final : public ::cue::Behaviour\n{\n  public:\n"
            "    /// @brief 更新処理を World の Owner Thread で実行する\n"
-           "    [[nodiscard]] ::cue::Result<void> update(::cue::GameObject &, const ::cue::ScriptUpdateContext &) "
-           "override\n"
+           "    [[nodiscard]] ::cue::Result<void> update() override\n"
            "    {\n        return ::cue::Result<void>::success();\n    }\n};\n} // namespace game\n\n"
            "// この cpp の型だけを登録し、接続入口は Build が一つに集約する\n"
            "CUE_DEFINE_SCRIPT(" +

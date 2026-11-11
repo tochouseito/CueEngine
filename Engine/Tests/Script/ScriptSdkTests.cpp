@@ -71,7 +71,9 @@ struct Engine final
                 {
                     *a_instance = {a_entity.world, a_entity.index, a_entity.generation};
                     return CueScriptStatus{};
-                }};
+                },
+                [](void *, CueScriptEntity, const CueScriptTransformChange *)
+                { return CueScriptStatus{1, "Fixture.change_unsupported"}; }};
     }
 };
 

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -431,9 +432,21 @@ class PulseSource final : public cue::Behaviour
     unsigned value = 1;
 
     /// @brief 設定を別 Script から直接受け取り、購読者へ通知する
-    cue::Result<void> update(cue::GameObject &, const cue::ScriptUpdateContext &) override
+    cue::Result<void> update() override
     {
-        return pulse.publish(value);
+        auto delivered = pulse.publish(value);
+        if (!delivered.has_value())
+        {
+            return delivered;
+        }
+        return transform.position.z.add(1.0f);
+    }
+
+    /// @brief 同期呼出が対象 Entity に切り替わっていることを位置の変更で観測する
+    cue::Result<void> configure()
+    {
+        value = 2;
+        return transform.position.x.add(4.0f);
     }
 };
 
@@ -441,30 +454,34 @@ class PulseReceiver final : public cue::Behaviour
 {
   public:
     /// @brief 型付き Component と対象の GameObject を確認し、通知を一度だけ購読する
-    cue::Result<void> update(cue::GameObject &a_self, const cue::ScriptUpdateContext &) override
+    cue::Result<void> update() override
     {
         if (m_subscribed)
         {
             return cue::Result<void>::success();
         }
-        auto cube = a_self.find_by_name("Cube");
-        if (!cube.has_value() || !a_self.get_component<cue::ScriptCamera>().has_value() ||
-            !a_self.get_component<cue::ScriptMeshRenderer>().has_value())
+        auto cube = find_by_name("Cube");
+        if (!cube.has_value() || !get_component<cue::ScriptCamera>().has_value() ||
+            !cube.try_value()->get_component<cue::ScriptMeshRenderer>().has_value())
         {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.components"});
         }
-        auto connected = cube.try_value()->with_script<PulseSource>([&](PulseSource &a_source, cue::GameObject &a_target)
+        auto connected = cube.try_value()->with_script<PulseSource>([this](PulseSource &a_source)
         {
-            auto transform = a_target.get_component<cue::math::floatTransform>();
-            if (!transform.has_value() || a_target.handle().index != a_self.handle().index)
+            auto configured = a_source.configure();
+            if (!configured.has_value())
             {
-                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.target"});
+                return configured;
             }
-            a_source.value = 2;
-            return a_source.pulse.subscribe(*this, [](const unsigned &a_value)
+            return a_source.pulse.subscribe(*this, [this](const unsigned &a_value)
             {
+                using namespace std::chrono_literals;
+                if (delta_time() != 1ms)
+                {
+                    return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.delta"});
+                }
                 g_received += a_value;
-                return cue::Result<void>::success();
+                return transform.position.y.add(static_cast<float>(a_value));
             });
         }, k_firstScriptId);
         m_subscribed = connected.has_value();
@@ -500,27 +517,133 @@ int test_script_communication()
     source.typeId = "test.pulse";
     auto receiver = assignment(k_secondScriptId);
     receiver.typeId = "test.receiver";
-    auto prepared = prepare({source, receiver});
+    auto prepared = prepare({source});
     CUE_RUNTIME_SCRIPT_CHECK(prepared.has_value());
     auto fixture = prepared.take_value();
     auto &world = *fixture.world;
-    CUE_RUNTIME_SCRIPT_CHECK(world.add_component<CameraComponent>(fixture.entity).has_value());
+    auto other = world.create_entity(fixture.instance, "3d01a77a-3859-4fc8-bca7-9fb6f05320aa", "Receiver");
+    CUE_RUNTIME_SCRIPT_CHECK(other.has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.add_component<CameraComponent>(*other.try_value()).has_value());
     CUE_RUNTIME_SCRIPT_CHECK(world.add_component<MeshRendererComponent>(fixture.entity).has_value());
+    auto receiverTransform = world.add_component<TransformComponent>(*other.try_value());
+    auto scripts = world.add_component<ScriptComponent>(*other.try_value());
+    CUE_RUNTIME_SCRIPT_CHECK(receiverTransform.has_value() && scripts.has_value());
+    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({receiver}).has_value());
     CUE_RUNTIME_SCRIPT_CHECK(world.initialize().has_value());
     CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value());
     const auto receivedBefore = g_received;
     CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 2);
-    auto scripts = world.get_component<ScriptComponent>(fixture.entity);
-    CUE_RUNTIME_SCRIPT_CHECK(scripts.has_value());
+    auto sourceTransform = world.get_component<TransformComponent>(fixture.entity);
+    CUE_RUNTIME_SCRIPT_CHECK(sourceTransform.has_value());
+    const auto &sourcePosition = (*sourceTransform.try_value())->local().position;
+    receiverTransform = world.get_component<TransformComponent>(*other.try_value());
+    CUE_RUNTIME_SCRIPT_CHECK(receiverTransform.has_value());
+    const auto &receiverPosition = (*receiverTransform.try_value())->local().position;
+    CUE_RUNTIME_SCRIPT_CHECK(sourcePosition.x == 4.0f && sourcePosition.y == 0.0f && sourcePosition.z == 2.0f);
+    CUE_RUNTIME_SCRIPT_CHECK(receiverPosition.x == 0.0f && receiverPosition.y == static_cast<float>(g_received) &&
+                             receiverPosition.z == 0.0f);
+    const auto set_receiver = [&](std::vector<ScriptDescriptor> a_assignments)
+    {
+        auto current = world.get_component<ScriptComponent>(*other.try_value());
+        return current.has_value() && (*current.try_value())->set_scripts(std::move(a_assignments)).has_value();
+    };
     receiver.isEnabled = false;
-    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source, receiver}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(set_receiver({receiver}));
     CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 2);
     receiver.isEnabled = true;
-    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source, receiver}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(set_receiver({receiver}));
     CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 4);
-    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(set_receiver({}));
     CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 4);
     CUE_RUNTIME_SCRIPT_CHECK(world.shutdown().has_value());
+    return 0;
+}
+
+bool g_sawPartialTransform = false;
+
+class TransformCommands final : public cue::Behaviour
+{
+  public:
+    /// @brief 新しい署名で省略引数・所有値・演算子を実際の World に適用する
+    cue::Result<void> update() override
+    {
+        using namespace std::chrono_literals;
+        using cue::ErrorCategory;
+        using cue::Result;
+        if (delta_time() != 10ms)
+        {
+            return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.delta_time"});
+        }
+        if (m_firstUpdate)
+        {
+            m_firstUpdate = false;
+            if (!transform.translate(1.0f).has_value() || !transform.translate(1.0f, 2.0f).has_value() ||
+                !transform.translate(1.0f, 2.0f, 3.0f).has_value() ||
+                !transform.translate(cue::math::float3{1.0f, 1.0f, 4.0f}).has_value())
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.translate"});
+            }
+            auto position = transform.position.get();
+            if (!position.has_value() || position.try_value()->x != 4.0f || position.try_value()->y != 5.0f ||
+                position.try_value()->z != 7.0f)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.position"});
+            }
+            auto rejected = transform.translate(8.0f, (std::numeric_limits<float>::infinity)());
+            auto value = transform.get();
+            if (rejected.has_value() || !value.has_value() || value.try_value()->position.x != 4.0f ||
+                value.try_value()->position.y != 5.0f)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.partial_translate"});
+            }
+            value.try_value()->scale.y = 3.0f;
+            auto written = transform.set(*value.try_value());
+            if (!written.has_value())
+            {
+                return written;
+            }
+            transform.scale.x *= 2.0f;
+        }
+        else
+        {
+            transform.position.x += 1.0f;
+            transform.position.y = (std::numeric_limits<float>::infinity)();
+            auto position = transform.position.get();
+            g_sawPartialTransform = position.has_value() && position.try_value()->x == 5.0f &&
+                                    position.try_value()->y == 5.0f;
+        }
+        return Result<void>::success();
+    }
+
+  private:
+    bool m_firstUpdate = true;
+};
+
+/// @brief 一括操作の検証失敗と、演算子の失敗が Callback の終了時に伝わることを確認する
+int test_transform_commands()
+{
+    using namespace cue;
+    using namespace std::chrono_literals;
+    CUE_RUNTIME_SCRIPT_CHECK(reset_module());
+    auto module = ScriptModule::create(
+        {make_script_registration<TransformCommands>({"test.transform", "Transform", 1, {}})});
+    CUE_RUNTIME_SCRIPT_CHECK(module.has_value());
+    g_module = module.take_value();
+    auto script = assignment();
+    script.typeId = "test.transform";
+    auto prepared = prepare({script});
+    CUE_RUNTIME_SCRIPT_CHECK(prepared.has_value());
+    auto fixture = prepared.take_value();
+    CUE_RUNTIME_SCRIPT_CHECK(fixture.world->initialize().has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(fixture.world->update(10ms).has_value());
+    auto component = fixture.world->get_component<TransformComponent>(fixture.entity);
+    CUE_RUNTIME_SCRIPT_CHECK(component.has_value());
+    const auto &scale = (*component.try_value())->local().scale;
+    CUE_RUNTIME_SCRIPT_CHECK(scale.x == 2.0f && scale.y == 3.0f);
+    g_sawPartialTransform = false;
+    auto failed = fixture.world->update(10ms);
+    CUE_RUNTIME_SCRIPT_CHECK(!failed.has_value() && g_sawPartialTransform &&
+                             failed.try_error()->operation == "Script:Math.Transform.to_matrix.non_finite");
     return 0;
 }
 } // namespace
@@ -530,7 +653,7 @@ int main()
 {
     for (auto test :
          {test_lifecycle, test_multiple_and_instances, test_diagnostics, test_failures, test_configurations,
-          test_script_communication})
+          test_script_communication, test_transform_commands})
     {
         const int result = test();
         if (result)

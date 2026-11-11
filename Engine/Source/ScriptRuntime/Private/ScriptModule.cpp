@@ -77,11 +77,20 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_entry(CueScri
         if (!a_entry)
             return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.entry_missing"});
         auto state = std::make_unique<State>();
-        const auto status = a_entry(CUE_SCRIPT_ABI_VERSION, &state->api);
+        std::uint32_t version = CUE_SCRIPT_ABI_VERSION;
+        auto status = a_entry(version, &state->api);
+        // Preview 7 の Module は明示的な Version 拒否を返す。初期化失敗はそのまま報告する
+        constexpr char k_versionError[] = "ScriptModule.abi_version";
+        if (status.code == 1 && std::strncmp(status.message, k_versionError, sizeof(k_versionError)) == 0)
+        {
+            version = CUE_SCRIPT_ABI_VERSION_2;
+            state->api = {};
+            status = a_entry(version, &state->api);
+        }
         if (status.code != 0)
             return ModuleResult::failure(status_error(status));
         const auto &api = state->api;
-        if (api.abiVersion != CUE_SCRIPT_ABI_VERSION || api.structSize != sizeof(CueScriptModuleApi) ||
+        if (api.abiVersion != version || api.structSize != sizeof(CueScriptModuleApi) ||
             api.pointerSize != sizeof(void *) || api.configuration != static_cast<std::uint32_t>(a_configuration) ||
             !api.context || !api.type_count || !api.type_info || !api.property_info || !api.create ||
             !api.set_property || !api.start || !api.update || !api.stop || !api.destroy || !api.set_active)

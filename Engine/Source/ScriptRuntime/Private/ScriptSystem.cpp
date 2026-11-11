@@ -1,7 +1,9 @@
 #include <ScriptRuntime/ScriptSystem.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <optional>
 #include <utility>
 
@@ -353,6 +355,63 @@ struct ScriptSystem::State final
             return status(3, "Script.set_transform.exception");
         }
     }
+
+    /// @brief 現在の Local 値に変更を適用し、全成分の検証に成功してから ECS へ反映する
+    static CueScriptStatus CUE_SCRIPT_CALL change_transform(void *a_context, CueScriptEntity a_entity,
+                                                           const CueScriptTransformChange *a_change) noexcept
+    {
+        try
+        {
+            auto *world = callback_world(a_context);
+            if (!world || !a_change)
+            {
+                return status(1, "Script.change_transform.context");
+            }
+            constexpr float math::float3::*k_axes[]{&math::float3::x, &math::float3::y, &math::float3::z};
+            if (a_change->field > CUE_SCRIPT_TRANSFORM_SCALE || a_change->axis >= std::size(k_axes) ||
+                a_change->operation > CUE_SCRIPT_TRANSFORM_TRANSLATE ||
+                (a_change->operation == CUE_SCRIPT_TRANSFORM_TRANSLATE && a_change->field != CUE_SCRIPT_TRANSFORM_POSITION))
+            {
+                return status(1, "Script.change_transform.arguments");
+            }
+            auto found = world->get_component<TransformComponent>(entity(a_entity));
+            if (!found.has_value())
+            {
+                return status(*found.try_error());
+            }
+            auto &component = **found.try_value();
+            auto next = component.local();
+            if (a_change->operation == CUE_SCRIPT_TRANSFORM_TRANSLATE)
+            {
+                const auto &offset = a_change->value;
+                next.position = next.position + math::float3{offset[0], offset[1], offset[2]};
+            }
+            else
+            {
+                auto &vector = a_change->field == CUE_SCRIPT_TRANSFORM_POSITION ? next.position : next.scale;
+                auto &axis = vector.*k_axes[a_change->axis];
+                const float value = a_change->value[0];
+                switch (a_change->operation)
+                {
+                case CUE_SCRIPT_TRANSFORM_SET:
+                    axis = value;
+                    break;
+                case CUE_SCRIPT_TRANSFORM_ADD:
+                    axis += value;
+                    break;
+                case CUE_SCRIPT_TRANSFORM_MULTIPLY:
+                    axis *= value;
+                    break;
+                }
+            }
+            auto applied = component.set_local(next);
+            return applied.has_value() ? status(0) : status(*applied.try_error());
+        }
+        catch (...)
+        {
+            return status(3, "Script.change_transform.exception");
+        }
+    }
     /// @brief SceneInstance を明示して同名 Object の別 Instance 混同を防ぐ
     static CueScriptStatus CUE_SCRIPT_CALL find_by_name(void *a_context, CueScriptSceneInstance a_instance,
                                                         CueScriptString a_name, CueScriptEntity *a_entity) noexcept
@@ -619,9 +678,13 @@ Result<std::unique_ptr<ScriptSystem>> ScriptSystem::create(std::unique_ptr<Runti
         auto state = std::make_unique<State>();
         state->module = std::move(a_module);
         state->reportCallback = std::move(a_report);
-        state->engine = {CUE_SCRIPT_ABI_VERSION, sizeof(CueScriptEngineApi), state.get(),         State::is_alive,
+        const auto version = state->module->api().abiVersion;
+        const auto apiSize = version == CUE_SCRIPT_ABI_VERSION_2 ? offsetof(CueScriptEngineApi, change_transform)
+                                                                 : sizeof(CueScriptEngineApi);
+        state->engine = {version, static_cast<std::uint32_t>(apiSize), state.get(), State::is_alive,
                          State::get_transform, State::set_transform, State::find_by_name, State::report,
-                         State::get_camera, State::get_mesh_renderer, State::find_script, State::get_scene_instance};
+                         State::get_camera, State::get_mesh_renderer, State::find_script, State::get_scene_instance,
+                         State::change_transform};
         return SystemResult::success(std::make_unique<ScriptSystem>(CreateToken{}, std::move(state)));
     }
     catch (...)

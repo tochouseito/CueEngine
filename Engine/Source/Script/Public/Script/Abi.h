@@ -10,7 +10,8 @@
 #define CUE_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define CUE_SCRIPT_ABI_VERSION 2u
+#define CUE_SCRIPT_ABI_VERSION 3u
+#define CUE_SCRIPT_ABI_VERSION_2 2u
 #define CUE_SCRIPT_MESH_ID_CAPACITY 256u
 
 #ifdef __cplusplus
@@ -52,6 +53,25 @@ extern "C"
         float rotation[4];
         float scale[3];
     } CueScriptTransform;
+
+    enum
+    {
+        CUE_SCRIPT_TRANSFORM_POSITION = 0,
+        CUE_SCRIPT_TRANSFORM_SCALE = 1,
+        CUE_SCRIPT_TRANSFORM_SET = 0,
+        CUE_SCRIPT_TRANSFORM_ADD = 1,
+        CUE_SCRIPT_TRANSFORM_MULTIPLY = 2,
+        CUE_SCRIPT_TRANSFORM_TRANSLATE = 3
+    };
+
+    // 座標の操作を一度の呼出で検証・反映する。TRANSLATE は value の全軸を使う
+    typedef struct CueScriptTransformChange
+    {
+        uint32_t field;
+        uint32_t axis;
+        uint32_t operation;
+        float value[3];
+    } CueScriptTransformChange;
 
     typedef struct CueScriptCamera
     {
@@ -113,6 +133,7 @@ extern "C"
         CueScriptStatus(CUE_SCRIPT_CALL *find_script)(void *, CueScriptEntity, CueScriptString, CueScriptString,
                                                        CueScriptInstance *);
         CueScriptStatus(CUE_SCRIPT_CALL *get_scene_instance)(void *, CueScriptEntity, CueScriptSceneInstance *);
+        CueScriptStatus(CUE_SCRIPT_CALL *change_transform)(void *, CueScriptEntity, const CueScriptTransformChange *);
     } CueScriptEngineApi;
 
     // context は Module 自身を借用する。Unload の前に全 Instance を destroy し、この Table を失効させる

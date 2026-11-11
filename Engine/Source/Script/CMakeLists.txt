@@ -2,6 +2,7 @@
 add_library(Cue.Script STATIC
     Private/GameObject.cpp
     Private/Module.cpp
+    Private/ScriptTransform.cpp
 )
 target_include_directories(Cue.Script PUBLIC Public)
 target_link_libraries(Cue.Script PUBLIC Cue.Math Cue.ScriptData)

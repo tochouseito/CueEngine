@@ -28,24 +28,23 @@ class RotateCubeBehaviour final : public cue::Behaviour
         return cue::Result<void>::failure({cue::ErrorCategory::InvalidArgument, "RotateCube.property"});
     }
     /// @brief 時間差に比例した回転を Math で計算し、Component Pointer を保持せず書き戻す
-    [[nodiscard]] cue::Result<void> update(cue::GameObject &a_object,
-                                           const cue::ScriptUpdateContext &a_context) override
+    [[nodiscard]] cue::Result<void> update() override
     {
         if (!m_isRotating)
             return cue::Result<void>::success();
-        auto transform = a_object.transform();
-        if (!transform.has_value())
-            return cue::Result<void>::failure(*transform.try_error());
-        const auto seconds = std::chrono::duration<float>(a_context.deltaTime).count();
+        auto current = transform.get();
+        if (!current.has_value())
+            return cue::Result<void>::failure(*current.try_error());
+        const auto seconds = std::chrono::duration<float>(delta_time()).count();
         auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0},
                                                     cue::math::degrees_to_radians(m_speedDegrees) * seconds);
         if (!delta.has_value())
             return cue::Result<void>::failure(*delta.try_error());
-        auto rotation = cue::math::normalize(*delta.try_value() * transform.try_value()->rotation);
+        auto rotation = cue::math::normalize(*delta.try_value() * current.try_value()->rotation);
         if (!rotation.has_value())
             return cue::Result<void>::failure(*rotation.try_error());
-        transform.try_value()->rotation = *rotation.try_value();
-        return a_object.set_transform(*transform.try_value());
+        current.try_value()->rotation = *rotation.try_value();
+        return transform.set(*current.try_value());
     }
 
   private:

@@ -4,6 +4,8 @@
 #include <cstring>
 #include <limits>
 
+#include <Script/Behaviour.h>
+
 namespace cue
 {
 namespace
@@ -51,9 +53,34 @@ GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity
 {
 }
 
-GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity, const ScriptAccess *a_access) noexcept
+GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity, ScriptAccess *a_access) noexcept
     : m_api(a_api), m_entity(a_entity), m_access(a_access)
 {
+}
+
+GameObject::CallbackScope::CallbackScope(Behaviour &a_script, const GameObject &a_object,
+                                         ScriptUpdateContext a_update) noexcept
+    : object(a_object), update(a_update), m_script(a_script), m_previousScript(a_script.m_callback),
+      m_previousModule(a_object.m_access->callback)
+{
+    m_script.m_entity = a_object.m_entity;
+    m_script.m_scriptAccess = a_object.m_access;
+    m_script.m_callback = this;
+    a_object.m_access->callback = this;
+}
+
+GameObject::CallbackScope::~CallbackScope()
+{
+    m_script.m_callback = m_previousScript;
+    object.m_access->callback = m_previousModule;
+}
+
+void GameObject::CallbackScope::remember(Result<void> a_result)
+{
+    if (!a_result.has_value() && !m_error)
+    {
+        m_error.emplace(std::move(*a_result.try_error()));
+    }
 }
 
 CueScriptEntity GameObject::handle() const noexcept
@@ -105,6 +132,15 @@ Result<void> GameObject::set_transform(const math::floatTransform &a_transform) 
     return script_result(m_api.set_transform(m_api.context, m_entity, &value));
 }
 
+Result<void> GameObject::change_transform(const CueScriptTransformChange &a_change) const
+{
+    if (!m_api.change_transform)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "GameObject.change_transform.api"});
+    }
+    return script_result(m_api.change_transform(m_api.context, m_entity, &a_change));
+}
+
 Result<ScriptCamera> GameObject::camera() const
 {
     if (!m_api.get_camera)
@@ -141,8 +177,7 @@ Result<ScriptMeshRenderer> GameObject::mesh_renderer() const
 
 Result<Behaviour *> GameObject::find_script(const std::type_info &a_type, std::string_view a_instanceId) const
 {
-    constexpr std::size_t k_maxCallDepth = 32;
-    if (!m_access || !m_api.find_script || *m_access->callDepth >= k_maxCallDepth)
+    if (!m_access || !m_access->callback || !m_api.find_script || *m_access->callDepth >= k_maxCallDepth)
     {
         return Result<Behaviour *>::failure({ErrorCategory::InvalidState, "GameObject.with_script.context_or_depth"});
     }

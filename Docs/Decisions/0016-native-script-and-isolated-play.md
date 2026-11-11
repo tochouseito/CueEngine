@@ -56,7 +56,9 @@ Setter の成功は要求された設定値を受理したことを表す。ゲ�
 - `find_by_name(name)` は呼出元と同じ Scene Instance を検索する。型付き `with_script<T>()` は起動済みで有効な割当を解決して同期実行する。同じ型の割当が複数ある場合は `instanceId` を指定する。参照を Callback の外に保持しない。
 - `with_script<T>()` の型は `make_script_registration<T>()` で一つの型 ID に登録する。Script の `start` 順序へ依存する接続は、最初の `update` で行う。対象を操作する Callback は、必要なら第 2 引数で対象の `GameObject&` を受け取る。
 - `ScriptEvent<T...>` は同じ Game Module 内で有効な購読者へ同期通知する。無効化中は配送を止め、再有効化後に再開する。購読者の停止・失敗または発行者の破棄で購読を解除する。Callback に `GameObject` の借用を保持しない。
-- Engine と Game Module の Script ABI は v2 を使う。Preview 6 以前の Game Module バイナリは新 SDK で再ビルドする。Scene の割当 ID とファイル形式は引き継ぐ。
+- 新規 Script は引数なしの `update()` を実装し、`delta_time()`、`get_component<T>()`、`transform` を `Behaviour` から利用する。従来の引数付き `update()` も利用できる。同期呼出とイベントは、対象の Entity と更新時間を呼出中だけ設定する。
+- `transform.position.x += value` は現在の値を一回の ABI 呼出で変更する。演算子の失敗は Callback の終了時に報告し、先に成功した変更を保持する。`translate(x, y = 0, z = 0)`、`translate(float3)`、`transform.set()` は一回の操作の変更を全て検証してから書き込む。
+- Script ABI v3 で Transform の変更を追加する。Runtime は Preview 7 の v2 Module の明示的な Version 拒否を受けた場合に v2 で読み込む。新しい API を利用する Game Module は v3 SDK でビルドする。Scene の割当 ID とファイル形式は引き継ぐ。
 
 ## データと保存
 

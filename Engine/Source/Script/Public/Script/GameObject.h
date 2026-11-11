@@ -1,9 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 #include <typeinfo>
@@ -17,6 +19,14 @@ namespace cue
 {
 class Behaviour;
 class ScriptModule;
+class ScriptTransform;
+
+/// @brief World の更新時間を表す SDK 値。start / stop の時間はゼロ
+struct ScriptUpdateContext final
+{
+    std::chrono::nanoseconds deltaTime{};
+    std::uint64_t tick = 0;
+};
 
 /// @brief Module 境界の Status を SDK 内の所有 Error に変換する
 [[nodiscard]] Result<void> script_result(CueScriptStatus a_status);
@@ -84,7 +94,40 @@ class GameObject final
     }
 
   private:
+    friend class Behaviour;
     friend class ScriptModule;
+    friend class ScriptTransform;
+    static constexpr std::size_t k_maxCallDepth = 32;
+
+    /// @brief Game Module 内の現在の呼出を保持し、入れ子から戻ると前の呼出を復元する
+    class CallbackScope final
+    {
+      public:
+        /// @brief 対象 Script に所属 Entity と時間を呼出中だけ公開する
+        CallbackScope(Behaviour &a_script, const GameObject &a_object, ScriptUpdateContext a_update) noexcept;
+        /// @brief 例外を含む全経路で外側の呼出を復元する
+        ~CallbackScope();
+        /// @brief この呼出の最初の暗黙書き込み失敗を保持する
+        void remember(Result<void> a_result);
+        /// @brief 明示的な失敗を優先し、成功時には記録された失敗も確認する
+        template <typename T> [[nodiscard]] Result<T> finish(Result<T> a_result)
+        {
+            if (a_result.has_value() && m_error)
+            {
+                return Result<T>::failure(std::move(*m_error));
+            }
+            return a_result;
+        }
+
+        const GameObject &object;
+        const ScriptUpdateContext update;
+
+      private:
+        Behaviour &m_script;
+        CallbackScope *m_previousScript;
+        CallbackScope *m_previousModule;
+        std::optional<Error> m_error;
+    };
 
     // この Table は SDK 内だけで借用する。型情報や Behaviour を C ABI へ渡さない
     struct ScriptAccess final
@@ -92,6 +135,7 @@ class GameObject final
         void *context;
         std::size_t *callDepth;
         Result<Behaviour *> (*find)(void *, const GameObject &, const std::type_info &, std::string_view);
+        CallbackScope *callback = nullptr;
     };
 
     class CallScope final
@@ -107,7 +151,9 @@ class GameObject final
     };
 
     /// @brief SDK の Module Adapter だけが C++ Script の参照解決を追加する
-    GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity, const ScriptAccess *a_access) noexcept;
+    GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity, ScriptAccess *a_access) noexcept;
+    /// @brief World が所有する値へ一度の ABI 呼出で変更を適用する
+    [[nodiscard]] Result<void> change_transform(const CueScriptTransformChange &a_change) const;
     /// @brief Component の投影設定を値へ変換する
     [[nodiscard]] Result<ScriptCamera> camera() const;
     /// @brief Component の Asset ID を値へ変換する
@@ -144,23 +190,24 @@ class GameObject final
             return Output::failure({ErrorCategory::InvalidState, "GameObject.with_script.type"});
         }
         CallScope scope(*m_access->callDepth);
+        CallbackScope callback(*script, *this, m_access->callback->update);
         if constexpr (std::same_as<Return, void>)
         {
             std::invoke(std::forward<Callback>(a_callback), *script, a_args...);
-            return Output::success();
+            return callback.finish(Output::success());
         }
         else if constexpr (std::same_as<Return, Output>)
         {
-            return std::invoke(std::forward<Callback>(a_callback), *script, a_args...);
+            return callback.finish(std::invoke(std::forward<Callback>(a_callback), *script, a_args...));
         }
         else
         {
-            return Output::success(std::invoke(std::forward<Callback>(a_callback), *script, a_args...));
+            return callback.finish(Output::success(std::invoke(std::forward<Callback>(a_callback), *script, a_args...)));
         }
     }
 
     const CueScriptEngineApi &m_api;
     CueScriptEntity m_entity;
-    const ScriptAccess *m_access;
+    ScriptAccess *m_access;
 };
 } // namespace cue
