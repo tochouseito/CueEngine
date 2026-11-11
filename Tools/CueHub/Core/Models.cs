@@ -34,6 +34,7 @@ public sealed record HubState
     public List<EngineRegistration> Engines { get; init; } = [];
     public List<ProjectRegistration> Projects { get; init; } = [];
     public bool IncludePreview { get; set; } = true;
+    public string Theme { get; set; } = "light";
     public string TrustedPublisherKeyFile { get; set; } = Path.Combine(AppContext.BaseDirectory, "PublisherPublicKey.pem");
     public string LocalHubFeed { get; set; } = "";
 }

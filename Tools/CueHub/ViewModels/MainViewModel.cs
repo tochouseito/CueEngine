@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Windows.Data;
 
 namespace Cue.Hub;
@@ -29,6 +30,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string m_keyFile = "";
     private string m_localFeed = "";
     private bool m_includePreview;
+    private string m_theme = "light";
     private string m_engineSearch = "";
     private int m_installedChannel;
     private int m_catalogChannel;
@@ -83,6 +85,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string KeyFile { get => m_keyFile; set => set(ref m_keyFile, value); }
     public string LocalFeed { get => m_localFeed; set => set(ref m_localFeed, value); }
     public bool IncludePreview { get => m_includePreview; set => set(ref m_includePreview, value); }
+    /// <summary>外観は単独で保存し、他の設定の編集中でも変更できる</summary>
+    public string Theme
+    {
+        get => m_theme;
+        set
+        {
+            if (value is not ("light" or "dark") || value == m_theme) return;
+            try
+            {
+                m_store.update(state => state.Theme = value);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+            {
+                Status = "テーマを保存できませんでした。 " + error.Message;
+                changed(nameof(Theme));
+                return;
+            }
+            set(ref m_theme, value);
+        }
+    }
     public HubCommand RegisterEngine { get; }
     public HubCommand RegisterProject { get; }
     public HubCommand CreateProject { get; }
@@ -299,6 +321,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var selectedFile = SelectedProject?.ProjectFile;
         var state = m_store.load();
         EngineDirectory = state.EngineDirectory; KeyFile = state.TrustedPublisherKeyFile; LocalFeed = state.LocalHubFeed; IncludePreview = state.IncludePreview;
+        set(ref m_theme, state.Theme == "dark" ? "dark" : "light", nameof(Theme));
         Engines.Clear(); foreach (var item in state.Engines) Engines.Add(item);
         Projects.Clear(); foreach (var item in state.Projects.OrderByDescending(item => item.LastOpenedUtc)) Projects.Add(item);
         SelectedEngine = Engines.FirstOrDefault(item => item.Id == selectedId) ?? Engines.FirstOrDefault();

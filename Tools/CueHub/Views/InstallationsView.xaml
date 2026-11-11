@@ -44,15 +44,15 @@
                 </ListBox.ItemContainerStyle>
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <Border Background="White" TextElement.Foreground="#172236" BorderBrush="#DCE2EA" BorderThickness="1" CornerRadius="6" Padding="20">
+                        <Border Background="{DynamicResource HubSurface}" TextElement.Foreground="{DynamicResource HubForeground}" BorderBrush="{DynamicResource HubBorder}" BorderThickness="1" CornerRadius="6" Padding="20">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                 <StackPanel Margin="0,0,16,0">
                                     <TextBlock Text="{Binding Version, StringFormat=CueEngine {0}}" FontSize="19" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding Root}" ToolTip="{Binding Root}" TextTrimming="CharacterEllipsis" Foreground="#586273" Margin="0,8,0,10" />
+                                    <TextBlock Text="{Binding Root}" ToolTip="{Binding Root}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource HubMutedForeground}" Margin="0,8,0,10" />
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="Windows x64" Background="#EEF2F7" Padding="6,3" Margin="0,0,8,0" />
-                                        <TextBlock Background="#EEF2F7" Padding="6,3">
+                                        <TextBlock Text="Windows x64" Background="{DynamicResource HubBadge}" Padding="6,3" Margin="0,0,8,0" />
+                                        <TextBlock Background="{DynamicResource HubBadge}" Padding="6,3">
                                             <TextBlock.Style>
                                                 <Style TargetType="TextBlock">
                                                     <Setter Property="Text" Value="ローカル開発版" />
@@ -92,7 +92,7 @@
                 </ListBox.ItemTemplate>
             </ListBox>
             <TextBlock Text="表示する Engine がありません。右上の「リストに追加」または「Engine をインストール」から導入できます。"
-                       TextWrapping="Wrap" Foreground="#586273" Margin="20" IsHitTestVisible="False">
+                       TextWrapping="Wrap" Foreground="{DynamicResource HubMutedForeground}" Margin="20" IsHitTestVisible="False">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">
                         <Setter Property="Visibility" Value="Collapsed" />

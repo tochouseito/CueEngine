@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Cue.Hub"
         Title="CueEngine Hub" Width="1120" Height="800" MinWidth="850" MinHeight="620"
-        Background="#F3F5F8" FontFamily="Yu Gothic UI" FontSize="14" Closing="on_closing">
+        Background="{DynamicResource HubBackground}" Foreground="{DynamicResource HubForeground}"
+        FontFamily="Yu Gothic UI" FontSize="14" Closing="on_closing">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanVisibility" />
         <Style x:Key="NavigationItem" TargetType="TabItem">
@@ -18,19 +19,19 @@
                                 CornerRadius="6" Padding="{TemplateBinding Padding}"
                                 BorderBrush="Transparent" BorderThickness="1">
                             <ContentPresenter x:Name="NavigationHeader" ContentSource="Header" RecognizesAccessKey="True"
-                                              TextElement.Foreground="#DCE3F1" />
+                                              TextElement.Foreground="{DynamicResource HubNavigationForeground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#2A3A55" />
+                                <Setter Property="Background" Value="{DynamicResource HubNavigationHover}" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter Property="Background" Value="#344D78" />
-                                <Setter TargetName="NavigationHeader" Property="TextElement.Foreground" Value="White" />
+                                <Setter Property="Background" Value="{DynamicResource HubNavigationSelected}" />
+                                <Setter TargetName="NavigationHeader" Property="TextElement.Foreground" Value="{DynamicResource HubNavigationHeading}" />
                                 <Setter TargetName="NavigationHeader" Property="TextElement.FontWeight" Value="SemiBold" />
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="NavigationBorder" Property="BorderBrush" Value="#B9D2FF" />
+                                <Setter TargetName="NavigationBorder" Property="BorderBrush" Value="{DynamicResource HubNavigationFocus}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -39,7 +40,7 @@
         </Style>
     </Window.Resources>
     <DockPanel>
-        <Border DockPanel.Dock="Bottom" Background="White" Padding="12" Margin="0,14,0,0">
+        <Border DockPanel.Dock="Bottom" Background="{DynamicResource HubSurface}" Padding="12" Margin="0,14,0,0">
             <DockPanel>
                 <Button DockPanel.Dock="Right" Content="取消" Command="{Binding Cancel}" Margin="14,0,0,0" />
                 <StackPanel>
@@ -49,7 +50,7 @@
             </DockPanel>
         </Border>
         <!-- TabControl の選択・キー操作を使い、見出しを左のナビゲーションとして配置する -->
-        <TabControl x:Name="Navigation" TabStripPlacement="Left" Background="#F3F5F8"
+        <TabControl x:Name="Navigation" TabStripPlacement="Left" Background="{DynamicResource HubBackground}"
                     ItemContainerStyle="{StaticResource NavigationItem}">
             <TabControl.Template>
                 <ControlTemplate TargetType="TabControl">
@@ -58,14 +59,14 @@
                             <ColumnDefinition Width="196" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <Border Background="#172236">
+                        <Border Background="{DynamicResource HubNavigationBackground}">
                             <DockPanel>
                                 <StackPanel DockPanel.Dock="Top" Margin="28,28,18,28">
-                                    <TextBlock Text="CUE ENGINE" Foreground="#A5B5D1" FontSize="12" />
-                                    <TextBlock Text="Hub" Foreground="White" FontSize="30" FontWeight="SemiBold" />
+                                    <TextBlock Text="CUE ENGINE" Foreground="{DynamicResource HubNavigationMuted}" FontSize="12" />
+                                    <TextBlock Text="Hub" Foreground="{DynamicResource HubNavigationHeading}" FontSize="30" FontWeight="SemiBold" />
                                 </StackPanel>
                                 <TextBlock DockPanel.Dock="Bottom" Text="{Binding Version, StringFormat=Version {0}}"
-                                           Foreground="#A5B5D1" Margin="18,24" TextWrapping="Wrap" />
+                                           Foreground="{DynamicResource HubNavigationMuted}" Margin="18,24" TextWrapping="Wrap" />
                                 <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
                             </DockPanel>
                         </Border>
@@ -121,7 +122,7 @@
                                 </ListView.View>
                             </ListView>
                             <TextBlock Text="登録済みのプロジェクトはありません。右上の「追加」または「新しいプロジェクト」から始めてください。"
-                                       TextWrapping="Wrap" Foreground="#586273" Margin="20,60,20,20" IsHitTestVisible="False">
+                                       TextWrapping="Wrap" Foreground="{DynamicResource HubMutedForeground}" Margin="20,60,20,20" IsHitTestVisible="False">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed" />
@@ -144,6 +145,17 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="8">
                         <TextBlock Text="設定" FontSize="27" FontWeight="SemiBold" Margin="0,0,0,16" />
+                        <GroupBox Header="外観">
+                            <StackPanel>
+                                <Label Content="テーマ" Target="{Binding ElementName=ThemeSelector}" Padding="0" />
+                                <ComboBox x:Name="ThemeSelector" AutomationProperties.Name="テーマ" Width="180"
+                                          HorizontalAlignment="Left" SelectedValuePath="Tag"
+                                          SelectedValue="{Binding Theme, Mode=TwoWay}">
+                                    <ComboBoxItem Content="ライト" Tag="light" />
+                                    <ComboBoxItem Content="ダーク" Tag="dark" />
+                                </ComboBox>
+                            </StackPanel>
+                        </GroupBox>
                         <GroupBox Header="Engine の保存先"><StackPanel><TextBox Text="{Binding EngineDirectory, UpdateSourceTrigger=PropertyChanged}" /><Button Content="フォルダを選択" Command="{Binding ChooseEngineDirectory}" HorizontalAlignment="Left" /></StackPanel></GroupBox>
                         <GroupBox Header="配布物を検証する発行者公開鍵"><StackPanel><TextBlock Text="配布元から確認した公開鍵だけを指定してください。ダウンロードしたパッケージ内の鍵は自動登録しません。" TextWrapping="Wrap" /><TextBox Text="{Binding KeyFile, UpdateSourceTrigger=PropertyChanged}" /><Button Content="公開鍵を選択" Command="{Binding ChooseKeyFile}" HorizontalAlignment="Left" /></StackPanel></GroupBox>
                         <CheckBox Content="Preview を表示・更新候補に含める" IsChecked="{Binding IncludePreview}" Margin="0,0,0,15" />

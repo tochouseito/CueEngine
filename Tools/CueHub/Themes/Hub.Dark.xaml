@@ -1,0 +1,16 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="HubBackground" Color="#151B24" />
+    <SolidColorBrush x:Key="HubSurface" Color="#202A37" />
+    <SolidColorBrush x:Key="HubForeground" Color="#EEF3FA" />
+    <SolidColorBrush x:Key="HubMutedForeground" Color="#B6C2D2" />
+    <SolidColorBrush x:Key="HubBorder" Color="#3B495B" />
+    <SolidColorBrush x:Key="HubBadge" Color="#2C394B" />
+    <SolidColorBrush x:Key="HubNavigationBackground" Color="#0F151F" />
+    <SolidColorBrush x:Key="HubNavigationForeground" Color="#DCE6F4" />
+    <SolidColorBrush x:Key="HubNavigationMuted" Color="#A8B8D0" />
+    <SolidColorBrush x:Key="HubNavigationHeading" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="HubNavigationHover" Color="#253349" />
+    <SolidColorBrush x:Key="HubNavigationSelected" Color="#304B72" />
+    <SolidColorBrush x:Key="HubNavigationFocus" Color="#A9CDFF" />
+</ResourceDictionary>

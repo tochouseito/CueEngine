@@ -143,10 +143,11 @@ internal static class Program
             model.ProjectDirectory = previousDirectory;
             model.HideProjectCreation.Execute(null);
             test_installations(window, tabs, model, local);
+            test_theme(window, tabs, model, store, dialogs);
             if (trace.Errors.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, trace.Errors));
             window.Close(); window = null;
             application.Shutdown();
-            Console.WriteLine("CueHub WPF projects, creation, installed Engine cards, filters, management menus and install catalog passed");
+            Console.WriteLine("CueHub WPF projects, creation, Engine management, install catalog and themes passed");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -156,6 +157,56 @@ internal static class Program
             PresentationTraceSources.DataBindingSource.Listeners.Remove(trace);
             if (Directory.Exists(root)) SafePaths.delete_owned_tree(root, Path.GetTempPath());
         }
+    }
+
+    /// <summary>テーマの即時適用、独立した保存、再読込、ダイアログへの継承を検証する</summary>
+    private static void test_theme(MainWindow a_window, TabControl a_tabs, MainViewModel a_model, HubStateStore a_store,
+        IUserDialogs a_dialogs)
+    {
+        a_tabs.SelectedIndex = 2;
+        a_window.UpdateLayout();
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        var selector = (ComboBox)a_window.FindName("ThemeSelector");
+        var lightWindow = ((SolidColorBrush)a_window.Background).Color;
+        var lightInput = ((SolidColorBrush)selector.Background).Color;
+        if (!Equals(selector.SelectedValue, "light") || lightWindow != Color.FromRgb(243, 245, 248))
+            throw new InvalidOperationException("既定のライトテーマが反映されません");
+
+        var originalDirectory = a_store.load().EngineDirectory;
+        a_model.EngineDirectory = "unsaved-directory";
+        selector.SelectedValue = "dark";
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        var darkWindow = ((SolidColorBrush)a_window.Background).Color;
+        var darkInput = ((SolidColorBrush)selector.Background).Color;
+        var darkText = ((SolidColorBrush)a_window.Foreground).Color;
+        var saved = a_store.load();
+        if (darkWindow != Color.FromRgb(21, 27, 36) || darkText != Color.FromRgb(238, 243, 250) ||
+            darkInput == lightInput || saved.Theme != "dark" || saved.EngineDirectory != originalDirectory ||
+            a_model.EngineDirectory != "unsaved-directory")
+            throw new InvalidOperationException("ダークテーマの即時適用または独立した保存が不正です");
+
+        using var restored = new MainViewModel(a_store, a_dialogs);
+        if (restored.Theme != "dark") throw new InvalidOperationException("保存済みテーマが復元されません");
+        var dialog = new EngineInstallWindow(a_model);
+        if (((SolidColorBrush)dialog.Background).Color != darkWindow)
+            throw new InvalidOperationException("インストール画面がテーマを継承しません");
+        dialog.Close();
+
+        // 保存できないときは適用済みテーマと選択を保ち、ロック解放後に同じ変更を再試行できる
+        using (var held = new FileStream(Path.Combine(a_store.DirectoryPath, "state.lock"), FileMode.Open,
+                   FileAccess.ReadWrite, FileShare.None))
+        {
+            selector.SelectedValue = "light";
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            if (((SolidColorBrush)a_window.Background).Color != darkWindow || a_model.Theme != "dark" ||
+                !Equals(selector.SelectedValue, "dark") || !a_model.Status.Contains("保存できません", StringComparison.Ordinal))
+                throw new InvalidOperationException("テーマの保存失敗時に元の選択が保たれません");
+        }
+        selector.SelectedValue = "light";
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        if (((SolidColorBrush)a_window.Background).Color != lightWindow ||
+            ((SolidColorBrush)selector.Background).Color != lightInput || a_store.load().Theme != "light")
+            throw new InvalidOperationException("ライトテーマへの切り替えが反映されません");
     }
 
     private static void test_installations(MainWindow a_window, TabControl a_tabs, MainViewModel a_model, EngineRegistration a_local)

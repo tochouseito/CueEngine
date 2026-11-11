@@ -4,7 +4,7 @@
     <StackPanel>
         <Button Content="← プロジェクト一覧へ" Command="{Binding HideProjectCreation}" HorizontalAlignment="Left" />
         <TextBlock Text="新しいプロジェクト" FontSize="27" FontWeight="SemiBold" Margin="0,12,0,24" />
-        <Border Background="White" Padding="24" CornerRadius="6">
+        <Border Background="{DynamicResource HubSurface}" Padding="24" CornerRadius="6">
             <StackPanel>
                 <StackPanel.Style>
                     <Style TargetType="StackPanel">
@@ -16,7 +16,7 @@
                 <TextBlock Text="使用する Engine" />
                 <ComboBox x:Name="CreationEngineSelector" ItemsSource="{Binding Engines}" SelectedItem="{Binding SelectedCreationEngine}"
                           DisplayMemberPath="Display" AutomationProperties.Name="使用する Engine" />
-                <TextBlock Text="インストール画面で Engine を導入してから選択してください。" Foreground="#586273" TextWrapping="Wrap" Margin="0,0,0,16">
+                <TextBlock Text="インストール画面で Engine を導入してから選択してください。" Foreground="{DynamicResource HubMutedForeground}" TextWrapping="Wrap" Margin="0,0,0,16">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Visibility" Value="Collapsed" />
@@ -33,7 +33,7 @@
                 <TextBlock Text="保存先（親フォルダ）" />
                 <TextBox x:Name="ProjectParentDirectoryBox" Text="{Binding ProjectDirectory, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Project 保存先の親フォルダ" />
                 <Button Content="保存先を選択" Command="{Binding ChooseProjectDirectory}" HorizontalAlignment="Left" />
-                <TextBlock x:Name="ProjectCreationPathText" Text="{Binding ProjectCreationPath, StringFormat=作成先: {0}}" TextWrapping="Wrap" Foreground="#586273" Margin="0,8,0,0" />
+                <TextBlock x:Name="ProjectCreationPathText" Text="{Binding ProjectCreationPath, StringFormat=作成先: {0}}" TextWrapping="Wrap" Foreground="{DynamicResource HubMutedForeground}" Margin="0,8,0,0" />
                 <WrapPanel HorizontalAlignment="Right" Margin="0,16,0,0">
                     <Button Content="キャンセル" Command="{Binding HideProjectCreation}" />
                     <Button Content="作成" Command="{Binding CreateProject}" FontWeight="SemiBold" />
