@@ -10,11 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include <Runtime/Components/CameraComponent.h>
+#include <Runtime/Components/MeshRendererComponent.h>
 #include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
 #include <Scene/Scene.h>
 #include <SceneRuntime/SceneInstantiation.h>
 #include <Script/Module.h>
+#include <Script/ScriptEvent.h>
 
 namespace
 {
@@ -418,13 +421,116 @@ int test_configurations()
     }
     return 0;
 }
+
+unsigned g_received = 0;
+
+class PulseSource final : public cue::Behaviour
+{
+  public:
+    cue::ScriptEvent<unsigned> pulse;
+    unsigned value = 1;
+
+    /// @brief 設定を別 Script から直接受け取り、購読者へ通知する
+    cue::Result<void> update(cue::GameObject &, const cue::ScriptUpdateContext &) override
+    {
+        return pulse.publish(value);
+    }
+};
+
+class PulseReceiver final : public cue::Behaviour
+{
+  public:
+    /// @brief 型付き Component と対象の GameObject を確認し、通知を一度だけ購読する
+    cue::Result<void> update(cue::GameObject &a_self, const cue::ScriptUpdateContext &) override
+    {
+        if (m_subscribed)
+        {
+            return cue::Result<void>::success();
+        }
+        auto cube = a_self.find_by_name("Cube");
+        if (!cube.has_value() || !a_self.get_component<cue::ScriptCamera>().has_value() ||
+            !a_self.get_component<cue::ScriptMeshRenderer>().has_value())
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.components"});
+        }
+        auto connected = cube.try_value()->with_script<PulseSource>([&](PulseSource &a_source, cue::GameObject &a_target)
+        {
+            auto transform = a_target.get_component<cue::math::floatTransform>();
+            if (!transform.has_value() || a_target.handle().index != a_self.handle().index)
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.target"});
+            }
+            a_source.value = 2;
+            return a_source.pulse.subscribe(*this, [](const unsigned &a_value)
+            {
+                g_received += a_value;
+                return cue::Result<void>::success();
+            });
+        }, k_firstScriptId);
+        m_subscribed = connected.has_value();
+        if (!connected.has_value())
+        {
+            return connected;
+        }
+        auto value = cube.try_value()->with_script<PulseSource>([](const PulseSource &a_source)
+        {
+            return a_source.value;
+        });
+        return value.has_value() && *value.try_value() == 2
+                   ? cue::Result<void>::success()
+                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.value"});
+    }
+
+  private:
+    bool m_subscribed = false;
+};
+
+/// @brief 無効化時の配送停止と再有効化、購読者削除、型付き ABI の取得経路を確認する
+int test_script_communication()
+{
+    using namespace cue;
+    using namespace std::chrono_literals;
+    CUE_RUNTIME_SCRIPT_CHECK(reset_module());
+    auto module = ScriptModule::create({make_script_registration<PulseSource>({"test.pulse", "Pulse", 1, {}}),
+                                        make_script_registration<PulseReceiver>({"test.receiver", "Receiver", 1, {}})});
+    CUE_RUNTIME_SCRIPT_CHECK(module.has_value());
+    g_module = module.take_value();
+    g_received = 0;
+    auto source = assignment(k_firstScriptId);
+    source.typeId = "test.pulse";
+    auto receiver = assignment(k_secondScriptId);
+    receiver.typeId = "test.receiver";
+    auto prepared = prepare({source, receiver});
+    CUE_RUNTIME_SCRIPT_CHECK(prepared.has_value());
+    auto fixture = prepared.take_value();
+    auto &world = *fixture.world;
+    CUE_RUNTIME_SCRIPT_CHECK(world.add_component<CameraComponent>(fixture.entity).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.add_component<MeshRendererComponent>(fixture.entity).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.initialize().has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value());
+    const auto receivedBefore = g_received;
+    CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 2);
+    auto scripts = world.get_component<ScriptComponent>(fixture.entity);
+    CUE_RUNTIME_SCRIPT_CHECK(scripts.has_value());
+    receiver.isEnabled = false;
+    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source, receiver}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 2);
+    receiver.isEnabled = true;
+    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source, receiver}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 4);
+    CUE_RUNTIME_SCRIPT_CHECK((*scripts.try_value())->set_scripts({source}).has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(world.update(1ms).has_value() && g_received == receivedBefore + 4);
+    CUE_RUNTIME_SCRIPT_CHECK(world.shutdown().has_value());
+    return 0;
+}
 } // namespace
 
 /// @brief GPU / Editor を起動せず SDK・C ABI・World・Scene の接続契約を検証する
 int main()
 {
     for (auto test :
-         {test_lifecycle, test_multiple_and_instances, test_diagnostics, test_failures, test_configurations})
+         {test_lifecycle, test_multiple_and_instances, test_diagnostics, test_failures, test_configurations,
+          test_script_communication})
     {
         const int result = test();
         if (result)

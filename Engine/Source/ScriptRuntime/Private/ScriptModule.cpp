@@ -84,7 +84,7 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_entry(CueScri
         if (api.abiVersion != CUE_SCRIPT_ABI_VERSION || api.structSize != sizeof(CueScriptModuleApi) ||
             api.pointerSize != sizeof(void *) || api.configuration != static_cast<std::uint32_t>(a_configuration) ||
             !api.context || !api.type_count || !api.type_info || !api.property_info || !api.create ||
-            !api.set_property || !api.start || !api.update || !api.stop || !api.destroy)
+            !api.set_property || !api.start || !api.update || !api.stop || !api.destroy || !api.set_active)
             return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.abi_mismatch"});
         const auto count = api.type_count(api.context);
         if (count > k_maxScriptTypes)

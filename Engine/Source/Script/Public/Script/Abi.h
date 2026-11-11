@@ -10,7 +10,8 @@
 #define CUE_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define CUE_SCRIPT_ABI_VERSION 1u
+#define CUE_SCRIPT_ABI_VERSION 2u
+#define CUE_SCRIPT_MESH_ID_CAPACITY 256u
 
 #ifdef __cplusplus
 extern "C"
@@ -51,6 +52,19 @@ extern "C"
         float rotation[4];
         float scale[3];
     } CueScriptTransform;
+
+    typedef struct CueScriptCamera
+    {
+        float verticalFovRadians;
+        float nearClip;
+        float farClip;
+    } CueScriptCamera;
+
+    typedef struct CueScriptMeshRenderer
+    {
+        char assetId[CUE_SCRIPT_MESH_ID_CAPACITY];
+        uint32_t assetIdSize;
+    } CueScriptMeshRenderer;
 
     typedef struct CueScriptUpdateContext
     {
@@ -94,6 +108,11 @@ extern "C"
         CueScriptStatus(CUE_SCRIPT_CALL *find_by_name)(void *, CueScriptSceneInstance, CueScriptString,
                                                        CueScriptEntity *);
         CueScriptStatus(CUE_SCRIPT_CALL *report)(void *, uint32_t, CueScriptString);
+        CueScriptStatus(CUE_SCRIPT_CALL *get_camera)(void *, CueScriptEntity, CueScriptCamera *);
+        CueScriptStatus(CUE_SCRIPT_CALL *get_mesh_renderer)(void *, CueScriptEntity, CueScriptMeshRenderer *);
+        CueScriptStatus(CUE_SCRIPT_CALL *find_script)(void *, CueScriptEntity, CueScriptString, CueScriptString,
+                                                       CueScriptInstance *);
+        CueScriptStatus(CUE_SCRIPT_CALL *get_scene_instance)(void *, CueScriptEntity, CueScriptSceneInstance *);
     } CueScriptEngineApi;
 
     // context は Module 自身を借用する。Unload の前に全 Instance を destroy し、この Table を失効させる
@@ -115,6 +134,7 @@ extern "C"
                                                  CueScriptUpdateContext);
         CueScriptStatus(CUE_SCRIPT_CALL *stop)(void *, CueScriptInstance, const CueScriptEngineApi *, CueScriptEntity);
         CueScriptStatus(CUE_SCRIPT_CALL *destroy)(void *, CueScriptInstance);
+        CueScriptStatus(CUE_SCRIPT_CALL *set_active)(void *, CueScriptInstance, uint32_t);
     } CueScriptModuleApi;
 
     // Export 名は CueScriptGetModule。Module の登録を構築する例外もこの境界内で Status に変換する

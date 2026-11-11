@@ -6,6 +6,8 @@
 #include <utility>
 
 #include <Foundation/Utf8.h>
+#include <Runtime/Components/CameraComponent.h>
+#include <Runtime/Components/MeshRendererComponent.h>
 #include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
 #include <Scene/Scene.h>
@@ -95,6 +97,8 @@ struct ScriptSystem::State final
         CueScriptInstance token = 0;
         bool hasStarted = false;
         bool hasStopped = false;
+        bool isReady = false;
+        bool isActive = false;
     };
     struct Desired final
     {
@@ -181,6 +185,148 @@ struct ScriptSystem::State final
         catch (...)
         {
             return status(3, "Script.get_transform.exception");
+        }
+    }
+
+    /// @brief 投影設定を固定幅の値で返し、Camera の内部型を Module に公開しない
+    static CueScriptStatus CUE_SCRIPT_CALL get_camera(void *a_context, CueScriptEntity a_entity,
+                                                      CueScriptCamera *a_value) noexcept
+    {
+        try
+        {
+            auto *world = callback_world(a_context);
+            if (!world || !a_value)
+            {
+                return status(1, "Script.callback_context");
+            }
+            auto component = world->get_component<CameraComponent>(entity(a_entity));
+            if (!component.has_value())
+            {
+                return status(*component.try_error());
+            }
+            const auto &projection = (*component.try_value())->projection();
+            *a_value = {projection.verticalFovRadians, projection.nearClip, projection.farClip};
+            return status(0);
+        }
+        catch (...)
+        {
+            return status(3, "Script.get_camera.exception");
+        }
+    }
+
+    /// @brief Asset ID の値だけを ABI Buffer へ複写する。切り詰めた ID は返さない
+    static CueScriptStatus CUE_SCRIPT_CALL get_mesh_renderer(void *a_context, CueScriptEntity a_entity,
+                                                             CueScriptMeshRenderer *a_value) noexcept
+    {
+        try
+        {
+            auto *world = callback_world(a_context);
+            if (!world || !a_value)
+            {
+                return status(1, "Script.callback_context");
+            }
+            auto component = world->get_component<MeshRendererComponent>(entity(a_entity));
+            if (!component.has_value())
+            {
+                return status(*component.try_error());
+            }
+            const auto id = (*component.try_value())->mesh_id();
+            if (id.empty() || id.size() > sizeof(a_value->assetId))
+            {
+                return status(1, "Script.get_mesh_renderer.asset");
+            }
+            std::memcpy(a_value->assetId, id.data(), id.size());
+            a_value->assetIdSize = static_cast<std::uint32_t>(id.size());
+            return status(0);
+        }
+        catch (...)
+        {
+            return status(3, "Script.get_mesh_renderer.exception");
+        }
+    }
+
+    /// @brief Entity から同じ World 内の Scene Instance を解決する
+    static CueScriptStatus CUE_SCRIPT_CALL get_scene_instance(void *a_context, CueScriptEntity a_entity,
+                                                               CueScriptSceneInstance *a_scene) noexcept
+    {
+        try
+        {
+            auto *world = callback_world(a_context);
+            if (!world || !a_scene)
+            {
+                return status(1, "Script.callback_context");
+            }
+            auto result = world->scene_instance(entity(a_entity));
+            if (!result.has_value())
+            {
+                return status(*result.try_error());
+            }
+            const auto &scene = *result.try_value();
+            *a_scene = {scene.world, scene.index, scene.generation};
+            return status(0);
+        }
+        catch (...)
+        {
+            return status(3, "Script.get_scene_instance.exception");
+        }
+    }
+
+    /// @brief 現在有効で初期化済みの割当だけを照合し、Module 内の Token を返す
+    static CueScriptStatus CUE_SCRIPT_CALL find_script(void *a_context, CueScriptEntity a_entity,
+                                                        CueScriptString a_type, CueScriptString a_instance,
+                                                        CueScriptInstance *a_token) noexcept
+    {
+        try
+        {
+            auto *world = callback_world(a_context);
+            if (!world || !a_token || !a_type.data || !a_type.size || a_type.size > 128 ||
+                (a_instance.size && (!a_instance.data || a_instance.size != 36)))
+            {
+                return status(1, "Script.lookup.arguments");
+            }
+            const auto handle = entity(a_entity);
+            const auto active = world->is_active(handle);
+            const auto component = world->get_component<ScriptComponent>(handle);
+            if (!active.has_value() || !*active.try_value() || !component.has_value() ||
+                !(*component.try_value())->is_active())
+            {
+                return status(1, "Script.lookup.inactive_or_missing");
+            }
+            const std::string_view type(a_type.data, a_type.size);
+            const std::string_view id = a_instance.size ? std::string_view(a_instance.data, a_instance.size)
+                                                        : std::string_view{};
+            const ScriptDescriptor *match = nullptr;
+            for (const auto &script : (*component.try_value())->scripts())
+            {
+                if (script.typeId == type && (id.empty() || script.instanceId == id))
+                {
+                    if (match)
+                    {
+                        return status(1, "Script.lookup.ambiguous");
+                    }
+                    match = &script;
+                }
+            }
+            if (!match || !match->isEnabled)
+            {
+                return status(1, "Script.lookup.inactive_or_missing");
+            }
+            const auto &records = static_cast<State *>(a_context)->records;
+            const auto found = std::find_if(records.begin(), records.end(), [&](const Record &a_record)
+            {
+                return a_record.entity == handle && a_record.descriptor.typeId == type &&
+                       a_record.descriptor.instanceId == match->instanceId && a_record.isReady && !a_record.hasStopped;
+            });
+            if (found == records.end())
+            {
+                return status(1, "Script.lookup.not_ready");
+            }
+            *a_token = found->token;
+            return status(0);
+        }
+        catch (...)
+        {
+            return status(3, "Script.lookup.exception");
         }
     }
     /// @brief Math の検証を通して Transform を変更し、次の World 同期で行列を確定する
@@ -354,6 +500,15 @@ struct ScriptSystem::State final
                 if (!removed.has_value())
                     return removed;
             }
+            else if (record.isActive != found->isActive)
+            {
+                auto changed = checked(api.set_active(api.context, record.token, found->isActive ? 1u : 0u));
+                if (!changed.has_value())
+                {
+                    return changed;
+                }
+                record.isActive = found->isActive;
+            }
         }
         for (const auto &desired : a_desired)
         {
@@ -414,11 +569,21 @@ struct ScriptSystem::State final
             }
             if (desired.isActive && !record->hasStarted)
             {
+                if (!record->isActive)
+                {
+                    auto changed = checked(api.set_active(api.context, record->token, 1u));
+                    if (!changed.has_value())
+                    {
+                        return changed;
+                    }
+                    record->isActive = true;
+                }
                 record->hasStarted = true;
                 CallbackScope scope(*this, a_world);
                 auto started = checked(api.start(api.context, record->token, &engine, entity(record->entity)));
                 if (!started.has_value())
                     return started;
+                record->isReady = true;
             }
         }
         return Result<void>::success();
@@ -455,7 +620,8 @@ Result<std::unique_ptr<ScriptSystem>> ScriptSystem::create(std::unique_ptr<Runti
         state->module = std::move(a_module);
         state->reportCallback = std::move(a_report);
         state->engine = {CUE_SCRIPT_ABI_VERSION, sizeof(CueScriptEngineApi), state.get(),         State::is_alive,
-                         State::get_transform,   State::set_transform,       State::find_by_name, State::report};
+                         State::get_transform, State::set_transform, State::find_by_name, State::report,
+                         State::get_camera, State::get_mesh_renderer, State::find_script, State::get_scene_instance};
         return SystemResult::success(std::make_unique<ScriptSystem>(CreateToken{}, std::move(state)));
     }
     catch (...)

@@ -465,6 +465,20 @@ Result<bool> World::is_active(EntityHandle a_entity) const
     return Result<bool>::success(m_ecs->is_entity_active(m_entities[a_entity.index].entity));
 }
 
+Result<SceneInstanceHandle> World::scene_instance(EntityHandle a_entity) const
+{
+    auto access = check_access();
+    if (!access.has_value())
+    {
+        return Result<SceneInstanceHandle>::failure(*access.try_error());
+    }
+    if (!live(a_entity))
+    {
+        return Result<SceneInstanceHandle>::failure(invalid_handle("World.scene_instance"));
+    }
+    return Result<SceneInstanceHandle>::success(m_entities[a_entity.index].instance);
+}
+
 Result<bool> World::is_alive(SceneInstanceHandle a_instance) const
 {
     if (std::this_thread::get_id() != m_owner)

@@ -47,7 +47,12 @@ CueScriptStatus script_exception_status() noexcept
 }
 
 GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity) noexcept
-    : m_api(a_api), m_entity(a_entity)
+    : GameObject(a_api, a_entity, nullptr)
+{
+}
+
+GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity, const ScriptAccess *a_access) noexcept
+    : m_api(a_api), m_entity(a_entity), m_access(a_access)
 {
 }
 
@@ -100,6 +105,65 @@ Result<void> GameObject::set_transform(const math::floatTransform &a_transform) 
     return script_result(m_api.set_transform(m_api.context, m_entity, &value));
 }
 
+Result<ScriptCamera> GameObject::camera() const
+{
+    if (!m_api.get_camera)
+    {
+        return Result<ScriptCamera>::failure({ErrorCategory::InvalidState, "GameObject.camera.api"});
+    }
+    CueScriptCamera value{};
+    auto result = script_result(m_api.get_camera(m_api.context, m_entity, &value));
+    if (!result.has_value())
+    {
+        return Result<ScriptCamera>::failure(*result.try_error());
+    }
+    return Result<ScriptCamera>::success({value.verticalFovRadians, value.nearClip, value.farClip});
+}
+
+Result<ScriptMeshRenderer> GameObject::mesh_renderer() const
+{
+    if (!m_api.get_mesh_renderer)
+    {
+        return Result<ScriptMeshRenderer>::failure({ErrorCategory::InvalidState, "GameObject.mesh_renderer.api"});
+    }
+    CueScriptMeshRenderer value{};
+    auto result = script_result(m_api.get_mesh_renderer(m_api.context, m_entity, &value));
+    if (!result.has_value())
+    {
+        return Result<ScriptMeshRenderer>::failure(*result.try_error());
+    }
+    if (!value.assetIdSize || value.assetIdSize > sizeof(value.assetId))
+    {
+        return Result<ScriptMeshRenderer>::failure({ErrorCategory::InvalidArgument, "GameObject.mesh_renderer.asset"});
+    }
+    return Result<ScriptMeshRenderer>::success({std::string(value.assetId, value.assetIdSize)});
+}
+
+Result<Behaviour *> GameObject::find_script(const std::type_info &a_type, std::string_view a_instanceId) const
+{
+    constexpr std::size_t k_maxCallDepth = 32;
+    if (!m_access || !m_api.find_script || *m_access->callDepth >= k_maxCallDepth)
+    {
+        return Result<Behaviour *>::failure({ErrorCategory::InvalidState, "GameObject.with_script.context_or_depth"});
+    }
+    return m_access->find(m_access->context, *this, a_type, a_instanceId);
+}
+
+Result<GameObject> GameObject::find_by_name(std::string_view a_name) const
+{
+    if (!m_api.get_scene_instance)
+    {
+        return Result<GameObject>::failure({ErrorCategory::InvalidState, "GameObject.find_by_name.scene_api"});
+    }
+    CueScriptSceneInstance scene{};
+    auto result = script_result(m_api.get_scene_instance(m_api.context, m_entity, &scene));
+    if (!result.has_value())
+    {
+        return Result<GameObject>::failure(*result.try_error());
+    }
+    return find_by_name(scene, a_name);
+}
+
 Result<GameObject> GameObject::find_by_name(CueScriptSceneInstance a_instance, std::string_view a_name) const
 {
     if (!m_api.find_by_name || a_name.empty() || a_name.size() > (std::numeric_limits<std::uint32_t>::max)())
@@ -108,7 +172,7 @@ Result<GameObject> GameObject::find_by_name(CueScriptSceneInstance a_instance, s
     auto result = script_result(m_api.find_by_name(m_api.context, a_instance, borrow(a_name), &found));
     if (!result.has_value())
         return Result<GameObject>::failure(*result.try_error());
-    return Result<GameObject>::success(GameObject(m_api, found));
+    return Result<GameObject>::success(GameObject(m_api, found, m_access));
 }
 
 Result<void> GameObject::report(std::uint32_t a_severity, std::string_view a_text) const

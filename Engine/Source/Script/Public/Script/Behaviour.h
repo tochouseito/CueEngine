@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string_view>
+#include <vector>
 
 #include <Foundation/Result.h>
 #include <Script/GameObject.h>
@@ -10,6 +12,8 @@
 
 namespace cue
 {
+template <typename... Args> class ScriptEvent;
+
 /// @brief World の時間を受け取る SDK 値。Timer や FPS 待機を Script に持たせない
 struct ScriptUpdateContext final
 {
@@ -22,6 +26,12 @@ struct ScriptUpdateContext final
 class Behaviour
 {
   public:
+    /// @brief Module が生成した Instance にだけ購読を紐付ける
+    Behaviour() = default;
+    /// @brief Instance の購読を複製しない
+    Behaviour(const Behaviour &) = delete;
+    /// @brief Instance の購読を複製しない
+    Behaviour &operator=(const Behaviour &) = delete;
     /// @brief Game Module 側で派生 Instance を破棄する
     virtual ~Behaviour() = default;
     /// @brief 有効な実行を初めて開始する。途中失敗も stop で回収できる状態にする
@@ -41,5 +51,19 @@ class Behaviour
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "Behaviour.property_missing"});
     }
+
+  private:
+    friend class ScriptModule;
+    template <typename... Args> friend class ScriptEvent;
+
+    // 購読者が Callback を所有する。停止・失敗時には Module Adapter が破棄する
+    struct EventSubscription
+    {
+        bool isConnected = true;
+    };
+
+    std::vector<std::shared_ptr<EventSubscription>> m_eventSubscriptions;
+    bool m_acceptsSubscriptions = false;
+    bool m_isActive = false;
 };
 } // namespace cue

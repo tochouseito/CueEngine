@@ -60,7 +60,18 @@ struct Engine final
     /// @brief 明示的な context で Fake Engine API を構築する
     CueScriptEngineApi api()
     {
-        return {CUE_SCRIPT_ABI_VERSION, sizeof(CueScriptEngineApi), this, alive, get, set, find, report};
+        // 新しい Table の関数を公開し、この Fixture が持たない Component や Script は欠損扱いにする
+        return {CUE_SCRIPT_ABI_VERSION, sizeof(CueScriptEngineApi), this, alive, get, set, find, report,
+                [](void *, CueScriptEntity, CueScriptCamera *) { return CueScriptStatus{1, "Fixture.camera_missing"}; },
+                [](void *, CueScriptEntity, CueScriptMeshRenderer *)
+                { return CueScriptStatus{1, "Fixture.mesh_missing"}; },
+                [](void *, CueScriptEntity, CueScriptString, CueScriptString, CueScriptInstance *)
+                { return CueScriptStatus{1, "Fixture.script_missing"}; },
+                [](void *, CueScriptEntity a_entity, CueScriptSceneInstance *a_instance)
+                {
+                    *a_instance = {a_entity.world, a_entity.index, a_entity.generation};
+                    return CueScriptStatus{};
+                }};
     }
 };
 

@@ -30,7 +30,7 @@ CUE_DEFINE_SCRIPT(RotateCube,
 旧 v1 の対応表と手書き `cue_add_game_module` は利用を継続できる。新規作成機能は v2 への移行を要求する。
 Source 作成は排他取得後に CreateNew し、登録表を最後に原子的に公開する。失敗時は未変更の新規 Source だけを回収する。
 登録式は初回呼出中に評価するため、他 cpp の可変 Global 初期化順序や自動収集に依存させない。
-ABI Version / 型 ID / 所有権 / Instance の破棄手順は変更しない。
+Source 登録だけの変更では型 ID、所有権、Instance の破棄手順を維持する。
 
 ## 所有と Lifecycle
 
@@ -49,6 +49,14 @@ destroy が失敗した DLL は Unload せず、失敗した Play プロセス�
 SDK の利用者は Callback 内の GameObject / Engine API の参照や Component 借用を保存しない。
 診断は ScriptSystem に Host が注入する Callback へ同期配送する。Runtime 自身は File 出力先や Native Logger を所有しない。
 Setter の成功は要求された設定値を受理したことを表す。ゲーム内部の可変状態を自動で読み戻す Reflection ではない。
+
+## Component と Script 間の通信
+
+- `GameObject::get_component<T>()` は `math::floatTransform`、`ScriptCamera`、`ScriptMeshRenderer` の所有値を返す。`set_transform()` は Transform を World へ反映する。Camera と Mesh Renderer の公開値は読み取り専用とする。
+- `find_by_name(name)` は呼出元と同じ Scene Instance を検索する。型付き `with_script<T>()` は起動済みで有効な割当を解決して同期実行する。同じ型の割当が複数ある場合は `instanceId` を指定する。参照を Callback の外に保持しない。
+- `with_script<T>()` の型は `make_script_registration<T>()` で一つの型 ID に登録する。Script の `start` 順序へ依存する接続は、最初の `update` で行う。対象を操作する Callback は、必要なら第 2 引数で対象の `GameObject&` を受け取る。
+- `ScriptEvent<T...>` は同じ Game Module 内で有効な購読者へ同期通知する。無効化中は配送を止め、再有効化後に再開する。購読者の停止・失敗または発行者の破棄で購読を解除する。Callback に `GameObject` の借用を保持しない。
+- Engine と Game Module の Script ABI は v2 を使う。Preview 6 以前の Game Module バイナリは新 SDK で再ビルドする。Scene の割当 ID とファイル形式は引き継ぐ。
 
 ## データと保存
 

@@ -30,7 +30,8 @@ CueScriptString borrow(const std::string &a_text) noexcept
 bool valid_engine(const CueScriptEngineApi *a_api) noexcept
 {
     return a_api && a_api->abiVersion == CUE_SCRIPT_ABI_VERSION && a_api->structSize == sizeof(CueScriptEngineApi) &&
-           a_api->is_alive && a_api->get_transform && a_api->set_transform && a_api->find_by_name && a_api->report;
+           a_api->is_alive && a_api->get_transform && a_api->set_transform && a_api->find_by_name && a_api->report &&
+           a_api->get_camera && a_api->get_mesh_renderer && a_api->find_script && a_api->get_scene_instance;
 }
 /// @brief ABI Property を検証して意味のある成分だけを採用する
 bool valid_property(CueScriptPropertyValue a_value) noexcept
@@ -59,6 +60,55 @@ struct ScriptModule::State final
     std::vector<ScriptRegistration> registrations;
     std::unordered_map<CueScriptInstance, Instance> instances;
     CueScriptInstance nextInstance = 1;
+    std::size_t callDepth = 0;
+    GameObject::ScriptAccess access{this, &callDepth, find_script};
+
+    /// @brief C ABI の Token だけを受け取り、型と実体を同じ Game Module 内で照合する
+    static Result<Behaviour *> find_script(void *a_context, const GameObject &a_object,
+                                           const std::type_info &a_type, std::string_view a_instanceId)
+    {
+        auto &state = *static_cast<State *>(a_context);
+        const ScriptRegistration *registration = nullptr;
+        for (const auto &candidate : state.registrations)
+        {
+            if (candidate.type && *candidate.type == a_type)
+            {
+                if (registration)
+                {
+                    return Result<Behaviour *>::failure({ErrorCategory::InvalidArgument, "Script.lookup.type_ambiguous"});
+                }
+                registration = &candidate;
+            }
+        }
+        if (!registration || a_instanceId.size() > 36)
+        {
+            return Result<Behaviour *>::failure({ErrorCategory::InvalidArgument, "Script.lookup.type_or_instance"});
+        }
+        const auto &api = a_object.m_api;
+        CueScriptInstance token = 0;
+        const CueScriptString instance{a_instanceId.data(), static_cast<std::uint32_t>(a_instanceId.size())};
+        auto result = script_result(api.find_script(api.context, a_object.handle(),
+                                                    borrow(registration->descriptor.typeId), instance, &token));
+        if (!result.has_value())
+        {
+            return Result<Behaviour *>::failure(*result.try_error());
+        }
+        const auto found = state.instances.find(token);
+        if (found == state.instances.end() || !found->second.hasStarted || found->second.hasStopped ||
+            found->second.hasFailed || &state.registrations[found->second.typeIndex] != registration)
+        {
+            return Result<Behaviour *>::failure({ErrorCategory::InvalidState, "Script.lookup.instance"});
+        }
+        return Result<Behaviour *>::success(found->second.behaviour.get());
+    }
+
+    /// @brief 停止または失敗した Script への通知を直ちに失効させる
+    static void clear_subscriptions(Behaviour &a_behaviour) noexcept
+    {
+        a_behaviour.m_acceptsSubscriptions = false;
+        a_behaviour.m_isActive = false;
+        a_behaviour.m_eventSubscriptions.clear();
+    }
 
     /// @brief ゲーム Callback の失敗を終端として記録し、停止以外の再実行を抑止する
     template <typename Callback> static CueScriptStatus invoke(Instance &a_instance, Callback &&a_callback) noexcept
@@ -69,11 +119,13 @@ struct ScriptModule::State final
             if (result.has_value())
                 return {};
             a_instance.hasFailed = true;
+            clear_subscriptions(*a_instance.behaviour);
             return script_status(*result.try_error());
         }
         catch (...)
         {
             a_instance.hasFailed = true;
+            clear_subscriptions(*a_instance.behaviour);
             return script_exception_status();
         }
     }
@@ -194,7 +246,8 @@ struct ScriptModule::State final
                 found->second.hasFailed)
                 return invalid_status("Script.start.lifecycle");
             found->second.hasStarted = true;
-            GameObject object(*a_api, a_entity);
+            found->second.behaviour->m_acceptsSubscriptions = true;
+            GameObject object(*a_api, a_entity, &state.access);
             return invoke(found->second, [&]() { return found->second.behaviour->start(object); });
         }
         catch (...)
@@ -216,7 +269,7 @@ struct ScriptModule::State final
             if (found == state.instances.end() || !found->second.hasStarted || found->second.hasStopped ||
                 found->second.hasFailed)
                 return invalid_status("Script.update.lifecycle");
-            GameObject object(*a_api, a_entity);
+            GameObject object(*a_api, a_entity, &state.access);
             const ScriptUpdateContext context{std::chrono::nanoseconds(a_update.deltaNanoseconds), a_update.tick};
             return invoke(found->second, [&]() { return found->second.behaviour->update(object, context); });
         }
@@ -240,7 +293,8 @@ struct ScriptModule::State final
             if (!found->second.hasStarted || found->second.hasStopped)
                 return {};
             found->second.hasStopped = true;
-            GameObject object(*a_api, a_entity);
+            clear_subscriptions(*found->second.behaviour);
+            GameObject object(*a_api, a_entity, &state.access);
             return invoke(found->second, [&]() { return found->second.behaviour->stop(object); });
         }
         catch (...)
@@ -268,6 +322,24 @@ struct ScriptModule::State final
         {
             return script_exception_status();
         }
+    }
+
+    /// @brief 無効化中は購読を保持しつつ通知を止める。再有効化後に同じ購読を使う
+    static CueScriptStatus CUE_SCRIPT_CALL set_active(void *a_context, CueScriptInstance a_token,
+                                                       std::uint32_t a_active) noexcept
+    {
+        if (!a_context || a_active > 1)
+        {
+            return invalid_status("Script.set_active.arguments");
+        }
+        auto &state = *static_cast<State *>(a_context);
+        const auto found = state.instances.find(a_token);
+        if (found == state.instances.end() || found->second.hasStopped || found->second.hasFailed)
+        {
+            return invalid_status("Script.set_active.instance");
+        }
+        found->second.behaviour->m_isActive = a_active != 0;
+        return {};
     }
 };
 
@@ -323,7 +395,8 @@ CueScriptStatus ScriptModule::get_api(std::uint32_t a_version, CueScriptModuleAp
              State::start,
              State::update,
              State::stop,
-             State::destroy};
+             State::destroy,
+             State::set_active};
     return {};
 }
 } // namespace cue

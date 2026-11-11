@@ -3,7 +3,7 @@
 #include <concepts>
 #include <cstdint>
 #include <memory>
-#include <utility>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -16,13 +16,14 @@ struct ScriptRegistration final
 {
     ScriptTypeDescriptor descriptor;
     std::unique_ptr<Behaviour> (*create)() = nullptr;
+    const std::type_info *type = nullptr;
 };
 
 /// @brief 派生型の Factory を登録する。C++ の所有権を Module の外へ移さない
 template <std::derived_from<Behaviour> T>
 [[nodiscard]] ScriptRegistration make_script_registration(ScriptTypeDescriptor a_descriptor)
 {
-    return {std::move(a_descriptor), []() -> std::unique_ptr<Behaviour> { return std::make_unique<T>(); }};
+    return {std::move(a_descriptor), []() -> std::unique_ptr<Behaviour> { return std::make_unique<T>(); }, &typeid(T)};
 }
 
 /// @brief Game Module 内の登録・Instance を所有し、Version 付き C ABI で操作する

@@ -73,6 +73,8 @@ class World final
     [[nodiscard]] Result<std::vector<EntityHandle>> entities() const;
     /// @brief 世代を検証して Entity の実行対象状態を返す。Component 自身の状態は含めない
     [[nodiscard]] Result<bool> is_active(EntityHandle a_entity) const;
+    /// @brief 生存中の Entity が属する Scene Instance の世代付き Handle を返す
+    [[nodiscard]] Result<SceneInstanceHandle> scene_instance(EntityHandle a_entity) const;
     /// @brief Owner Thread 上で World 識別・世代・生存を検証する
     [[nodiscard]] Result<bool> is_alive(EntityHandle a_entity) const;
     /// @brief Instance の World 識別・世代・生存を検証する
