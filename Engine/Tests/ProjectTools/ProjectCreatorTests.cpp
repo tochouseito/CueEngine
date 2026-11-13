@@ -56,7 +56,7 @@ int test_templates(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_tem
     CHECK(project.has_value() && project.try_value()->descriptor().formatVersion == 2);
     CHECK(project.try_value()->descriptor().engineVersion == "0.1.0-preview.1");
     CHECK(project.try_value()->descriptor().gameTarget == "CueGame_123Game");
-    for (const auto *name : {"CMakeLists.txt", "CMakePresets.json"})
+    for (const auto *name : {"CMakeLists.txt", "CMakePresets.json", ".gitignore"})
     {
         auto rootFile = files.read_all(path(descriptor.directory.join(name)));
         auto expected = files.read_all(path(a_templates.join(std::string("GameWorkspace/") + name)));
@@ -80,6 +80,8 @@ int test_templates(cue::tests::TemporaryFiles &a_fixture, const cue::Path &a_tem
     descriptor.projectTemplate = cue::ProjectTemplate::Empty3D;
     auto empty = cue::create_project(files, a_templates, descriptor, generated);
     CHECK(empty.has_value() && empty.try_value()->projectId != created.try_value()->projectId);
+    auto ignore = files.exists(path(descriptor.directory.join(".gitignore")));
+    CHECK(ignore.has_value() && *ignore.try_value());
     auto emptyProject = cue::Project::load(files, empty.try_value()->projectFile);
     CHECK(emptyProject.has_value());
     auto emptyScene = cue::Scene::load(files, *emptyProject.try_value()->startup_scene_file());

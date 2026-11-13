@@ -94,16 +94,35 @@ foreach(taskOutput IN ITEMS Runtime/SdkGameModule.dll Runtime/SdkGameModule.pdb 
     endif()
 endforeach()
 
-# 対応表への追加だけで再構成し、別 cpp の二つの登録が DLL / Static の双方に残ることを確認する
-file(WRITE "${taskGame}/Source/SecondScript.cpp" [=[
-#include <Script/ModuleEntry.h>
-class SecondScript final : public cue::Behaviour
+# 対応表への追加で再構成し、単独 cpp と Header を分けた Script の登録が DLL / Static の双方に残ることを確認する
+file(WRITE "${taskGame}/Source/SecondScript.h" [=[
+#pragma once
+
+#include <Foundation/Result.h>
+#include <Script/Behaviour.h>
+
+namespace game
 {
-public:
-    cue::Result<void> update(cue::GameObject &, const cue::ScriptUpdateContext &) override
-    { return cue::Result<void>::success(); }
+class SecondScript final : public ::cue::Behaviour
+{
+  public:
+    /// @brief 生成した Script の更新入口を提供する
+    [[nodiscard]] ::cue::Result<void> update() override;
 };
-CUE_DEFINE_SCRIPT(SecondScript, cue::make_script_registration<SecondScript>({"game.SecondScript", "Second Script", 1, {}}))
+} // namespace game
+]=])
+file(WRITE "${taskGame}/Source/SecondScript.cpp" [=[
+#include "SecondScript.h"
+
+#include <Script/ModuleEntry.h>
+
+::cue::Result<void> game::SecondScript::update()
+{
+    return ::cue::Result<void>::success();
+}
+
+CUE_DEFINE_SCRIPT(SecondScript,
+                  ::cue::make_script_registration<::game::SecondScript>({"game.SecondScript", "Second Script", 1, {}}))
 ]=])
 file(APPEND "${taskGame}/Source/ScriptSources.cueide"
     "script.game.SecondScript=SecondScript.cpp\nregistration.game.SecondScript=SecondScript\n")

@@ -3,6 +3,7 @@
 #include <Profiler/TimingTrace.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <new>
 #include <unordered_map>
@@ -24,6 +25,7 @@
 #include <ScriptPlay/PlayClient.h>
 
 #include "EditorGameSettings.h"
+#include "EditorGitHead.h"
 #include "EditorPlayServices.h"
 #include "EditorScriptController.h"
 #include "EditorWindowsServices.h"
@@ -225,6 +227,12 @@ struct EditorHost::EditingState final
     std::string scriptStatusText;
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     bool isGameBuildRequired = true;
+    std::optional<std::string> gitHead;
+    std::chrono::steady_clock::time_point nextGitCheck{};
+    bool isGitReloadPending = false;
+    std::optional<Path> sceneBeforeCheckout;
+    // 構成ごとに実際に Build した HEAD を保持し、同じ出力 Path に残る旧 DLL を拒否する
+    std::unordered_map<std::string, std::array<bool, 3>> staleBranchBuilds;
 };
 
 /// @brief 準備中の Project の住所を固定し、Controller の借用を commit の前後で維持する
@@ -235,6 +243,8 @@ struct EditorHost::PreparedProject final
     std::unique_ptr<EditorScriptController> scripts;
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     std::string settingsError;
+    std::optional<std::string> gitHead;
+    bool isGitReload = false;
 };
 
 /// @brief Editor の表示設定を保持し、下位基盤へ Editor 型を渡さない
@@ -474,6 +484,12 @@ Result<void> EditorHost::initialize()
             return Result<void>::failure(*controller.try_error());
         m_editing->scripts = controller.take_value();
     }
+    if (windows.has_value() && m_project)
+    {
+        auto observed = observe_git_head();
+        if (!observed.has_value())
+            m_editing->error = observed.try_error()->operation;
+    }
     if (windows.has_value() && m_editing && !m_editing->scripts)
         m_editing->scriptStatusText =
             m_ideUnavailableReason.empty() ? "IDE service is not configured" : m_ideUnavailableReason;
@@ -520,7 +536,7 @@ bool EditorHost::can_open_project() const noexcept
 {
     return std::this_thread::get_id() == m_ownerId && !m_isClosed && !m_isInitializing && !m_isPreparingProject &&
            m_hasInitializeAttempt && m_editing && m_windows.file_system() && !m_pendingProject &&
-           !m_editing->pendingChange && !has_active_project_operations();
+           !m_editing->pendingChange && !m_editing->isGitReloadPending && !has_active_project_operations();
 }
 
 bool EditorHost::has_pending_project_confirmation() const noexcept
@@ -535,11 +551,24 @@ Result<void> EditorHost::request_open_project(const Path &a_projectFile)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.project.owner"});
     if (!can_open_project())
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.project.busy"});
+    return prepare_project_change(a_projectFile, false);
+}
+
+Result<void> EditorHost::prepare_project_change(const Path &a_projectFile, bool a_isGitReload)
+{
     ScopedFlag preparing(m_isPreparingProject);
     try
     {
+        auto &files = *m_windows.file_system();
+        auto absolute = files.absolute_path(a_projectFile);
+        if (!absolute.has_value())
+            return Result<void>::failure(*absolute.try_error());
+        auto gitHead = read_editor_git_head(files, absolute.try_value()->parent());
+        if ((!gitHead.has_value() && gitHead.try_error()->operation == "EditorGit.index_locked") ||
+            (a_isGitReload && (!gitHead.has_value() || *gitHead.try_value() != m_editing->gitHead)))
+            return Result<void>::failure({ErrorCategory::InvalidState, "EditorGit.checkout_in_progress"});
         // 候補の設定と Scene を検証する間は旧 Project / World / Undo を変更しない
-        auto project = Project::load(*m_windows.file_system(), a_projectFile);
+        auto project = Project::load(files, *absolute.try_value());
         if (!project.has_value())
             return Result<void>::failure(*project.try_error());
         if (project.try_value()->descriptor().engineVersion &&
@@ -551,7 +580,7 @@ Result<void> EditorHost::request_open_project(const Path &a_projectFile)
         config.contentRoot = project.try_value()->content_directory();
         if (const auto *file = project.try_value()->startup_scene_file())
         {
-            auto loaded = Scene::load(*m_windows.file_system(), *file);
+            auto loaded = Scene::load(files, *file);
             if (!loaded.has_value())
                 return Result<void>::failure(*loaded.try_error());
             scene = loaded.take_value();
@@ -560,10 +589,23 @@ Result<void> EditorHost::request_open_project(const Path &a_projectFile)
         auto application = EditorApplication::create(std::move(scene), std::move(config));
         if (!application.has_value())
             return Result<void>::failure(*application.try_error());
+        if (a_isGitReload && m_editing->sceneBeforeCheckout)
+        {
+            // Scene の削除や Content Root 変更では、先に検証した起動 Scene を使う
+            auto opened = (*application.try_value())->open_scene(files, *m_editing->sceneBeforeCheckout);
+            if (!opened.has_value() && opened.try_error()->operation != "Editor.scene_file.missing" &&
+                opened.try_error()->operation != "Editor.scene_file.outside_content")
+            {
+                return opened;
+            }
+        }
         auto prepared = std::make_unique<PreparedProject>();
+        prepared->isGitReload = a_isGitReload;
+        if (gitHead.has_value())
+            prepared->gitHead = gitHead.take_value();
         prepared->project = std::make_unique<Project>(project.take_value());
         prepared->application = application.take_value();
-        auto savedConfiguration = load_editor_game_configuration(*m_windows.file_system(), *prepared->project);
+        auto savedConfiguration = load_editor_game_configuration(files, *prepared->project);
         if (savedConfiguration.has_value())
             prepared->gameConfiguration = *savedConfiguration.try_value();
         else
@@ -572,6 +614,18 @@ Result<void> EditorHost::request_open_project(const Path &a_projectFile)
         if (!controller.has_value())
             return Result<void>::failure(*controller.try_error());
         prepared->scripts = controller.take_value();
+        if (prepared->gitHead)
+        {
+            auto latest = read_editor_git_head(files, prepared->project->root());
+            if (!latest.has_value() || *latest.try_value() != prepared->gitHead)
+                return Result<void>::failure({ErrorCategory::InvalidState, "EditorGit.checkout_in_progress"});
+        }
+        if (a_isGitReload)
+        {
+            m_pendingProject = std::move(prepared);
+            m_isProjectChangeConfirmed = true;
+            return Result<void>::success();
+        }
         // 未保存確認は既存の ImGui Modal を使い、応答まで候補を所有する
         m_pendingProject = std::move(prepared);
         auto confirmed = begin_document_change(DocumentChangeKind::OpenProject);
@@ -633,11 +687,13 @@ Result<std::unique_ptr<EditorScriptController>> EditorHost::create_script_contro
         callbacks.play = [this]() { return m_editing ? m_editing->play.get() : nullptr; };
         callbacks.reload = [this]() -> Result<void>
         {
+            record_git_script_build();
             auto prepared = prepare_play();
             return prepared.has_value() ? m_editing->play->describe() : std::move(prepared);
         };
         callbacks.startDebug = [this](const Scene &a_scene) -> Result<void>
         {
+            record_git_script_build();
             auto prepared = prepare_play();
             if (!prepared.has_value())
                 return prepared;
@@ -673,6 +729,18 @@ Result<void> EditorHost::apply_project_change()
         m_pendingProject.reset();
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.project.busy"});
     }
+    if (m_pendingProject->gitHead)
+    {
+        // 確認待ち中に別ブランチへ移った候補を公開しない
+        auto head = read_editor_git_head(*m_windows.file_system(), m_pendingProject->project->root());
+        if (!head.has_value() || *head.try_value() != m_pendingProject->gitHead)
+        {
+            if (m_pendingProject->isGitReload)
+                m_editing->isGitReloadPending = true;
+            m_pendingProject.reset();
+            return Result<void>::failure({ErrorCategory::InvalidState, "EditorGit.checkout_in_progress"});
+        }
+    }
     if (m_gameBuildService)
     {
         auto reset = m_gameBuildService->reset_project();
@@ -692,6 +760,9 @@ Result<void> EditorHost::apply_project_change()
     editing.sceneViewCamera.reset();
     m_playExecutable.reset();
     m_scriptModule.reset();
+    const bool isGitReload = m_pendingProject->isGitReload;
+    editing.gitHead = std::move(m_pendingProject->gitHead);
+    editing.sceneBeforeCheckout.reset();
     m_project = std::move(m_pendingProject->project);
     editing.application = std::move(m_pendingProject->application);
     editing.scripts = std::move(m_pendingProject->scripts);
@@ -703,6 +774,8 @@ Result<void> EditorHost::apply_project_change()
     editing.actions.clear();
     editing.error = std::move(settingsError);
     editing.notice.clear();
+    if (isGitReload)
+        editing.notice = "Project reloaded after Git checkout. Unsaved edits were discarded.";
     editing.buildStatusText.clear();
     editing.scriptStatusText.clear();
     auto target = current_native_game_build_target();
@@ -716,7 +789,7 @@ Result<void> EditorHost::apply_project_change()
     if (!title.has_value())
         editing.error = title.try_error()->operation;
     // 起動時と同じ検証経路で新 Project の型情報を取得する。未 Build でも編集は継続する
-    if (has_play_configuration())
+    if (has_play_configuration() && !needs_git_script_build())
     {
         auto prepared = prepare_play();
         if (prepared.has_value())
@@ -727,11 +800,97 @@ Result<void> EditorHost::apply_project_change()
     return Result<void>::success();
 }
 
+Result<void> EditorHost::observe_git_head()
+{
+    if (!m_project || !m_editing || !m_windows.file_system())
+        return Result<void>::success();
+    auto head = read_editor_git_head(*m_windows.file_system(), m_project->root());
+    if (!head.has_value())
+        return Result<void>::failure(*head.try_error());
+    auto &editing = *m_editing;
+    if (*head.try_value() && editing.gitHead && *head.try_value() != editing.gitHead)
+    {
+        editing.isGitReloadPending = true;
+        editing.staleBranchBuilds[m_project->file().utf8()].fill(true);
+    }
+    // Git 管理の開始時は現在のブランチを初回の比較基準にする
+    if (*head.try_value())
+        editing.gitHead = head.take_value();
+    return Result<void>::success();
+}
+
+void EditorHost::poll_git_reload()
+{
+    if (!m_editing || !m_project || m_isClosed)
+        return;
+    auto &editing = *m_editing;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < editing.nextGitCheck)
+        return;
+    editing.nextGitCheck = now + std::chrono::milliseconds(250);
+    auto observed = observe_git_head();
+    if (!observed.has_value() || !editing.isGitReloadPending)
+        return;
+    // 切替先の読込に失敗しても、切替元の編集を保存可能な状態へ戻さない
+    if (editing.application)
+    {
+        if (const auto *file = editing.application->document().file())
+            editing.sceneBeforeCheckout = *file;
+        editing.application.reset();
+        editing.pendingChange.reset();
+        m_pendingProject.reset();
+        m_isProjectChangeConfirmed = false;
+        editing.actions.clear();
+        editing.ui->reset();
+        editing.error.clear();
+        editing.notice = "Git checkout detected. Reloading project...";
+        auto title = set_editor_project_title(*editing.window, {});
+        if (!title.has_value())
+            editing.error = title.try_error()->operation;
+        if (editing.scripts && editing.scripts->status().isBusy)
+        {
+            auto cancelled = editing.scripts->cancel();
+            if (!cancelled.has_value())
+                editing.error = cancelled.try_error()->operation;
+        }
+        auto stopped = stop_play();
+        if (!stopped.has_value())
+            editing.error = stopped.try_error()->operation;
+        if (m_gameBuildService &&
+            (m_gameBuildService->status().state == GameBuildState::Configuring ||
+             m_gameBuildService->status().state == GameBuildState::Building))
+        {
+            auto cancelled = m_gameBuildService->cancel();
+            if (!cancelled.has_value())
+                editing.error = cancelled.try_error()->operation;
+        }
+    }
+    if (has_active_project_operations())
+    {
+        if (m_gameBuildService && m_gameBuildService->status().isApplicationRunning)
+            editing.notice = "Close the running game to finish reloading the project.";
+        return;
+    }
+    auto prepared = prepare_project_change(m_project->file(), true);
+    if (!prepared.has_value() && prepared.try_error()->operation == "EditorGit.checkout_in_progress")
+        return;
+    editing.isGitReloadPending = false;
+    if (!prepared.has_value())
+    {
+        editing.notice.clear();
+        const auto &operation = prepared.try_error()->operation;
+        if (operation == "EditorHost.project_engine_version")
+            editing.error = "Engine version changed. Open this project from CueHub.";
+        else
+            editing.error = "Could not reload project after Git checkout. " + operation;
+    }
+}
+
 const Scene *EditorHost::scene() const noexcept
 {
     if (std::this_thread::get_id() != m_ownerId)
         return nullptr;
-    if (m_enableProjectOpening && !m_project)
+    if ((m_enableProjectOpening && !m_project) || (m_editing && !m_editing->application))
         return nullptr;
     return m_editing && m_editing->application ? &m_editing->application->document().scene()
                                                : (m_scene ? &*m_scene : nullptr);
@@ -763,6 +922,7 @@ Result<bool> EditorHost::step()
         return Result<bool>::failure({ErrorCategory::InvalidState, "EditorHost.step"});
     }
     ScopedFlag stepping(m_isStepping);
+    poll_git_reload();
     // Render が止まる最小化中も Pipe を排出し、外部 Build を描画 Frame に依存させない
     poll_game_build();
     poll_play();
@@ -978,7 +1138,7 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             if (m_editing->scripts && m_editing->scripts->status().isBusy)
                 context.noticeText = m_editing->scriptStatusText;
             context.isSceneViewEnabled = m_hasSceneView;
-            context.isProjectOpen = !m_enableProjectOpening || static_cast<bool>(m_project);
+            context.isProjectOpen = m_editing->application && (!m_enableProjectOpening || m_project);
             context.canOpenProject = can_open_project();
             context.isSceneViewEnabled = context.isSceneViewEnabled && context.isProjectOpen;
             context.isUnsavedConfirmationRequested = m_editing->pendingChange.has_value();
@@ -993,7 +1153,7 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.build.statusText = m_editing->buildStatusText;
             if (m_project && m_project->startup_scene_file())
                 context.build.startupScene = m_project->startup_scene_file()->utf8();
-            context.canPlay = has_play_configuration();
+            context.canPlay = has_play_configuration() && !needs_git_script_build();
             if (m_editing->play)
             {
                 const auto state = m_editing->play->state();
@@ -1160,6 +1320,12 @@ Result<bool> EditorHost::save_editor_scene(bool a_chooseFile)
     }
     if (!destination)
         return Result<bool>::success(false);
+    // 保存 Dialog の表示中にも外部で Checkout できるため、公開の直前に HEAD を確認する
+    auto gitHead = observe_git_head();
+    if (!gitHead.has_value() && (editing.gitHead || gitHead.try_error()->operation == "EditorGit.index_locked"))
+        return Result<bool>::failure(*gitHead.try_error());
+    if (editing.isGitReloadPending)
+        return Result<bool>::failure({ErrorCategory::InvalidState, "EditorGit.reload_pending"});
     auto saved = app.save_scene(*m_windows.file_system(), *destination);
     if (!saved.has_value())
         return Result<bool>::failure(*saved.try_error());
@@ -1247,7 +1413,8 @@ Result<void> EditorHost::open_ide()
 {
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.ide.owner"});
-    if (m_isClosed || !m_editing || !m_editing->scripts || m_editing->pendingChange || m_pendingProject)
+    if (m_isClosed || !m_editing || !m_editing->application || !m_editing->scripts || m_editing->isGitReloadPending ||
+        m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.ide.unavailable"});
     return m_editing->scripts->open_folder();
 }
@@ -1256,7 +1423,8 @@ Result<void> EditorHost::edit_script(std::string_view a_typeId)
 {
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.ide.owner"});
-    if (m_isClosed || !m_editing || !m_editing->scripts || m_editing->pendingChange || m_pendingProject)
+    if (m_isClosed || !m_editing || !m_editing->application || !m_editing->scripts || m_editing->isGitReloadPending ||
+        m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.ide.unavailable"});
     return m_editing->scripts->open_script(a_typeId);
 }
@@ -1265,7 +1433,8 @@ Result<void> EditorHost::build_scripts()
 {
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.ide.owner"});
-    if (m_isClosed || !m_editing || !m_editing->scripts || m_editing->pendingChange || m_pendingProject)
+    if (m_isClosed || !m_editing || !m_editing->application || !m_editing->scripts || m_editing->isGitReloadPending ||
+        m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.ide.unavailable"});
     return m_editing->scripts->build_scripts();
 }
@@ -1274,7 +1443,8 @@ Result<void> EditorHost::debug_play()
 {
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.ide.owner"});
-    if (m_isClosed || !m_editing || !m_editing->scripts || m_editing->pendingChange || m_pendingProject)
+    if (m_isClosed || !m_editing || !m_editing->application || !m_editing->scripts || m_editing->isGitReloadPending ||
+        m_editing->pendingChange || m_pendingProject)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.ide.unavailable"});
     auto &app = *m_editing->application;
     if (app.document().is_transform_editing())
@@ -1319,7 +1489,8 @@ Result<void> EditorHost::request_game_build(GameBuildTarget a_target)
 {
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.build.owner"});
-    if (!m_editing || m_isClosed || !m_windows.file_system() || !m_project || !m_project->descriptor().gameTarget ||
+    if (!m_editing || !m_editing->application || m_editing->isGitReloadPending || m_isClosed ||
+        !m_windows.file_system() || !m_project || !m_project->descriptor().gameTarget ||
         !m_project->startup_scene_file() || !m_gameBuildService)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.unavailable"});
     if (m_editing->pendingChange || m_pendingProject)
@@ -1405,7 +1576,7 @@ Result<void> EditorHost::run_game()
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.build.owner"});
     if (!m_editing || !m_editing->application || !m_project || m_isClosed || !m_gameBuildService ||
-        m_editing->pendingChange || m_pendingProject)
+        m_editing->pendingChange || m_pendingProject || m_editing->isGitReloadPending)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.build.unavailable"});
     const auto &status = m_gameBuildService->status();
     if (status.state != GameBuildState::Succeeded || status.purpose != GameBuildPurpose::App ||
@@ -1430,6 +1601,7 @@ void EditorHost::poll_game_build()
     if (!polled.has_value())
         m_editing->error = polled.try_error()->operation;
     const auto &status = m_gameBuildService->status();
+    const bool isConfigureOnly = status.purpose == GameBuildPurpose::IdeProject;
     const char *label = "Ready";
     switch (status.state)
     {
@@ -1442,13 +1614,13 @@ void EditorHost::poll_game_build()
         label = "Building and packaging";
         break;
     case GameBuildState::Succeeded:
-        label = "Build succeeded";
+        label = isConfigureOnly ? "CMake configuration succeeded" : "Build succeeded";
         break;
     case GameBuildState::Failed:
-        label = "Build failed";
+        label = isConfigureOnly ? "CMake configuration failed" : "Build failed";
         break;
     case GameBuildState::Cancelled:
-        label = "Build cancelled";
+        label = isConfigureOnly ? "CMake configuration cancelled" : "Build cancelled";
         break;
     }
     m_editing->buildStatusText = label;
@@ -1460,10 +1632,32 @@ void EditorHost::poll_game_build()
 
 bool EditorHost::has_play_configuration() const noexcept
 {
-    if (m_pendingProject)
+    if (m_pendingProject || !m_editing || !m_editing->application || m_editing->isGitReloadPending)
         return false;
     return m_playExecutable.has_value() || m_scriptModule.has_value() ||
            (m_project && m_project->descriptor().gameTarget.has_value());
+}
+
+bool EditorHost::needs_git_script_build() const noexcept
+{
+    if (!m_editing || !m_project)
+        return false;
+    const auto found = m_editing->staleBranchBuilds.find(m_project->file().utf8());
+    return found != m_editing->staleBranchBuilds.end() &&
+           found->second[static_cast<std::size_t>(m_editing->gameConfiguration)];
+}
+
+void EditorHost::record_git_script_build() noexcept
+{
+    if (!m_project || !m_editing)
+        return;
+    const auto found = m_editing->staleBranchBuilds.find(m_project->file().utf8());
+    if (found != m_editing->staleBranchBuilds.end())
+    {
+        found->second[static_cast<std::size_t>(m_editing->gameConfiguration)] = false;
+        if (std::none_of(found->second.begin(), found->second.end(), [](bool a_stale) { return a_stale; }))
+            m_editing->staleBranchBuilds.erase(found);
+    }
 }
 
 GameBuildConfiguration EditorHost::game_configuration() const noexcept
@@ -1474,7 +1668,7 @@ GameBuildConfiguration EditorHost::game_configuration() const noexcept
 
 bool EditorHost::can_select_game_configuration() const noexcept
 {
-    return can_open_project() && m_project && m_project->descriptor().gameTarget.has_value();
+    return can_open_project() && m_editing->application && m_project && m_project->descriptor().gameTarget.has_value();
 }
 
 Result<void> EditorHost::request_script_creation(std::string_view a_name)
@@ -1483,8 +1677,8 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.create_script.owner"});
     if (!can_select_game_configuration() || !m_windows.file_system())
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.create_script.busy"});
-    // 通知用の所有値も公開前に確保し、作成成功後は失敗する外部操作を追加しない
-    auto notice = "Created Source/" + std::string(a_name) + ".cpp - Build Scripts required";
+    // 作成の確定と構成生成を分け、生成失敗後も保存した Source から再試行できるようにする
+    auto notice = "Created Source/" + std::string(a_name) + ".h and .cpp - Build Scripts required";
     auto created = create_script_source(*m_windows.file_system(), *m_project, a_name);
     if (!created.has_value())
         return Result<void>::failure(*created.try_error());
@@ -1496,6 +1690,20 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
     m_editing->isGameBuildRequired = true;
     m_editing->error.clear();
     m_editing->notice = std::move(notice);
+    if (!m_gameBuildService)
+    {
+        m_editing->error = "Script saved. CMake configuration unavailable";
+        return Result<void>::success();
+    }
+    auto target = current_native_game_build_target();
+    if (target.has_value())
+        target.try_value()->configuration = m_editing->gameConfiguration;
+    // Script 用 Workspace を再生成し、Inspector へ型を反映する DLL Build は既存操作へ委ねる
+    auto configured = target.has_value()
+                          ? m_gameBuildService->start(*m_project, *target.try_value(), GameBuildPurpose::IdeProject)
+                          : Result<void>::failure(*target.try_error());
+    if (!configured.has_value())
+        m_editing->error = "Script saved. CMake configuration could not start: " + configured.try_error()->operation;
     return Result<void>::success();
 }
 
@@ -1533,7 +1741,7 @@ Result<void> EditorHost::start_play()
     if (std::this_thread::get_id() != m_ownerId)
         return Result<void>::failure({ErrorCategory::WrongThread, "EditorHost.play.owner_thread"});
     if (m_isClosed || m_isInitializing || !m_editing || !m_editing->window || !m_editing->application ||
-        m_editing->pendingChange || m_pendingProject ||
+        m_editing->pendingChange || m_pendingProject || m_editing->isGitReloadPending ||
         (m_editing->scripts && m_editing->scripts->status().isBusy))
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.unavailable"});
     if (m_gameBuildService)
@@ -1590,6 +1798,8 @@ Result<void> EditorHost::prepare_play()
 {
     if (!m_editing)
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.document"});
+    if (!m_editing->application || m_editing->isGitReloadPending || needs_git_script_build())
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorGit.build_scripts_required"});
     if (m_editing->play)
     {
         const auto state = m_editing->play->state();
@@ -1702,7 +1912,7 @@ Result<void> EditorHost::apply_editor_actions()
                                     action.kind == EditorActionKind::ConfirmDiscardChanges ||
                                     action.kind == EditorActionKind::CancelDocumentChange;
         // 同じ Frame で先に採用した切替要求を、後続の編集要求で変更しない
-        if ((editing.pendingChange || m_pendingProject) && !isConfirmation)
+        if (editing.isGitReloadPending || ((editing.pendingChange || m_pendingProject) && !isConfirmation))
             continue;
         // 次の操作へ移ったら古い保存通知を消し、現在の Dirty 表示へ戻す
         editing.notice.clear();

@@ -215,6 +215,7 @@ void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_sta
                                                   ImGuiInputTextFlags_EnterReturnsTrue);
         const std::string_view name(a_state.scriptName.data());
         const bool isValid = is_script_name_input(name);
+        ImGui::Text("Source/%s.h", a_state.scriptName.data());
         ImGui::Text("Source/%s.cpp", a_state.scriptName.data());
         if (!name.empty() && !isValid)
             ImGui::TextUnformatted("Use ASCII letters, digits and underscores; start with a letter.");

@@ -12,8 +12,9 @@
 
 ## ゲーム側の登録入口
 
-Editor の `Script > New Script...` が `Source/<Name>.cpp` と v2 の対応表を作る。
-各 cpp は `Script/ModuleEntry.h` の `CUE_DEFINE_SCRIPT(...)` で、自分の型登録だけを定義する。
+Editor の `Script > New Script...` が `Source/<Name>.h` と `Source/<Name>.cpp` を作り、v2 の対応表を更新する。
+Header にクラス定義、cpp に処理の実装と `Script/ModuleEntry.h` の `CUE_DEFINE_SCRIPT(...)` を置く。
+cpp 単体で定義した Script も、同じ対応表からビルドできる。
 ゲーム側の手書き `Game.cpp` は不要とし、CMake が一つの接続入口を Binary Tree へ自動生成する。
 
 ```cpp

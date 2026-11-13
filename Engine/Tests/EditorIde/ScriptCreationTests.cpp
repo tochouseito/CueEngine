@@ -204,8 +204,13 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     CHECK(cue::is_valid_script_name("RotateCube2"));
     auto created = cue::create_script_source(probe, project, "RotateCube");
     CHECK(created.has_value() && created.try_value()->utf8() == joined(source, "RotateCube.cpp").utf8());
+    const auto header = read(files, joined(source, "RotateCube.h"));
     const auto generated = read(files, *created.try_value());
-    CHECK(generated.find("class RotateCube final : public ::cue::Behaviour") != std::string::npos);
+    CHECK(header.find("class RotateCube final : public ::cue::Behaviour") != std::string::npos);
+    CHECK(header.find("update() override;") != std::string::npos);
+    CHECK(header.find("CUE_DEFINE_SCRIPT") == std::string::npos);
+    CHECK(generated.starts_with("#include \"RotateCube.h\"\n"));
+    CHECK(generated.find("RotateCube::update()") != std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT(RotateCube,") != std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT_MODULE") == std::string::npos);
     auto resolved = cue::resolve_script_source(files, project, "game.RotateCube");
@@ -216,12 +221,18 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     CHECK(namespaceName.has_value());
     const auto namespaceSource = read(files, *namespaceName.try_value());
     CHECK(namespaceSource.find("namespace game\n") != std::string::npos);
-    CHECK(namespaceSource.find("class cue final : public ::cue::Behaviour") != std::string::npos);
+    CHECK(read(files, joined(source, "cue.h")).find("class cue final : public ::cue::Behaviour") != std::string::npos);
     CHECK(namespaceSource.find("::cue::make_script_registration<::game::cue>") != std::string::npos);
     auto before = read(files, map);
     CHECK(!cue::create_script_source(probe, project, "rotatecube").has_value());
     CHECK(write(files, joined(source, "Manual.CPP"), "// user source\n"));
     CHECK(!cue::create_script_source(probe, project, "Manual").has_value());
+    CHECK(file_exists(files, joined(source, "Manual.h")) == false);
+    const auto manualHeader = joined(source, "ExistingHeader.H");
+    CHECK(write(files, manualHeader, "// user header\n"));
+    CHECK(!cue::create_script_source(probe, project, "ExistingHeader").has_value());
+    CHECK(read(files, manualHeader) == "// user header\n");
+    CHECK(file_exists(files, joined(source, "ExistingHeader.cpp")) == false);
     CHECK(read(files, map) == before);
 
     // 二つの Editor が同時に対応表を上書きせず、OS の非共有 Handle で直列化する
@@ -237,10 +248,12 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     probe.failSave = true;
     CHECK(!cue::create_script_source(probe, project, "SaveFailed").has_value());
     CHECK(file_exists(files, joined(source, "SaveFailed.cpp")) == false && read(files, map) == before);
+    CHECK(file_exists(files, joined(source, "SaveFailed.h")) == false);
     probe.failSave = false;
     probe.failedFilename = "OpenFailed.cpp";
     CHECK(!cue::create_script_source(probe, project, "OpenFailed").has_value());
     CHECK(file_exists(files, joined(source, "OpenFailed.cpp")) == false);
+    CHECK(file_exists(files, joined(source, "OpenFailed.h")) == false);
     probe.failedFilename.clear();
 
     for (const auto *name : {"WriteFailed", "FlushFailed", "CloseFailed"})
@@ -251,6 +264,7 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
         probe.failClose = std::string_view(name) == "CloseFailed";
         CHECK(!cue::create_script_source(probe, project, name).has_value());
         CHECK(file_exists(files, joined(source, probe.probeFilename)) == false && read(files, map) == before);
+        CHECK(file_exists(files, joined(source, std::string(name) + ".h")) == false);
     }
     probe.probeFilename.clear();
     probe.failFlush = false;
@@ -277,6 +291,7 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     auto userChanged = cue::create_script_source(probe, project, "UserChanged");
     CHECK(!userChanged.has_value() && userChanged.try_error()->operation.find("cleanup:") != std::string::npos);
     CHECK(read(files, probe.changedSource) == "// user changed this file\n" && read(files, map) == before);
+    CHECK(file_exists(files, joined(source, "UserChanged.h")) == false);
     probe.changedSource = {};
     probe.failRemove = true;
     auto cleanupFailed = cue::create_script_source(probe, project, "CleanupFailed");

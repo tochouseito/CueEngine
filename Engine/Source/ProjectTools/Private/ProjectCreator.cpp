@@ -275,10 +275,12 @@ Result<ProjectCreation> create_project(IFileSystem &a_files, const Path &a_templ
         const auto scriptFile = a_desc.projectTemplate == ProjectTemplate::RotateCube ? "Source/RotateCube.cpp"
                                                                                       : "Source/EmptyBehaviour.cpp";
         for (const auto *relative : {"Source/CMakeLists.txt.in", scriptFile, "Source/ScriptSources.cueide",
-                                     "Content/Scenes/Main.cuescene.in", "CMakeLists.txt", "CMakePresets.json"})
+                                     "Content/Scenes/Main.cuescene.in", "CMakeLists.txt", "CMakePresets.json",
+                                     ".gitignore"})
         {
             const std::string_view relativeName(relative);
-            const bool isWorkspace = relativeName == "CMakeLists.txt" || relativeName == "CMakePresets.json";
+            const bool isWorkspace =
+                relativeName == "CMakeLists.txt" || relativeName == "CMakePresets.json" || relativeName == ".gitignore";
             auto source = isWorkspace ? a_templates.join("GameWorkspace/" + std::string(relativeName))
                                       : templateDirectory.try_value()->join(relative);
             if (!source.has_value())

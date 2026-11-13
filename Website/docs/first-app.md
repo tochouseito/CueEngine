@@ -4,6 +4,7 @@ sidebar_position: 2
 ---
 
 [CueHub と Engine のインストール](./install.md) が済んだら、空の Project に Cube と C++ Script を追加し、Cube が回るアプリを作ります。
+以下の手順は Engine `0.1.0-preview.9` 以降を対象にしています。
 
 ## Project を作る
 
@@ -14,29 +15,28 @@ sidebar_position: 2
 ## Editor で Cube を追加する
 
 1. Editor で起動シーン `Main` を開きます。**Objects → Add Cube** で Cube を追加します。
-2. **Script → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.cpp` と型登録が生成され、ビルド対象へ自動的に加わります。`Game.cpp` は不要です。
-3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` の先頭に `#include <chrono>` と `#include <Math/Quaternion.h>` を追加し、`RotateCube` の `update()` を下記の実装へ置き換えて保存します。
+2. **Script → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.h` にクラス定義、`Source/RotateCube.cpp` に実装と型登録が生成されます。
+3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` に `#include <chrono>`、`#include <Math/Quaternion.h>`、`#include <Math/Scalar.h>` を追加し、`namespace game` 内の `RotateCube::update()` を下記の実装へ置き換えて保存します。
 
 ```cpp
-[[nodiscard]] cue::Result<void> update(cue::GameObject &a_object,
-                                     const cue::ScriptUpdateContext &a_context) override
+::cue::Result<void> RotateCube::update()
 {
-    auto transform = a_object.transform();
-    if (!transform.has_value())
-        return cue::Result<void>::failure(*transform.try_error());
+    auto pose = transform.get();
+    if (!pose.has_value())
+        return ::cue::Result<void>::failure(*pose.try_error());
 
-    const auto seconds = std::chrono::duration<float>(a_context.deltaTime).count();
-    auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0},
-                                               cue::math::degrees_to_radians(90.0f) * seconds);
+    const auto seconds = std::chrono::duration<float>(delta_time()).count();
+    auto delta = ::cue::math::rotation_axis_angle(::cue::math::float3{0, 1, 0},
+                                                 ::cue::math::degrees_to_radians(90.0f) * seconds);
     if (!delta.has_value())
-        return cue::Result<void>::failure(*delta.try_error());
+        return ::cue::Result<void>::failure(*delta.try_error());
 
-    auto rotation = cue::math::normalize(*delta.try_value() * transform.try_value()->rotation);
+    auto rotation = ::cue::math::normalize(*delta.try_value() * pose.try_value()->rotation);
     if (!rotation.has_value())
-        return cue::Result<void>::failure(*rotation.try_error());
+        return ::cue::Result<void>::failure(*rotation.try_error());
 
-    transform.try_value()->rotation = *rotation.try_value();
-    return a_object.set_transform(*transform.try_value());
+    pose.try_value()->rotation = *rotation.try_value();
+    return transform.set(*pose.try_value());
 }
 ```
 

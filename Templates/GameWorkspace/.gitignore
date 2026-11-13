@@ -1,0 +1,9 @@
+# CueEngine が再生成するビルド成果物と中間ファイル
+/Build/
+/Intermediate/
+
+# PC 固有の SDK パスと Visual Studio の設定
+/CMakeUserPresets.json
+.vs/
+*.user
+*.suo

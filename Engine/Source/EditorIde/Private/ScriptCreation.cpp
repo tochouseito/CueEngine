@@ -187,17 +187,26 @@ Result<void> validate_catalog(IFileSystem &a_files, const Project &a_project, st
     return Result<void>::success();
 }
 
-/// @brief Class 本体と登録だけを生成し、共通 C ABI 入口は Build 時の自動生成へ任せる
-std::string make_source(std::string_view a_name)
+/// @brief 他の Script から型を参照できるように Behaviour の宣言を生成する
+std::string make_header(std::string_view a_name)
 {
     const std::string name(a_name);
-    return "#include <Script/ModuleEntry.h>\n\nnamespace game\n{\n"
+    return "#pragma once\n\n#include <Foundation/Result.h>\n#include <Script/Behaviour.h>\n\nnamespace game\n{\n"
            "/// @brief ゲームの更新処理を実装する Script\nclass " +
            name +
            " final : public ::cue::Behaviour\n{\n  public:\n"
            "    /// @brief 更新処理を World の Owner Thread で実行する\n"
-           "    [[nodiscard]] ::cue::Result<void> update() override\n"
-           "    {\n        return ::cue::Result<void>::success();\n    }\n};\n} // namespace game\n\n"
+           "    [[nodiscard]] ::cue::Result<void> update() override;\n};\n} // namespace game\n";
+}
+
+/// @brief 更新処理と型の登録を cpp に生成し、共通 C ABI 入口は Build 時に生成する
+std::string make_source(std::string_view a_name)
+{
+    const std::string name(a_name);
+    return "#include \"" + name + ".h\"\n\n#include <Script/ModuleEntry.h>\n\nnamespace game\n{\n"
+           "::cue::Result<void> " +
+           name +
+           "::update()\n{\n    return ::cue::Result<void>::success();\n}\n} // namespace game\n\n"
            "// この cpp の型だけを登録し、接続入口は Build が一つに集約する\n"
            "CUE_DEFINE_SCRIPT(" +
            name + ", ::cue::make_script_registration<::game::" + name + ">({\"game." + name + "\", \"" + name +
@@ -249,30 +258,39 @@ bool is_valid_script_name(std::string_view a_name) noexcept
 
 Result<Path> create_script_source(IFileSystem &a_files, const Project &a_project, std::string_view a_className)
 {
-    Path output;
-    std::string text;
-    std::size_t ownedBytes = 0;
-    bool ownsSource = false;
+    struct ScriptFile
+    {
+        Path path;
+        std::string text;
+        std::size_t ownedBytes = 0;
+        bool isCreated = false;
+    };
+    std::array<ScriptFile, 2> outputs;
+    auto &[header, source] = outputs;
     bool isPublished = false;
     std::unique_ptr<IFile> lock;
     // 新規作成した内容と一致する File だけを回収し、競合する利用者の変更を削除しない
     const auto fail = [&](Error a_error) -> Result<Path>
     {
-        if (ownsSource && !isPublished)
+        if (isPublished)
+            return Result<Path>::failure(std::move(a_error));
+        for (const auto &output : outputs)
         {
-            auto parent = validate_directory(a_files, output.parent());
-            auto info = a_files.stat(output);
+            if (!output.isCreated)
+                continue;
+            auto parent = validate_directory(a_files, output.path.parent());
+            auto info = a_files.stat(output.path);
             auto current = parent.has_value() && info.has_value() && *info.try_value() &&
                                    (**info.try_value()).type == FileType::Regular
-                               ? a_files.read_all(output, text.size())
+                               ? a_files.read_all(output.path, output.text.size())
                                : Result<std::vector<std::byte>>::failure(invalid("EditorIde.script_cleanup_kind"));
-            if (!current.has_value() || current.try_value()->size() != ownedBytes ||
+            if (!current.has_value() || current.try_value()->size() != output.ownedBytes ||
                 !std::equal(current.try_value()->begin(), current.try_value()->end(),
-                            reinterpret_cast<const std::byte *>(text.data())))
+                            reinterpret_cast<const std::byte *>(output.text.data())))
                 a_error.operation += ";cleanup:EditorIde.script_source_changed";
             else
             {
-                auto removed = a_files.remove(output);
+                auto removed = a_files.remove(output.path);
                 if (!removed.has_value())
                     a_error.operation += ";cleanup:" + removed.try_error()->operation;
             }
@@ -288,11 +306,14 @@ Result<Path> create_script_source(IFileSystem &a_files, const Project &a_project
             return fail(*sourceValid.try_error());
         auto catalogPath = a_project.source_directory().join("ScriptSources.cueide");
         auto cmakePath = a_project.source_directory().join("CMakeLists.txt");
-        auto outputPath = a_project.source_directory().join(std::string(a_className) + ".cpp");
+        auto headerPath = a_project.source_directory().join(std::string(a_className) + ".h");
+        auto sourcePath = a_project.source_directory().join(std::string(a_className) + ".cpp");
         auto lockPath = a_project.root().join("Intermediate/Editor/ScriptCreation.lock");
-        if (!catalogPath.has_value() || !cmakePath.has_value() || !outputPath.has_value() || !lockPath.has_value())
+        if (!catalogPath.has_value() || !cmakePath.has_value() || !headerPath.has_value() || !sourcePath.has_value() ||
+            !lockPath.has_value())
             return fail(invalid("EditorIde.script_path"));
-        output = outputPath.take_value();
+        header.path = headerPath.take_value();
+        source.path = sourcePath.take_value();
         auto lockParent = validate_directory(a_files, lockPath.try_value()->parent(), true);
         if (!lockParent.has_value())
             return fail(*lockParent.try_error());
@@ -327,13 +348,19 @@ Result<Path> create_script_source(IFileSystem &a_files, const Project &a_project
         auto children = a_files.list_directory(a_project.source_directory());
         if (!children.has_value())
             return fail(*children.try_error());
-        for (const auto &child : *children.try_value())
-            if (folded(child.filename()) == folded(output.filename()))
-                return fail(invalid("EditorIde.script_exists"));
-        auto info = a_files.stat(output);
-        if (!info.has_value() || *info.try_value())
-            return fail(info.has_value() ? invalid("EditorIde.script_exists") : *info.try_error());
-        text = make_source(a_className);
+        // 両方の出力先を先に検証し、片方だけが既に存在するときも上書きしない
+        for (const auto &output : outputs)
+        {
+            const auto name = folded(output.path.filename());
+            for (const auto &child : *children.try_value())
+                if (folded(child.filename()) == name)
+                    return fail(invalid("EditorIde.script_exists"));
+            auto info = a_files.stat(output.path);
+            if (!info.has_value() || *info.try_value())
+                return fail(info.has_value() ? invalid("EditorIde.script_exists") : *info.try_error());
+        }
+        header.text = make_header(a_className);
+        source.text = make_source(a_className);
         auto updated = *catalog.try_value();
         if (!updated.empty() && !updated.ends_with('\n'))
             updated += '\n';
@@ -341,35 +368,40 @@ Result<Path> create_script_source(IFileSystem &a_files, const Project &a_project
                    ".cpp\nregistration.game." + std::string(a_className) + '=' + std::string(a_className) + '\n';
         if (updated.size() > k_maxCatalogBytes)
             return fail(invalid("EditorIde.script_catalog_size"));
-        auto created = a_files.open(output, {FileAccess::Write, FileCreation::CreateNew, false, false, false});
-        if (!created.has_value())
-            return fail(*created.try_error());
-        auto file = created.take_value();
-        ownsSource = true;
-        const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
-        std::optional<Error> writeError;
-        while (ownedBytes < bytes.size())
+        // Header と cpp の両方が書き込み済みになってから型の対応表を公開する
+        for (auto &output : outputs)
         {
-            auto written = file->write(bytes.subspan(ownedBytes));
-            if (!written.has_value() || *written.try_value() == 0 || *written.try_value() > bytes.size() - ownedBytes)
+            auto created = a_files.open(output.path, {FileAccess::Write, FileCreation::CreateNew, false, false, false});
+            if (!created.has_value())
+                return fail(*created.try_error());
+            auto file = created.take_value();
+            output.isCreated = true;
+            const auto bytes = std::as_bytes(std::span(output.text.data(), output.text.size()));
+            std::optional<Error> writeError;
+            while (output.ownedBytes < bytes.size())
             {
-                writeError = written.has_value() ? invalid("EditorIde.script_write") : *written.try_error();
-                break;
+                auto written = file->write(bytes.subspan(output.ownedBytes));
+                if (!written.has_value() || *written.try_value() == 0 ||
+                    *written.try_value() > bytes.size() - output.ownedBytes)
+                {
+                    writeError = written.has_value() ? invalid("EditorIde.script_write") : *written.try_error();
+                    break;
+                }
+                output.ownedBytes += *written.try_value();
             }
-            ownedBytes += *written.try_value();
+            if (!writeError)
+            {
+                auto flushed = file->flush();
+                if (!flushed.has_value())
+                    writeError = *flushed.try_error();
+            }
+            auto closed = file->close();
+            file.reset();
+            if (!writeError && !closed.has_value())
+                writeError = *closed.try_error();
+            if (writeError)
+                return fail(*writeError);
         }
-        if (!writeError)
-        {
-            auto flushed = file->flush();
-            if (!flushed.has_value())
-                writeError = *flushed.try_error();
-        }
-        auto closed = file->close();
-        file.reset();
-        if (!writeError && !closed.has_value())
-            writeError = *closed.try_error();
-        if (writeError)
-            return fail(*writeError);
         // 排他を使わない外部 Editor の変更も、公開直前に検出して保持する
         auto latest = read_text(a_files, *catalogPath.try_value());
         if (!latest.has_value() || *latest.try_value() != *catalog.try_value())
@@ -379,7 +411,7 @@ Result<Path> create_script_source(IFileSystem &a_files, const Project &a_project
         if (!saved.has_value())
             return fail(*saved.try_error());
         isPublished = true;
-        return Result<Path>::success(std::move(output));
+        return Result<Path>::success(std::move(source.path));
     }
     catch (...)
     {

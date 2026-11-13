@@ -139,8 +139,8 @@ class EditorHost final
     [[nodiscard]] GameBuildConfiguration game_configuration() const noexcept;
     /// @brief 操作と Project の状態から構成変更の可否を返す。File I/O は行わない
     [[nodiscard]] bool can_select_game_configuration() const noexcept;
-    /// @brief 名前を検証して Source と登録表を公開する。Owner 専用、Scene / Undo は変更しない
-    /// Play / Build / IDE / 確認中は拒否する。失敗時は既存 Source と登録表を保持する
+    /// @brief 名前を検証して Source と登録表を公開し、Workspace の非同期構成生成を開始する
+    /// Owner 専用。Play / Build / IDE / 確認中は拒否する。公開後の構成生成失敗は画面に表示し、Source を保持する
     [[nodiscard]] Result<void> request_script_creation(std::string_view a_name);
     /// @brief 所有 Play の停止を予約する。完了まで step で回収し、無応答の子だけを期限後に終了する
     [[nodiscard]] Result<void> stop_play();
@@ -250,6 +250,10 @@ class EditorHost final
     [[nodiscard]] Result<void> prepare_play();
     /// @brief 未 Build の Project でも再試行操作を表示できるよう、接続設定の有無だけを返す
     [[nodiscard]] bool has_play_configuration() const noexcept;
+    /// @brief 選択中の構成で切替先の Game DLL が作られているか確認する
+    [[nodiscard]] bool needs_git_script_build() const noexcept;
+    /// @brief 現在の構成の DLL を Build したことを記録する。Script Controller の成功通知から呼ぶ
+    void record_git_script_build() noexcept;
     /// @brief 確認後に再開する Document 操作を識別する
     enum class DocumentChangeKind
     {
@@ -267,6 +271,12 @@ class EditorHost final
     [[nodiscard]] Result<bool> save_editor_scene(bool a_chooseFile);
     /// @brief 選択・検証済みの候補を UI / Action の借用がない step 境界で公開する
     [[nodiscard]] Result<void> apply_project_change();
+    /// @brief Git HEAD の切替を記録する。Document の破棄は step へ遅延する
+    [[nodiscard]] Result<void> observe_git_head();
+    /// @brief 古い編集を破棄し、所有 Process の停止後に切替先の Project を公開する
+    void poll_git_reload();
+    /// @brief 保存確認の有無を切り替え、同じ Project 読込経路を利用する
+    [[nodiscard]] Result<void> prepare_project_change(const Path &a_projectFile, bool a_isGitReload);
     /// @brief World と独立した Build / Play / IDE の稼働だけを Owner Thread で確認する
     [[nodiscard]] bool has_active_project_operations() const noexcept;
     /// @brief Project の安定した所有先を借用し、まだ要求を実行しない Script 接続を作る

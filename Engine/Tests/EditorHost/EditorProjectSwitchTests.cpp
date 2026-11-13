@@ -1,5 +1,6 @@
 #include <EditorHost/EditorHost.h>
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <span>
@@ -72,6 +73,20 @@ class BuildFixture final : public cue::IGameBuildService
     {
         return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.unexpected_build"});
     }
+    /// @brief Script 作成後の構成生成要求を記録する
+    cue::Result<void> start(const cue::Project &a_project, const cue::GameBuildTarget &a_target,
+                            cue::GameBuildPurpose a_purpose) override
+    {
+        ++configureRequests;
+        if (a_purpose != cue::GameBuildPurpose::IdeProject || failConfigure)
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Test.configure_rejected"});
+        current = {};
+        current.state = cue::GameBuildState::Configuring;
+        current.target = a_target;
+        current.purpose = a_purpose;
+        current.workspaceDirectory = a_project.root();
+        return cue::Result<void>::success();
+    }
     /// @brief Host が状態を観測しても Test の注入値を進めない
     cue::Result<void> poll() override
     {
@@ -112,7 +127,9 @@ class BuildFixture final : public cue::IGameBuildService
     cue::GameBuildStatus current;
     unsigned resets = 0;
     unsigned launches = 0;
+    unsigned configureRequests = 0;
     bool failReset = false;
+    bool failConfigure = false;
 };
 
 /// @brief Project と Scene を独立 Directory へ作り、破損・版不一致も入力だけで再現する
@@ -238,10 +255,25 @@ int test_switching(bool a_useWorkers)
     CHECK(write(files, joined(firstRoot, "Source/ScriptSources.cueide"),
                 "formatVersion=2\nscript.game.Existing=Existing.cpp\nregistration.game.Existing=Existing\n"));
     CHECK(host.request_script_creation("CreatedScript").has_value());
+    CHECK(observedBuild->configureRequests == 1);
+    CHECK(observedBuild->current.purpose == cue::GameBuildPurpose::IdeProject);
+    CHECK(observedBuild->current.target.configuration == cue::GameBuildConfiguration::Debug);
+    CHECK(!host.request_script_creation("DuringConfigure").has_value());
+    observedBuild->current.state = cue::GameBuildState::Succeeded;
     CHECK(!host.request_script_creation("CreatedScript").has_value());
     CHECK(!host.request_script_creation("../Escape").has_value());
+    CHECK(observedBuild->configureRequests == 1);
     CHECK(read(files, joined(firstRoot, "Source/CreatedScript.cpp")).find("CUE_DEFINE_SCRIPT(CreatedScript") !=
           std::string::npos);
+    // 構成生成を開始できない場合にも確定した Script と登録を保持する
+    observedBuild->failConfigure = true;
+    CHECK(host.request_script_creation("SavedScript").has_value());
+    CHECK(observedBuild->configureRequests == 2);
+    CHECK(read(files, joined(firstRoot, "Source/ScriptSources.cueide")).find("script.game.SavedScript=SavedScript.cpp") !=
+          std::string::npos);
+    CHECK(read(files, joined(firstRoot, "Source/SavedScript.cpp")).find("CUE_DEFINE_SCRIPT(SavedScript") !=
+          std::string::npos);
+    observedBuild->failConfigure = false;
     auto afterConfiguration = host.scene()->serialize();
     CHECK(afterConfiguration.has_value() && *afterConfiguration.try_value() == *firstScene.try_value());
 
@@ -362,6 +394,57 @@ int test_dirty_document(bool a_useWorkers, bool a_shouldSave)
     CHECK(host.shutdown().has_value());
     return 0;
 }
+
+/// @brief 外部 Checkout で未保存確認を取り消し、切替先を保存せずに読み込む
+int test_git_checkout(bool a_useWorkers)
+{
+    cue::tests::TemporaryFiles fixture;
+    CHECK(fixture.isCreated && fixture.files);
+    auto &files = *fixture.files;
+    const auto root = joined(fixture.root, "Game");
+    const auto metadata = joined(fixture.root, "GitMetadata");
+    const auto head = joined(metadata, "HEAD");
+    const auto lock = joined(metadata, "index.lock");
+    const auto projectFile = joined(root, "Project.cueproj");
+    const auto sceneFile = joined(root, "Content/Scenes/Start.cuescene");
+    const auto replacement = render_scene("Branch B Scene");
+    CHECK(make_project(files, root, "Branch A", "7f533c49-d416-47ea-98c1-026822b1e6ed", cue::tests::k_sceneText));
+    CHECK(files.create_directories(metadata).has_value());
+    CHECK(write(files, joined(root, ".git"), "gitdir: ../GitMetadata\n"));
+    CHECK(write(files, head, "ref: refs/heads/branch-a\n"));
+    auto project = cue::Project::load(files, projectFile);
+    CHECK(project.has_value());
+    auto probe = std::make_unique<cue::tests::FileSystemProbe>(files);
+    auto *observed = probe.get();
+    auto config = host_config(fixture, a_useWorkers, std::move(probe));
+    config.project = project.take_value();
+    cue::EditorHost host(std::move(config));
+    CHECK(host.initialize().has_value());
+    const auto original = host.scene()->serialize();
+    CHECK(original.has_value() && read(files, sceneFile) != *original.try_value());
+    CHECK(host.request_open_project(projectFile).has_value() && host.has_pending_project_confirmation());
+    CHECK(write(files, lock, "checkout in progress"));
+    CHECK(make_project(files, root, "Branch B", "7f533c49-d416-47ea-98c1-026822b1e6ed", replacement));
+    CHECK(write(files, head, "ref: refs/heads/branch-b\n"));
+    CHECK(!host.confirm_open_project(cue::ProjectOpenSaveChoice::Save).has_value());
+    CHECK(read(files, sceneFile) == replacement);
+    CHECK(host.scene()->descriptor().name != "Branch B Scene");
+    CHECK(files.remove(lock).has_value());
+    observed->failSave = true;
+    CHECK(step_frames(host));
+    CHECK(host.scene() && host.scene()->descriptor().name == "Branch B Scene");
+    CHECK(host.project() && host.project()->descriptor().name == "Branch B");
+    CHECK(!host.has_pending_project_confirmation() && read(files, sceneFile) == replacement);
+
+    // 読み込めない切替先では旧 Scene を編集可能な状態に戻さない
+    CHECK(write(files, head, "ref: refs/heads/branch-c\n"));
+    CHECK(write(files, sceneFile, "invalid scene\n"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(260));
+    CHECK(step_frames(host));
+    CHECK(!host.scene() && host.can_open_project() && read(files, sceneFile) == "invalid scene\n");
+    CHECK(host.shutdown().has_value());
+    return 0;
+}
 } // namespace
 
 /// @brief Single / Worker の両方で、同一 Editor Process の Project 再読込と保存境界を検証する
@@ -372,6 +455,7 @@ int main()
         CHECK(test_switching(useWorkers) == 0);
         CHECK(test_dirty_document(useWorkers, true) == 0);
         CHECK(test_dirty_document(useWorkers, false) == 0);
+        CHECK(test_git_checkout(useWorkers) == 0);
     }
     return 0;
 }
