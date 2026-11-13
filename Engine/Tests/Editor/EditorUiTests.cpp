@@ -4,6 +4,8 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include <imgui.h>
@@ -106,6 +108,36 @@ int test_unselected_editor()
     io.AddKeyEvent(ImGuiKey_S, false);
     io.AddKeyEvent(ImGuiMod_Ctrl, false);
     CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+
+    // 実クリップボードを上書きせず、クリックで ImGui が渡す内容を受け取る
+    std::string copied;
+    auto &platform = ImGui::GetPlatformIO();
+    platform.Platform_ClipboardUserData = &copied;
+    platform.Platform_SetClipboardTextFn = [](ImGuiContext *, const char *a_text)
+    {
+        *static_cast<std::string *>(ImGui::GetPlatformIO().Platform_ClipboardUserData) = a_text;
+    };
+    const std::string error = "ビルド失敗: " + std::string(320, 'x') + "\n詳細 (copy ends here)tail";
+    display.errorText = std::string_view(error).substr(0, error.size() - 4);
+    display.noticeText = "Build completed";
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    const auto *status = ImGui::FindWindowByName("Status##EditorStatus");
+    CUE_EDITOR_UI_CHECK(status && status->Active);
+    const auto start = status->DC.CursorStartPos;
+    io.AddMousePosEvent(start.x + 6, start.y + ImGui::GetTextLineHeight() * 0.5f);
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    io.AddMouseButtonEvent(0, true);
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    io.AddMouseButtonEvent(0, false);
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    CUE_EDITOR_UI_CHECK(copied == display.errorText);
+
+    display.errorText = {};
+    io.AddMouseButtonEvent(0, true);
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    io.AddMouseButtonEvent(0, false);
+    CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+    CUE_EDITOR_UI_CHECK(copied == display.noticeText);
     return 0;
 }
 

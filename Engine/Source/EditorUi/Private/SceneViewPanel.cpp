@@ -1,6 +1,7 @@
 #include "EditorUiPanels.h"
 
 #include <algorithm>
+#include <string>
 
 #include <Math/Quaternion.h>
 
@@ -119,20 +120,29 @@ void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &
     ImGui::SetNextWindowSize({(std::max)(a_context.displayWidth, 1.0f), height});
     PanelScope panel("Status##EditorStatus", ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
-                                                 ImGuiWindowFlags_NoNav);
+                                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse);
     if (!panel.is_visible())
         return;
-    if (!a_context.errorText.empty())
+    const bool hasError = !a_context.errorText.empty();
+    const auto message = hasError ? a_context.errorText : a_context.noticeText;
+    if (message.empty())
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, {1.0f, 0.45f, 0.4f, 1.0f});
-        ImGui::TextUnformatted(a_context.errorText.data(), a_context.errorText.data() + a_context.errorText.size());
-        ImGui::PopStyleColor();
+        ImGui::TextUnformatted(!a_document || !a_context.isProjectOpen ? "No project open"
+                               : a_document->is_dirty()              ? "Unsaved changes"
+                                                                      : "Ready");
+        return;
     }
-    else if (!a_context.noticeText.empty())
-        ImGui::TextUnformatted(a_context.noticeText.data(), a_context.noticeText.data() + a_context.noticeText.size());
-    else if (!a_document || !a_context.isProjectOpen)
-        ImGui::TextUnformatted("No project open");
-    else
-        ImGui::TextUnformatted(a_document->is_dirty() ? "Unsaved changes" : "Ready");
+    // 長いメッセージでもボタンを表示し、クリップボードには省略前の全文を渡す
+    if (ImGui::SmallButton("Copy"))
+    {
+        const std::string text(message);
+        ImGui::SetClipboardText(text.c_str());
+    }
+    ImGui::SameLine();
+    if (hasError)
+        ImGui::PushStyleColor(ImGuiCol_Text, {1.0f, 0.45f, 0.4f, 1.0f});
+    ImGui::TextUnformatted(message.data(), message.data() + message.size());
+    if (hasError)
+        ImGui::PopStyleColor();
 }
 } // namespace cue
