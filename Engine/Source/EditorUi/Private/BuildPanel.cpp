@@ -40,21 +40,24 @@ void request_target(EditorUiState &a_state, std::vector<EditorAction> &a_actions
 }
 
 /// @brief 登録一覧をそのまま使い、未対応 Target を UI が暗黙に選択しない
-void draw_target_selection(const EditorBuildContext &a_build, EditorUiState &a_state,
+void draw_target_selection(const EditorUiContext &a_context, EditorUiState &a_state,
                            std::vector<EditorAction> &a_actions)
 {
-    const auto *platform = selected_platform(a_build);
+    const auto &build = a_context.build;
+    const auto *platform = selected_platform(build);
     ImGui::SetNextItemWidth(-120);
-    if (ImGui::BeginCombo("Platform", platform ? a_build.selectedTarget.platform.c_str() : "Select platform"))
+    if (ImGui::BeginCombo(a_context.text("Platform", "プラットフォーム###Platform"),
+                          platform ? build.selectedTarget.platform.c_str()
+                                   : a_context.text("Select platform", "プラットフォームを選択")))
     {
         ComboScope combo;
-        for (const auto &entry : a_build.platforms)
+        for (const auto &entry : build.platforms)
         {
             const std::string label(entry.displayName.empty() ? entry.id : entry.displayName);
-            if (ImGui::Selectable(label.c_str(), entry.id == a_build.selectedTarget.platform) &&
-                entry.id != a_build.selectedTarget.platform)
+            if (ImGui::Selectable(label.c_str(), entry.id == build.selectedTarget.platform) &&
+                entry.id != build.selectedTarget.platform)
             {
-                auto target = a_build.selectedTarget;
+                auto target = build.selectedTarget;
                 target.platform = entry.id;
                 // 新しい Platform で Architecture が未対応なら明示的な再選択を求める
                 if (std::find(entry.architectures.begin(), entry.architectures.end(), target.architecture) ==
@@ -65,37 +68,40 @@ void draw_target_selection(const EditorBuildContext &a_build, EditorUiState &a_s
         }
     }
     ImGui::SetNextItemWidth(-120);
-    if (ImGui::BeginCombo("Architecture", a_build.selectedTarget.architecture.empty()
-                                              ? "Select architecture"
-                                              : a_build.selectedTarget.architecture.c_str()))
+    if (ImGui::BeginCombo(a_context.text("Architecture", "アーキテクチャ###Architecture"),
+                          build.selectedTarget.architecture.empty()
+                              ? a_context.text("Select architecture", "アーキテクチャを選択")
+                              : build.selectedTarget.architecture.c_str()))
     {
         ComboScope combo;
         if (platform)
             for (const auto architecture : platform->architectures)
             {
                 const std::string label(architecture);
-                if (ImGui::Selectable(label.c_str(), architecture == a_build.selectedTarget.architecture) &&
-                    architecture != a_build.selectedTarget.architecture)
+                if (ImGui::Selectable(label.c_str(), architecture == build.selectedTarget.architecture) &&
+                    architecture != build.selectedTarget.architecture)
                 {
-                    auto target = a_build.selectedTarget;
+                    auto target = build.selectedTarget;
                     target.architecture = architecture;
                     request_target(a_state, a_actions, std::move(target));
                 }
             }
     }
-    const auto configuration = game_build_configuration_name(a_build.selectedTarget.configuration);
+    const auto configuration = game_build_configuration_name(build.selectedTarget.configuration);
     ImGui::SetNextItemWidth(-120);
-    if (ImGui::BeginCombo("Configuration", configuration.empty() ? "Select configuration" : configuration.data()))
+    if (ImGui::BeginCombo(a_context.text("Configuration", "構成###Configuration"),
+                          configuration.empty() ? a_context.text("Select configuration", "構成を選択")
+                                                : configuration.data()))
     {
         ComboScope combo;
         constexpr std::array configurations{GameBuildConfiguration::Debug, GameBuildConfiguration::Development,
                                             GameBuildConfiguration::Release};
         for (const auto value : configurations)
             if (ImGui::Selectable(game_build_configuration_name(value).data(),
-                                  value == a_build.selectedTarget.configuration) &&
-                value != a_build.selectedTarget.configuration)
+                                  value == build.selectedTarget.configuration) &&
+                value != build.selectedTarget.configuration)
             {
-                auto target = a_build.selectedTarget;
+                auto target = build.selectedTarget;
                 target.configuration = value;
                 request_target(a_state, a_actions, std::move(target));
             }
@@ -133,13 +139,13 @@ void draw_build_panel(const EditorUiContext &a_context, EditorUiState &a_state, 
     const float left = (std::min)(240.0f, width * 0.22f);
     const float right = (std::min)(300.0f, width * 0.27f);
     set_initial_panel(viewport->Pos.x + left, editor_panel_top() + 40, (std::max)(width - left - right, 320.0f), 430);
-    PanelScope panel("Build##EditorBuild");
+    PanelScope panel(a_context.text("Build##EditorBuild", "ビルド###Build##EditorBuild"));
     if (!panel.is_visible())
         return;
     const bool isBusy = build.isBuilding || build.isApplicationRunning || a_context.isPlaying || a_context.isPlayBusy;
     {
         EditorDisabledScope disabled(isBusy);
-        draw_target_selection(build, a_state, a_actions);
+        draw_target_selection(a_context, a_state, a_actions);
     }
     ImGui::Separator();
     const auto request = [&](EditorActionKind a_kind)
@@ -149,33 +155,42 @@ void draw_build_panel(const EditorUiContext &a_context, EditorUiState &a_state, 
     };
     {
         EditorDisabledScope disabled(!build.canBuild || isBusy || !has_game_build_target(build));
-        if (ImGui::Button("Build", {100, 0}))
+        if (ImGui::Button(a_context.text("Build", "ビルド###Build"), {100, 0}))
             request(EditorActionKind::BuildGame);
     }
     ImGui::SameLine();
     {
         EditorDisabledScope disabled(!build.canCancel || !build.isBuilding);
-        if (ImGui::Button("Cancel Build", {110, 0}))
+        if (ImGui::Button(a_context.text("Cancel Build", "中止###Cancel Build"), {110, 0}))
             request(EditorActionKind::CancelGameBuild);
     }
     ImGui::SameLine();
     {
         EditorDisabledScope disabled(!build.canRun || isBusy);
-        if (ImGui::Button("Run", {100, 0}))
+        if (ImGui::Button(a_context.text("Run", "起動###Run"), {100, 0}))
             request(EditorActionKind::RunGame);
     }
     if (build.isApplicationRunning)
-        ImGui::TextUnformatted("Application running. Close it before building again.");
-    draw_value("State:", build.statusText);
+        ImGui::TextUnformatted(a_context.text("Application running. Close it before building again.",
+                                              "アプリの実行中です。ビルドする前にアプリを閉じてください。"));
+    draw_value(a_context.text("State:", "状態"), build.statusText);
+    if (build.isBuilding)
+    {
+        // CMake / MSBuild の完了率は取得できないため、処理中だけバーを動かす
+        ImGui::ProgressBar(-static_cast<float>(ImGui::GetTime()), {-1.0f, 0.0f}, "");
+    }
     if (build.exitCode)
-        ImGui::Text("Build exit code: %u", static_cast<unsigned>(*build.exitCode));
-    draw_value("Startup scene:", build.startupScene);
-    draw_value("Output:", build.outputDirectory);
-    ImGui::TextWrapped("The project startup scene is packaged from saved files.");
-    if (ImGui::CollapsingHeader("Build Log"))
+        ImGui::Text(a_context.text("Build exit code: %u", "ビルドの終了コード %u"),
+                    static_cast<unsigned>(*build.exitCode));
+    draw_value(a_context.text("Startup scene:", "起動シーン"), build.startupScene);
+    draw_value(a_context.text("Output:", "出力先"), build.outputDirectory);
+    ImGui::TextWrapped(a_context.text("The project startup scene is packaged from saved files.",
+                                      "保存済みファイルからプロジェクトの起動シーンをパッケージ化します。"));
+    if (ImGui::CollapsingHeader(a_context.text("Build Log", "ビルドログ###Build Log")))
     {
         if (build.isLogTruncated)
-            ImGui::TextUnformatted("Older output was omitted to keep the log bounded.");
+            ImGui::TextUnformatted(a_context.text("Older output was omitted to keep the log bounded.",
+                                                  "ログの容量上限に達したため、古い出力を省略しました。"));
         // 折り畳み中は巨大 Log を走査せず、展開中も Host の所有 Buffer を複写しない
         const bool isVisible =
             ImGui::BeginChild("BuildLogText", {0, 160}, ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);

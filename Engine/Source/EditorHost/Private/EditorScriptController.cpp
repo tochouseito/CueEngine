@@ -3,6 +3,7 @@
 #include <utility>
 
 #include <EditorIde/ScriptSource.h>
+#include <EditorUi/EditorLanguage.h>
 #include <Platform/FileSystem.h>
 
 namespace cue
@@ -42,10 +43,12 @@ Result<void> EditorScriptController::check_start(bool a_allowPlay) const
     return Result<void>::success();
 }
 
-void EditorScriptController::transition(EditorScriptState a_state, const char *a_message, bool a_busy)
+void EditorScriptController::transition(EditorScriptState a_state, const char *a_english, const char *a_japanese,
+                                        bool a_busy)
 {
     m_status.state = a_state;
-    m_status.message = a_message;
+    m_status.message = a_english;
+    m_statusJapanese = a_japanese;
     m_status.isBusy = a_busy;
 }
 
@@ -74,7 +77,8 @@ Result<void> EditorScriptController::start(Request a_request)
                 return opened;
             m_request = a_request;
             m_status.error.reset();
-            transition(EditorScriptState::OpeningIde, "Opening script source", true);
+            transition(EditorScriptState::OpeningIde, "Opening script source", "スクリプトのソースを開いています",
+                       true);
             return Result<void>::success();
         }
         m_workspace = {};
@@ -92,6 +96,8 @@ Result<void> EditorScriptController::start(Request a_request)
     transition(purpose == GameBuildPurpose::IdeProject ? EditorScriptState::PreparingWorkspace
                                                        : EditorScriptState::BuildingScripts,
                purpose == GameBuildPurpose::IdeProject ? "Preparing Visual Studio workspace" : "Building game DLL",
+               purpose == GameBuildPurpose::IdeProject ? "Visual Studio のワークスペースを準備中"
+                                                       : "ゲーム DLL をビルド中",
                true);
     return Result<void>::success();
 }
@@ -137,7 +143,8 @@ Result<void> EditorScriptController::fail(Error a_error)
     (void)cancelled;
     a_error.category = ErrorCategory::PlatformFailure;
     m_status.error = a_error;
-    transition(EditorScriptState::Failed, "Script / IDE operation failed", false);
+    transition(EditorScriptState::Failed, "Script / IDE operation failed", "スクリプトまたは IDE の操作に失敗しました",
+               false);
     m_workspace = {};
     return Result<void>::failure(std::move(a_error));
 }
@@ -171,7 +178,8 @@ Result<void> EditorScriptController::cancel()
         m_debugSessionId = 0;
     }
     m_scene.reset();
-    transition(EditorScriptState::Cancelled, "Script / IDE operation cancelled", false);
+    transition(EditorScriptState::Cancelled, "Script / IDE operation cancelled",
+               "スクリプトまたは IDE の操作を中止しました", false);
     return failure ? Result<void>::failure(*failure) : Result<void>::success();
 }
 
@@ -186,7 +194,8 @@ Result<void> EditorScriptController::start_debug_child()
     auto *play = m_callbacks.play ? m_callbacks.play() : nullptr;
     m_debugSessionId = play ? play->session_id() : 0;
     m_scene.reset();
-    transition(EditorScriptState::StartingDebug, "Waiting for Play debugger gate", true);
+    transition(EditorScriptState::StartingDebug, "Waiting for Play debugger gate",
+               "再生プロセスのデバッガー待機を確認中", true);
     return Result<void>::success();
 }
 
@@ -210,7 +219,7 @@ Result<void> EditorScriptController::poll()
             if (m_status.isBusy && m_request == Request::DebugPlay)
                 return fail({ErrorCategory::PlatformFailure, "EditorScript.debug_session_ended"});
             if (m_status.state == EditorScriptState::Debugging)
-                transition(EditorScriptState::Succeeded, "Debug Play stopped", false);
+                transition(EditorScriptState::Succeeded, "Debug Play stopped", "デバッグ再生を停止しました", false);
         }
     }
     auto ide = m_ide.poll();
@@ -240,14 +249,15 @@ Result<void> EditorScriptController::poll()
                                  : Result<void>::failure({ErrorCategory::InvalidState, "EditorScript.reload"});
             if (!refreshed.has_value())
                 return fail(*refreshed.try_error());
-            transition(EditorScriptState::ReloadingScripts, "Reloading script types", true);
+            transition(EditorScriptState::ReloadingScripts, "Reloading script types", "スクリプト型を再読み込み中",
+                       true);
             return Result<void>::success();
         }
         auto opened = m_request == Request::OpenSource ? m_ide.open_source(m_workspace, m_source, 1)
                                                        : m_ide.open_folder(m_workspace);
         if (!opened.has_value())
             return fail(*opened.try_error());
-        transition(EditorScriptState::OpeningIde, "Opening Visual Studio", true);
+        transition(EditorScriptState::OpeningIde, "Opening Visual Studio", "Visual Studio を起動中", true);
     }
     else if (m_status.state == EditorScriptState::OpeningIde || m_status.state == EditorScriptState::AttachingDebugger)
     {
@@ -259,7 +269,8 @@ Result<void> EditorScriptController::poll()
         if (status.state != IdeState::Succeeded)
             return Result<void>::success();
         if (m_status.state == EditorScriptState::OpeningIde)
-            transition(EditorScriptState::Succeeded, "Visual Studio ready", false);
+            transition(EditorScriptState::Succeeded, "Visual Studio ready", "Visual Studio の準備が完了しました",
+                       false);
         else
         {
             auto *play = m_callbacks.play ? m_callbacks.play() : nullptr;
@@ -268,7 +279,8 @@ Result<void> EditorScriptController::poll()
             auto continued = play->continue_debug();
             if (!continued.has_value())
                 return fail(*continued.try_error());
-            transition(EditorScriptState::StartingDebug, "Starting script under debugger", true);
+            transition(EditorScriptState::StartingDebug, "Starting script under debugger",
+                       "デバッガー付きでスクリプトを起動中", true);
         }
     }
     else
@@ -278,21 +290,23 @@ Result<void> EditorScriptController::poll()
             return fail(
                 {ErrorCategory::PlatformFailure, play ? std::string(play->error()) : "EditorScript.play_missing"});
         if (m_status.state == EditorScriptState::ReloadingScripts && play->state() == PlayState::Stopped)
-            transition(EditorScriptState::Succeeded, "Game DLL built and script types reloaded", false);
+            transition(EditorScriptState::Succeeded, "Game DLL built and script types reloaded",
+                       "ゲーム DLL のビルドとスクリプト型の再読み込みが完了しました", false);
         else if (play->state() == PlayState::WaitingForDebugger && m_status.state == EditorScriptState::StartingDebug)
         {
             m_status.processId = play->process_id();
             auto attached = m_ide.attach_debugger(m_workspace, m_status.processId, m_callbacks.playExecutable);
             if (!attached.has_value())
                 return fail(*attached.try_error());
-            transition(EditorScriptState::AttachingDebugger, "Attaching Visual Studio debugger", true);
+            transition(EditorScriptState::AttachingDebugger, "Attaching Visual Studio debugger",
+                       "Visual Studio のデバッガーを接続中", true);
         }
         else if (m_hasDebugSession && play->state() == PlayState::Running)
-            transition(EditorScriptState::Debugging, "Debug Play running", false);
+            transition(EditorScriptState::Debugging, "Debug Play running", "デバッグ再生中", false);
         else if (m_hasDebugSession && play->state() == PlayState::Stopped)
         {
             m_hasDebugSession = false;
-            transition(EditorScriptState::Succeeded, "Debug Play stopped", false);
+            transition(EditorScriptState::Succeeded, "Debug Play stopped", "デバッグ再生を停止しました", false);
         }
     }
     return Result<void>::success();
@@ -301,5 +315,9 @@ Result<void> EditorScriptController::poll()
 const EditorScriptStatus &EditorScriptController::status() const noexcept
 {
     return m_status;
+}
+std::string_view EditorScriptController::status_message(EditorLanguage a_language) const noexcept
+{
+    return editor_text(a_language, m_status.message.c_str(), m_statusJapanese);
 }
 } // namespace cue

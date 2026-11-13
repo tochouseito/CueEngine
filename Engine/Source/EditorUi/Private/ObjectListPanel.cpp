@@ -13,23 +13,14 @@ void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_
     const float top = editor_panel_top();
     const float leftWidth = (std::min)(240.0f, width * 0.22f);
     set_initial_panel(viewport->WorkPos.x, top, leftWidth, (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
-    PanelScope panel("Objects##EditorObjects", ImGuiWindowFlags_NoCollapse);
+    PanelScope panel(hierarchy_panel_title(a_context), ImGuiWindowFlags_NoCollapse);
     if (!panel.is_visible())
         return;
     if (!a_context.isProjectOpen)
     {
-        ImGui::TextUnformatted("No project open");
+        ImGui::TextUnformatted(a_context.text("No project open", "プロジェクト未選択"));
         return;
     }
-    {
-        EditorDisabledScope disabled(a_context.isPlaying);
-        if (ImGui::Button("Add Cube", {-1, 0}))
-        {
-            finish_transform_input(a_state, a_actions);
-            emit_editor_action(a_actions, EditorActionKind::AddCube);
-        }
-    }
-    ImGui::Separator();
     const auto selected = a_document.selected_object_id();
     for (const auto &object : a_document.scene().descriptor().objects)
     {
@@ -43,7 +34,5 @@ void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_
             emit_editor_action(a_actions, EditorActionKind::SelectObject, object.objectId);
         }
     }
-    ImGui::Separator();
-    ImGui::Text("%zu objects", a_document.scene().descriptor().objects.size());
 }
 } // namespace cue

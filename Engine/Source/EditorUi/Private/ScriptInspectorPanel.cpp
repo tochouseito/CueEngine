@@ -66,9 +66,11 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
             }
     }
     ImGui::Separator();
-    ImGui::TextUnformatted(a_context.isPlaying ? "Scripts (Play instance)" : "Scripts");
+    ImGui::TextUnformatted(a_context.isPlaying ? a_context.text("Scripts (Play instance)", "スクリプト（再生中）")
+                                               : a_context.text("Scripts", "スクリプト"));
     if (a_context.isPlaying)
-        ImGui::TextWrapped("Changes affect this Play session only. Values update after confirmation.");
+        ImGui::TextWrapped(a_context.text("Changes affect this Play session only. Values update after confirmation.",
+                                          "変更はこの再生中だけ有効です。適用が確認されると値が更新されます。"));
     for (const auto &script : object->scripts)
     {
         ScriptIdScope scriptId(script.instanceId.c_str());
@@ -78,7 +80,7 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
         ImGui::TextUnformatted(type ? type->displayName.c_str() : script.typeId.c_str());
         {
             EditorDisabledScope disabled(!a_context.script.canEditSource);
-            if (ImGui::SmallButton("Edit Source"))
+            if (ImGui::SmallButton(a_context.text("Edit Source", "ソースを開く###Edit Source")))
             {
                 EditorAction action;
                 action.kind = EditorActionKind::OpenScriptSource;
@@ -89,7 +91,7 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
         {
             EditorDisabledScope disabled(a_context.isPlaying);
             bool isEnabled = script.isEnabled;
-            if (ImGui::Checkbox("Enabled", &isEnabled))
+            if (ImGui::Checkbox(a_context.text("Enabled", "有効###Enabled"), &isEnabled))
             {
                 EditorAction action;
                 action.kind = EditorActionKind::SetScriptEnabled;
@@ -99,7 +101,7 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
                 a_actions.push_back(std::move(action));
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Remove"))
+            if (ImGui::SmallButton(a_context.text("Remove", "削除###Remove")))
             {
                 EditorAction action;
                 action.kind = EditorActionKind::RemoveScript;
@@ -109,9 +111,13 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
             }
         }
         if (!type)
-            ImGui::TextWrapped("Script type unavailable. Saved settings are preserved.");
+            ImGui::TextWrapped(a_context.text("Script type unavailable. Saved settings are preserved.",
+                                              "スクリプト型を読み込めません。保存済みの設定は保持されます。"));
         else if (type->schemaVersion != script.schemaVersion)
-            ImGui::TextWrapped("Script schema changed. Saved settings are preserved; reassign the script to migrate.");
+            ImGui::TextWrapped(
+                a_context.text("Script schema changed. Saved settings are preserved; reassign the script to migrate.",
+                               "スクリプトの定義が変更されました。保存済みの設定は保持されます。移行するにはスクリプト"
+                               "を割り当て直してください。"));
         // 省略された Property も型の既定値から表示する。編集するまでは保存正本へ追加しない
         auto properties = script.properties;
         if (type)
@@ -151,7 +157,8 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
     {
         EditorDisabledScope disabled(a_context.isPlaying || a_context.isPlayBusy ||
                                      object->scripts.size() >= k_maxScriptsPerObject);
-        if (ImGui::BeginCombo("Add Script", "Select type..."))
+        if (ImGui::BeginCombo(a_context.text("Add Script", "スクリプトを追加###Add Script"),
+                              a_context.text("Select type...", "型を選択...")))
         {
             ScriptComboScope combo;
             for (const auto &type : a_context.scriptTypes)
@@ -169,8 +176,11 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
         }
     }
     if (a_context.scriptTypes.empty())
-        ImGui::TextWrapped("No script types loaded. Use Script > Reload Script Types.");
+        ImGui::TextWrapped(a_context.text(
+            "No script types loaded. Use Script > Reload Script Types.",
+            "スクリプト型がありません。「スクリプト」→「スクリプト型を再読み込み」を実行してください。"));
     else
-        ImGui::TextDisabled("Press Enter to apply a numeric value.");
+        ImGui::TextDisabled(
+            a_context.text("Press Enter to apply a numeric value.", "Enter キーで入力した値を適用します。"));
 }
 } // namespace cue

@@ -60,6 +60,11 @@ class Behaviour
     {
         return m_callback ? m_callback->update.deltaTime : std::chrono::nanoseconds{};
     }
+    /// @brief 現在の更新時間を秒単位の float で返す。更新時間がないときは 0
+    [[nodiscard]] float delta_time_seconds() const noexcept
+    {
+        return std::chrono::duration<float>(delta_time()).count();
+    }
     /// @brief 自分の Component を Callback 中に所有値として取得する
     template <typename T> [[nodiscard]] Result<T> get_component() const
     {

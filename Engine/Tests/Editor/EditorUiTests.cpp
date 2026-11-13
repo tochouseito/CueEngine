@@ -87,8 +87,8 @@ int test_unselected_editor()
     CUE_EDITOR_UI_CHECK(idle.has_value() && idle.try_value()->empty());
     CUE_EDITOR_UI_CHECK(!has_texture(static_cast<ImTextureID>(display.sceneTextureId)));
     CUE_EDITOR_UI_CHECK(!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
-    for (const char *name : {"Objects##EditorObjects", "Inspector##EditorInspector", "Scene View##EditorSceneView",
-                             "##MainMenuBar", "Status##EditorStatus"})
+    for (const char *name : {"Hierarchy###Objects##EditorObjects", "Inspector##EditorInspector",
+                             "Scene View##EditorSceneView", "##MainMenuBar", "Status##EditorStatus"})
     {
         const auto *panel = ImGui::FindWindowByName(name);
         CUE_EDITOR_UI_CHECK(panel && panel->Active);
@@ -138,6 +138,63 @@ int test_unselected_editor()
     io.AddMouseButtonEvent(0, false);
     CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
     CUE_EDITOR_UI_CHECK(copied == display.noticeText);
+
+    // Project 未選択でメニューから切り替え、既存 Window の ID と位置を保持する
+    display.noticeText = {};
+    const auto *hierarchy = ImGui::FindWindowByName("Objects##EditorObjects");
+    CUE_EDITOR_UI_CHECK(hierarchy && hierarchy->Active);
+    const auto position = hierarchy->Pos;
+    auto &popupStack = context->OpenPopupStack;
+    const auto *menuBar = ImGui::FindWindowByName("##MainMenuBar");
+    CUE_EDITOR_UI_CHECK(menuBar && menuBar->Active);
+    for (const auto language : {cue::EditorLanguage::Japanese, cue::EditorLanguage::English})
+    {
+        const auto &style = ImGui::GetStyle();
+        const float viewX = menuBar->Pos.x + style.FramePadding.x + style.ItemSpacing.x * 5 +
+                            ImGui::CalcTextSize(display.text("File", "ファイル")).x +
+                            ImGui::CalcTextSize(display.text("Edit", "編集")).x +
+                            ImGui::CalcTextSize(display.text("View", "表示")).x * 0.5f;
+        io.AddMousePosEvent(viewX, menuBar->Pos.y + menuBar->Size.y * 0.5f);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        io.AddMouseButtonEvent(0, true);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        io.AddMouseButtonEvent(0, false);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        CUE_EDITOR_UI_CHECK(popupStack.Size == 1 && popupStack.back().Window);
+        const auto menuStart = popupStack.back().Window->DC.CursorStartPos;
+        const float lineHeight = ImGui::GetTextLineHeight();
+        const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+        io.AddMousePosEvent(menuStart.x + 5, menuStart.y + rowHeight + lineHeight * 0.5f);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        CUE_EDITOR_UI_CHECK(popupStack.Size == 2 && popupStack.back().Window);
+        const auto submenuStart = popupStack.back().Window->DC.CursorStartPos;
+        const float row = language == cue::EditorLanguage::Japanese ? rowHeight : 0;
+        io.AddMousePosEvent(submenuStart.x + 5, submenuStart.y + row + lineHeight * 0.5f);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        io.AddMouseButtonEvent(0, true);
+        CUE_EDITOR_UI_CHECK(empty_frame(*ui, display).has_value());
+        io.AddMouseButtonEvent(0, false);
+        auto changed = empty_frame(*ui, display);
+        CUE_EDITOR_UI_CHECK(changed.has_value() && changed.try_value()->size() == 1);
+        CUE_EDITOR_UI_CHECK(changed.try_value()->front().kind == cue::EditorActionKind::SetLanguage);
+        CUE_EDITOR_UI_CHECK(changed.try_value()->front().language == language);
+        display.language = language;
+        // 描画中の文字列を採取し、メニュー操作の次 Frame から選択言語が使われることを確認する
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        const auto localized = ui->draw(nullptr, display);
+        const auto *expectedLabel = cue::editor_text(language, "No project open", "プロジェクト未選択");
+        const bool hasLocalizedLabel = std::string_view(context->LogBuffer.c_str()).find(expectedLabel) !=
+                                       std::string_view::npos;
+        ImGui::LogFinish();
+        ImGui::Render();
+        CUE_EDITOR_UI_CHECK(localized.has_value() && hasLocalizedLabel);
+        const auto *name = cue::editor_text(language, "Hierarchy###Objects##EditorObjects",
+                                           "ヒエラルキー###Objects##EditorObjects");
+        CUE_EDITOR_UI_CHECK(ImGui::FindWindowByName(name) == hierarchy && hierarchy->Active);
+        CUE_EDITOR_UI_CHECK(hierarchy->Pos.x == position.x && hierarchy->Pos.y == position.y);
+    }
     return 0;
 }
 
@@ -312,7 +369,8 @@ int main()
     CUE_EDITOR_UI_CHECK(menu && menu->Active && menu->DrawList->VtxBuffer.Size > 0);
     const float menuBottom = menu->Pos.y + menu->Size.y;
     for (const char *name :
-         {"Objects##EditorObjects", "Inspector##EditorInspector", "Scene View##EditorSceneView", "EditorDockSpace"})
+         {"Hierarchy###Objects##EditorObjects", "Inspector##EditorInspector", "Scene View##EditorSceneView",
+          "EditorDockSpace"})
     {
         auto *panel = ImGui::FindWindowByName(name);
         CUE_EDITOR_UI_CHECK(panel && panel->Pos.y >= menuBottom);
@@ -327,23 +385,27 @@ int main()
     CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
     const auto *status = ImGui::FindWindowByName("Status##EditorStatus");
     CUE_EDITOR_UI_CHECK(status != nullptr);
-    for (const char *name : {"Objects##EditorObjects", "Inspector##EditorInspector", "Scene View##EditorSceneView"})
+    for (const char *name :
+         {"Hierarchy###Objects##EditorObjects", "Inspector##EditorInspector", "Scene View##EditorSceneView"})
     {
         const auto *panel = ImGui::FindWindowByName(name);
         CUE_EDITOR_UI_CHECK(panel->Pos.y >= menuBottom);
         CUE_EDITOR_UI_CHECK(panel->Pos.y + panel->Size.y <= status->Pos.y);
     }
 
-    // 実際の Button を Mouse で押す。位置だけを Layout から借用し、内部 Action 関数は使わない
-    auto *objects = ImGui::FindWindowByName("Objects##EditorObjects");
-    CUE_EDITOR_UI_CHECK(objects != nullptr);
-    const ImVec2 buttonCenter{objects->DC.CursorStartPos.x + 40,
-                              objects->DC.CursorStartPos.y + ImGui::GetFrameHeight() * 0.5f};
-    io.AddMousePosEvent(buttonCenter.x, buttonCenter.y);
+    // Edit Menu を Mouse で開き、Add Cube が Document を直接変更せず要求を返すことを確認する
+    const auto &style = ImGui::GetStyle();
+    const float editX = menu->Pos.x + style.FramePadding.x + style.ItemSpacing.x * 3 +
+                        ImGui::CalcTextSize("File").x + ImGui::CalcTextSize("Edit").x * 0.5f;
+    io.AddMousePosEvent(editX, menu->Pos.y + menu->Size.y * 0.5f);
     CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
     io.AddMouseButtonEvent(0, true);
     CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
     io.AddMouseButtonEvent(0, false);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    const auto &popupStack = context->OpenPopupStack;
+    CUE_EDITOR_UI_CHECK(!popupStack.empty() && popupStack.back().Window && popupStack.back().Window->Active);
+    ImGui::ActivateItemByID(ImHashStr("Add Cube", 0, popupStack.back().Window->ID));
     const auto beforeCount = application->document().scene().descriptor().objects.size();
     auto clicked = frame(*ui, application->document(), display);
     CUE_EDITOR_UI_CHECK(clicked.has_value() && clicked.try_value()->size() == 1);
@@ -532,7 +594,7 @@ int main()
         auto *popup = ImGui::FindWindowByName("Save changes?##EditorUnsavedChanges");
         CUE_EDITOR_UI_CHECK(popup && popup->Active && popup->Flags & ImGuiWindowFlags_Modal);
 
-        io.AddMousePosEvent(buttonCenter.x, buttonCenter.y);
+        io.AddMousePosEvent(editX, menu->Pos.y + menu->Size.y * 0.5f);
         CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
         io.AddMouseButtonEvent(0, true);
         auto blockedDown = frame(*ui, application->document(), display);

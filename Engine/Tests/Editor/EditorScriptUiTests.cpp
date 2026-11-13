@@ -158,11 +158,10 @@ int test_script_creation(cue::EditorUi &a_ui, const cue::SceneDocument &a_docume
         auto *menuBar = ImGui::FindWindowByName("##MainMenuBar");
         if (!menuBar || !menuBar->Active)
             return false;
-        float scriptX = menuBar->Pos.x + ImGui::GetStyle().FramePadding.x;
-        for (const char *label : {"File", "Edit", "View"})
-            scriptX += ImGui::CalcTextSize(label).x + ImGui::GetStyle().ItemSpacing.x * 2;
-        scriptX += ImGui::CalcTextSize("Script").x * 0.5f + ImGui::GetStyle().ItemSpacing.x;
-        io.AddMousePosEvent(scriptX, menuBar->Pos.y + menuBar->Size.y * 0.5f);
+        const auto &style = ImGui::GetStyle();
+        const float editX = menuBar->Pos.x + style.FramePadding.x + style.ItemSpacing.x * 3 +
+                            ImGui::CalcTextSize("File").x + ImGui::CalcTextSize("Edit").x * 0.5f;
+        io.AddMousePosEvent(editX, menuBar->Pos.y + menuBar->Size.y * 0.5f);
         if (!advance())
             return false;
         io.AddMouseButtonEvent(0, true);

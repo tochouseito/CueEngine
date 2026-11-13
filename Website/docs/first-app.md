@@ -14,8 +14,8 @@ sidebar_position: 2
 
 ## Editor で Cube を追加する
 
-1. Editor で起動シーン `Main` を開きます。**Objects → Add Cube** で Cube を追加します。
-2. **Script → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.h` にクラス定義、`Source/RotateCube.cpp` に実装と型登録が生成されます。
+1. Editor で起動シーン `Main` を開きます。**Edit → Add Cube** で Cube を追加します。
+2. **Edit → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.h` にクラス定義、`Source/RotateCube.cpp` に実装と型登録が生成されます。
 3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` に `#include <chrono>`、`#include <Math/Quaternion.h>`、`#include <Math/Scalar.h>` を追加し、`namespace game` 内の `RotateCube::update()` を下記の実装へ置き換えて保存します。
 
 ```cpp

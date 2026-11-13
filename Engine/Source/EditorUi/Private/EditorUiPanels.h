@@ -20,6 +20,12 @@ namespace cue
     return viewport->Pos.y + ImGui::GetFrameHeight();
 }
 
+/// @brief 保存済みの Docking 配置を引き継ぐため、Hierarchy の表示名と従来の Window ID を分ける
+[[nodiscard]] inline const char *hierarchy_panel_title(const EditorUiContext &a_context) noexcept
+{
+    return a_context.text("Hierarchy###Objects##EditorObjects", "ヒエラルキー###Objects##EditorObjects");
+}
+
 /// @brief Scene の正本から独立した入力 Buffer。Panel 構築中だけ Main Thread で使う
 struct EditorUiState
 {
@@ -131,7 +137,7 @@ void finish_transform_input(EditorUiState &a_state, std::vector<EditorAction> &a
 /// @brief File / Edit と Keyboard Shortcut の要求を構築する
 void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
                      const EditorUiContext &a_context, bool a_isInputEnabled);
-/// @brief Object 一覧と選択・Cube 追加の要求を構築する
+/// @brief Object 一覧を表示し、選択の要求を構築する
 void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_context, EditorUiState &a_state,
                       std::vector<EditorAction> &a_actions);
 /// @brief 選択 Object の Transform 入力を所有 Buffer で編集する

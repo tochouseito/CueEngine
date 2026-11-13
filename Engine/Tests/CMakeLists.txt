@@ -571,7 +571,7 @@ if(WIN32)
     add_executable(CueEditorGameSettingsTests EditorHost/EditorGameSettingsTests.cpp)
     target_include_directories(CueEditorGameSettingsTests PRIVATE "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
     target_link_libraries(CueEditorGameSettingsTests PRIVATE
-        Cue.EditorHost Cue.ProjectBuild Cue.Platform.Windows Cue.Foundation.Windows)
+        Cue.EditorHost Cue.Editor.Ui Cue.ProjectBuild Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Editor.GameSettings COMMAND CueEditorGameSettingsTests)
     add_executable(CueGameStartupTests GameRuntime/GameStartupTests.cpp)
     target_link_libraries(CueGameStartupTests PRIVATE Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows)

@@ -79,7 +79,7 @@ registration.sample.RotateCube=RotateCubeBehaviour
 値は Project の Source Directory 基準の相対 Path。`resolve_script_source` は最大 64 KiB の UTF-8 を読み、
 未知 ID、未知 Version、重複 Key、絶対 Path、`..`、Source 外参照、Link、存在しない通常 File を拒否する。
 Source Map 自体も読込時点で親 Directory を含めて確認する。Inspector からの表示位置は現在 1 行目とする。
-`Script > New Script...` は v2 の Source と対応表を作る。CMake は対応表の変更時に登録入口を再生成する。
+`Edit > New Script...` は v2 の Source と対応表を作る。CMake は対応表の変更時に登録入口を再生成する。
 任意の C++ Source から型や定義行を解析・自動収集する処理は行わない。
 
 ## Debug Play の起動 Gate

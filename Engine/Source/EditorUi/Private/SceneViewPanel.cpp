@@ -1,6 +1,8 @@
 #include "EditorUiPanels.h"
 
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <string>
 
 #include <Math/Quaternion.h>
@@ -9,6 +11,21 @@ namespace cue
 {
 namespace
 {
+/// @brief 進捗率のない処理を一行の高さに収め、経過時間で円弧を回転させる
+void draw_activity_spinner()
+{
+    constexpr float k_turn = 2.0f * std::numbers::pi_v<float>;
+    constexpr double k_period = 0.8;
+    const auto position = ImGui::GetCursorScreenPos();
+    const float size = ImGui::GetTextLineHeight();
+    const ImVec2 center{position.x + size * 0.5f, position.y + size * 0.5f};
+    const float angle = static_cast<float>(std::fmod(ImGui::GetTime(), k_period) / k_period) * k_turn;
+    ImGui::Dummy({size, size});
+    auto *drawList = ImGui::GetWindowDrawList();
+    drawList->PathArcTo(center, size * 0.35f, angle, angle + k_turn * 0.7f);
+    drawList->PathStroke(ImGui::GetColorU32(ImGuiCol_PlotHistogram), size * 0.12f);
+}
+
 /// @brief Hover 中の Camera 操作だけを所有要求へ変換し、ゲーム側の Camera / 入力は変更しない
 void navigate_scene_view(const EditorUiContext &a_context, std::vector<EditorAction> &a_actions)
 {
@@ -70,35 +87,39 @@ void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction>
     const float top = editor_panel_top();
     set_initial_panel(viewport->WorkPos.x + left, top, (std::max)(width - left - right, 64.0f),
                       (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
-    PanelScope panel("Scene View##EditorSceneView",
+    PanelScope panel(a_context.text("Scene View##EditorSceneView", "シーンビュー###Scene View##EditorSceneView"),
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);
     if (!panel.is_visible())
         return;
     if (!a_context.isProjectOpen)
     {
-        ImGui::TextUnformatted("Open a project from File > Open Project...");
+        ImGui::TextUnformatted(a_context.text("Open a project from File > Open Project...",
+                                              "「ファイル」→「プロジェクトを開く...」から開いてください。"));
         return;
     }
     if (!a_context.isSceneViewEnabled || a_context.sceneTextureId == 0)
     {
-        ImGui::TextUnformatted("Scene View unavailable.");
+        ImGui::TextUnformatted(a_context.text("Scene View unavailable.", "シーンビューを利用できません。"));
         return;
     }
     {
         EditorDisabledScope disabled(!a_context.sceneViewCamera);
-        if (ImGui::SmallButton("Scene camera"))
+        if (ImGui::SmallButton(a_context.text("Scene camera", "シーンカメラ###Scene camera")))
             emit_editor_action(a_actions, EditorActionKind::ResetSceneViewCamera);
     }
     ImGui::SameLine();
-    ImGui::TextDisabled(a_context.sceneViewCamera ? "Editor camera" : "Scene camera");
+    ImGui::TextDisabled(a_context.sceneViewCamera ? a_context.text("Editor camera", "エディターカメラ")
+                                                  : a_context.text("Scene camera", "シーンカメラ"));
     if (a_context.isPlaying)
     {
         ImGui::SameLine();
-        ImGui::TextUnformatted(a_context.script.isWaitingForDebugger ? "Waiting for debugger"
-                               : a_context.isPlayBusy                ? "Play transition..."
-                                                                     : "Playing");
+        ImGui::TextUnformatted(a_context.script.isWaitingForDebugger
+                                   ? a_context.text("Waiting for debugger", "デバッガーの接続待ち")
+                               : a_context.isPlayBusy ? a_context.text("Play transition...", "再生状態を切り替え中...")
+                                                      : a_context.text("Playing", "再生中"));
     }
-    ImGui::TextDisabled("RMB + WASD/QE: move | RMB drag: look | Wheel: dolly");
+    ImGui::TextDisabled(a_context.text("RMB + WASD/QE: move | RMB drag: look | Wheel: dolly",
+                                       "右ボタン＋WASD/QE で移動、右ドラッグで視点変更、ホイールで前後移動"));
     const auto available = ImGui::GetContentRegionAvail();
     if (available.x <= 0 || available.y <= 0)
         return;
@@ -123,22 +144,38 @@ void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &
                                                  ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse);
     if (!panel.is_visible())
         return;
+    const bool isBusy = a_context.build.isBuilding || a_context.script.isBusy;
+    auto activity = a_context.build.isBuilding ? a_context.build.statusText : a_context.script.statusText;
+    if (isBusy && activity.empty())
+        activity = a_context.text("Working...", "処理中...");
     const bool hasError = !a_context.errorText.empty();
-    const auto message = hasError ? a_context.errorText : a_context.noticeText;
+    const auto message = hasError ? a_context.errorText : (isBusy ? activity : a_context.noticeText);
     if (message.empty())
     {
-        ImGui::TextUnformatted(!a_document || !a_context.isProjectOpen ? "No project open"
-                               : a_document->is_dirty()              ? "Unsaved changes"
-                                                                      : "Ready");
+        ImGui::TextUnformatted(!a_document || !a_context.isProjectOpen
+                                   ? a_context.text("No project open", "プロジェクト未選択")
+                               : a_document->is_dirty() ? a_context.text("Unsaved changes", "未保存の変更あり")
+                                                        : a_context.text("Ready", "準備完了"));
         return;
     }
     // 長いメッセージでもボタンを表示し、クリップボードには省略前の全文を渡す
-    if (ImGui::SmallButton("Copy"))
+    if (ImGui::SmallButton(a_context.text("Copy", "コピー###Copy")))
     {
         const std::string text(message);
         ImGui::SetClipboardText(text.c_str());
     }
     ImGui::SameLine();
+    if (isBusy)
+    {
+        draw_activity_spinner();
+        ImGui::SameLine();
+        // 作業中のエラーもコピーできるよう、段階名とエラーメッセージを併記する
+        if (hasError)
+        {
+            ImGui::TextUnformatted(activity.data(), activity.data() + activity.size());
+            ImGui::SameLine();
+        }
+    }
     if (hasError)
         ImGui::PushStyleColor(ImGuiCol_Text, {1.0f, 0.45f, 0.4f, 1.0f});
     ImGui::TextUnformatted(message.data(), message.data() + message.size());

@@ -1,4 +1,3 @@
-#include <chrono>
 #include <cmath>
 
 #include <Math/Quaternion.h>
@@ -35,7 +34,7 @@ class RotateCubeBehaviour final : public cue::Behaviour
         auto current = transform.get();
         if (!current.has_value())
             return cue::Result<void>::failure(*current.try_error());
-        const auto seconds = std::chrono::duration<float>(delta_time()).count();
+        const float seconds = delta_time_seconds();
         auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0},
                                                     cue::math::degrees_to_radians(m_speedDegrees) * seconds);
         if (!delta.has_value())

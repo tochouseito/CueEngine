@@ -12,7 +12,7 @@
 
 ## ゲーム側の登録入口
 
-Editor の `Script > New Script...` が `Source/<Name>.h` と `Source/<Name>.cpp` を作り、v2 の対応表を更新する。
+Editor の `Edit > New Script...` が `Source/<Name>.h` と `Source/<Name>.cpp` を作り、v2 の対応表を更新する。
 Header にクラス定義、cpp に処理の実装と `Script/ModuleEntry.h` の `CUE_DEFINE_SCRIPT(...)` を置く。
 cpp 単体で定義した Script も、同じ対応表からビルドできる。
 ゲーム側の手書き `Game.cpp` は不要とし、CMake が一つの接続入口を Binary Tree へ自動生成する。
@@ -58,6 +58,7 @@ Setter の成功は要求された設定値を受理したことを表す。ゲ�
 - `with_script<T>()` の型は `make_script_registration<T>()` で一つの型 ID に登録する。Script の `start` 順序へ依存する接続は、最初の `update` で行う。対象を操作する Callback は、必要なら第 2 引数で対象の `GameObject&` を受け取る。
 - `ScriptEvent<T...>` は同じ Game Module 内で有効な購読者へ同期通知する。無効化中は配送を止め、再有効化後に再開する。購読者の停止・失敗または発行者の破棄で購読を解除する。Callback に `GameObject` の借用を保持しない。
 - 新規 Script は引数なしの `update()` を実装し、`delta_time()`、`get_component<T>()`、`transform` を `Behaviour` から利用する。従来の引数付き `update()` も利用できる。同期呼出とイベントは、対象の Entity と更新時間を呼出中だけ設定する。
+- `delta_time()` は `std::chrono::nanoseconds`、`delta_time_seconds()` は秒単位の `float` を返す。
 - `transform.position.x += value` は現在の値を一回の ABI 呼出で変更する。演算子の失敗は Callback の終了時に報告し、先に成功した変更を保持する。`translate(x, y = 0, z = 0)`、`translate(float3)`、`transform.set()` は一回の操作の変更を全て検証してから書き込む。
 - Script ABI v3 で Transform の変更を追加する。Runtime は Preview 7 の v2 Module の明示的な Version 拒否を受けた場合に v2 で読み込む。新しい API を利用する Game Module は v3 SDK でビルドする。Scene の割当 ID とファイル形式は引き継ぐ。
 

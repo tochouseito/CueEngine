@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include <EditorUi/EditorLanguage.h>
 #include <Foundation/Result.h>
 #include <Math/Transform.h>
 #include <ProjectBuild/BuildTarget.h>
@@ -60,6 +61,7 @@ enum class EditorActionKind
     ResetSceneViewCamera,
     SetGameConfiguration,
     CreateScript,
+    SetLanguage,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求
@@ -76,6 +78,7 @@ struct EditorAction final
     // Play 用 Game DLL の構成。製品アプリの Build Target とは独立して選ぶ
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     std::string scriptName;
+    EditorLanguage language = EditorLanguage::English;
 };
 
 /// @brief Build の表示用 Snapshot。View / Span は draw の間だけ Host から借用する
@@ -146,6 +149,13 @@ struct EditorUiContext final
     // 保存済み File の Build は編集正本を破棄しないため、通常の Discard と文言を分ける
     bool isBuildConfirmationRequested = false;
     EditorScriptContext script;
+    EditorLanguage language = EditorLanguage::English;
+
+    /// @brief 表示言語だけを切り替える。ImGui の ID 付き Label には共通の ID を指定する
+    [[nodiscard]] const char *text(const char *a_english, const char *a_japanese) const noexcept
+    {
+        return editor_text(language, a_english, a_japanese);
+    }
 };
 
 /// @brief ImGui の Panel と入力中の表示値を所有する。Scene や Preview World は変更しない

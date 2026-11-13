@@ -1,5 +1,6 @@
 #include <EditorUi/EditorUi.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <memory>
@@ -47,6 +48,15 @@ cue::Result<std::vector<cue::EditorAction>> activate(cue::EditorUi &a_ui, const 
 bool is_action(const cue::Result<std::vector<cue::EditorAction>> &a_actions, cue::EditorActionKind a_kind)
 {
     return a_actions.has_value() && a_actions.try_value()->size() == 1 && a_actions.try_value()->front().kind == a_kind;
+}
+
+/// @brief 作業表示に使う専用の描画色が Panel の描画 Data に含まれるか確認する
+bool draws_progress(const ImGuiWindow &a_panel)
+{
+    const auto color = ImGui::GetColorU32(ImGuiCol_PlotHistogram);
+    const auto &vertices = a_panel.DrawList->VtxBuffer;
+    return std::any_of(vertices.begin(), vertices.end(),
+                       [color](const ImDrawVert &a_vertex) { return a_vertex.col == color; });
 }
 } // namespace
 
@@ -119,6 +129,8 @@ int main()
     CHECK(frame(*ui, app->document(), display).has_value());
     auto *panel = ImGui::FindWindowByName("Build##EditorBuild");
     CHECK(panel && panel->Active);
+    auto *status = ImGui::FindWindowByName("Status##EditorStatus");
+    CHECK(status && status->Active && !draws_progress(*status) && !draws_progress(*panel));
     auto build = activate(*ui, app->document(), display, *panel, "Build");
     CHECK(is_action(build, cue::EditorActionKind::BuildGame));
     CHECK(!display.build.isBuilding);
@@ -143,12 +155,16 @@ int main()
     CHECK(unsupported.has_value() && unsupported.try_value()->empty());
     display.build.selectedTarget.architecture = "x64";
     display.build.isBuilding = true;
+    display.build.statusText = "Configuring CMake...";
     display.build.canCancel = true;
     display.build.canRun = true;
     auto duplicate = activate(*ui, app->document(), display, *panel, "Build");
     CHECK(duplicate.has_value() && duplicate.try_value()->empty());
+    CHECK(draws_progress(*status) && draws_progress(*panel));
+    display.build.statusText = "Building and packaging game...";
     auto cancel = activate(*ui, app->document(), display, *panel, "Cancel Build");
     CHECK(is_action(cancel, cue::EditorActionKind::CancelGameBuild));
+    CHECK(draws_progress(*status) && draws_progress(*panel));
     auto runBusy = activate(*ui, app->document(), display, *panel, "Run");
     CHECK(runBusy.has_value() && runBusy.try_value()->empty());
     // Build 中は Scene 保存 Shortcut も抑止する
@@ -164,6 +180,7 @@ int main()
     display.build.isApplicationRunning = true;
     auto appRunning = activate(*ui, app->document(), display, *panel, "Build");
     CHECK(appRunning.has_value() && appRunning.try_value()->empty());
+    CHECK(!draws_progress(*status) && !draws_progress(*panel));
     display.build.isApplicationRunning = false;
     auto run = activate(*ui, app->document(), display, *panel, "Run");
     CHECK(is_action(run, cue::EditorActionKind::RunGame));
@@ -178,6 +195,15 @@ int main()
     CHECK(activate(*ui, app->document(), display, *panel, "Build Log").has_value());
     CHECK(frame(*ui, app->document(), display).has_value());
     CHECK(display.build.logText == log);
+
+    // IDE / Script の作業はステータスバーに表示し、Build が終わった後のバーは非表示にする
+    display.script.isBusy = true;
+    display.script.statusText = "Reloading script types";
+    CHECK(frame(*ui, app->document(), display).has_value());
+    CHECK(draws_progress(*status) && !draws_progress(*panel));
+    display.script.isBusy = false;
+    CHECK(frame(*ui, app->document(), display).has_value());
+    CHECK(!draws_progress(*status));
 
     // Build 確認は通常 Discard と異なり、保存済み File の採用を明示する
     const std::array choices{std::pair{"Save and Build", cue::EditorActionKind::ConfirmSaveChanges},

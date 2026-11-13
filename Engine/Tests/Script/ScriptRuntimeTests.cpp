@@ -1,6 +1,7 @@
 #include <ScriptRuntime/ScriptSystem.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <memory>
@@ -81,6 +82,8 @@ class Move final : public cue::Behaviour
     cue::Result<void> start(cue::GameObject &a_self) override
     {
         ++g_counters.started;
+        if (delta_time_seconds() != 0.0f)
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Move.start.delta_time"});
         if (g_counters.shouldFailStart)
             return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "Move.partial_start"});
         auto alive = a_self.is_alive();
@@ -476,7 +479,7 @@ class PulseReceiver final : public cue::Behaviour
             return a_source.pulse.subscribe(*this, [this](const unsigned &a_value)
             {
                 using namespace std::chrono_literals;
-                if (delta_time() != 1ms)
+                if (delta_time() != 1ms || std::abs(delta_time_seconds() - 0.001f) > 1e-8f)
                 {
                     return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.delta"});
                 }
@@ -570,7 +573,7 @@ class TransformCommands final : public cue::Behaviour
         using namespace std::chrono_literals;
         using cue::ErrorCategory;
         using cue::Result;
-        if (delta_time() != 10ms)
+        if (delta_time() != 10ms || std::abs(delta_time_seconds() - 0.01f) > 1e-8f)
         {
             return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.delta_time"});
         }

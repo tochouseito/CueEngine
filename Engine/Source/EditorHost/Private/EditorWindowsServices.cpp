@@ -14,6 +14,7 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include <EditorUi/EditorLanguage.h>
 #include <Foundation/Uuid.h>
 #include <Foundation/Windows/UtfConversion.h>
 #include <Platform/FileSystem.h>
@@ -145,7 +146,7 @@ Result<std::string> create_editor_object_id()
 }
 
 Result<std::optional<Path>> choose_scene_file(Window &a_window, bool a_isSave, const Path *a_initialFile,
-                                              const Path *a_contentRoot)
+                                              const Path *a_contentRoot, EditorLanguage a_language)
 {
     auto handle = borrow_windows_window_handle(a_window);
     if (!handle.has_value())
@@ -181,8 +182,14 @@ Result<std::optional<Path>> choose_scene_file(Window &a_window, bool a_isSave, c
         return Result<std::optional<Path>>::failure(
             {ErrorCategory::PlatformFailure, "Editor.SceneDialog.options", result});
     }
-    const COMDLG_FILTERSPEC filter[] = {{L"CueEngine Scene (*.cuescene)", L"*.cuescene"}};
-    result = dialog->SetFileTypes(1, filter);
+    // 共通 Dialog の操作文言は Windows が表示し、CueEngine 側で指定する文言だけを翻訳する
+    const auto *title = a_isSave ? editor_text(a_language, L"Save Scene", L"シーンを保存")
+                                 : editor_text(a_language, L"Open Scene", L"シーンを開く");
+    const COMDLG_FILTERSPEC filter[] = {
+        {editor_text(a_language, L"CueEngine Scene (*.cuescene)", L"CueEngine シーン (*.cuescene)"), L"*.cuescene"}};
+    result = dialog->SetTitle(title);
+    if (SUCCEEDED(result))
+        result = dialog->SetFileTypes(1, filter);
     if (SUCCEEDED(result))
     {
         result = dialog->SetDefaultExtension(L"cuescene");
@@ -235,7 +242,8 @@ Result<std::optional<Path>> choose_scene_file(Window &a_window, bool a_isSave, c
     return Result<std::optional<Path>>::success(path.take_value());
 }
 
-Result<std::optional<Path>> choose_project_folder(Window &a_window, const Path *a_initialFolder)
+Result<std::optional<Path>> choose_project_folder(Window &a_window, const Path *a_initialFolder,
+                                                  EditorLanguage a_language)
 {
     auto handle = borrow_windows_window_handle(a_window);
     if (!handle.has_value())
@@ -256,7 +264,8 @@ Result<std::optional<Path>> choose_project_folder(Window &a_window, const Path *
         result = dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
                                     FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
     if (SUCCEEDED(result))
-        result = dialog->SetTitle(L"Open CueEngine Project Folder");
+        result = dialog->SetTitle(
+            editor_text(a_language, L"Open CueEngine Project Folder", L"CueEngine プロジェクトフォルダーを開く"));
     if (FAILED(result))
         return Result<std::optional<Path>>::failure(
             {ErrorCategory::PlatformFailure, "Editor.ProjectDialog.options", result});

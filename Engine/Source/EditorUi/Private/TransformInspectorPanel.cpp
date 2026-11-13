@@ -179,9 +179,12 @@ void draw_play_transform(const SceneObjectDescriptor &a_object, const EditorUiCo
     ImGui::PushID(session.c_str());
     {
         EditorDisabledScope disabled(a_context.isPlayBusy);
-        edit_play_transform_field(input, a_actions, "Position", 0, input.transform.position, 0.01f, cancelInput);
-        edit_play_transform_field(input, a_actions, "Rotation (degrees)", 1, input.rotationDegrees, 0.5f, cancelInput);
-        edit_play_transform_field(input, a_actions, "Scale", 2, input.transform.scale, 0.01f, cancelInput);
+        edit_play_transform_field(input, a_actions, a_context.text("Position", "位置"), 0, input.transform.position,
+                                  0.01f, cancelInput);
+        edit_play_transform_field(input, a_actions, a_context.text("Rotation (degrees)", "回転（度）"), 1,
+                                  input.rotationDegrees, 0.5f, cancelInput);
+        edit_play_transform_field(input, a_actions, a_context.text("Scale", "スケール"), 2, input.transform.scale,
+                                  0.01f, cancelInput);
     }
     ImGui::PopID();
     ImGui::PopID();
@@ -192,8 +195,10 @@ void draw_play_transform(const SceneObjectDescriptor &a_object, const EditorUiCo
         input.activeField = -1;
         input.activeInputId = 0;
     }
-    ImGui::TextDisabled("Play instance only. Changes are not saved.");
-    ImGui::TextDisabled("Escape restores the value before this edit.");
+    ImGui::TextDisabled(a_context.text("Play instance only. Changes are not saved.",
+                                       "変更は再生中のインスタンスだけに適用され、保存されません。"));
+    ImGui::TextDisabled(
+        a_context.text("Escape restores the value before this edit.", "Esc キーで編集前の値に戻します。"));
 }
 } // namespace
 
@@ -234,17 +239,18 @@ Result<void> draw_transform_inspector(const SceneDocument &a_document, const Edi
     const float top = editor_panel_top();
     set_initial_panel(viewport->WorkPos.x + width - panelWidth, top, panelWidth,
                       (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
-    PanelScope panel("Inspector##EditorInspector", ImGuiWindowFlags_NoCollapse);
+    PanelScope panel(a_context.text("Inspector##EditorInspector", "インスペクター###Inspector##EditorInspector"),
+                     ImGuiWindowFlags_NoCollapse);
     if (!panel.is_visible())
         return Result<void>::success();
     if (!a_context.isProjectOpen)
     {
-        ImGui::TextUnformatted("No project open");
+        ImGui::TextUnformatted(a_context.text("No project open", "プロジェクト未選択"));
         return Result<void>::success();
     }
     if (!object)
     {
-        ImGui::TextUnformatted("Select an object.");
+        ImGui::TextUnformatted(a_context.text("Select an object.", "オブジェクトを選択してください。"));
         return Result<void>::success();
     }
     ImGui::TextUnformatted(object->name.c_str());
@@ -262,32 +268,36 @@ Result<void> draw_transform_inspector(const SceneDocument &a_document, const Edi
     if (a_state.hasTransform)
     {
         EditorDisabledScope disabled(a_context.isPlaying);
-        auto position =
-            edit_transform_field(a_state, a_actions, "Position", 0, a_state.transform.position, 0.01f, cancelInput);
+        auto position = edit_transform_field(a_state, a_actions, a_context.text("Position", "位置"), 0,
+                                             a_state.transform.position, 0.01f, cancelInput);
         if (!position.has_value())
             return position;
-        auto rotation = edit_transform_field(a_state, a_actions, "Rotation (degrees)", 1, a_state.rotationDegrees, 0.5f,
-                                             cancelInput);
+        auto rotation = edit_transform_field(a_state, a_actions, a_context.text("Rotation (degrees)", "回転（度）"), 1,
+                                             a_state.rotationDegrees, 0.5f, cancelInput);
         if (!rotation.has_value())
             return rotation;
         if (a_state.hasInvalidRotationInput)
-            ImGui::TextWrapped("Enter finite rotation values. The last valid rotation is kept.");
-        auto scale = edit_transform_field(a_state, a_actions, "Scale", 2, a_state.transform.scale, 0.01f, cancelInput);
+            ImGui::TextWrapped(a_context.text("Enter finite rotation values. The last valid rotation is kept.",
+                                              "有限の回転値を入力してください。直前の有効値を保持しています。"));
+        auto scale = edit_transform_field(a_state, a_actions, a_context.text("Scale", "スケール"), 2,
+                                          a_state.transform.scale, 0.01f, cancelInput);
         if (!scale.has_value())
             return scale;
         ImGui::Spacing();
-        ImGui::TextDisabled("Drag to edit. Double-click for a value.");
-        ImGui::TextDisabled("Escape cancels the current edit.");
+        ImGui::TextDisabled(a_context.text("Drag to edit. Double-click for a value.",
+                                           "ドラッグで調整し、ダブルクリックで値を入力できます。"));
+        ImGui::TextDisabled(
+            a_context.text("Escape cancels the current edit.", "Esc キーで編集中の変更を取り消します。"));
     }
     if (object->mesh)
     {
         ImGui::Separator();
-        ImGui::TextUnformatted("Mesh: Cube");
+        ImGui::TextUnformatted(a_context.text("Mesh: Cube", "メッシュ（キューブ）"));
     }
     if (object->camera)
     {
         ImGui::Separator();
-        ImGui::TextUnformatted("Perspective Camera");
+        ImGui::TextUnformatted(a_context.text("Perspective Camera", "透視投影カメラ"));
     }
     if (cancelInput)
         finish_transform_input(a_state, a_actions, EditorActionKind::CancelTransformEdit);

@@ -69,6 +69,30 @@ class SettingsProbe final : public cue::tests::FileSystemProbe
     std::string linkedPath;
 };
 
+/// @brief Project 未選択でも言語を保存でき、書き込み失敗時に前回の設定が残ることを確認する
+int test_language(cue::tests::TemporaryFiles &a_fixture)
+{
+    auto &files = *a_fixture.files;
+    const auto dataRoot = joined(a_fixture.root, "UserData");
+    const auto languageFile = joined(dataRoot, "editor/language.txt");
+    auto language = cue::load_editor_language(files, dataRoot);
+    CHECK(language.has_value() && *language.try_value() == cue::EditorLanguage::English);
+    CHECK(cue::save_editor_language(files, dataRoot, cue::EditorLanguage::Japanese).has_value());
+    language = cue::load_editor_language(files, dataRoot);
+    CHECK(language.has_value() && *language.try_value() == cue::EditorLanguage::Japanese);
+
+    SettingsProbe probe(files);
+    probe.failSave = true;
+    CHECK(!cue::save_editor_language(probe, dataRoot, cue::EditorLanguage::English).has_value());
+    CHECK(read(files, languageFile) == "ja\n");
+    CHECK(cue::save_editor_language(files, dataRoot, cue::EditorLanguage::English).has_value());
+    language = cue::load_editor_language(files, dataRoot);
+    CHECK(language.has_value() && *language.try_value() == cue::EditorLanguage::English);
+    CHECK(write(files, languageFile, "invalid\n"));
+    CHECK(!cue::load_editor_language(files, dataRoot).has_value());
+    return 0;
+}
+
 /// @brief Missing の既定値、全構成、厳格な入力、原子的保存と Link 拒否をまとめて検証する
 int test_settings(cue::tests::TemporaryFiles &a_fixture)
 {
@@ -145,5 +169,6 @@ int main()
 {
     cue::tests::TemporaryFiles fixture;
     CHECK(fixture.isCreated && fixture.files);
+    CHECK(test_language(fixture) == 0);
     return test_settings(fixture);
 }

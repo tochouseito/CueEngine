@@ -51,26 +51,29 @@ void draw_empty_project_panels(const EditorUiContext &a_context)
     const float rightWidth = (std::min)(300.0f, width * 0.27f);
     set_initial_panel(viewport->WorkPos.x, top, leftWidth, panelHeight);
     {
-        PanelScope panel("Objects##EditorObjects", ImGuiWindowFlags_NoCollapse);
+        PanelScope panel(hierarchy_panel_title(a_context), ImGuiWindowFlags_NoCollapse);
         if (panel.is_visible())
-            ImGui::TextUnformatted("No project open");
+            ImGui::TextUnformatted(a_context.text("No project open", "プロジェクト未選択"));
     }
     set_initial_panel(viewport->WorkPos.x + width - rightWidth, top, rightWidth, panelHeight);
     {
-        PanelScope panel("Inspector##EditorInspector", ImGuiWindowFlags_NoCollapse);
+        PanelScope panel(a_context.text("Inspector##EditorInspector", "インスペクター###Inspector##EditorInspector"),
+                         ImGuiWindowFlags_NoCollapse);
         if (panel.is_visible())
-            ImGui::TextUnformatted("No project open");
+            ImGui::TextUnformatted(a_context.text("No project open", "プロジェクト未選択"));
     }
 }
 /// @brief Modal の選択・取消だけを返し、確認待ちの間も通常 Frame を進行させる
-void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRequested, bool &a_hasResponse,
+void draw_unsaved_confirmation(const EditorUiContext &a_context, bool &a_wasRequested, bool &a_hasResponse,
                                bool &a_shouldClose, std::vector<EditorAction> &a_actions)
 {
-    constexpr const char *k_popupName = "Save changes?##EditorUnsavedChanges";
+    const bool isBuild = a_context.isBuildConfirmationRequested;
+    const char *popupName = a_context.text("Save changes?##EditorUnsavedChanges",
+                                           "変更を保存しますか？###Save changes?##EditorUnsavedChanges");
     // reset は Context 外から呼ばれるため、表示中 Popup の回収を描画境界へ遅延する
     if (a_shouldClose)
     {
-        if (ImGui::BeginPopupModal(k_popupName))
+        if (ImGui::BeginPopupModal(popupName))
         {
             ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -78,9 +81,9 @@ void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRe
         a_shouldClose = false;
     }
     // Host が要求を取り消した場合も Popup を閉じ、次の確認を別の操作として受け付ける
-    if (!a_isRequested)
+    if (!a_context.isUnsavedConfirmationRequested)
     {
-        if (a_wasRequested && ImGui::BeginPopupModal(k_popupName))
+        if (a_wasRequested && ImGui::BeginPopupModal(popupName))
         {
             ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -91,7 +94,7 @@ void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRe
     }
     if (!a_wasRequested)
     {
-        ImGui::OpenPopup(k_popupName);
+        ImGui::OpenPopup(popupName);
         a_wasRequested = true;
     }
     // Host が返却済み Action を適用するまで、同じ確認を再生成・再送しない
@@ -101,7 +104,7 @@ void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRe
     const auto *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
     bool isOpen = true;
-    const bool isVisible = ImGui::BeginPopupModal(k_popupName, &isOpen,
+    const bool isVisible = ImGui::BeginPopupModal(popupName, &isOpen,
                                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                                       ImGuiWindowFlags_NoDocking);
     if (isVisible)
@@ -114,22 +117,29 @@ void draw_unsaved_confirmation(bool a_isRequested, bool a_isBuild, bool &a_wasRe
                 ImGui::EndPopup();
             }
         } popup;
-        ImGui::TextUnformatted("This scene has unsaved changes.");
-        ImGui::TextUnformatted(a_isBuild ? "Save before building the project startup scene?"
-                                         : "Save before continuing?");
-        if (a_isBuild)
-            ImGui::TextUnformatted("Build Saved Files keeps your unsaved edits in the Editor.");
+        ImGui::TextUnformatted(a_context.text("This scene has unsaved changes.", "シーンに未保存の変更があります。"));
+        ImGui::TextUnformatted(isBuild ? a_context.text("Save before building the project startup scene?",
+                                                        "起動シーンをビルドする前に、変更を保存しますか？")
+                                       : a_context.text("Save before continuing?", "続行する前に変更を保存しますか？"));
+        if (isBuild)
+            ImGui::TextUnformatted(
+                a_context.text("Build Saved Files keeps your unsaved edits in the Editor.",
+                               "保存済みファイルでビルドしても、編集中の変更は Editor に残ります。"));
         ImGui::Separator();
         std::optional<EditorActionKind> response;
-        if (ImGui::Button(a_isBuild ? "Save and Build" : "Save", {a_isBuild ? 150.0f : 100.0f, 0}))
+        if (ImGui::Button(isBuild ? a_context.text("Save and Build", "保存してビルド###Save and Build")
+                                  : a_context.text("Save", "保存###Save"),
+                          {isBuild ? 150.0f : 100.0f, 0}))
             response = EditorActionKind::ConfirmSaveChanges;
         ImGui::SameLine();
-        if (ImGui::Button(a_isBuild ? "Build Saved Files" : "Discard", {a_isBuild ? 150.0f : 100.0f, 0}))
+        if (ImGui::Button(isBuild ? a_context.text("Build Saved Files", "保存済みでビルド###Build Saved Files")
+                                  : a_context.text("Discard", "破棄###Discard"),
+                          {isBuild ? 150.0f : 100.0f, 0}))
             response = EditorActionKind::ConfirmDiscardChanges;
         ImGui::SameLine();
         // Modal の初回 Frame でも取消を観測する。Shortcut の前 Frame 予約や入力所有権へ依存しない
         const bool isCancelled = ImGui::IsKeyPressed(ImGuiKey_Escape, ImGuiInputFlags_None, ImGuiKeyOwner_Any);
-        if (ImGui::Button("Cancel", {100, 0}) || isCancelled)
+        if (ImGui::Button(a_context.text("Cancel", "キャンセル###Cancel"), {100, 0}) || isCancelled)
             response = EditorActionKind::CancelDocumentChange;
         if (response)
         {
@@ -162,7 +172,8 @@ bool is_script_name_input(std::string_view a_name) noexcept
 void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_state,
                           std::vector<EditorAction> &a_actions)
 {
-    constexpr const char *k_popupName = "New Script##EditorCreateScript";
+    const char *popupName =
+        a_context.text("New Script##EditorCreateScript", "スクリプトの作成###New Script##EditorCreateScript");
     if (!can_create_editor_script(a_context))
     {
         a_state.shouldCloseScriptCreationPopup |= a_state.isScriptCreationRequested;
@@ -174,7 +185,7 @@ void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_sta
     // Project 切替や外部からの操作開始で取り消した Popup を、ImGui Context のある境界で回収する
     if (a_state.shouldCloseScriptCreationPopup)
     {
-        if (ImGui::BeginPopupModal(k_popupName))
+        if (ImGui::BeginPopupModal(popupName))
         {
             ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -185,13 +196,13 @@ void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_sta
         return;
     if (a_state.shouldOpenScriptCreationPopup)
     {
-        ImGui::OpenPopup(k_popupName);
+        ImGui::OpenPopup(popupName);
         a_state.shouldOpenScriptCreationPopup = false;
     }
     const auto *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
     bool isOpen = true;
-    const bool isVisible = ImGui::BeginPopupModal(k_popupName, &isOpen,
+    const bool isVisible = ImGui::BeginPopupModal(popupName, &isOpen,
                                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                                       ImGuiWindowFlags_NoDocking);
     if (isVisible)
@@ -204,28 +215,30 @@ void draw_script_creation(const EditorUiContext &a_context, EditorUiState &a_sta
                 ImGui::EndPopup();
             }
         } popup;
-        ImGui::TextUnformatted("Create a C++ Behaviour with script registration.");
+        ImGui::TextUnformatted(a_context.text("Create a C++ Behaviour with script registration.",
+                                              "登録処理を含む C++ Behaviour を作成します。"));
         if (a_state.needsScriptNameFocus)
         {
             ImGui::SetKeyboardFocusHere();
             a_state.needsScriptNameFocus = false;
         }
         ImGui::SetNextItemWidth(320);
-        const bool isSubmitted = ImGui::InputText("Name", a_state.scriptName.data(), a_state.scriptName.size(),
-                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+        const bool isSubmitted = ImGui::InputText(a_context.text("Name", "名前###Name"), a_state.scriptName.data(),
+                                                  a_state.scriptName.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         const std::string_view name(a_state.scriptName.data());
         const bool isValid = is_script_name_input(name);
         ImGui::Text("Source/%s.h", a_state.scriptName.data());
         ImGui::Text("Source/%s.cpp", a_state.scriptName.data());
         if (!name.empty() && !isValid)
-            ImGui::TextUnformatted("Use ASCII letters, digits and underscores; start with a letter.");
+            ImGui::TextUnformatted(a_context.text("Use ASCII letters, digits and underscores; start with a letter.",
+                                                  "半角英字で始め、半角英数字とアンダースコアを使ってください。"));
         bool isCreated = false;
         {
             EditorDisabledScope disabled(!isValid);
-            isCreated = ImGui::Button("Create", {100, 0});
+            isCreated = ImGui::Button(a_context.text("Create", "作成###Create"), {100, 0});
         }
         ImGui::SameLine();
-        const bool isCancelled = ImGui::Button("Cancel", {100, 0}) ||
+        const bool isCancelled = ImGui::Button(a_context.text("Cancel", "キャンセル###Cancel"), {100, 0}) ||
                                  ImGui::IsKeyPressed(ImGuiKey_Escape, ImGuiInputFlags_None, ImGuiKeyOwner_Any);
         if (!isCancelled && (isCreated || isSubmitted) && isValid)
         {
@@ -339,8 +352,7 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
         if (context.isUnsavedConfirmationRequested || wasScriptCreationRequested)
             actions.clear();
         draw_script_creation(context, *m_state, actions);
-        draw_unsaved_confirmation(context.isUnsavedConfirmationRequested, context.isBuildConfirmationRequested,
-                                  m_state->wasUnsavedConfirmationRequested, m_state->hasUnsavedResponse,
+        draw_unsaved_confirmation(context, m_state->wasUnsavedConfirmationRequested, m_state->hasUnsavedResponse,
                                   m_state->shouldCloseUnsavedPopup, actions);
         return Result<std::vector<EditorAction>>::success(std::move(actions));
     }

@@ -16,6 +16,7 @@ namespace cue
 namespace
 {
 constexpr std::size_t k_maxSettingsBytes = 1024;
+constexpr std::string_view k_languageFile = "editor/language.txt";
 
 /// @brief 設定の形式と保存先の不正を、運用時に表示できる Error として返す
 Error invalid_settings(const char *a_reason)
@@ -91,6 +92,78 @@ Result<GameBuildConfiguration> parse_settings(std::string_view a_text, const Pro
     return ConfigurationResult::failure(invalid_settings("configuration"));
 }
 } // namespace
+
+Result<EditorLanguage> load_editor_language(IFileSystem &a_files, const Path &a_dataRoot)
+{
+    using LanguageResult = Result<EditorLanguage>;
+    try
+    {
+        auto file = a_dataRoot.join(k_languageFile);
+        if (!file.has_value())
+            return LanguageResult::failure(*file.try_error());
+        const auto &path = *file.try_value();
+        auto valid = validate_settings_path(a_files, path);
+        if (!valid.has_value())
+            return LanguageResult::failure(*valid.try_error());
+        auto info = a_files.stat(path);
+        if (!info.has_value())
+            return LanguageResult::failure(*info.try_error());
+        if (!*info.try_value())
+            return LanguageResult::success(EditorLanguage::English);
+
+        // 保存した言語コードだけを読み、手編集時の CRLF も受け付ける
+        auto bytes = a_files.read_all(path, 16);
+        if (!bytes.has_value())
+            return LanguageResult::failure(*bytes.try_error());
+        const auto &data = *bytes.try_value();
+        std::string_view code(data.empty() ? "" : reinterpret_cast<const char *>(data.data()), data.size());
+        if (code.ends_with('\n'))
+        {
+            code.remove_suffix(1);
+            if (code.ends_with('\r'))
+                code.remove_suffix(1);
+        }
+        if (code == "en")
+            return LanguageResult::success(EditorLanguage::English);
+        if (code == "ja")
+            return LanguageResult::success(EditorLanguage::Japanese);
+        return LanguageResult::failure(invalid_settings("language"));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return LanguageResult::failure({ErrorCategory::PlatformFailure, "EditorGameSettings.language.allocation"});
+    }
+}
+
+Result<void> save_editor_language(IFileSystem &a_files, const Path &a_dataRoot, EditorLanguage a_language)
+{
+    if (a_language != EditorLanguage::English && a_language != EditorLanguage::Japanese)
+        return Result<void>::failure(invalid_settings("language"));
+    try
+    {
+        auto file = a_dataRoot.join(k_languageFile);
+        if (!file.has_value())
+            return Result<void>::failure(*file.try_error());
+        const auto &path = *file.try_value();
+        auto valid = validate_settings_path(a_files, path);
+        if (!valid.has_value())
+            return valid;
+        auto created = a_files.create_directories(path.parent());
+        if (!created.has_value())
+            return created;
+        // 親 Directory の生成後も確認し、既存の設定は置換成功まで保持する
+        valid = validate_settings_path(a_files, path);
+        if (!valid.has_value())
+            return valid;
+        const std::string_view code = editor_text(a_language, "en\n", "ja\n");
+        auto saved = a_files.replace_file(path, std::as_bytes(std::span(code.data(), code.size())));
+        return saved.has_value() ? Result<void>::success() : Result<void>::failure(*saved.try_error());
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "EditorGameSettings.language.allocation"});
+    }
+}
 
 Result<GameBuildConfiguration> load_editor_game_configuration(IFileSystem &a_files, const Project &a_project)
 {

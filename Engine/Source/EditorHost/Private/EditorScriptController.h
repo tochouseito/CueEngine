@@ -15,6 +15,7 @@
 namespace cue
 {
 class IFileSystem;
+enum class EditorLanguage;
 /// @brief Host が所有する接続を操作中だけ借用する。Callback は Controller より長く有効にする
 struct EditorScriptCallbacks final
 {
@@ -50,6 +51,8 @@ class EditorScriptController final
     [[nodiscard]] Result<void> poll();
     /// @brief Owner Thread が次の操作まで有効な表示値を借用する
     [[nodiscard]] const EditorScriptStatus &status() const noexcept;
+    /// @brief 現在の状態文を指定言語で返す。次の操作まで借用できる
+    [[nodiscard]] std::string_view status_message(EditorLanguage a_language) const noexcept;
 
   private:
     enum class Request
@@ -66,7 +69,7 @@ class EditorScriptController final
     /// @brief 回復可能な要求失敗を状態へ保持し、関連する待機を取り消す
     [[nodiscard]] Result<void> fail(Error a_error);
     /// @brief 画面表示と Busy を一つの境界で更新する
-    void transition(EditorScriptState a_state, const char *a_message, bool a_busy);
+    void transition(EditorScriptState a_state, const char *a_english, const char *a_japanese, bool a_busy);
     /// @brief 所有 Scene の Debug 子起動を要求する
     [[nodiscard]] Result<void> start_debug_child();
     const Project &m_project;
@@ -76,6 +79,7 @@ class EditorScriptController final
     EditorScriptCallbacks m_callbacks;
     std::thread::id m_owner;
     EditorScriptStatus m_status;
+    const char *m_statusJapanese = "";
     Request m_request = Request::OpenFolder;
     Path m_workspace;
     Path m_source;

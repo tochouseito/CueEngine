@@ -56,22 +56,24 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
 [[nodiscard]] Result<void> build_test_window(const FrameTimingInfo &a_frameTiming, const ImGuiTimingInfo &a_uiTiming,
                                              const MainFrameGraphPerformance &a_graphPerformance,
                                              const InputLatencyInfo &a_inputLatency, const Project *a_project,
-                                             const Scene *a_scene)
+                                             const Scene *a_scene, EditorLanguage a_language)
 {
+    const auto text = [a_language](const char *a_english, const char *a_japanese)
+    { return editor_text(a_language, a_english, a_japanese); };
     // 初回の位置と寸法だけ指定し、以後の移動と Layout 保存を妨げない
     ImGui::SetNextWindowPos({32.0f, 32.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({640.0f, 480.0f}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Test"))
+    if (ImGui::Begin(text("Test", "診断###Test")))
     {
-        ImGui::Text("TEST");
+        ImGui::Text(text("TEST", "診断情報"));
         // Project 設定は Host が所有し、UI へは不変の表示値だけを借用する
         if (a_project)
         {
-            ImGui::Text("Project: %s", a_project->descriptor().name.c_str());
+            ImGui::Text(text("Project: %s", "プロジェクト: %s"), a_project->descriptor().name.c_str());
         }
         if (a_scene)
-            ImGui::Text("Scene: %s (%zu objects)", a_scene->descriptor().name.c_str(),
-                        a_scene->descriptor().objects.size());
+            ImGui::Text(text("Scene: %s (%zu objects)", "シーン: %s（%zu オブジェクト）"),
+                        a_scene->descriptor().name.c_str(), a_scene->descriptor().objects.size());
         // 開始制限後も Render 完了時刻は揺れるため、直近の平均間隔から完了頻度を求める
         // 各 Frame の FPS を平均せず、Sample 数 / 合計経過時間と等価な値を使う
         const auto &intervals = a_frameTiming.frameInterval;
@@ -79,7 +81,9 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         const auto interval = std::chrono::duration<double>(intervals.averageDuration).count();
         if (intervals.sampleCount != 0 && interval > 0.0)
         {
-            ImGui::Text("FrameController FPS: %.1f (avg %zu intervals)", 1.0 / interval, intervals.sampleCount);
+            ImGui::Text(
+                text("FrameController FPS: %.1f (avg %zu intervals)", "FrameController FPS: %.1f（%zu 区間の平均）"),
+                1.0 / interval, intervals.sampleCount);
         }
         else
         {
@@ -90,65 +94,79 @@ void show_timing(const char *a_name, const TimingStatistics &a_statistics)
         const auto lastInterval = std::chrono::duration<double>(intervals.lastDuration).count();
         if (intervals.sampleCount != 0 && lastInterval > 0.0)
         {
-            ImGui::Text("FrameController FPS (instant): %.1f", 1.0 / lastInterval);
+            ImGui::Text(text("FrameController FPS (instant): %.1f", "FrameController FPS（瞬間）: %.1f"),
+                        1.0 / lastInterval);
         }
         else
         {
-            ImGui::Text("FrameController FPS (instant): --");
+            ImGui::Text(text("FrameController FPS (instant): --", "FrameController FPS（瞬間）: --"));
         }
         // GPU 時間と混同しないよう CPU の経過時間であることと集計枠数を表示する
-        ImGui::Text("CPU timings (last 120 samples)");
+        ImGui::Text(text("CPU timings (last 120 samples)", "CPU 計測（直近 120 件）"));
         show_timing("Main", a_frameTiming.main);
         show_timing("Update", a_frameTiming.update);
         show_timing("Render", a_frameTiming.render);
         // 平均 FPS だけでは見えない Frame Pacing の揺れを実際の完了間隔で確認する
-        show_timing("Frame interval", intervals);
-        show_timing("FPS wait", a_frameTiming.limitWait);
-        show_timing("Post-Present readiness wait", a_frameTiming.presentationWait);
-        show_timing("Cycle interval", a_frameTiming.cycleInterval);
-        show_timing("Frame adopted -> Render start", a_frameTiming.inputToRenderStart);
-        show_timing("Frame adopted -> CPU Render complete", a_frameTiming.inputToRenderComplete);
-        ImGui::TextUnformatted("Input event latency (last 120 reflected events, CPU only)");
-        ImGui::TextUnformatted("Origin: Window message dispatch; Present return is not screen display");
-        show_timing("Input -> Frame capture", a_inputLatency.toFrameCapture);
-        show_timing("Input -> Render start", a_inputLatency.toRenderStart);
-        show_timing("Input -> Present call", a_inputLatency.toPresentStart);
-        show_timing("Input -> Present return", a_inputLatency.toPresentReturn);
-        show_timing("Input -> CPU Render complete", a_inputLatency.toCpuComplete);
-        ImGui::Text("Input observed / reflected / presented: %llu / %llu / %llu",
+        show_timing(text("Frame interval", "フレーム間隔"), intervals);
+        show_timing(text("FPS wait", "FPS 制限の待機"), a_frameTiming.limitWait);
+        show_timing(text("Post-Present readiness wait", "Present 後の準備待ち"), a_frameTiming.presentationWait);
+        show_timing(text("Cycle interval", "サイクル間隔"), a_frameTiming.cycleInterval);
+        show_timing(text("Frame adopted -> Render start", "フレーム採用 → Render 開始"),
+                    a_frameTiming.inputToRenderStart);
+        show_timing(text("Frame adopted -> CPU Render complete", "フレーム採用 → CPU Render 完了"),
+                    a_frameTiming.inputToRenderComplete);
+        ImGui::TextUnformatted(text("Input event latency (last 120 reflected events, CPU only)",
+                                    "入力遅延（直近 120 件の反映済みイベント、CPU のみ）"));
+        ImGui::TextUnformatted(
+            text("Origin: Window message dispatch; Present return is not screen display",
+                 "計測起点: ウィンドウメッセージの配信。実際の表示には Present 復帰後の時間も含まれます。"));
+        show_timing(text("Input -> Frame capture", "入力 → フレーム採取"), a_inputLatency.toFrameCapture);
+        show_timing(text("Input -> Render start", "入力 → Render 開始"), a_inputLatency.toRenderStart);
+        show_timing(text("Input -> Present call", "入力 → Present 呼び出し"), a_inputLatency.toPresentStart);
+        show_timing(text("Input -> Present return", "入力 → Present 復帰"), a_inputLatency.toPresentReturn);
+        show_timing(text("Input -> CPU Render complete", "入力 → CPU Render 完了"), a_inputLatency.toCpuComplete);
+        ImGui::Text(text("Input observed / reflected / presented: %llu / %llu / %llu",
+                         "入力の検出 / 反映 / 提出: %llu / %llu / %llu"),
                     static_cast<unsigned long long>(a_inputLatency.observedEvents),
                     static_cast<unsigned long long>(a_inputLatency.assignedEvents),
                     static_cast<unsigned long long>(a_inputLatency.presentedEvents));
-        ImGui::Text("Input skipped / invalid: %llu / %llu; last event / frame / present: %llu / %llu / %llu",
+        ImGui::Text(text("Input skipped / invalid: %llu / %llu; last event / frame / present: %llu / %llu / %llu",
+                         "スキップ / 無効な入力: %llu / %llu、最新のイベント / フレーム / Present: %llu / %llu / %llu"),
                     static_cast<unsigned long long>(a_inputLatency.skippedEvents),
                     static_cast<unsigned long long>(a_inputLatency.invalidEvents),
                     static_cast<unsigned long long>(a_inputLatency.lastEventId),
                     static_cast<unsigned long long>(a_inputLatency.lastFrame),
                     static_cast<unsigned long long>(a_inputLatency.lastPresent));
-        show_timing("UI build", a_uiTiming.uiBuild);
-        show_timing("Snapshot copy", a_uiTiming.snapshotCopy);
-        show_timing("ImGui lock wait", a_uiTiming.contextWait);
-        show_timing("ImGui GPU fence wait", a_uiTiming.gpuWait);
-        show_timing("Graph record", a_graphPerformance.record);
-        show_timing("Graph frame fence wait", a_graphPerformance.frameWait);
-        show_timing("Present total", a_graphPerformance.present);
+        show_timing(text("UI build", "UI 構築"), a_uiTiming.uiBuild);
+        show_timing(text("Snapshot copy", "スナップショットのコピー"), a_uiTiming.snapshotCopy);
+        show_timing(text("ImGui lock wait", "ImGui ロック待ち"), a_uiTiming.contextWait);
+        show_timing(text("ImGui GPU fence wait", "ImGui GPU フェンス待ち"), a_uiTiming.gpuWait);
+        show_timing(text("Graph record", "グラフのコマンド記録"), a_graphPerformance.record);
+        show_timing(text("Graph frame fence wait", "グラフのフレームフェンス待ち"), a_graphPerformance.frameWait);
+        show_timing(text("Present total", "Present 全体"), a_graphPerformance.present);
         show_timing("Present API", a_graphPerformance.presentApi);
-        show_timing("Presentation statistics", a_graphPerformance.presentationStatistics);
-        show_timing("Main admission wait (per check)", a_graphPerformance.admissionWait);
-        show_timing("Main GPU wait (per check)", a_graphPerformance.mainGpuWait);
-        show_timing("Main DXGI wait (per check)", a_graphPerformance.mainPresentationWait);
-        show_timing("Main resource wait (per check)", a_graphPerformance.mainResourceWait);
-        show_timing("GPU queue limit wait", a_graphPerformance.gpuQueueWait);
-        show_timing("Pre-record readiness wait", a_graphPerformance.presentationReadyWait);
-        show_timing("Present return interval", a_graphPerformance.presentInterval);
-        show_timing("Display interval (DXGI derived)", a_graphPerformance.displayInterval);
-        ImGui::Text("Unfinished GPU frames: %u / peak %u", a_graphPerformance.unfinishedGpuFrames,
-                    a_graphPerformance.peakUnfinishedGpuFrames);
-        ImGui::Text("DXGI display timing: %s", !a_graphPerformance.presentation.hasDisplayTiming ? "unavailable"
-                                               : a_graphPerformance.presentation.isDisplayTimeEstimated
-                                                   ? "estimated from refresh"
-                                                   : "QPC sample");
-        ImGui::Text("GPU timings (last 120 completed samples)");
+        show_timing(text("Presentation statistics", "表示統計の取得"), a_graphPerformance.presentationStatistics);
+        show_timing(text("Main admission wait (per check)", "Main の開始待ち（確認単位）"),
+                    a_graphPerformance.admissionWait);
+        show_timing(text("Main GPU wait (per check)", "Main の GPU 待ち（確認単位）"), a_graphPerformance.mainGpuWait);
+        show_timing(text("Main DXGI wait (per check)", "Main の DXGI 待ち（確認単位）"),
+                    a_graphPerformance.mainPresentationWait);
+        show_timing(text("Main resource wait (per check)", "Main のリソース待ち（確認単位）"),
+                    a_graphPerformance.mainResourceWait);
+        show_timing(text("GPU queue limit wait", "GPU キュー上限の待機"), a_graphPerformance.gpuQueueWait);
+        show_timing(text("Pre-record readiness wait", "コマンド記録前の準備待ち"),
+                    a_graphPerformance.presentationReadyWait);
+        show_timing(text("Present return interval", "Present 復帰の間隔"), a_graphPerformance.presentInterval);
+        show_timing(text("Display interval (DXGI derived)", "表示間隔（DXGI から算出）"),
+                    a_graphPerformance.displayInterval);
+        ImGui::Text(text("Unfinished GPU frames: %u / peak %u", "GPU 未完了フレーム数: %u / 最大 %u"),
+                    a_graphPerformance.unfinishedGpuFrames, a_graphPerformance.peakUnfinishedGpuFrames);
+        ImGui::Text(text("DXGI display timing: %s", "DXGI の表示時刻: %s"),
+                    !a_graphPerformance.presentation.hasDisplayTiming ? text("unavailable", "取得不可")
+                    : a_graphPerformance.presentation.isDisplayTimeEstimated
+                        ? text("estimated from refresh", "リフレッシュ間隔から推定")
+                        : text("QPC sample", "QPC の計測値"));
+        ImGui::Text(text("GPU timings (last 120 completed samples)", "GPU 計測（直近 120 件の完了分）"));
         // GPU 時間は回収済み標本のある Pass だけを表示する
         for (const auto &pass : a_graphPerformance.gpuPasses)
         {
@@ -211,6 +229,7 @@ struct EditorHost::EditingState final
     std::vector<EditorAction> actions;
     std::string error;
     std::string notice;
+    EditorLanguage language = EditorLanguage::English;
     bool isCloseConfirmed = false;
     bool isDiagnosticsVisible = false;
     std::optional<PendingChange> pendingChange;
@@ -258,7 +277,8 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                                                         // UI 開始前に取得した同じ計測 Snapshot で FPS と区間を表示する
                                                         auto result = build_test_window(
                                                             m_frameTiming, m_uiTiming, m_graphPerformance,
-                                                            m_inputLatency, project(), scene());
+                                                            m_inputLatency, project(), scene(),
+                                                            m_editing ? m_editing->language : EditorLanguage::English);
                                                         return result.has_value() ? build_performance_settings_ui()
                                                                                   : std::move(result);
                                                     }}),
@@ -452,8 +472,7 @@ Result<void> EditorHost::initialize()
         else
             m_editing->buildStatusText = target.try_error()->operation;
         if (!m_gameBuildService)
-            m_editing->buildStatusText =
-                m_gameBuildUnavailableReason.empty() ? "Build service is not configured" : m_gameBuildUnavailableReason;
+            m_editing->buildStatusText = m_gameBuildUnavailableReason;
         m_scene.reset();
     }
     auto windows = m_windows.initialize();
@@ -491,8 +510,7 @@ Result<void> EditorHost::initialize()
             m_editing->error = observed.try_error()->operation;
     }
     if (windows.has_value() && m_editing && !m_editing->scripts)
-        m_editing->scriptStatusText =
-            m_ideUnavailableReason.empty() ? "IDE service is not configured" : m_ideUnavailableReason;
+        m_editing->scriptStatusText = m_ideUnavailableReason;
     if (windows.has_value() && m_editing && has_play_configuration())
     {
         // 下位 Host の FileSystem が利用可能になってから検証する。未 Build でも Editor は継続する
@@ -775,7 +793,9 @@ Result<void> EditorHost::apply_project_change()
     editing.error = std::move(settingsError);
     editing.notice.clear();
     if (isGitReload)
-        editing.notice = "Project reloaded after Git checkout. Unsaved edits were discarded.";
+        editing.notice =
+            editor_text(editing.language, "Project reloaded after Git checkout. Unsaved edits were discarded.",
+                        "Git の切り替え後にプロジェクトを再読み込みしました。未保存の編集は破棄されました。");
     editing.buildStatusText.clear();
     editing.scriptStatusText.clear();
     auto target = current_native_game_build_target();
@@ -843,7 +863,8 @@ void EditorHost::poll_git_reload()
         editing.actions.clear();
         editing.ui->reset();
         editing.error.clear();
-        editing.notice = "Git checkout detected. Reloading project...";
+        editing.notice = editor_text(editing.language, "Git checkout detected. Reloading project...",
+                                     "Git の切り替えを検出しました。プロジェクトを再読み込み中...");
         auto title = set_editor_project_title(*editing.window, {});
         if (!title.has_value())
             editing.error = title.try_error()->operation;
@@ -868,7 +889,8 @@ void EditorHost::poll_git_reload()
     if (has_active_project_operations())
     {
         if (m_gameBuildService && m_gameBuildService->status().isApplicationRunning)
-            editing.notice = "Close the running game to finish reloading the project.";
+            editing.notice = editor_text(editing.language, "Close the running game to finish reloading the project.",
+                                         "実行中のゲームを閉じると、プロジェクトの再読み込みを再開します。");
         return;
     }
     auto prepared = prepare_project_change(m_project->file(), true);
@@ -1082,7 +1104,15 @@ Result<void> EditorHost::initialize_ui(Window &a_window)
     }
     m_imgui = result.take_value();
     if (m_editing)
+    {
         m_editing->window = &a_window;
+        // Project を開く前から、前回の Editor 言語で表示する
+        auto language = load_editor_language(*files, paths->dataRoot);
+        if (language.has_value())
+            m_editing->language = language.take_value();
+        else
+            m_editing->error = language.try_error()->operation;
+    }
     return Result<void>::success();
 }
 
@@ -1130,13 +1160,12 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             // UI は不変 Document を借り、操作要求だけを所有値として返す
             const auto display = ImGui::GetIO().DisplaySize;
             EditorUiContext context;
+            context.language = m_editing->language;
             context.sceneTextureId = k_sceneViewTextureId;
             context.displayWidth = display.x;
             context.displayHeight = display.y;
             context.errorText = m_editing->error;
             context.noticeText = m_editing->notice;
-            if (m_editing->scripts && m_editing->scripts->status().isBusy)
-                context.noticeText = m_editing->scriptStatusText;
             context.isSceneViewEnabled = m_hasSceneView;
             context.isProjectOpen = m_editing->application && (!m_enableProjectOpening || m_project);
             context.canOpenProject = can_open_project();
@@ -1144,6 +1173,8 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.isUnsavedConfirmationRequested = m_editing->pendingChange.has_value();
             context.isBuildConfirmationRequested = has_pending_game_build_confirmation();
             context.script.statusText = m_editing->scriptStatusText;
+            if (!m_editing->scripts && context.script.statusText.empty())
+                context.script.statusText = context.text("IDE service is not configured", "IDE 連携は設定されていません");
             context.script.configuration = m_editing->gameConfiguration;
             context.script.canSelectConfiguration = can_select_game_configuration();
             context.script.canCreate = can_select_game_configuration();
@@ -1151,6 +1182,9 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.build.platforms = supported_game_build_platforms();
             context.build.selectedTarget = m_editing->buildTarget;
             context.build.statusText = m_editing->buildStatusText;
+            if (!m_gameBuildService && context.build.statusText.empty())
+                context.build.statusText =
+                    context.text("Build service is not configured", "ビルド機能は設定されていません");
             if (m_project && m_project->startup_scene_file())
                 context.build.startupScene = m_project->startup_scene_file()->utf8();
             context.canPlay = has_play_configuration() && !needs_git_script_build();
@@ -1313,7 +1347,7 @@ Result<bool> EditorHost::save_editor_scene(bool a_chooseFile)
     else
     {
         auto chosen = choose_scene_file(*editing.window, true, app.document().file(),
-                                        m_project ? &m_project->content_directory() : nullptr);
+                                        m_project ? &m_project->content_directory() : nullptr, editing.language);
         if (!chosen.has_value())
             return Result<bool>::failure(*chosen.try_error());
         destination = chosen.take_value();
@@ -1330,7 +1364,7 @@ Result<bool> EditorHost::save_editor_scene(bool a_chooseFile)
     if (!saved.has_value())
         return Result<bool>::failure(*saved.try_error());
     // 通常の保存成否は公開成功で判定し、電源断耐性の保証と混同しない
-    editing.notice = "Scene saved";
+    editing.notice = editor_text(editing.language, "Scene saved", "シーンを保存しました");
     editing.ui->reset();
     return Result<bool>::success(true);
 }
@@ -1474,7 +1508,7 @@ void EditorHost::poll_script_operations()
     if (!progressed.has_value())
         m_editing->error = progressed.try_error()->operation;
     const auto &status = m_editing->scripts->status();
-    m_editing->scriptStatusText = status.message;
+    m_editing->scriptStatusText = m_editing->scripts->status_message(m_editing->language);
     if (status.error)
         m_editing->scriptStatusText += ": " + status.error->operation;
 }
@@ -1528,7 +1562,8 @@ Result<void> EditorHost::start_game_build()
     if (started.has_value())
     {
         m_editing->error.clear();
-        m_editing->notice = "Build started from saved project files";
+        m_editing->notice = editor_text(m_editing->language, "Build started from saved project files",
+                                        "保存済みファイルでビルドを開始しました");
     }
     return started;
 }
@@ -1602,32 +1637,43 @@ void EditorHost::poll_game_build()
         m_editing->error = polled.try_error()->operation;
     const auto &status = m_gameBuildService->status();
     const bool isConfigureOnly = status.purpose == GameBuildPurpose::IdeProject;
-    const char *label = "Ready";
+    const char *label = editor_text(m_editing->language, "Ready", "準備完了");
     switch (status.state)
     {
     case GameBuildState::Idle:
         break;
     case GameBuildState::Configuring:
-        label = "Configuring";
+        label = editor_text(m_editing->language, "Configuring CMake...", "CMake を構成中...");
         break;
     case GameBuildState::Building:
-        label = "Building and packaging";
+        label = status.purpose == GameBuildPurpose::ScriptModule
+                    ? editor_text(m_editing->language, "Building scripts...", "スクリプトをビルド中...")
+                    : editor_text(m_editing->language, "Building and packaging game...",
+                                  "ゲームをビルド・パッケージ化中...");
         break;
     case GameBuildState::Succeeded:
-        label = isConfigureOnly ? "CMake configuration succeeded" : "Build succeeded";
+        label = isConfigureOnly
+                    ? editor_text(m_editing->language, "CMake configuration succeeded", "CMake の構成が完了しました")
+                    : editor_text(m_editing->language, "Build succeeded", "ビルドが完了しました");
         break;
     case GameBuildState::Failed:
-        label = isConfigureOnly ? "CMake configuration failed" : "Build failed";
+        label = isConfigureOnly
+                    ? editor_text(m_editing->language, "CMake configuration failed", "CMake の構成に失敗しました")
+                    : editor_text(m_editing->language, "Build failed", "ビルドに失敗しました");
         break;
     case GameBuildState::Cancelled:
-        label = isConfigureOnly ? "CMake configuration cancelled" : "Build cancelled";
+        label = isConfigureOnly
+                    ? editor_text(m_editing->language, "CMake configuration cancelled", "CMake の構成を中止しました")
+                    : editor_text(m_editing->language, "Build cancelled", "ビルドを中止しました");
         break;
     }
     m_editing->buildStatusText = label;
     if (status.error)
         m_editing->buildStatusText += ": " + status.error->operation;
     if (status.applicationExitCode)
-        m_editing->buildStatusText += " / Game exited: " + std::to_string(*status.applicationExitCode);
+        m_editing->buildStatusText +=
+            std::string(editor_text(m_editing->language, " / Game exited: ", " / ゲームの終了コード: ")) +
+            std::to_string(*status.applicationExitCode);
 }
 
 bool EditorHost::has_play_configuration() const noexcept
@@ -1678,7 +1724,10 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
     if (!can_select_game_configuration() || !m_windows.file_system())
         return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.create_script.busy"});
     // 作成の確定と構成生成を分け、生成失敗後も保存した Source から再試行できるようにする
-    auto notice = "Created Source/" + std::string(a_name) + ".h and .cpp - Build Scripts required";
+    auto notice = std::string(editor_text(m_editing->language, "Created Source/", "作成: Source/")) +
+                  std::string(a_name) +
+                  editor_text(m_editing->language, ".h and .cpp - Build Scripts required",
+                              ".h と .cpp。スクリプトのビルドが必要です。");
     auto created = create_script_source(*m_windows.file_system(), *m_project, a_name);
     if (!created.has_value())
         return Result<void>::failure(*created.try_error());
@@ -1692,7 +1741,8 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
     m_editing->notice = std::move(notice);
     if (!m_gameBuildService)
     {
-        m_editing->error = "Script saved. CMake configuration unavailable";
+        m_editing->error = editor_text(m_editing->language, "Script saved. CMake configuration unavailable",
+                                       "スクリプトを保存しました。CMake の構成は利用できません。");
         return Result<void>::success();
     }
     auto target = current_native_game_build_target();
@@ -1703,7 +1753,10 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
                           ? m_gameBuildService->start(*m_project, *target.try_value(), GameBuildPurpose::IdeProject)
                           : Result<void>::failure(*target.try_error());
     if (!configured.has_value())
-        m_editing->error = "Script saved. CMake configuration could not start: " + configured.try_error()->operation;
+        m_editing->error =
+            std::string(editor_text(m_editing->language, "Script saved. CMake configuration could not start: ",
+                                    "スクリプトを保存しました。CMake の構成を開始できませんでした: ")) +
+            configured.try_error()->operation;
     return Result<void>::success();
 }
 
@@ -1730,9 +1783,12 @@ Result<void> EditorHost::request_game_configuration(GameBuildConfiguration a_con
         prepared = m_editing->play->describe();
     if (!prepared.has_value())
         m_editing->notice =
-            "Game: " + std::string(game_build_configuration_name(a_configuration)) + " - Build Scripts required";
+            std::string(editor_text(m_editing->language, "Game: ", "ゲーム構成: ")) +
+            std::string(game_build_configuration_name(a_configuration)) +
+            editor_text(m_editing->language, " - Build Scripts required", "。スクリプトのビルドが必要です。");
     else
-        m_editing->notice = "Game: " + std::string(game_build_configuration_name(a_configuration));
+        m_editing->notice = std::string(editor_text(m_editing->language, "Game: ", "ゲーム構成: ")) +
+                            std::string(game_build_configuration_name(a_configuration));
     return Result<void>::success();
 }
 
@@ -1918,9 +1974,9 @@ Result<void> EditorHost::apply_editor_actions()
         editing.notice.clear();
         auto result = [&]() -> Result<void>
         {
-            // 未選択画面は文書を持たず、開く・終了・診断表示だけを受け付ける
+            // 未選択画面でも文書に依存しない操作は受け付ける
             if (!app && action.kind != EditorActionKind::OpenProject && action.kind != EditorActionKind::Exit &&
-                action.kind != EditorActionKind::ToggleDiagnostics)
+                action.kind != EditorActionKind::ToggleDiagnostics && action.kind != EditorActionKind::SetLanguage)
                 return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.action.no_project"});
             const bool isPlaying = editing.play && (editing.play->state() == PlayState::Starting ||
                                                     editing.play->state() == PlayState::Running ||
@@ -1934,10 +1990,23 @@ Result<void> EditorHost::apply_editor_actions()
                 action.kind != EditorActionKind::SetScriptProperty && action.kind != EditorActionKind::SelectObject &&
                 action.kind != EditorActionKind::ToggleDiagnostics && action.kind != EditorActionKind::Exit &&
                 action.kind != EditorActionKind::OpenIde && action.kind != EditorActionKind::OpenScriptSource &&
-                action.kind != EditorActionKind::CancelScriptOperation && !isConfirmation)
+                action.kind != EditorActionKind::CancelScriptOperation &&
+                action.kind != EditorActionKind::SetLanguage && !isConfirmation)
                 return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.edit_locked"});
             switch (action.kind)
             {
+            case EditorActionKind::SetLanguage:
+            {
+                const auto *paths = m_windows.storage_paths();
+                auto *files = m_windows.file_system();
+                if (!paths || !files)
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.file_system"});
+                // 保存に成功した言語を次 Frame から使用する
+                auto saved = save_editor_language(*files, paths->dataRoot, action.language);
+                if (saved.has_value())
+                    editing.language = action.language;
+                return saved;
+            }
             case EditorActionKind::SetGameConfiguration:
                 return request_game_configuration(action.gameConfiguration);
             case EditorActionKind::CreateScript:
@@ -1961,7 +2030,8 @@ Result<void> EditorHost::apply_editor_actions()
                     return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.project.busy"});
                 auto chosen = m_projectDialog
                                   ? m_projectDialog(*editing.window, m_project ? &m_project->root() : nullptr)
-                                  : choose_project_folder(*editing.window, m_project ? &m_project->root() : nullptr);
+                                  : choose_project_folder(*editing.window, m_project ? &m_project->root() : nullptr,
+                                                          editing.language);
                 if (!chosen.has_value())
                     return Result<void>::failure(*chosen.try_error());
                 if (!*chosen.try_value())
@@ -2117,8 +2187,9 @@ Result<void> EditorHost::apply_editor_actions()
                 std::optional<Path> file;
                 if (action.kind == EditorActionKind::OpenScene)
                 {
-                    auto chosen = choose_scene_file(*editing.window, false, app->document().file(),
-                                                    m_project ? &m_project->content_directory() : nullptr);
+                    auto chosen =
+                        choose_scene_file(*editing.window, false, app->document().file(),
+                                          m_project ? &m_project->content_directory() : nullptr, editing.language);
                     if (!chosen.has_value())
                         return Result<void>::failure(*chosen.try_error());
                     file = chosen.take_value();
@@ -2280,76 +2351,93 @@ Result<void> EditorHost::build_performance_settings_ui()
     {
         m_settingsDraft = *applied.try_value();
     }
-    ImGui::Begin("Test");
-    if (ImGui::CollapsingHeader("Performance settings"))
+    const auto language = m_editing ? m_editing->language : EditorLanguage::English;
+    const auto text = [language](const char *a_english, const char *a_japanese)
+    { return editor_text(language, a_english, a_japanese); };
+    ImGui::Begin(text("Test", "診断###Test"));
+    if (ImGui::CollapsingHeader(text("Performance settings", "パフォーマンス設定###Performance settings")))
     {
         auto &settings = *m_settingsDraft;
         auto &frame = settings.frame;
         auto &gpu = settings.gpu;
         auto &present = settings.presentation;
         const bool isPending = m_windows.has_pending_performance_settings();
-        ImGui::Text("Active request: %u FPS / buffering %u", applied.try_value()->frame.maxFps,
-                    applied.try_value()->gpu.resourceFrameCount);
-        ImGui::Text("Derived: workers %s / CPU slots %u / update lead %u",
+        ImGui::Text(text("Active request: %u FPS / buffering %u", "現在の要求値: %u FPS / バッファリング %u"),
+                    applied.try_value()->frame.maxFps, applied.try_value()->gpu.resourceFrameCount);
+        ImGui::Text(text("Derived: workers %s / CPU slots %u / update lead %u",
+                         "要求から算出: ワーカー %s / CPU 枠 %u / 更新先行数 %u"),
                     applied.try_value()->frame.useWorkerThreads ? "ON" : "OFF",
                     applied.try_value()->frame.maxFramesInFlight, update_lead_frames(applied.try_value()->frame));
-        ImGui::Text("Unfinished GPU limit: %u", applied.try_value()->gpu.maxFramesInFlight);
-        ImGui::TextUnformatted(isPending ? "Applying at frame boundary..." : "Ready");
+        ImGui::Text(text("Unfinished GPU limit: %u", "GPU 未完了フレーム上限: %u"),
+                    applied.try_value()->gpu.maxFramesInFlight);
+        ImGui::TextUnformatted(isPending ? text("Applying at frame boundary...", "フレーム境界での適用を待機中...")
+                                         : text("Ready", "準備完了"));
         // 要求値と実際に採用された同期条件を別々に表示する
         auto status = m_windows.performance_settings_status();
         if (status.has_value())
         {
             const auto &requested = status.try_value()->requested.frame;
             const auto &effective = status.try_value()->effective.frame;
-            ImGui::Text("Effective: workers %s / CPU slots %u / update lead %u",
+            ImGui::Text(text("Effective: workers %s / CPU slots %u / update lead %u",
+                             "実行中: ワーカー %s / CPU 枠 %u / 更新先行数 %u"),
                         effective.useWorkerThreads ? "ON" : "OFF", effective.maxFramesInFlight,
                         effective.maxUpdateLeadFrames.value_or(0));
-            ImGui::Text("Spin requested: %.3f us / effective: %.3f us",
-                        std::chrono::duration<double, std::micro>(requested.spinDuration).count(),
-                        std::chrono::duration<double, std::micro>(effective.spinDuration).count());
-            ImGui::Text("Prediction slack requested: %.3f us / effective: %.3f us",
+            ImGui::Text(
+                text("Spin requested: %.3f us / effective: %.3f us", "スピン待機の要求値: %.3f us / 適用値: %.3f us"),
+                std::chrono::duration<double, std::micro>(requested.spinDuration).count(),
+                std::chrono::duration<double, std::micro>(effective.spinDuration).count());
+            ImGui::Text(text("Prediction slack requested: %.3f us / effective: %.3f us",
+                             "表示予測の余裕時間の要求値: %.3f us / 適用値: %.3f us"),
                         std::chrono::duration<double, std::micro>(requested.predictionSlack).count(),
                         std::chrono::duration<double, std::micro>(effective.predictionSlack).count());
             const auto &queued = status.try_value()->effective.presentation.maxQueuedFrames;
             if (queued)
             {
-                ImGui::Text("Display queue requested: %u / effective: %u",
-                            status.try_value()->requested.presentation.maxQueuedFrames, *queued);
+                ImGui::Text(
+                    text("Display queue requested: %u / effective: %u", "表示キュー上限の要求値: %u / 適用値: %u"),
+                    status.try_value()->requested.presentation.maxQueuedFrames, *queued);
             }
             else
             {
-                ImGui::Text("Display queue requested: %u / effective: inactive (Waitable OFF)",
+                ImGui::Text(text("Display queue requested: %u / effective: inactive (Waitable OFF)",
+                                 "表示キュー上限の要求値: %u / 適用なし（待機可能な表示が無効）"),
                             status.try_value()->requested.presentation.maxQueuedFrames);
             }
-            constexpr const char *k_modes[] = {"Fixed period", "Presentation ready", "Display prediction"};
-            ImGui::Text("Sync requested: %s / effective: %s",
-                        k_modes[static_cast<int>(status.try_value()->requested.frame.syncMode)],
-                        k_modes[static_cast<int>(status.try_value()->effective.frame.syncMode)]);
+            const char *modes[] = {text("Fixed period", "固定間隔"), text("Presentation ready", "表示準備待ち"),
+                                   text("Display prediction", "表示時刻を予測")};
+            ImGui::Text(text("Sync requested: %s / effective: %s", "同期の要求値: %s / 適用値: %s"),
+                        modes[static_cast<int>(status.try_value()->requested.frame.syncMode)],
+                        modes[static_cast<int>(status.try_value()->effective.frame.syncMode)]);
             if (status.try_value()->syncFallback != FrameSyncFallback::None)
             {
-                ImGui::TextUnformatted(status.try_value()->syncFallback == FrameSyncFallback::DisplayTimingUnavailable
-                                           ? "Fallback: prediction needs VSync and fresh DXGI statistics"
-                                           : "Fallback: waitable presentation unavailable");
+                ImGui::TextUnformatted(
+                    status.try_value()->syncFallback == FrameSyncFallback::DisplayTimingUnavailable
+                        ? text("Fallback: prediction needs VSync and fresh DXGI statistics",
+                               "表示時刻の予測には VSync と最新の DXGI "
+                               "統計が必要なため、代替の同期方法を使用しています。")
+                        : text("Fallback: waitable presentation unavailable",
+                               "待機可能な表示を利用できないため、代替の同期方法を使用しています。"));
             }
             if (status.try_value()->requested.presentation.isTearingAllowed &&
                 !status.try_value()->effective.presentation.isTearingAllowed)
             {
-                ImGui::TextUnformatted("Tearing requested but unsupported by DXGI");
+                ImGui::TextUnformatted(text("Tearing requested but unsupported by DXGI",
+                                            "ティアリングを許可する要求は DXGI でサポートされていません。"));
             }
         }
         ImGui::BeginDisabled(isPending || !m_performancePolicy.usersMayEdit);
         // Preset は編集値へ反映し、実行構成の変更は Apply まで保留する
-        if (ImGui::Button("Balanced"))
+        if (ImGui::Button(text("Balanced", "バランス###Balanced")))
         {
             settings = performance_preset(PerformancePreset::Balanced);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Low latency"))
+        if (ImGui::Button(text("Low latency", "低遅延###Low latency")))
         {
             settings = performance_preset(PerformancePreset::LowLatency);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Throughput"))
+        if (ImGui::Button(text("Throughput", "スループット###Throughput")))
         {
             settings = performance_preset(PerformancePreset::Throughput);
         }
@@ -2364,15 +2452,16 @@ Result<void> EditorHost::build_performance_settings_ui()
             }
             return false;
         };
-        slider("FPS limit (0: unlimited)", frame.maxFps, m_performancePolicy.allowsUnlimitedFps ? 0 : 1,
-               static_cast<int>(m_performancePolicy.maxFps));
+        slider(text("FPS limit (0: unlimited)", "FPS 上限（0 で無制限）###FPS limit (0: unlimited)"), frame.maxFps,
+               m_performancePolicy.allowsUnlimitedFps ? 0 : 1, static_cast<int>(m_performancePolicy.maxFps));
         // 一つの枠数から CPU / GPU 容量、Worker と先行数を同時に更新する
         // CPU・GPU・先行数の Policy が許す共通の枠数上限を求める
         const auto maxBuffering = (std::min)({8u, m_performancePolicy.maxCpuFrames, m_performancePolicy.maxGpuFrames,
                                               (std::min)(m_performancePolicy.maxUpdateLeadFrames, 7u) + 1});
         auto buffering = gpu.resourceFrameCount;
         ImGui::BeginDisabled(maxBuffering == 0);
-        if (slider("Buffering (frames)", buffering, 1, static_cast<int>((std::max)(maxBuffering, 1u))))
+        if (slider(text("Buffering (frames)", "バッファリング（フレーム数）###Buffering (frames)"), buffering, 1,
+                   static_cast<int>((std::max)(maxBuffering, 1u))))
         {
             // Buffering 変更から CPU Snapshot・Worker・Update 先行数を一括導出する
             auto edited = set_frame_buffering(settings, buffering);
@@ -2382,21 +2471,27 @@ Result<void> EditorHost::build_performance_settings_ui()
             }
         }
         ImGui::EndDisabled();
-        ImGui::Text("%s buffering: workers %s / CPU slots %u / update lead %u",
-                    buffering == 1   ? "Single"
-                    : buffering == 2 ? "Double"
-                    : buffering == 3 ? "Triple"
-                                     : "Multi-frame",
+        ImGui::Text(text("%s buffering: workers %s / CPU slots %u / update lead %u",
+                         "%sバッファリング: ワーカー %s / CPU 枠 %u / 更新先行数 %u"),
+                    buffering == 1   ? text("Single", "シングル")
+                    : buffering == 2 ? text("Double", "ダブル")
+                    : buffering == 3 ? text("Triple", "トリプル")
+                                     : text("Multi-frame", "複数フレームの"),
                     frame.useWorkerThreads ? "ON" : "OFF", frame.maxFramesInFlight, update_lead_frames(frame));
-        slider("Unfinished GPU frames", gpu.maxFramesInFlight, 1, static_cast<int>(gpu.resourceFrameCount));
-        slider("SwapChain buffers", present.bufferCount, 2, static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
-        ImGui::Checkbox("Waitable presentation", &present.isWaitableEnabled);
+        slider(text("Unfinished GPU frames", "GPU 未完了フレーム上限###Unfinished GPU frames"), gpu.maxFramesInFlight,
+               1, static_cast<int>(gpu.resourceFrameCount));
+        slider(text("SwapChain buffers", "スワップチェーンのバッファー数###SwapChain buffers"), present.bufferCount, 2,
+               static_cast<int>(m_performancePolicy.maxSwapChainBuffers));
+        ImGui::Checkbox(text("Waitable presentation", "待機可能な表示###Waitable presentation"),
+                        &present.isWaitableEnabled);
         ImGui::BeginDisabled(!performance_settings_controls(settings).canEditQueuedPresents);
-        slider("Queued presents", present.maxQueuedFrames, 1, static_cast<int>(m_performancePolicy.maxQueuedFrames));
+        slider(text("Queued presents", "表示キュー上限###Queued presents"), present.maxQueuedFrames, 1,
+               static_cast<int>(m_performancePolicy.maxQueuedFrames));
         ImGui::EndDisabled();
         if (!present.isWaitableEnabled)
         {
-            ImGui::TextWrapped("Queued presents requires Waitable presentation; the request is retained");
+            ImGui::TextWrapped(text("Queued presents requires Waitable presentation; the request is retained",
+                                    "表示キュー上限の適用には、待機可能な表示が必要です。要求値は保持されます。"));
         }
         // VSync を有効にすると両立できない Tearing を解除する
         if (ImGui::Checkbox("VSync", &present.isVSyncEnabled) && present.isVSyncEnabled)
@@ -2404,13 +2499,15 @@ Result<void> EditorHost::build_performance_settings_ui()
             present.isTearingAllowed = false;
         }
         // Tearing を有効にすると VSync を解除する
-        if (ImGui::Checkbox("Allow tearing", &present.isTearingAllowed) && present.isTearingAllowed)
+        if (ImGui::Checkbox(text("Allow tearing", "ティアリングを許可###Allow tearing"), &present.isTearingAllowed) &&
+            present.isTearingAllowed)
         {
             present.isVSyncEnabled = false;
         }
         ImGui::BeginDisabled(!performance_settings_controls(settings).canEditWaitMode);
         int wait = static_cast<int>(frame.waitMode);
-        if (ImGui::Combo("Wait method", &wait, "Sleep\0Sleep + short spin\0"))
+        if (ImGui::Combo(text("Wait method", "待機方法###Wait method"), &wait,
+                         text("Sleep\0Sleep + short spin\0", "スリープ\0スリープ＋短いスピン待機\0")))
         {
             frame.waitMode = static_cast<FrameWaitMode>(wait);
         }
@@ -2418,32 +2515,39 @@ Result<void> EditorHost::build_performance_settings_ui()
         // FPS 無制限では時間制限用の待機設定を未適用として表示する
         if (frame.maxFps == 0)
         {
-            ImGui::TextWrapped("FPS wait method is inactive with an unlimited FPS request");
+            ImGui::TextWrapped(text("FPS wait method is inactive with an unlimited FPS request",
+                                    "FPS が無制限のときは FPS 制限の待機方法を適用しません。"));
         }
         ImGui::BeginDisabled(!performance_settings_controls(settings).canEditSpin);
         int spin = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.spinDuration).count());
-        if (ImGui::SliderInt("Spin (us)", &spin, 0, 5000))
+        if (ImGui::SliderInt(text("Spin (us)", "スピン待機（us）###Spin (us)"), &spin, 0, 5000))
         {
             frame.spinDuration = std::chrono::microseconds(spin);
         }
         ImGui::EndDisabled();
         if (!performance_settings_controls(settings).canEditSpin)
         {
-            ImGui::TextWrapped("Spin requires an FPS limit and Sleep + short spin; the request is retained");
+            ImGui::TextWrapped(
+                text("Spin requires an FPS limit and Sleep + short spin; the request is retained",
+                     "スピン待機の適用には、FPS 上限と「スリープ＋短いスピン待機」が必要です。要求値は保持されます。"));
         }
         else
         {
-            ImGui::TextWrapped("Spin is capped at 1/8 of the FPS period in both thread modes");
+            ImGui::TextWrapped(text("Spin is capped at 1/8 of the FPS period in both thread modes",
+                                    "スピン待機の上限は、どのスレッド構成でも FPS 間隔の 1/8 です。"));
         }
         int sync = static_cast<int>(frame.syncMode);
-        if (ImGui::Combo("Synchronization", &sync, "Fixed period\0Presentation ready\0Display prediction\0"))
+        if (ImGui::Combo(text("Synchronization", "同期方法###Synchronization"), &sync,
+                         text("Fixed period\0Presentation ready\0Display prediction\0",
+                              "固定間隔\0表示準備待ち\0表示時刻を予測\0")))
         {
             frame.syncMode = static_cast<FrameSyncMode>(sync);
         }
         ImGui::BeginDisabled(!performance_settings_controls(settings).canEditPredictionSlack);
         int slack =
             static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(frame.predictionSlack).count());
-        if (ImGui::SliderInt("Prediction slack (us)", &slack, 0, 100000))
+        if (ImGui::SliderInt(text("Prediction slack (us)", "表示予測の余裕時間（us）###Prediction slack (us)"), &slack,
+                             0, 100000))
         {
             frame.predictionSlack = std::chrono::microseconds(slack);
         }
@@ -2451,10 +2555,11 @@ Result<void> EditorHost::build_performance_settings_ui()
         if (!performance_settings_controls(settings).canEditPredictionSlack)
         {
             ImGui::TextWrapped(
-                "Prediction slack requires Display prediction, Waitable and VSync; the request is retained");
+                text("Prediction slack requires Display prediction, Waitable and VSync; the request is retained",
+                     "余裕時間の適用には、表示時刻の予測、待機可能な表示、VSync が必要です。要求値は保持されます。"));
         }
         // 編集値を検証し、次の安全な Main 境界での適用を要求する
-        if (ImGui::Button("Apply"))
+        if (ImGui::Button(text("Apply", "適用###Apply")))
         {
             auto requested = request_performance_settings(settings);
             m_settingsError = requested.has_value() ? std::string{} : requested.try_error()->operation;
@@ -2462,7 +2567,7 @@ Result<void> EditorHost::build_performance_settings_ui()
         ImGui::EndDisabled();
         if (!m_settingsError.empty())
         {
-            ImGui::Text("Settings error: %s", m_settingsError.c_str());
+            ImGui::Text(text("Settings error: %s", "設定エラー: %s"), m_settingsError.c_str());
         }
     }
     ImGui::End();

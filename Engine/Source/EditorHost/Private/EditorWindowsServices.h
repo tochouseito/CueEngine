@@ -11,6 +11,7 @@ namespace cue
 {
 class Window;
 class IFileSystem;
+enum class EditorLanguage;
 
 /// @brief 非零の小文字 UUID を新規 Object ID として生成する。任意 Thread で呼べる
 [[nodiscard]] Result<std::string> create_editor_object_id();
@@ -19,11 +20,12 @@ class IFileSystem;
 /// Window 生成 Thread 専用。Path は呼出中だけ借用し、返却 Path の Project 内検証は呼出側が行う
 /// COM 初期化と解放はこの呼出の範囲で釣り合わせ、異なる Apartment で初期化済みなら失敗する
 [[nodiscard]] Result<std::optional<Path>> choose_scene_file(Window &a_window, bool a_isSave, const Path *a_initialFile,
-                                                            const Path *a_contentRoot);
+                                                            const Path *a_contentRoot, EditorLanguage a_language);
 
 /// @brief Window 生成 Thread で Project Folder を選び、キャンセルは空の成功値にする
 /// 初期 Path と Window は呼出中だけ借用し、Filesystem 上の選択 Path を所有値として返す
-[[nodiscard]] Result<std::optional<Path>> choose_project_folder(Window &a_window, const Path *a_initialFolder);
+[[nodiscard]] Result<std::optional<Path>> choose_project_folder(Window &a_window, const Path *a_initialFolder,
+                                                                EditorLanguage a_language);
 
 /// @brief Folder 直下の唯一の通常 .cueproj File を返す。空・複数・Link は推測で選択せず拒否する
 /// FileSystem と Path は呼出中だけ借用し、失敗時に Filesystem を変更しない
