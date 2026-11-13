@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -144,10 +145,11 @@ internal static class Program
             model.HideProjectCreation.Execute(null);
             test_installations(window, tabs, model, local);
             test_theme(window, tabs, model, store, dialogs);
+            test_mouse_wheel(window, tabs, model);
             if (trace.Errors.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, trace.Errors));
             window.Close(); window = null;
             application.Shutdown();
-            Console.WriteLine("CueHub WPF projects, creation, Engine management, install catalog and themes passed");
+            Console.WriteLine("CueHub WPF projects, creation, Engine management, install catalog, themes and mouse wheel passed");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -267,6 +269,48 @@ internal static class Program
                 throw new InvalidOperationException("選択した版をインストール対象にできません");
         }
         finally { dialog.Close(); }
+    }
+
+    /// <summary>長い一覧と狭い設定画面で、子コントロール上のホイール操作が実際に一覧を動かすことを確認する</summary>
+    private static void test_mouse_wheel(MainWindow a_window, TabControl a_tabs, MainViewModel a_model)
+    {
+        a_window.Height = a_window.MinHeight;
+        for (var index = 0; index < 48; ++index)
+        {
+            a_model.Projects.Add(new ProjectRegistration { Name = $"Scroll project {index}" });
+            a_model.Engines.Add(new EngineRegistration { Version = $"1.0.{index}" });
+        }
+
+        a_tabs.SelectedIndex = 0;
+        a_window.UpdateLayout();
+        var projects = (ListView)a_window.FindName("ProjectList");
+        verify_mouse_wheel(projects, (ListViewItem)projects.ItemContainerGenerator.ContainerFromIndex(0), "プロジェクト一覧");
+
+        a_tabs.SelectedIndex = 1;
+        a_window.UpdateLayout();
+        var installations = (InstallationsView)a_window.FindName("InstallationsPage");
+        var installed = (ListBox)installations.FindName("InstalledEngineList");
+        var card = (ListBoxItem)installed.ItemContainerGenerator.ContainerFromIndex(0);
+        verify_mouse_wheel(installed, (UIElement?)find<Button>(card) ?? card, "インストール済み Engine 一覧");
+
+        a_tabs.SelectedIndex = 2;
+        a_window.UpdateLayout();
+        var settings = (ScrollViewer)((TabItem)a_tabs.Items[2]).Content;
+        var field = find<TextBox>(settings) ?? throw new InvalidOperationException("設定の入力欄がありません");
+        verify_mouse_wheel(settings, field, "設定");
+    }
+
+    /// <summary>WPF のルーティングを通して上下のホイールイベントを送り、表示位置を検証する</summary>
+    private static void verify_mouse_wheel(DependencyObject a_root, UIElement a_target, string a_page)
+    {
+        var scroll = find<ScrollViewer>(a_root) ?? throw new InvalidOperationException($"{a_page}にスクロール領域がありません");
+        if (scroll.ScrollableHeight <= 0) throw new InvalidOperationException($"{a_page}にスクロール範囲がありません");
+        a_target.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = Mouse.MouseWheelEvent });
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        if (scroll.VerticalOffset <= 0) throw new InvalidOperationException($"{a_page}をホイールで下に移動できません");
+        a_target.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, 120) { RoutedEvent = Mouse.MouseWheelEvent });
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        if (scroll.VerticalOffset != 0) throw new InvalidOperationException($"{a_page}をホイールで上に戻せません");
     }
 
     private static T? find<T>(DependencyObject a_parent) where T : DependencyObject
