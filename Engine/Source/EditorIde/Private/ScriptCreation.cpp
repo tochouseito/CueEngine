@@ -192,18 +192,22 @@ std::string make_header(std::string_view a_name)
 {
     const std::string name(a_name);
     return "#pragma once\n\n#include <Foundation/Result.h>\n#include <Script/Behaviour.h>\n\nnamespace game\n{\n"
-           "/// @brief ゲームの更新処理を実装する Script\nclass " +
+           "/// @brief ゲームの開始時と更新時の処理を実装する Script\nclass " +
            name +
            " final : public ::cue::Behaviour\n{\n  public:\n"
+           "    /// @brief 最初の更新より前に初期化する\n"
+           "    [[nodiscard]] ::cue::Result<void> start(::cue::GameObject &) override;\n"
            "    /// @brief 更新処理を World の Owner Thread で実行する\n"
            "    [[nodiscard]] ::cue::Result<void> update() override;\n};\n} // namespace game\n";
 }
 
-/// @brief 更新処理と型の登録を cpp に生成し、共通 C ABI 入口は Build 時に生成する
+/// @brief 開始・更新処理と型の登録を cpp に生成し、共通 C ABI 入口は Build 時に生成する
 std::string make_source(std::string_view a_name)
 {
     const std::string name(a_name);
     return "#include \"" + name + ".h\"\n\n#include <Script/ModuleEntry.h>\n\nnamespace game\n{\n"
+           "::cue::Result<void> " +
+           name + "::start(::cue::GameObject &)\n{\n    return ::cue::Result<void>::success();\n}\n\n"
            "::cue::Result<void> " +
            name +
            "::update()\n{\n    return ::cue::Result<void>::success();\n}\n} // namespace game\n\n"

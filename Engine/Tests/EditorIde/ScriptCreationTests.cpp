@@ -207,9 +207,12 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     const auto header = read(files, joined(source, "RotateCube.h"));
     const auto generated = read(files, *created.try_value());
     CHECK(header.find("class RotateCube final : public ::cue::Behaviour") != std::string::npos);
+    CHECK(header.find("[[nodiscard]] ::cue::Result<void> start(::cue::GameObject &) override;") != std::string::npos);
     CHECK(header.find("update() override;") != std::string::npos);
     CHECK(header.find("CUE_DEFINE_SCRIPT") == std::string::npos);
     CHECK(generated.starts_with("#include \"RotateCube.h\"\n"));
+    CHECK(generated.find("RotateCube::start(::cue::GameObject &)\n{\n    return ::cue::Result<void>::success();\n}") !=
+          std::string::npos);
     CHECK(generated.find("RotateCube::update()") != std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT(RotateCube,") != std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT_MODULE") == std::string::npos);

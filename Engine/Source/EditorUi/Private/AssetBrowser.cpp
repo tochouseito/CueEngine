@@ -28,7 +28,8 @@ void draw_folder(const EditorAssetFolder &a_folder, Path &a_selected)
     const bool isSelected = a_selected.utf8() == path;
     if (a_selected.utf8().starts_with(path + '/'))
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    ImGuiTreeNodeFlags flags =
+        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DrawLinesToNodes;
     if (isSelected)
         flags |= ImGuiTreeNodeFlags_Selected;
     if (a_folder.folders.empty())
