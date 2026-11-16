@@ -196,7 +196,7 @@ std::string make_header(std::string_view a_name)
            name +
            " final : public ::cue::Behaviour\n{\n  public:\n"
            "    /// @brief 最初の更新より前に初期化する\n"
-           "    [[nodiscard]] ::cue::Result<void> start(::cue::GameObject &) override;\n"
+           "    [[nodiscard]] ::cue::Result<void> start() override;\n"
            "    /// @brief 更新処理を World の Owner Thread で実行する\n"
            "    [[nodiscard]] ::cue::Result<void> update() override;\n};\n} // namespace game\n";
 }
@@ -207,7 +207,7 @@ std::string make_source(std::string_view a_name)
     const std::string name(a_name);
     return "#include \"" + name + ".h\"\n\n#include <Script/ModuleEntry.h>\n\nnamespace game\n{\n"
            "::cue::Result<void> " +
-           name + "::start(::cue::GameObject &)\n{\n    return ::cue::Result<void>::success();\n}\n\n"
+           name + "::start()\n{\n    return ::cue::Result<void>::success();\n}\n\n"
            "::cue::Result<void> " +
            name +
            "::update()\n{\n    return ::cue::Result<void>::success();\n}\n} // namespace game\n\n"

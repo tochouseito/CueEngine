@@ -2391,6 +2391,8 @@ Result<void> EditorHost::apply_editor_actions()
                 auto added = app->add_cube();
                 return added.has_value() ? Result<void>::success() : Result<void>::failure(*added.try_error());
             }
+            case EditorActionKind::DeleteObject:
+                return app->delete_object(action.objectId);
             case EditorActionKind::SelectObject:
                 return app->select_object(action.objectId);
             case EditorActionKind::BeginTransformEdit:
@@ -2417,6 +2419,9 @@ Result<void> EditorHost::apply_editor_actions()
             if (result.try_error()->category == ErrorCategory::Fatal)
                 return result;
             editing.error = result.try_error()->operation;
+            if (action.kind == EditorActionKind::DeleteObject && editing.error == "Editor.preview.camera_count")
+                editing.error = editor_text(editing.language, "A scene with renderable objects needs an active camera.",
+                                            "描画対象があるシーンには有効なカメラが必要です。");
             editing.notice.clear();
             if (app && app->document().is_transform_editing())
             {

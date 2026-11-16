@@ -142,7 +142,7 @@ void finish_transform_input(EditorUiState &a_state, std::vector<EditorAction> &a
 /// @brief File / Edit と Keyboard Shortcut の要求を構築する
 void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
                      const EditorUiContext &a_context, bool a_isInputEnabled);
-/// @brief Object 一覧を表示し、選択の要求を構築する
+/// @brief Object 一覧を表示し、選択と行メニューの要求を構築する
 void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_context, EditorUiState &a_state,
                       std::vector<EditorAction> &a_actions);
 /// @brief 選択 Object の Transform 入力を所有 Buffer で編集する

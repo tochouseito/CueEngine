@@ -16,6 +16,7 @@ class ScriptTransform final
 {
   public:
     class Vector;
+    class Rotation;
 
     /// @brief 一軸の変更をその場で適用する。演算子での失敗は現在の Callback に記録する
     class Axis final
@@ -78,6 +79,44 @@ class ScriptTransform final
         std::uint32_t m_field;
     };
 
+    /// @brief Script Callback 中に固定軸まわりの相対回転を度数で適用する窓口
+    class RotationAxis final
+    {
+      public:
+        /// @brief 軸の窓口を別の Behaviour にコピーさせない
+        RotationAxis(const RotationAxis &) = delete;
+        /// @brief 軸の所属を変更させない
+        RotationAxis &operator=(const RotationAxis &) = delete;
+        /// @brief 差分回転を現在の姿勢に合成する。失敗時は旧値を保持する
+        [[nodiscard]] Result<void> add(float a_degrees) const;
+        /// @brief 正方向へ回転し、失敗は現在の Callback に記録する
+        void operator+=(float a_degrees) const;
+        /// @brief 逆方向へ回転し、失敗は現在の Callback に記録する
+        void operator-=(float a_degrees) const;
+
+      private:
+        friend class Rotation;
+        /// @brief 所属する Transform と固定軸を保持する
+        RotationAxis(const ScriptTransform &a_transform, std::uint32_t a_axis) noexcept;
+
+        const ScriptTransform &m_transform;
+        std::uint32_t m_axis;
+    };
+
+    /// @brief Quaternion で保持する姿勢に対し、X・Y・Z の固定軸を公開する
+    class Rotation final
+    {
+      public:
+        RotationAxis x;
+        RotationAxis y;
+        RotationAxis z;
+
+      private:
+        friend class ScriptTransform;
+        /// @brief 三軸を同じ Transform に紐付ける
+        explicit Rotation(const ScriptTransform &a_transform) noexcept;
+    };
+
     /// @brief 所属 Entity の位置・回転・Scale を所有値として取得する
     [[nodiscard]] Result<math::floatTransform> get() const;
     /// @brief 全項目を検証して一度に置き換える。失敗時は旧値を保持する
@@ -89,6 +128,7 @@ class ScriptTransform final
 
     Vector position;
     Vector scale;
+    Rotation rotate;
 
   private:
     friend class Behaviour;

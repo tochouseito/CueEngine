@@ -70,6 +70,8 @@ class EditorApplication final
     [[nodiscard]] Result<FileSaveOutcome> save_scene(IFileSystem &a_files, const Path &a_file);
     /// @brief UUID を発行して Cube を追加・選択し、作成した ID を返す
     [[nodiscard]] Result<std::string> add_cube();
+    /// @brief 永続 ID の Object を一回の Undo 操作で削除する。候補の失敗では正本と履歴を維持する
+    [[nodiscard]] Result<void> delete_object(std::string_view a_objectId);
     /// @brief 永続 Object ID で選択する。空文字列は選択解除
     [[nodiscard]] Result<void> select_object(std::string_view a_objectId);
     /// @brief 一回の Transform 操作として確定する。失敗時は Data と履歴を維持する
@@ -104,6 +106,8 @@ class EditorApplication final
     [[nodiscard]] Result<PreparedPreview> prepare_preview(const Scene &a_scene);
     /// @brief 完成済み候補を公開し、旧 World を停止・回収する
     void replace_preview(PreparedPreview a_preview) noexcept;
+    /// @brief 構造変更後の Scene と Preview を準備し、両方が成功した後に公開する
+    [[nodiscard]] Result<void> apply_scene_structure(SceneDescriptor a_descriptor);
     /// @brief 検証済み Scene の一つの Transform を既存 Preview へ適用する
     [[nodiscard]] Result<void> apply_preview_transform(std::string_view a_id, const math::floatTransform &a_value);
     /// @brief 生成サービスから Scene / Object に使える UUID を取得する

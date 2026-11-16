@@ -28,8 +28,20 @@ void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_
         ImGui::PushID(object.objectId.c_str());
         const bool wasSelected = selected == object.objectId;
         const bool clicked = ImGui::Selectable(object.name.c_str(), wasSelected);
+        bool requestedDelete = false;
+        if (ImGui::BeginPopupContextItem())
+        {
+            requestedDelete = ImGui::MenuItem(a_context.text("Delete", "削除###Delete"), nullptr, false,
+                                               !a_context.isPlaying);
+            ImGui::EndPopup();
+        }
         ImGui::PopID();
-        if (clicked && !wasSelected)
+        if (requestedDelete)
+        {
+            finish_transform_input(a_state, a_actions);
+            emit_editor_action(a_actions, EditorActionKind::DeleteObject, object.objectId);
+        }
+        else if (clicked && !wasSelected)
         {
             finish_transform_input(a_state, a_actions);
             emit_editor_action(a_actions, EditorActionKind::SelectObject, object.objectId);

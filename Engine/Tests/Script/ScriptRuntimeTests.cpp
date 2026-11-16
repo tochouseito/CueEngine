@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <Math/Quaternion.h>
 #include <Math/VectorOperations.h>
 #include <Runtime/Components/CameraComponent.h>
 #include <Runtime/Components/MeshRendererComponent.h>
@@ -616,6 +617,18 @@ class TransformCommands final : public cue::Behaviour
                 return written;
             }
             transform.scale.x *= 2.0f;
+
+            transform.rotate.x += 90.0f;
+            transform.rotate.y -= 90.0f;
+            auto rotated = transform.rotate.z.add(90.0f);
+            if (!rotated.has_value())
+            {
+                return rotated;
+            }
+            if (transform.rotate.z.add((std::numeric_limits<float>::infinity)()).has_value())
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.invalid_rotation"});
+            }
         }
         else
         {
@@ -651,8 +664,14 @@ int test_transform_commands()
     CUE_RUNTIME_SCRIPT_CHECK(fixture.world->update(10ms).has_value());
     auto component = fixture.world->get_component<TransformComponent>(fixture.entity);
     CUE_RUNTIME_SCRIPT_CHECK(component.has_value());
-    const auto &scale = (*component.try_value())->local().scale;
-    CUE_RUNTIME_SCRIPT_CHECK(scale.x == 2.0f && scale.y == 3.0f);
+    const auto &value = (*component.try_value())->local();
+    CUE_RUNTIME_SCRIPT_CHECK(value.position == math::float3{4.0f, 5.0f, 7.0f});
+    CUE_RUNTIME_SCRIPT_CHECK(value.scale == math::float3{2.0f, 3.0f, 1.0f});
+    // 固定軸で X → -Y → Z の順に回すと、+Y が +Z、-X、-Y の順に移る
+    auto direction = math::rotate(value.rotation, math::float3{0.0f, 1.0f, 0.0f});
+    CUE_RUNTIME_SCRIPT_CHECK(direction.has_value() &&
+                             math::length(*direction.try_value() - math::float3{0.0f, -1.0f, 0.0f}) < 1e-5f);
+    CUE_RUNTIME_SCRIPT_CHECK(math::nearly_equal(math::dot(value.rotation, value.rotation), 1.0f));
     g_sawPartialTransform = false;
     auto failed = fixture.world->update(10ms);
     CUE_RUNTIME_SCRIPT_CHECK(!failed.has_value() && g_sawPartialTransform &&

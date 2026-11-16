@@ -186,6 +186,24 @@ void EditorApplication::replace_preview(PreparedPreview a_preview) noexcept
     }
 }
 
+Result<void> EditorApplication::apply_scene_structure(SceneDescriptor a_descriptor)
+{
+    auto scene = Scene::create(std::move(a_descriptor));
+    if (!scene.has_value())
+        return Result<void>::failure(*scene.try_error());
+    auto text = scene.try_value()->serialize();
+    if (!text.has_value())
+        return Result<void>::failure(*text.try_error());
+    auto preview = prepare_preview(*scene.try_value());
+    if (!preview.has_value())
+        return Result<void>::failure(*preview.try_error());
+    replace_preview(preview.take_value());
+    m_document->m_scene = scene.take_value();
+    m_document->m_text = text.take_value();
+    ++m_document->m_revision;
+    return Result<void>::success();
+}
+
 Result<std::string> EditorApplication::generate_id()
 {
     if (!m_config.generateId)
@@ -400,25 +418,16 @@ Result<std::string> EditorApplication::add_cube()
         SceneDocument::Command command;
         command.kind = SceneDocument::CommandKind::AddCube;
         command.object = object;
+        command.objectIndex = descriptor.objects.size();
         command.selectedBefore = m_document->m_selected;
         command.selectedAfter = object.objectId;
         std::string selected = object.objectId;
         descriptor.objects.push_back(std::move(object));
-        auto scene = Scene::create(std::move(descriptor));
-        if (!scene.has_value())
-            return Result<std::string>::failure(*scene.try_error());
-        auto text = scene.try_value()->serialize();
-        if (!text.has_value())
-            return Result<std::string>::failure(*text.try_error());
-        auto preview = prepare_preview(*scene.try_value());
-        if (!preview.has_value())
-            return Result<std::string>::failure(*preview.try_error());
-        replace_preview(preview.take_value());
-        m_document->m_scene = scene.take_value();
-        m_document->m_text = text.take_value();
+        auto applied = apply_scene_structure(std::move(descriptor));
+        if (!applied.has_value())
+            return Result<std::string>::failure(*applied.try_error());
         m_document->m_selected.swap(selected);
         m_document->append_command(std::move(command));
-        ++m_document->m_revision;
         return id;
     }
     catch (const std::bad_alloc &)
@@ -428,6 +437,49 @@ Result<std::string> EditorApplication::add_cube()
     catch (...)
     {
         return Result<std::string>::failure({ErrorCategory::PlatformFailure, "Editor.add_cube.callback"});
+    }
+}
+
+Result<void> EditorApplication::delete_object(std::string_view a_objectId)
+{
+    auto access = check_access();
+    if (!access.has_value())
+        return access;
+    if (m_document->m_edit)
+        return Result<void>::failure(operation_error("Editor.delete_object.editing"));
+    const ScopedFlag mutation(m_isMutating);
+    try
+    {
+        auto descriptor = m_document->m_scene.descriptor();
+        const auto index = find_object(descriptor, a_objectId);
+        if (index == descriptor.objects.size())
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "Editor.delete_object.id"});
+
+        // 元の位置・Component・Script の割当も Undo で復元できるよう保存する
+        SceneDocument::Command command;
+        command.kind = SceneDocument::CommandKind::DeleteObject;
+        command.object = std::move(descriptor.objects[index]);
+        command.objectIndex = index;
+        command.selectedBefore = m_document->m_selected;
+        if (command.object.objectId != command.selectedBefore)
+            command.selectedAfter = command.selectedBefore;
+        descriptor.objects.erase(descriptor.objects.begin() + index);
+
+        auto applied = apply_scene_structure(std::move(descriptor));
+        if (!applied.has_value())
+            return applied;
+        if (command.selectedAfter.empty())
+            m_document->m_selected.clear();
+        m_document->append_command(std::move(command));
+        return Result<void>::success();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "Editor.delete_object.allocation"});
+    }
+    catch (...)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "Editor.delete_object.callback"});
     }
 }
 
@@ -731,8 +783,12 @@ Result<void> EditorApplication::apply_history(bool a_isRedo)
             // v1 から初めて Script を追加した操作の Undo では保存基準の形式まで戻す
             descriptor.formatVersion = a_isRedo ? command.formatAfter : command.formatBefore;
         }
-        else if (a_isRedo)
-            descriptor.objects.push_back(command.object);
+        else if (command.kind == SceneDocument::CommandKind::DeleteObject ? !a_isRedo : a_isRedo)
+        {
+            if (command.objectIndex > descriptor.objects.size())
+                return Result<void>::failure(operation_error("Editor.history.object_index"));
+            descriptor.objects.insert(descriptor.objects.begin() + command.objectIndex, command.object);
+        }
         else
         {
             const auto object = find_object(descriptor, command.object.objectId);
@@ -740,19 +796,9 @@ Result<void> EditorApplication::apply_history(bool a_isRedo)
                 return Result<void>::failure(operation_error("Editor.history.object_missing"));
             descriptor.objects.erase(descriptor.objects.begin() + object);
         }
-        auto scene = Scene::create(std::move(descriptor));
-        if (!scene.has_value())
-            return Result<void>::failure(*scene.try_error());
-        auto text = scene.try_value()->serialize();
-        if (!text.has_value())
-            return Result<void>::failure(*text.try_error());
-        auto preview = prepare_preview(*scene.try_value());
-        if (!preview.has_value())
-            return Result<void>::failure(*preview.try_error());
-        replace_preview(preview.take_value());
-        m_document->m_scene = scene.take_value();
-        m_document->m_text = text.take_value();
-        ++m_document->m_revision;
+        auto applied = apply_scene_structure(std::move(descriptor));
+        if (!applied.has_value())
+            return applied;
     }
     // 選択だけは履歴後の利用者操作で変わり得るため、存在する ID だけを復元する
     if (!selected.empty() &&

@@ -94,6 +94,38 @@ int main()
     CUE_EDITOR_CHECK(app->redo().has_value() && app->document().selected_object_id() == second);
     CUE_EDITOR_CHECK(editor_object(*app, second).mesh->assetId == editor_object(*app, first).mesh->assetId);
 
+    ScriptDescriptor script;
+    script.instanceId = "3ce1feb2-e711-4ca3-9698-2b32e0d9637c";
+    script.typeId = "test.Move";
+    CUE_EDITOR_CHECK(app->set_scripts(first, {script}).has_value());
+    EditorMemoryFiles files;
+    const auto saveFile = editor_value(Path::create("/Content/Scenes/Remove.cuescene"));
+    CUE_EDITOR_CHECK(app->save_scene(files, saveFile).has_value());
+    const auto beforeDelete = files.entries[saveFile.utf8()].text;
+    const auto cameraId = app->document().scene().descriptor().objects.front().objectId;
+    const auto deleteRevision = app->document().revision();
+    auto *deleteWorld = app->preview_world();
+    // 最後の有効な Camera や候補 World の生成失敗では削除を確定しない
+    auto deletedCamera = app->delete_object(cameraId);
+    CUE_EDITOR_CHECK(!deletedCamera.has_value() && deletedCamera.try_error()->operation == "Editor.preview.camera_count");
+    failWorld = true;
+    CUE_EDITOR_CHECK(!app->delete_object(first).has_value());
+    failWorld = false;
+    CUE_EDITOR_CHECK(!app->delete_object("missing").has_value());
+    CUE_EDITOR_CHECK(app->document().revision() == deleteRevision && app->preview_world() == deleteWorld &&
+                     app->document().selected_object_id() == second && !app->document().is_dirty());
+
+    // 右クリック対象が未選択でも削除し、Undo で元の順序と設定を戻す
+    CUE_EDITOR_CHECK(app->delete_object(first).has_value() && app->document().selected_object_id() == second);
+    CUE_EDITOR_CHECK(app->document().is_dirty() && app->document().scene().descriptor().objects.size() == 2);
+    CUE_EDITOR_CHECK(!app->preview_world()->find_by_id(*app->preview_instance(), first).has_value());
+    CUE_EDITOR_CHECK(app->undo().has_value() && !app->document().is_dirty());
+    CUE_EDITOR_CHECK(editor_value(app->document().scene().serialize()) == beforeDelete);
+    CUE_EDITOR_CHECK(app->preview_world()->find_by_id(*app->preview_instance(), first).has_value());
+    CUE_EDITOR_CHECK(app->redo().has_value() && app->document().scene().descriptor().objects.size() == 2);
+    CUE_EDITOR_CHECK(app->delete_object(second).has_value() && app->document().selected_object_id().empty());
+    CUE_EDITOR_CHECK(app->undo().has_value() && app->document().selected_object_id() == second);
+
     bool rejected = false;
     std::thread worker(
         [&]()

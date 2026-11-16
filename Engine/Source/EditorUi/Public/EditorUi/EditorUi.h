@@ -29,6 +29,7 @@ enum class EditorActionKind
     SaveScene,
     SaveSceneAs,
     AddCube,
+    DeleteObject,
     SelectObject,
     BeginTransformEdit,
     PreviewTransform,

@@ -56,6 +56,7 @@ class SceneDocument final
     enum class CommandKind
     {
         AddCube,
+        DeleteObject,
         Transform,
         Scripts
     };
@@ -63,6 +64,7 @@ class SceneDocument final
     {
         CommandKind kind = CommandKind::Transform;
         SceneObjectDescriptor object;
+        std::size_t objectIndex = 0;
         math::floatTransform before;
         math::floatTransform after;
         std::vector<ScriptDescriptor> scriptsBefore;

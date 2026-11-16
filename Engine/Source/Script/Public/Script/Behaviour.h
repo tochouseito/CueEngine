@@ -28,10 +28,10 @@ class Behaviour
     Behaviour &operator=(const Behaviour &) = delete;
     /// @brief Game Module 側で派生 Instance を破棄する
     virtual ~Behaviour() = default;
-    /// @brief 有効な実行を初めて開始する。途中失敗も stop で回収できる状態にする
+    /// @brief 既存の Script の override を保持し、既定では引数なしの入口へ渡す
     [[nodiscard]] virtual Result<void> start(GameObject &)
     {
-        return Result<void>::success();
+        return start();
     }
     /// @brief 所属 Entity と時間を基底クラスから取得して更新する。失敗では Session を停止する
     [[nodiscard]] virtual Result<void> update()
@@ -52,6 +52,11 @@ class Behaviour
     [[nodiscard]] virtual Result<void> set_property(std::string_view, const ScriptPropertyValue &)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "Behaviour.property_missing"});
+    }
+    /// @brief 最初の更新より前に初期化する。途中失敗も stop で回収できる状態にする
+    [[nodiscard]] virtual Result<void> start()
+    {
+        return Result<void>::success();
     }
 
   protected:

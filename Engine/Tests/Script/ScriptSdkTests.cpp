@@ -122,9 +122,12 @@ class Move final : public cue::Behaviour
 class FailedStart final : public cue::Behaviour
 {
   public:
-    /// @brief 部分初期化の失敗を返す
-    cue::Result<void> start(cue::GameObject &) override
+    /// @brief 引数なしでも Transform を参照でき、部分初期化の失敗を返せることを確認する
+    cue::Result<void> start() override
     {
+        auto current = transform.get();
+        if (!current.has_value())
+            return cue::Result<void>::failure(*current.try_error());
         return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "FailedStart.start"});
     }
     /// @brief 開始に失敗した Instance は更新対象にしない
@@ -194,7 +197,8 @@ int test_module()
     CUE_SCRIPT_CHECK(api.destroy(api.context, instance).code != 0);
     CueScriptInstance partial = 0;
     CUE_SCRIPT_CHECK(api.create(api.context, 1, &partial).code == 0 && partial != instance);
-    CUE_SCRIPT_CHECK(api.start(api.context, partial, &engineApi, entity).code == 2);
+    const auto start = api.start(api.context, partial, &engineApi, entity);
+    CUE_SCRIPT_CHECK(start.code == 2 && std::string_view(start.message) == "FailedStart.start");
     CUE_SCRIPT_CHECK(api.update(api.context, partial, &engineApi, entity, {1000000000, 1}).code != 0);
     CUE_SCRIPT_CHECK(api.stop(api.context, partial, &engineApi, entity).code == 0 && engine.reports == 2);
     CUE_SCRIPT_CHECK(api.destroy(api.context, partial).code == 0);

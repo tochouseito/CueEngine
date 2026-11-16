@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include <Math/Quaternion.h>
+#include <Math/Scalar.h>
 #include <Math/VectorOperations.h>
 #include <Script/Behaviour.h>
 
@@ -9,6 +11,8 @@ namespace cue
 {
 namespace
 {
+constexpr math::float3 k_rotationAxes[]{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+
 /// @brief 有効な Script Callback の外で World へのアクセスを拒否する
 Error missing_context()
 {
@@ -89,8 +93,58 @@ Result<math::float3> ScriptTransform::Vector::get() const
     return Result<math::float3>::success(m_field == CUE_SCRIPT_TRANSFORM_POSITION ? value.position : value.scale);
 }
 
+ScriptTransform::RotationAxis::RotationAxis(const ScriptTransform &a_transform, std::uint32_t a_axis) noexcept
+    : m_transform(a_transform), m_axis(a_axis)
+{
+}
+
+Result<void> ScriptTransform::RotationAxis::add(float a_degrees) const
+{
+    auto delta = math::rotation_axis_angle(k_rotationAxes[m_axis], math::degrees_to_radians(a_degrees));
+    if (!delta.has_value())
+    {
+        return Result<void>::failure(std::move(*delta.try_error()));
+    }
+    auto current = m_transform.get();
+    if (!current.has_value())
+    {
+        return Result<void>::failure(std::move(*current.try_error()));
+    }
+
+    // 既存の姿勢が非単位でも、積の中間値が元の Quaternion の大きさに左右されないようにする
+    auto unit = math::normalize(current.try_value()->rotation);
+    if (!unit.has_value())
+    {
+        return Result<void>::failure(std::move(*unit.try_error()));
+    }
+    // 固定軸まわりに適用するため、差分回転を左から掛ける
+    auto rotation = math::normalize(*delta.try_value() * *unit.try_value());
+    if (!rotation.has_value())
+    {
+        return Result<void>::failure(std::move(*rotation.try_error()));
+    }
+    current.try_value()->rotation = rotation.take_value();
+    return m_transform.set(*current.try_value());
+}
+
+void ScriptTransform::RotationAxis::operator+=(float a_degrees) const
+{
+    m_transform.remember(add(a_degrees));
+}
+
+void ScriptTransform::RotationAxis::operator-=(float a_degrees) const
+{
+    m_transform.remember(add(-a_degrees));
+}
+
+ScriptTransform::Rotation::Rotation(const ScriptTransform &a_transform) noexcept
+    : x(a_transform, 0), y(a_transform, 1), z(a_transform, 2)
+{
+}
+
 ScriptTransform::ScriptTransform(Behaviour &a_owner) noexcept
-    : position(*this, CUE_SCRIPT_TRANSFORM_POSITION), scale(*this, CUE_SCRIPT_TRANSFORM_SCALE), m_owner(a_owner)
+    : position(*this, CUE_SCRIPT_TRANSFORM_POSITION), scale(*this, CUE_SCRIPT_TRANSFORM_SCALE), rotate(*this),
+      m_owner(a_owner)
 {
 }
 

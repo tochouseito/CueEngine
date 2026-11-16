@@ -471,6 +471,27 @@ int main()
     CUE_EDITOR_UI_CHECK(cube.has_value());
     ui->reset();
     CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+
+    // 選択中の Cube と別の行を右クリックし、行の ID を削除要求に含める
+    const auto *hierarchy = ImGui::FindWindowByName("Hierarchy###Objects##EditorObjects");
+    CUE_EDITOR_UI_CHECK(hierarchy != nullptr);
+    const auto firstRow = hierarchy->DC.CursorStartPos;
+    io.AddMousePosEvent(firstRow.x + 8, firstRow.y + ImGui::GetTextLineHeight() * 0.5f);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    CUE_EDITOR_UI_CHECK(frame(*ui, application->document(), display).has_value());
+    CUE_EDITOR_UI_CHECK(!popupStack.empty() && popupStack.back().Window && popupStack.back().Window->Active);
+    ImGui::ActivateItemByID(ImHashStr("Delete", 0, popupStack.back().Window->ID));
+    auto deleted = frame(*ui, application->document(), display);
+    CUE_EDITOR_UI_CHECK(deleted.has_value() && deleted.try_value()->size() == 1);
+    const auto &objects = application->document().scene().descriptor().objects;
+    const auto &deleteAction = deleted.try_value()->front();
+    CUE_EDITOR_UI_CHECK(deleteAction.kind == cue::EditorActionKind::DeleteObject &&
+                        deleteAction.objectId == objects.front().objectId);
+    CUE_EDITOR_UI_CHECK(objects.size() == beforeCount + 1 && application->document().selected_object_id() == *cube.try_value());
+
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     io.AddKeyEvent(ImGuiKey_S, true);
     auto save = frame(*ui, application->document(), display);
