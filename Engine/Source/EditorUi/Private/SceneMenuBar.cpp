@@ -165,6 +165,13 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
                     }
                 }
             }
+            if (ImGui::MenuItem(a_context.text("Asset Browser", "アセットブラウザー###Asset Browser"), nullptr,
+                                a_state.isAssetBrowserVisible && a_context.hasAssetBrowser, a_context.hasAssetBrowser))
+            {
+                a_state.isAssetBrowserVisible = !a_state.isAssetBrowserVisible;
+                if (a_state.isAssetBrowserVisible)
+                    request(EditorActionKind::RefreshAssets);
+            }
         }
         if (ImGui::BeginMenu(a_context.text("Script", "スクリプト###Script"), a_context.isProjectOpen))
         {

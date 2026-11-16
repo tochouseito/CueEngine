@@ -198,6 +198,59 @@ int test_unselected_editor()
     return 0;
 }
 
+/// @brief 二つの Dock Window と削除確認が独立して操作できることを確認する
+int test_asset_browser_ui()
+{
+    auto scene = cue::Scene::create({1, "91f62c65-ae16-42c8-a1d8-90f47ffc8beb", "Assets"});
+    CUE_EDITOR_UI_CHECK(scene.has_value());
+    auto application = cue::EditorApplication::create(scene.take_value());
+    auto ui = cue::EditorUi::create();
+    CUE_EDITOR_UI_CHECK(application.has_value() && ui.has_value());
+    const auto &document = (*application.try_value())->document();
+    auto &editorUi = **ui.try_value();
+    std::unique_ptr<ImGuiContext, decltype(&ImGui::DestroyContext)> context(ImGui::CreateContext(),
+                                                                            &ImGui::DestroyContext);
+    CUE_EDITOR_UI_CHECK(context != nullptr);
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
+    io.DisplaySize = {1280, 720};
+    io.DeltaTime = 1.0f / 60.0f;
+    CUE_EDITOR_UI_CHECK(io.Fonts->Build());
+    io.Fonts->SetTexID(static_cast<ImTextureID>(1));
+
+    auto path = cue::Path::create("C:/Game/Source");
+    CUE_EDITOR_UI_CHECK(path.has_value());
+    const std::vector<cue::EditorAssetFolder> folders{{path.take_value(), "Source"}};
+    cue::EditorUiContext display;
+    display.hasAssetBrowser = true;
+    display.assetFolders = folders;
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    const auto *left = ImGui::FindWindowByName("Project Folders###EditorProjectFolders");
+    const auto *right = ImGui::FindWindowByName("Assets###EditorAssets");
+    CUE_EDITOR_UI_CHECK(left && left->Active && right && right->Active);
+    CUE_EDITOR_UI_CHECK(left->DockId && right->DockId && left->DockId != right->DockId);
+    CUE_EDITOR_UI_CHECK(left->Pos.x < right->Pos.x && left->Pos.y == right->Pos.y);
+
+    const std::vector<std::string> files{"Source/Move.cpp", "Source/Move.h"};
+    const std::vector<std::string> uses{"Scenes/Main.cuescene / Cube"};
+    cue::EditorScriptRemovalView removal{"Move", files, uses};
+    display.scriptRemoval = &removal;
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    const auto *dialog = ImGui::FindWindowByName("Delete Script?###EditorDeleteScript");
+    CUE_EDITOR_UI_CHECK(dialog && dialog->Active);
+    ImGui::ActivateItemByID(ImHashStr("Delete from Project", 0, dialog->ID));
+    auto accepted = frame(editorUi, document, display);
+    CUE_EDITOR_UI_CHECK(accepted.has_value() && accepted.try_value()->size() == 1 &&
+                        accepted.try_value()->front().kind == cue::EditorActionKind::ConfirmScriptRemoval);
+    display.scriptRemoval = nullptr;
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(context->OpenPopupStack.empty());
+    return 0;
+}
+
 /// @brief Play 入力と Editor Camera が保存正本を触らず、実入力を専用要求に変換することを確認する
 int test_play_view_ui()
 {
@@ -329,6 +382,7 @@ int test_play_view_ui()
 int main()
 {
     CUE_EDITOR_UI_CHECK(test_unselected_editor() == 0);
+    CUE_EDITOR_UI_CHECK(test_asset_browser_ui() == 0);
     CUE_EDITOR_UI_CHECK(test_play_view_ui() == 0);
     cue::EditorApplicationConfig config;
     unsigned id = 0;

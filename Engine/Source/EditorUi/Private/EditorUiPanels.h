@@ -29,6 +29,11 @@ namespace cue
 /// @brief Scene の正本から独立した入力 Buffer。Panel 構築中だけ Main Thread で使う
 struct EditorUiState
 {
+    // 位置は ImGui に任せ、閲覧先だけを二つの Window で共有する
+    Path assetFolder;
+    bool isAssetBrowserVisible = true;
+    bool hasPlacedAssetBrowser = false;
+    bool hasScriptRemovalPopup = false;
     /// @brief Play 専用の入力 Buffer。Session / 選択の変更で破棄し、Document の編集 Transaction と共有しない
     struct PlayTransformInput
     {
@@ -152,6 +157,11 @@ void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction>
 void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context);
 /// @brief 対応対象の選択と Build 結果を表示し、Host が実行する所有値の要求を返す
 void draw_build_panel(const EditorUiContext &a_context, EditorUiState &a_state, std::vector<EditorAction> &a_actions);
+/// @brief 独立した Window で Folder とその直下の Asset を表示する
+void draw_asset_browser(const EditorUiContext &a_context, EditorUiState &a_state, std::vector<EditorAction> &a_actions);
+/// @brief Host の削除予定を表示し、確定または取消を一度返す
+void draw_script_removal(const EditorUiContext &a_context, EditorUiState &a_state,
+                         std::vector<EditorAction> &a_actions);
 /// @brief Menu と Panel で同じ登録一覧を使い、未完了の Target Draft から Build 要求を作らない
 [[nodiscard]] bool has_game_build_target(const EditorBuildContext &a_build) noexcept;
 

@@ -237,6 +237,10 @@ class EditorHost final
 
     /// @brief UI の借用を終えた後、所有値の編集要求を順に確定する
     [[nodiscard]] Result<void> apply_editor_actions();
+    /// @brief Project の二つの公開 Root から Asset Browser 用 Snapshot を更新する
+    [[nodiscard]] Result<void> refresh_editor_assets();
+    /// @brief 確認済み Script を Project から削除し、選択構成の DLL を再構築する
+    [[nodiscard]] Result<void> confirm_script_removal();
     /// @brief 非待機で Play 子 Process の状態と確認済み Property を回収する。失敗は Editor の通知に留める
     void poll_play();
     /// @brief 最小化中も Build の出力・終了を回収し、失敗を Editor 内の通知へ留める

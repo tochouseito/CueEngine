@@ -56,16 +56,19 @@ file(WRITE "${taskGame}/Probe.cpp" [=[
 #define NOMINMAX
 #include <windows.h>
 #include <cstdint>
+#include <cwchar>
 #include <Script/Abi.h>
 extern "C" CueScriptStatus CUE_SCRIPT_CALL CueScriptGetModule(std::uint32_t, CueScriptModuleApi *) noexcept;
 int wmain(int count, wchar_t **arguments)
 {
-    HMODULE library = count == 2 ? LoadLibraryW(arguments[1]) : nullptr;
-    if (count == 2 && !library) return 1;
+    if (count < 2 || count > 3) return 3;
+    const auto expected = std::wcstoul(arguments[1], nullptr, 10);
+    HMODULE library = count == 3 ? LoadLibraryW(arguments[2]) : nullptr;
+    if (count == 3 && !library) return 1;
     auto entry = library ? reinterpret_cast<CueScriptGetModuleFunction>(GetProcAddress(library, "CueScriptGetModule"))
                          : &CueScriptGetModule;
     CueScriptModuleApi api{};
-    const bool valid = entry && entry(CUE_SCRIPT_ABI_VERSION, &api).code == 0 && api.type_count(api.context) == 2;
+    const bool valid = entry && entry(CUE_SCRIPT_ABI_VERSION, &api).code == 0 && api.type_count(api.context) == expected;
     if (library) FreeLibrary(library);
     return valid ? 0 : 2;
 }
@@ -133,7 +136,7 @@ if(NOT taskResult EQUAL 0)
 endif()
 foreach(taskMode IN ITEMS static dll)
     set(taskProbe "${taskTree}/${CUE_CONFIGURATION}/ModuleMetadataProbe.exe")
-    set(taskArguments)
+    set(taskArguments 2)
     if(taskMode STREQUAL "dll")
         list(APPEND taskArguments "${taskGame}/Build/Windows/x64/${CUE_CONFIGURATION}/Runtime/SdkGameModule.dll")
     endif()
@@ -152,7 +155,20 @@ foreach(taskInvalid IN ITEMS "registration.game.SecondScript=Invalid;Token\n" "u
         message(FATAL_ERROR "An invalid script source map was accepted")
     endif()
 endforeach()
-file(WRITE "${taskGame}/Source/ScriptSources.cueide" "${taskValidCatalog}")
+# 最後の Script を消しても有効な空 Module が DLL と Static の双方に生成される
+file(WRITE "${taskGame}/Source/ScriptSources.cueide" "formatVersion=2\n")
+execute_process(COMMAND "${CMAKE_COMMAND}" --build "${taskTree}" --config "${CUE_CONFIGURATION}"
+    --target Cue.GameProjectBuild ModuleMetadataProbe RESULT_VARIABLE taskResult OUTPUT_VARIABLE taskOutput ERROR_VARIABLE taskError)
+if(NOT taskResult EQUAL 0)
+    message(FATAL_ERROR "Deleting the last script did not regenerate an empty module: ${taskOutput}\n${taskError}")
+endif()
+execute_process(COMMAND "${taskProbe}" 0 RESULT_VARIABLE taskStaticResult TIMEOUT 10)
+execute_process(COMMAND "${taskProbe}" 0
+    "${taskGame}/Build/Windows/x64/${CUE_CONFIGURATION}/Runtime/SdkGameModule.dll"
+    RESULT_VARIABLE taskDllResult TIMEOUT 10)
+if(NOT taskStaticResult EQUAL 0 OR NOT taskDllResult EQUAL 0)
+    message(FATAL_ERROR "The empty module did not expose a valid API with zero script types")
+endif()
 
 # 同じ SDK で App を構成し、Editor の Target を生成しないことも確認する
 if(NOT DEFINED CUE_PIX_ARCHIVE OR CUE_PIX_ARCHIVE STREQUAL "")

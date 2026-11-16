@@ -573,6 +573,12 @@ if(WIN32)
     target_link_libraries(CueEditorGameSettingsTests PRIVATE
         Cue.EditorHost Cue.Editor.Ui Cue.ProjectBuild Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Editor.GameSettings COMMAND CueEditorGameSettingsTests)
+    add_executable(CueEditorAssetBrowserTests EditorHost/EditorAssetBrowserTests.cpp)
+    target_include_directories(CueEditorAssetBrowserTests PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/Source/EditorHost/Private")
+    target_link_libraries(CueEditorAssetBrowserTests PRIVATE Cue.EditorHost Cue.Editor.Ui
+        Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Editor.AssetBrowser COMMAND CueEditorAssetBrowserTests)
     add_executable(CueGameStartupTests GameRuntime/GameStartupTests.cpp)
     target_link_libraries(CueGameStartupTests PRIVATE Cue.GameRuntime Cue.Platform.Windows Cue.Foundation.Windows)
     add_test(NAME Cue.Runtime.GameStartup COMMAND CueGameStartupTests)

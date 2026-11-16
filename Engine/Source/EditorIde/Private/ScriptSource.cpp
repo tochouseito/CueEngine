@@ -1,10 +1,10 @@
 #include <EditorIde/ScriptSource.h>
 
 #include <algorithm>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include <EditorIde/ScriptCreation.h>
 #include <Foundation/Utf8.h>
@@ -77,32 +77,31 @@ bool valid_relative(std::string_view a_text)
 }
 } // namespace
 
-Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_project, std::string_view a_typeId)
+Result<ScriptSourceMap> load_script_source_map(IFileSystem &a_files, const Project &a_project)
 {
     try
     {
-        if (a_typeId.empty() || a_typeId.size() > 256 || !is_valid_utf8_text(a_typeId))
-            return Result<Path>::failure(invalid("EditorIde.script_type_id"));
         auto map = a_project.source_directory().join("ScriptSources.cueide");
         if (!map.has_value())
-            return Result<Path>::failure(*map.try_error());
+            return Result<ScriptSourceMap>::failure(*map.try_error());
         auto checked = validate_file(a_files, a_project.root(), *map.try_value());
         if (!checked.has_value())
-            return Result<Path>::failure(*checked.try_error());
+            return Result<ScriptSourceMap>::failure(*checked.try_error());
         auto bytes = a_files.read_all(*map.try_value(), 64 * 1024);
         if (!bytes.has_value())
-            return Result<Path>::failure(*bytes.try_error());
+            return Result<ScriptSourceMap>::failure(*bytes.try_error());
         const auto &data = *bytes.try_value();
         std::string_view text(data.empty() ? "" : reinterpret_cast<const char *>(data.data()), data.size());
         if (text.empty() || !is_valid_utf8_text(text))
-            return Result<Path>::failure(invalid("EditorIde.source_map_text"));
+            return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_text"));
+        const std::string original(text);
         if (text.starts_with("\xef\xbb\xbf"))
             text.remove_prefix(3);
         unsigned version = 0;
         std::unordered_set<std::string> keys;
         std::unordered_map<std::string, std::string> scripts;
         std::unordered_map<std::string, std::string> registrations;
-        std::optional<Path> selected;
+        ScriptSourceMap catalog{map.take_value(), original};
         for (std::size_t offset = 0; offset < text.size();)
         {
             const auto end = text.find('\n', offset);
@@ -112,45 +111,42 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
                 continue;
             const auto separator = line.find('=');
             if (separator == std::string_view::npos)
-                return Result<Path>::failure(invalid("EditorIde.source_map_syntax"));
+                return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_syntax"));
             const auto key = trim(line.substr(0, separator));
             const auto value = trim(line.substr(separator + 1));
             if (key.empty() || value.empty() || !keys.emplace(key).second || keys.size() > 1025)
-                return Result<Path>::failure(invalid("EditorIde.source_map_key"));
+                return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_key"));
             if (key == "formatVersion")
             {
                 if (value != "1" && value != "2")
-                    return Result<Path>::failure(invalid("EditorIde.source_map_version"));
+                    return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_version"));
                 version = value == "1" ? 1 : 2;
                 continue;
             }
             if (key.starts_with("registration."))
             {
                 if (key.size() <= 13 || key.size() > 269 || !is_valid_script_name(value))
-                    return Result<Path>::failure(invalid("EditorIde.source_map_registration"));
+                    return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_registration"));
                 registrations.emplace(std::string(key.substr(13)), std::string(value));
                 continue;
             }
             if (!key.starts_with("script.") || key.size() <= 7 || key.size() > 263 || !valid_relative(value))
-                return Result<Path>::failure(invalid("EditorIde.source_map_entry"));
+                return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_entry"));
             auto relative = Path::create(value);
             if (!relative.has_value() || relative.try_value()->is_absolute())
-                return Result<Path>::failure(invalid("EditorIde.source_map_path"));
+                return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_path"));
             scripts.emplace(std::string(key.substr(7)), std::string(value));
-            if (key.substr(7) == a_typeId)
-            {
-                auto source = a_project.source_directory().join(*relative.try_value());
-                if (!source.has_value())
-                    return Result<Path>::failure(*source.try_error());
-                selected = source.take_value();
-            }
+            auto source = a_project.source_directory().join(*relative.try_value());
+            if (!source.has_value())
+                return Result<ScriptSourceMap>::failure(*source.try_error());
+            catalog.entries.push_back({std::string(key.substr(7)), source.take_value()});
         }
         if (version == 1 && !registrations.empty())
-            return Result<Path>::failure(invalid("EditorIde.source_map_version"));
+            return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_version"));
         if (version == 2)
         {
             if (scripts.size() != registrations.size() || scripts.size() > 256)
-                return Result<Path>::failure(invalid("EditorIde.source_map_pairs"));
+                return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_pairs"));
             std::unordered_set<std::string> sourceNames;
             std::unordered_set<std::string> symbols;
             std::unordered_set<std::string> typeNames;
@@ -178,16 +174,38 @@ Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_projec
                     source.find_first_of("\\;$<>") != std::string::npos ||
                     !sourceNames.emplace(folded(source)).second || !typeNames.emplace(folded(typeId)).second ||
                     !symbols.emplace(folded(registrations.at(typeId))).second)
-                    return Result<Path>::failure(invalid("EditorIde.source_map_pairs"));
+                    return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_pairs"));
             }
         }
-        if (!version || !selected)
-            return Result<Path>::failure(
-                invalid(version ? "EditorIde.script_source_not_found" : "EditorIde.source_map_version"));
-        checked = validate_file(a_files, a_project.source_directory(), *selected);
+        if (!version)
+            return Result<ScriptSourceMap>::failure(invalid("EditorIde.source_map_version"));
+        catalog.version = version;
+        return Result<ScriptSourceMap>::success(std::move(catalog));
+    }
+    catch (...)
+    {
+        return Result<ScriptSourceMap>::failure({ErrorCategory::PlatformFailure, "EditorIde.source_map_exception"});
+    }
+}
+
+Result<Path> resolve_script_source(IFileSystem &a_files, const Project &a_project, std::string_view a_typeId)
+{
+    try
+    {
+        if (a_typeId.empty() || a_typeId.size() > 256 || !is_valid_utf8_text(a_typeId))
+            return Result<Path>::failure(invalid("EditorIde.script_type_id"));
+        auto catalog = load_script_source_map(a_files, a_project);
+        if (!catalog.has_value())
+            return Result<Path>::failure(*catalog.try_error());
+        const auto &entries = catalog.try_value()->entries;
+        const auto selected = std::find_if(entries.begin(), entries.end(),
+                                           [a_typeId](const auto &a_entry) { return a_entry.typeId == a_typeId; });
+        if (selected == entries.end())
+            return Result<Path>::failure(invalid("EditorIde.script_source_not_found"));
+        auto checked = validate_file(a_files, a_project.source_directory(), selected->source);
         if (!checked.has_value())
             return Result<Path>::failure(*checked.try_error());
-        return Result<Path>::success(std::move(*selected));
+        return Result<Path>::success(selected->source);
     }
     catch (...)
     {

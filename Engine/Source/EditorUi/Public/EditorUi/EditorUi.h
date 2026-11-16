@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include <EditorUi/EditorAssets.h>
 #include <EditorUi/EditorLanguage.h>
 #include <Foundation/Result.h>
 #include <Math/Transform.h>
@@ -62,6 +63,11 @@ enum class EditorActionKind
     SetGameConfiguration,
     CreateScript,
     SetLanguage,
+    RefreshAssets,
+    OpenAssetScene,
+    InspectScriptRemoval,
+    ConfirmScriptRemoval,
+    CancelScriptRemoval,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求
@@ -79,6 +85,7 @@ struct EditorAction final
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     std::string scriptName;
     EditorLanguage language = EditorLanguage::English;
+    Path assetPath;
 };
 
 /// @brief Build の表示用 Snapshot。View / Span は draw の間だけ Host から借用する
@@ -150,6 +157,11 @@ struct EditorUiContext final
     bool isBuildConfirmationRequested = false;
     EditorScriptContext script;
     EditorLanguage language = EditorLanguage::English;
+    bool hasAssetBrowser = false;
+    bool canManageAssets = false;
+    float reservedBottomHeight = 0;
+    std::span<const EditorAssetFolder> assetFolders;
+    const EditorScriptRemovalView *scriptRemoval = nullptr;
 
     /// @brief 表示言語だけを切り替える。ImGui の ID 付き Label には共通の ID を指定する
     [[nodiscard]] const char *text(const char *a_english, const char *a_japanese) const noexcept

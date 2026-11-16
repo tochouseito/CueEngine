@@ -17,7 +17,7 @@ namespace cue
 namespace
 {
 /// @brief Menu と Status の間を背景付き Docking 先にし、旧 Engine と同様に空き領域も Editor が描画する
-void draw_editor_dockspace(const EditorUiContext &a_context)
+void draw_editor_dockspace(const EditorUiContext &a_context, EditorUiState &a_state)
 {
     if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable))
         return;
@@ -36,8 +36,31 @@ void draw_editor_dockspace(const EditorUiContext &a_context)
                                                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                                  ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar(3);
-    if (background.is_visible())
-        ImGui::DockSpace(ImGui::GetID("EditorDockArea"), {0, 0}, ImGuiDockNodeFlags_None);
+    if (!background.is_visible())
+        return;
+    const auto dockId = ImGui::GetID("EditorDockArea");
+    if (a_context.hasAssetBrowser && a_state.isAssetBrowserVisible && !a_state.hasPlacedAssetBrowser)
+    {
+        a_state.hasPlacedAssetBrowser = true;
+        const auto *node = ImGui::DockBuilderGetNode(dockId);
+        // 保存済みの Dock 配置を優先し、空の DockSpace にだけ初期配置を与える
+        if ((!node || (!node->IsSplitNode() && node->Windows.empty())) &&
+            !ImGui::FindWindowSettingsByID(ImHashStr("EditorProjectFolders")) &&
+            !ImGui::FindWindowSettingsByID(ImHashStr("EditorAssets")) && a_context.displayWidth >= 640 &&
+            a_context.displayHeight >= 400)
+        {
+            if (!node)
+                ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetContentRegionAvail());
+            const auto bottom = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Down, 0.30f, nullptr, nullptr);
+            ImGuiID assets = 0;
+            const auto folders = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 0.24f, nullptr, &assets);
+            ImGui::DockBuilderDockWindow("Project Folders###EditorProjectFolders", folders);
+            ImGui::DockBuilderDockWindow("Assets###EditorAssets", assets);
+            ImGui::DockBuilderFinish(dockId);
+        }
+    }
+    ImGui::DockSpace(dockId, {0, 0}, ImGuiDockNodeFlags_None);
 }
 /// @brief Document がない起動状態を表示し、内部用の Scene や World を生成しない
 void draw_empty_project_panels(const EditorUiContext &a_context)
@@ -314,12 +337,18 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
             context.canStop = false;
             context.script = {};
             context.build = {};
+            context.hasAssetBrowser = false;
+            context.scriptRemoval = nullptr;
         }
         std::vector<EditorAction> actions;
         actions.reserve(16);
+        if (context.hasAssetBrowser && m_state->isAssetBrowserVisible)
+            context.reservedBottomHeight = (std::min)(240.0f, context.displayHeight * 0.30f);
         const bool wasScriptCreationRequested = m_state->isScriptCreationRequested;
         // Modal の初回 Frame も無効化し、Popup がまだ開く前の背景入力を処理しない
-        ImGui::BeginDisabled(context.isUnsavedConfirmationRequested || wasScriptCreationRequested);
+        const bool isInputBlocked =
+            context.isUnsavedConfirmationRequested || wasScriptCreationRequested || context.scriptRemoval;
+        ImGui::BeginDisabled(isInputBlocked);
         struct DisabledScope final
         {
             /// @brief Panel の失敗・例外でも Disabled の Stack を対応させる
@@ -330,7 +359,7 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
         };
         {
             DisabledScope disabled;
-            draw_editor_dockspace(context);
+            draw_editor_dockspace(context, *m_state);
             if (a_document)
             {
                 // 未選択の起動 Shell は表示だけを維持し、仮 Document を編集対象として公開しない
@@ -340,18 +369,24 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
                 if (!inspector.has_value())
                     return Result<std::vector<EditorAction>>::failure(*inspector.try_error());
                 draw_build_panel(context, *m_state, actions);
+                draw_scene_view(context, actions);
             }
             else
+            {
                 draw_empty_project_panels(context);
-            draw_scene_view(context, actions);
+                draw_scene_view(context, actions);
+            }
+            draw_asset_browser(context, *m_state, actions);
             draw_editor_status(a_document, context);
             // Panel より後に Menu を構築し、旧 Layout から移行する Frame でも入力領域を確保する
-            draw_scene_menu(a_document, *m_state, actions, context,
-                            !context.isUnsavedConfirmationRequested && !wasScriptCreationRequested);
+            draw_scene_menu(a_document, *m_state, actions, context, !isInputBlocked);
         }
-        if (context.isUnsavedConfirmationRequested || wasScriptCreationRequested)
+        if (isInputBlocked)
             actions.clear();
         draw_script_creation(context, *m_state, actions);
+        if (context.isUnsavedConfirmationRequested)
+            context.scriptRemoval = nullptr;
+        draw_script_removal(context, *m_state, actions);
         draw_unsaved_confirmation(context, m_state->wasUnsavedConfirmationRequested, m_state->hasUnsavedResponse,
                                   m_state->shouldCloseUnsavedPopup, actions);
         return Result<std::vector<EditorAction>>::success(std::move(actions));

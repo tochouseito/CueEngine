@@ -382,6 +382,12 @@ Result<void> set_editor_project_title(Window &a_window, std::string_view a_proje
     }
 }
 
+bool is_editor_window_foreground(Window &a_window)
+{
+    auto handle = borrow_windows_window_handle(a_window);
+    return handle.has_value() && static_cast<HWND>(*handle.try_value()) == GetForegroundWindow();
+}
+
 Result<void> request_editor_close(Window &a_window)
 {
     auto handle = borrow_windows_window_handle(a_window);

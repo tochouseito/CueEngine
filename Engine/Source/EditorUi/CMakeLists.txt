@@ -8,6 +8,7 @@ add_library(Cue.Editor.Ui STATIC
     Private/ScriptInspectorPanel.cpp
     Private/SceneViewPanel.cpp
     Private/BuildPanel.cpp
+    Private/AssetBrowser.cpp
 )
 target_include_directories(Cue.Editor.Ui PUBLIC Public)
 target_link_libraries(Cue.Editor.Ui PUBLIC Cue.Editor Cue.ProjectBuild PRIVATE imgui::imgui)

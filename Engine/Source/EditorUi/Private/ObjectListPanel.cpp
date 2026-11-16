@@ -12,7 +12,8 @@ void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_
     const float height = (std::max)(a_context.displayHeight, 1.0f);
     const float top = editor_panel_top();
     const float leftWidth = (std::min)(240.0f, width * 0.22f);
-    set_initial_panel(viewport->WorkPos.x, top, leftWidth, (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
+    set_initial_panel(viewport->WorkPos.x, top, leftWidth,
+                      (std::max)(height - (top - viewport->Pos.y) - 32 - a_context.reservedBottomHeight, 64.0f));
     PanelScope panel(hierarchy_panel_title(a_context), ImGuiWindowFlags_NoCollapse);
     if (!panel.is_visible())
         return;

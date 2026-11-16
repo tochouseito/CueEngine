@@ -119,9 +119,9 @@ function(cue_add_game_scripts a_target)
     endforeach()
     list(LENGTH taskTypes taskCount)
     list(LENGTH taskRegistrationTypes taskRegistrationCount)
-    if(NOT taskVersion STREQUAL "2" OR taskCount EQUAL 0 OR taskCount GREATER 256
+    if(NOT taskVersion STREQUAL "2" OR taskCount GREATER 256
        OR NOT taskCount EQUAL taskRegistrationCount)
-        message(FATAL_ERROR "Cue automatic script registration requires a nonempty, paired v2 source map")
+        message(FATAL_ERROR "Cue automatic script registration requires a paired v2 source map")
     endif()
     set(taskEntry "#include <Script/ModuleEntry.h>\n\n")
     set(taskCalls)

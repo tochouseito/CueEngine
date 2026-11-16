@@ -86,7 +86,7 @@ void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction>
     const float right = (std::min)(300.0f, width * 0.27f);
     const float top = editor_panel_top();
     set_initial_panel(viewport->WorkPos.x + left, top, (std::max)(width - left - right, 64.0f),
-                      (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
+                      (std::max)(height - (top - viewport->Pos.y) - 32 - a_context.reservedBottomHeight, 64.0f));
     PanelScope panel(a_context.text("Scene View##EditorSceneView", "シーンビュー###Scene View##EditorSceneView"),
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);
     if (!panel.is_visible())

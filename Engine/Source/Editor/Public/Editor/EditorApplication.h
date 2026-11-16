@@ -77,6 +77,8 @@ class EditorApplication final
     /// @brief Script の割当・設定を一回の Undo 操作で置き換える。未解決型も保存し、Preview では実行しない
     /// 候補の検証・Preview 生成失敗では正本・履歴を維持する。Transform Draft 中は拒否する
     [[nodiscard]] Result<void> set_scripts(std::string_view a_objectId, std::vector<ScriptDescriptor> a_scripts);
+    /// @brief Project から削除済みの Script 型を Undo / Redo の値から除く。Owner Thread でのみ呼ぶ
+    void forget_script_history(std::string_view a_typeId) noexcept;
     /// @brief Transform 編集の開始値を保持する。二重開始は拒否する
     [[nodiscard]] Result<void> begin_transform_edit(std::string_view a_objectId);
     /// @brief Draft と既存 Entity を更新する。毎回の World 再生成は行わない

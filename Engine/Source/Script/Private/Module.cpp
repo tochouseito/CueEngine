@@ -375,7 +375,7 @@ Result<std::unique_ptr<ScriptModule>> ScriptModule::create(std::vector<ScriptReg
 {
     try
     {
-        if (a_registrations.empty() || a_registrations.size() > k_maxScriptTypes)
+        if (a_registrations.size() > k_maxScriptTypes)
             return Result<std::unique_ptr<ScriptModule>>::failure(
                 {ErrorCategory::InvalidArgument, "ScriptModule.type_count"});
         std::unordered_set<std::string_view> typeIds;

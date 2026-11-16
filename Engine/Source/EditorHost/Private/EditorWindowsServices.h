@@ -37,4 +37,6 @@ enum class EditorLanguage;
 
 /// @brief Window 生成 Thread 上で Close Message を予約し、通常の Host 終了経路へ渡す
 [[nodiscard]] Result<void> request_editor_close(Window &a_window);
+/// @brief Window の Owner Thread で、この Editor が OS の前面にあるか返す
+[[nodiscard]] bool is_editor_window_foreground(Window &a_window);
 } // namespace cue

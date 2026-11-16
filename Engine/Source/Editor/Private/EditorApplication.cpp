@@ -594,6 +594,17 @@ Result<void> EditorApplication::set_scripts(std::string_view a_objectId, std::ve
     }
 }
 
+void EditorApplication::forget_script_history(std::string_view a_typeId) noexcept
+{
+    const auto isRemoved = [a_typeId](const ScriptDescriptor &a_script) { return a_script.typeId == a_typeId; };
+    for (auto &command : m_document->m_history)
+    {
+        std::erase_if(command.object.scripts, isRemoved);
+        std::erase_if(command.scriptsBefore, isRemoved);
+        std::erase_if(command.scriptsAfter, isRemoved);
+    }
+}
+
 Result<void> EditorApplication::begin_transform_edit(std::string_view a_objectId)
 {
     auto access = check_access();

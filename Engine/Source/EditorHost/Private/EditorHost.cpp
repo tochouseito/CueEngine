@@ -24,6 +24,7 @@
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayClient.h>
 
+#include "EditorAssetBrowser.h"
 #include "EditorGameSettings.h"
 #include "EditorGitHead.h"
 #include "EditorPlayServices.h"
@@ -233,6 +234,11 @@ struct EditorHost::EditingState final
     bool isCloseConfirmed = false;
     bool isDiagnosticsVisible = false;
     std::optional<PendingChange> pendingChange;
+    std::vector<EditorAssetFolder> assetFolders;
+    std::optional<EditorScriptRemoval> scriptRemoval;
+    bool isScriptUsagePreview = false;
+    bool needsAssetRefresh = true;
+    bool wasEditorForeground = false;
     std::unique_ptr<PlayClient> play;
     // Play 時点の Scene 設定を保持し、実行中の変更を編集正本へ混ぜない
     std::optional<SceneDescriptor> playScene;
@@ -786,6 +792,9 @@ Result<void> EditorHost::apply_project_change()
     editing.scripts = std::move(m_pendingProject->scripts);
     editing.gameConfiguration = m_pendingProject->gameConfiguration;
     editing.isGameBuildRequired = true;
+    editing.scriptRemoval.reset();
+    editing.assetFolders.clear();
+    editing.needsAssetRefresh = true;
     auto settingsError = std::move(m_pendingProject->settingsError);
     m_pendingProject.reset();
     editing.ui->reset();
@@ -959,6 +968,20 @@ Result<bool> EditorHost::step()
             if (changed.try_error()->category == ErrorCategory::Fatal)
                 return Result<bool>::failure(*changed.try_error());
             m_editing->error = changed.try_error()->operation;
+        }
+    }
+    if (m_editing && m_project && !m_editing->isGitReloadPending)
+    {
+        // IDE などから戻った時だけ外部編集を取り込む。通常 Frame では FileSystem を走査しない
+        auto &editing = *m_editing;
+        const bool isForeground = editing.window && is_editor_window_foreground(*editing.window);
+        editing.needsAssetRefresh |= isForeground && !editing.wasEditorForeground;
+        editing.wasEditorForeground = isForeground;
+        if (editing.needsAssetRefresh && !editing.scriptRemoval)
+        {
+            auto refreshed = refresh_editor_assets();
+            if (!refreshed.has_value())
+                editing.error = refreshed.try_error()->operation;
         }
     }
     return m_windows.step();
@@ -1169,6 +1192,17 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.isSceneViewEnabled = m_hasSceneView;
             context.isProjectOpen = m_editing->application && (!m_enableProjectOpening || m_project);
             context.canOpenProject = can_open_project();
+            context.hasAssetBrowser = m_project && context.isProjectOpen;
+            context.canManageAssets = context.hasAssetBrowser && context.canOpenProject;
+            context.assetFolders = m_editing->assetFolders;
+            const auto *removal = m_editing->scriptRemoval ? &*m_editing->scriptRemoval : nullptr;
+            EditorScriptRemovalView removalView;
+            if (removal)
+            {
+                removalView = {removal->name, removal->files, removal->uses, removal->requiresSceneSave,
+                               !m_editing->isScriptUsagePreview};
+                context.scriptRemoval = &removalView;
+            }
             context.isSceneViewEnabled = context.isSceneViewEnabled && context.isProjectOpen;
             context.isUnsavedConfirmationRequested = m_editing->pendingChange.has_value();
             context.isBuildConfirmationRequested = has_pending_game_build_confirmation();
@@ -1365,6 +1399,7 @@ Result<bool> EditorHost::save_editor_scene(bool a_chooseFile)
         return Result<bool>::failure(*saved.try_error());
     // 通常の保存成否は公開成功で判定し、電源断耐性の保証と混同しない
     editing.notice = editor_text(editing.language, "Scene saved", "シーンを保存しました");
+    editing.needsAssetRefresh = true;
     editing.ui->reset();
     return Result<bool>::success(true);
 }
@@ -1377,6 +1412,8 @@ Result<bool> EditorHost::begin_document_change(DocumentChangeKind a_kind, std::o
     // 二度目の Close や同じ Frame の要求で、最初に保留した操作を上書きしない
     if (m_editing->pendingChange)
         return Result<bool>::success(false);
+    // OS の Close が先に来た場合は削除確認を終了し、保存確認へ制御を渡す
+    m_editing->scriptRemoval.reset();
     // 未選択画面は保存対象を持たず、最初の Project をそのまま開く
     if (!m_editing->application)
         return Result<bool>::success(true);
@@ -1717,6 +1754,74 @@ bool EditorHost::can_select_game_configuration() const noexcept
     return can_open_project() && m_editing->application && m_project && m_project->descriptor().gameTarget.has_value();
 }
 
+Result<void> EditorHost::refresh_editor_assets()
+{
+    m_editing->needsAssetRefresh = false;
+    auto assets = scan_editor_assets(*m_windows.file_system(), *m_project);
+    if (!assets.has_value())
+        return Result<void>::failure(*assets.try_error());
+    m_editing->assetFolders = assets.take_value();
+    return Result<void>::success();
+}
+
+Result<void> EditorHost::confirm_script_removal()
+{
+    if (!can_select_game_configuration() || !m_editing->scriptRemoval || m_editing->isScriptUsagePreview)
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.removal_busy"});
+    auto &editing = *m_editing;
+    auto &application = *editing.application;
+    auto &files = *m_windows.file_system();
+    auto &removal = *editing.scriptRemoval;
+    if (removal.requiresSceneSave)
+    {
+        auto saved = save_editor_scene(false);
+        if (!saved.has_value())
+            return Result<void>::failure(*saved.try_error());
+        if (!*saved.try_value())
+            return Result<void>::success();
+        // 保存で参照先が変わるため、更新済みの影響範囲を表示して別の確定を待つ
+        auto checked = inspect_script_removal(files, *m_project, application.document(), removal.typeId);
+        if (!checked.has_value())
+        {
+            editing.scriptRemoval.reset();
+            return Result<void>::failure(*checked.try_error());
+        }
+        editing.scriptRemoval = checked.take_value();
+        return Result<void>::success();
+    }
+
+    auto observed = observe_git_head();
+    if ((!observed.has_value() && (editing.gitHead || observed.try_error()->operation == "EditorGit.index_locked")) ||
+        editing.isGitReloadPending)
+    {
+        editing.scriptRemoval.reset();
+        return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.project_changed"});
+    }
+    // Scene の準備が失敗した場合も File と編集正本を削除前に戻せるよう、公開の一部として再読込する
+    const auto reload = [&]() -> Result<void>
+    { return removal.activeScene ? application.open_scene(files, *removal.activeScene) : Result<void>::success(); };
+    auto executed = execute_script_removal(files, *m_project, application.document(), removal, reload);
+    if (!executed.has_value())
+    {
+        editing.scriptRemoval.reset();
+        editing.needsAssetRefresh = true;
+        return executed;
+    }
+    application.forget_script_history(removal.typeId);
+    editing.scriptRemoval.reset();
+    editing.ui->reset();
+    editing.needsAssetRefresh = true;
+    editing.play.reset();
+    editing.playScene.reset();
+    editing.playObjectIndices.clear();
+    editing.appliedViewTick.reset();
+    editing.isGameBuildRequired = true;
+    editing.notice =
+        editor_text(editing.language, "Script removed from project", "プロジェクトからスクリプトを削除しました");
+    // 削除は完了済み。再 Build の開始に失敗した場合も新しい Source を保持し、その失敗を表示する
+    return build_scripts();
+}
+
 Result<void> EditorHost::request_script_creation(std::string_view a_name)
 {
     if (std::this_thread::get_id() != m_ownerId)
@@ -1731,6 +1836,7 @@ Result<void> EditorHost::request_script_creation(std::string_view a_name)
     auto created = create_script_source(*m_windows.file_system(), *m_project, a_name);
     if (!created.has_value())
         return Result<void>::failure(*created.try_error());
+    m_editing->needsAssetRefresh = true;
     // 新しい型を含まない DLL の Metadata を Inspector に再利用しない
     m_editing->play.reset();
     m_editing->playScene.reset();
@@ -1964,11 +2070,15 @@ Result<void> EditorHost::apply_editor_actions()
     auto *app = editing.application.get();
     for (const auto &action : editing.actions)
     {
+        const bool isRemovalResponse = action.kind == EditorActionKind::ConfirmScriptRemoval ||
+                                       action.kind == EditorActionKind::CancelScriptRemoval;
         const bool isConfirmation = action.kind == EditorActionKind::ConfirmSaveChanges ||
                                     action.kind == EditorActionKind::ConfirmDiscardChanges ||
                                     action.kind == EditorActionKind::CancelDocumentChange;
         // 同じ Frame で先に採用した切替要求を、後続の編集要求で変更しない
         if (editing.isGitReloadPending || ((editing.pendingChange || m_pendingProject) && !isConfirmation))
+            continue;
+        if (editing.scriptRemoval && !isRemovalResponse)
             continue;
         // 次の操作へ移ったら古い保存通知を消し、現在の Dirty 表示へ戻す
         editing.notice.clear();
@@ -1991,10 +2101,41 @@ Result<void> EditorHost::apply_editor_actions()
                 action.kind != EditorActionKind::ToggleDiagnostics && action.kind != EditorActionKind::Exit &&
                 action.kind != EditorActionKind::OpenIde && action.kind != EditorActionKind::OpenScriptSource &&
                 action.kind != EditorActionKind::CancelScriptOperation &&
-                action.kind != EditorActionKind::SetLanguage && !isConfirmation)
+                action.kind != EditorActionKind::RefreshAssets && action.kind != EditorActionKind::SetLanguage &&
+                !isConfirmation)
                 return Result<void>::failure({ErrorCategory::InvalidState, "EditorHost.play.edit_locked"});
             switch (action.kind)
             {
+            case EditorActionKind::RefreshAssets:
+                editing.needsAssetRefresh = true;
+                return Result<void>::success();
+            case EditorActionKind::InspectScriptRemoval:
+            {
+                if (!can_select_game_configuration())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.removal_busy"});
+                auto removal =
+                    inspect_script_removal(*m_windows.file_system(), *m_project, app->document(), action.scriptTypeId);
+                if (!removal.has_value())
+                    return Result<void>::failure(*removal.try_error());
+                editing.isScriptUsagePreview = !action.isEnabled;
+                editing.scriptRemoval = removal.take_value();
+                return Result<void>::success();
+            }
+            case EditorActionKind::ConfirmScriptRemoval:
+                return confirm_script_removal();
+            case EditorActionKind::CancelScriptRemoval:
+                editing.scriptRemoval.reset();
+                return Result<void>::success();
+            case EditorActionKind::OpenAssetScene:
+            {
+                if (!can_open_project())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.open_scene_busy"});
+                auto allowed = begin_document_change(DocumentChangeKind::OpenScene, action.assetPath);
+                if (!allowed.has_value())
+                    return Result<void>::failure(*allowed.try_error());
+                return *allowed.try_value() ? execute_document_change(DocumentChangeKind::OpenScene, &action.assetPath)
+                                            : Result<void>::success();
+            }
             case EditorActionKind::SetLanguage:
             {
                 const auto *paths = m_windows.storage_paths();

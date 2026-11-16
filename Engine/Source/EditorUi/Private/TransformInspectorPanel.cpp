@@ -238,7 +238,7 @@ Result<void> draw_transform_inspector(const SceneDocument &a_document, const Edi
     const float panelWidth = (std::min)(300.0f, width * 0.27f);
     const float top = editor_panel_top();
     set_initial_panel(viewport->WorkPos.x + width - panelWidth, top, panelWidth,
-                      (std::max)(height - (top - viewport->Pos.y) - 32, 64.0f));
+                      (std::max)(height - (top - viewport->Pos.y) - 32 - a_context.reservedBottomHeight, 64.0f));
     PanelScope panel(a_context.text("Inspector##EditorInspector", "インスペクター###Inspector##EditorInspector"),
                      ImGuiWindowFlags_NoCollapse);
     if (!panel.is_visible())
