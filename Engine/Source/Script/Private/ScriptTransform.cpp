@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <Math/VectorOperations.h>
 #include <Script/Behaviour.h>
 
 namespace cue
@@ -134,5 +135,16 @@ void ScriptTransform::remember(Result<void> a_result) const
         throw std::move(*a_result.try_error());
     }
     callback->remember(std::move(a_result));
+}
+
+float math::length(const ScriptTransform::Vector &a_value)
+{
+    auto value = a_value.get();
+    if (const auto *vector = value.try_value())
+    {
+        return math::length(*vector);
+    }
+    // 取得失敗は既存の Script Callback 境界へ伝え、長さを返す式を中断する
+    throw std::move(*value.try_error());
 }
 } // namespace cue

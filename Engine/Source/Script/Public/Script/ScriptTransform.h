@@ -101,4 +101,11 @@ class ScriptTransform final
 
     Behaviour &m_owner;
 };
+
+namespace math
+{
+/// @brief Script の位置または Scale の現在値を取得して長さを求める
+/// World の Owner Thread の Script Callback 中に利用する。値の取得失敗時は cue::Error を送出する
+[[nodiscard]] float length(const ScriptTransform::Vector &a_value);
+} // namespace math
 } // namespace cue

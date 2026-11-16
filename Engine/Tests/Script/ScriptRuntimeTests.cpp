@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <Math/VectorOperations.h>
 #include <Runtime/Components/CameraComponent.h>
 #include <Runtime/Components/MeshRendererComponent.h>
 #include <Runtime/Components/TransformComponent.h>
@@ -580,6 +581,10 @@ class TransformCommands final : public cue::Behaviour
         if (m_firstUpdate)
         {
             m_firstUpdate = false;
+            if (cue::math::length(transform.position) != 0.0f)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.initial_length"});
+            }
             if (!transform.translate(1.0f).has_value() || !transform.translate(1.0f, 2.0f).has_value() ||
                 !transform.translate(1.0f, 2.0f, 3.0f).has_value() ||
                 !transform.translate(cue::math::float3{1.0f, 1.0f, 4.0f}).has_value())
@@ -591,6 +596,11 @@ class TransformCommands final : public cue::Behaviour
                 position.try_value()->z != 7.0f)
             {
                 return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.position"});
+            }
+            const float distance = cue::math::length(transform.position);
+            if (std::abs(distance - std::sqrt(90.0f)) > 1e-5f)
+            {
+                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.length"});
             }
             auto rejected = transform.translate(8.0f, (std::numeric_limits<float>::infinity)());
             auto value = transform.get();
@@ -622,7 +632,7 @@ class TransformCommands final : public cue::Behaviour
     bool m_firstUpdate = true;
 };
 
-/// @brief 一括操作の検証失敗と、演算子の失敗が Callback の終了時に伝わることを確認する
+/// @brief Transform の変更と数学関数による読み取りを検証し、失敗が Callback 境界で伝わることを確認する
 int test_transform_commands()
 {
     using namespace cue;
@@ -647,6 +657,17 @@ int test_transform_commands()
     auto failed = fixture.world->update(10ms);
     CUE_RUNTIME_SCRIPT_CHECK(!failed.has_value() && g_sawPartialTransform &&
                              failed.try_error()->operation == "Script:Math.Transform.to_matrix.non_finite");
+    auto stopped = fixture.world->shutdown();
+    CUE_RUNTIME_SCRIPT_CHECK(!stopped.has_value() && stopped.try_error()->operation == failed.try_error()->operation);
+
+    auto withoutTransform = prepare({script});
+    CUE_RUNTIME_SCRIPT_CHECK(withoutTransform.has_value());
+    auto missing = withoutTransform.take_value();
+    CUE_RUNTIME_SCRIPT_CHECK(missing.world->initialize().has_value());
+    CUE_RUNTIME_SCRIPT_CHECK(missing.world->remove_component<TransformComponent>(missing.entity).has_value());
+    auto readFailed = missing.world->update(10ms);
+    CUE_RUNTIME_SCRIPT_CHECK(!readFailed.has_value() &&
+                             readFailed.try_error()->operation == "Script:World.component_missing");
     return 0;
 }
 } // namespace
