@@ -448,10 +448,10 @@ class PulseSource final : public cue::Behaviour
     }
 
     /// @brief 同期呼出が対象 Entity に切り替わっていることを位置の変更で観測する
-    cue::Result<void> configure()
+    cue::Result<void> configure(unsigned a_value, float a_offset)
     {
-        value = 2;
-        return transform.position.x.add(4.0f);
+        value = a_value;
+        return transform.position.x.add(a_offset);
     }
 };
 
@@ -465,6 +465,32 @@ class PulseReceiver final : public cue::Behaviour
         {
             return cue::Result<void>::success();
         }
+        auto missing = find_script_by_name<PulseSource>("Missing");
+        auto wrongType = find_script_by_name<PulseSource>("Receiver");
+        auto lookupFailure = missing.call(&PulseSource::configure, 2u, 4.0f);
+        if (missing || wrongType || !missing.try_error() || !wrongType.try_error() || lookupFailure.has_value() ||
+            lookupFailure.try_error()->operation != missing.try_error()->operation)
+        {
+            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.lookup"});
+        }
+        if (auto source = find_script_by_name<PulseSource>("Cube", k_firstScriptId))
+        {
+            const auto nullMethod = static_cast<decltype(&PulseSource::configure)>(nullptr);
+            auto rejected = source.call(nullMethod, 2u, 4.0f);
+            if (rejected.has_value() || rejected.try_error()->operation != "ScriptReference.call.method")
+            {
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.null_method"});
+            }
+            auto configured = source.call(&PulseSource::configure, 2u, 4.0f);
+            if (!configured.has_value())
+            {
+                return configured;
+            }
+        }
+        else
+        {
+            return cue::Result<void>::failure(*source.try_error());
+        }
         auto cube = find_by_name("Cube");
         if (!cube.has_value() || !get_component<cue::ScriptCamera>().has_value() ||
             !cube.try_value()->get_component<cue::ScriptMeshRenderer>().has_value())
@@ -473,11 +499,6 @@ class PulseReceiver final : public cue::Behaviour
         }
         auto connected = cube.try_value()->with_script<PulseSource>([this](PulseSource &a_source)
         {
-            auto configured = a_source.configure();
-            if (!configured.has_value())
-            {
-                return configured;
-            }
             return a_source.pulse.subscribe(*this, [this](const unsigned &a_value)
             {
                 using namespace std::chrono_literals;

@@ -1,9 +1,12 @@
 #pragma once
 
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <typeinfo>
+#include <utility>
 #include <vector>
 
 #include <Foundation/Result.h>
@@ -87,6 +90,25 @@ class Behaviour
             return Result<GameObject>::failure({ErrorCategory::InvalidState, "Behaviour.callback_context"});
         }
         return m_callback->object.find_by_name(a_name);
+    }
+    /// @brief 同じ Scene Instance の Object 名で起動済みの T を解決する
+    /// Owner Thread の現在の Callback 中だけ利用する。同じ型の割当が複数ある場合は ID を指定する
+    template <std::derived_from<Behaviour> T>
+    [[nodiscard]] GameObject::ScriptReference<T> find_script_by_name(std::string_view a_name,
+                                                                    std::string_view a_instanceId = {}) const
+    {
+        auto object = find_by_name(a_name);
+        if (!object.has_value())
+        {
+            return GameObject::ScriptReference<T>(std::move(*object.try_error()));
+        }
+        const auto &target = *object.try_value();
+        auto script = target.find_script(typeid(T), a_instanceId);
+        if (!script.has_value())
+        {
+            return GameObject::ScriptReference<T>(std::move(*script.try_error()));
+        }
+        return GameObject::ScriptReference<T>(target, a_instanceId);
     }
 
     ScriptTransform transform{*this};

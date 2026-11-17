@@ -408,11 +408,13 @@ Result<std::string> EditorApplication::add_cube()
             return Result<std::string>::failure({ErrorCategory::InvalidArgument, "Editor.add_cube.duplicate_id"});
         SceneObjectDescriptor object;
         object.objectId = *id.try_value();
-        object.name = "Cube";
-        for (std::size_t suffix = 2; std::any_of(descriptor.objects.begin(), descriptor.objects.end(),
+        constexpr char k_cubeName[] = "Cube";
+        object.name = k_cubeName;
+        // 連番付きの候補が使用済みでも、次の候補は常に元の名前から組み立てる
+        for (std::size_t suffix = 1; std::any_of(descriptor.objects.begin(), descriptor.objects.end(),
                                                  [&](const auto &a_object) { return a_object.name == object.name; });
              ++suffix)
-            object.name = "Cube " + std::to_string(suffix);
+            object.name = std::string(k_cubeName) + '(' + std::to_string(suffix) + ')';
         object.transform.emplace();
         object.mesh.emplace();
         SceneDocument::Command command;

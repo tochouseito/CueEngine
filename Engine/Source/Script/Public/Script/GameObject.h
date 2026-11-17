@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <typeinfo>
@@ -40,6 +41,8 @@ struct ScriptUpdateContext final
 class GameObject final
 {
   public:
+    template <std::derived_from<Behaviour> T> class ScriptReference;
+
     /// @brief SDK の Module Adapter が検証済み API と Handle を束ねる
     GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity) noexcept;
     /// @brief 保存用 Identity と異なる、Process 内の世代付き参照値を返す
@@ -209,5 +212,72 @@ class GameObject final
     const CueScriptEngineApi &m_api;
     CueScriptEntity m_entity;
     ScriptAccess *m_access;
+};
+
+/// @brief 名前で解決した Script を、対象の Callback Context で同期呼出する窓口
+/// Game Module を借用する。取得した Owner Thread の Script Callback 中だけ利用する
+/// 実体の Pointer は保持せず、呼出時に世代と割当の有効性を再検証する
+template <std::derived_from<Behaviour> T> class GameObject::ScriptReference final
+{
+  public:
+    /// @brief 呼出の窓口を Callback 外へコピーさせない
+    ScriptReference(const ScriptReference &) = delete;
+    /// @brief 異なる検索結果で窓口を上書きさせない
+    ScriptReference &operator=(const ScriptReference &) = delete;
+
+    /// @brief 検索時に起動済み Script を解決できたか返す
+    [[nodiscard]] explicit operator bool() const noexcept { return m_target.has_value(); }
+    /// @brief 検索失敗の Error を借用する。有効期間はこの窓口の寿命まで
+    [[nodiscard]] const Error *try_error() const & noexcept { return m_target.try_error(); }
+    /// @brief 一時の窓口から失効する Pointer を取得させない
+    const Error *try_error() const && = delete;
+
+    /// @brief 対象 Script の Member 関数を同期実行し、返り値または失敗を Result で返す
+    template <typename Method, typename... Args>
+        requires(std::is_member_function_pointer_v<Method> && std::invocable<Method, T &, Args...>)
+    [[nodiscard]] auto call(Method a_method, Args &&...a_args) const
+    {
+        using Output = typename CallbackResult<std::invoke_result_t<Method, T &, Args...>>::resultType;
+        const auto *target = m_target.try_value();
+        if (!target)
+        {
+            return Output::failure(*m_target.try_error());
+        }
+        if (a_method == nullptr)
+        {
+            return Output::failure({ErrorCategory::InvalidArgument, "ScriptReference.call.method"});
+        }
+        // 検索時の EngineApi を持ち越さず、現在の Callback が借用する Table から対象を復元する
+        const auto *caller = target->access->callback;
+        if (!caller || caller->object.m_entity.world != target->entity.world)
+        {
+            return Output::failure({ErrorCategory::InvalidState, "ScriptReference.call.context"});
+        }
+        const GameObject object(caller->object.m_api, target->entity, target->access);
+        return object.with_script<T>([&](T &a_script) -> decltype(auto)
+        {
+            return std::invoke(a_method, a_script, std::forward<Args>(a_args)...);
+        }, target->instanceId);
+    }
+
+  private:
+    friend class Behaviour;
+    struct Target final
+    {
+        ScriptAccess *access;
+        CueScriptEntity entity;
+        std::string instanceId;
+    };
+    /// @brief 検索済みの Entity と割当 ID を保持する
+    ScriptReference(const GameObject &a_object, std::string_view a_instanceId)
+        : m_target(Result<Target>::success({a_object.m_access, a_object.m_entity, std::string(a_instanceId)}))
+    {
+    }
+    /// @brief 検索時の Error を所有する
+    explicit ScriptReference(Error a_error) : m_target(Result<Target>::failure(std::move(a_error)))
+    {
+    }
+
+    Result<Target> m_target;
 };
 } // namespace cue

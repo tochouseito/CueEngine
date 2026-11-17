@@ -84,8 +84,11 @@ int main()
     CUE_EDITOR_CHECK(app->new_scene().has_value());
     auto first = editor_value(app->add_cube());
     auto second = editor_value(app->add_cube());
+    const auto third = editor_value(app->add_cube());
     CUE_EDITOR_CHECK(editor_object(*app, first).name == "Cube");
-    CUE_EDITOR_CHECK(editor_object(*app, second).name == "Cube 2");
+    CUE_EDITOR_CHECK(editor_object(*app, second).name == "Cube(1)");
+    CUE_EDITOR_CHECK(editor_object(*app, third).name == "Cube(2)");
+    CUE_EDITOR_CHECK(app->undo().has_value() && app->document().selected_object_id() == second);
     failWorld = true;
     CUE_EDITOR_CHECK(!app->undo().has_value() && app->document().selected_object_id() == second);
     failWorld = false;
