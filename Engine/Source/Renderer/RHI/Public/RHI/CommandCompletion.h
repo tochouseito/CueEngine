@@ -40,13 +40,7 @@ class SharedCommandCompletion final : public ICommandCompletion
         return m_completion ? m_completion->fence_value() : 0;
     }
 
-    /// @brief 元 Token が正常完了したか確認する
-    [[nodiscard]] bool is_complete() const noexcept override
-    {
-        return m_completion && m_completion->is_complete();
-    }
-
-    /// @brief 元 Token の完了を待ち、未設定なら公開前状態の誤用を返す
+    /// @brief 元 Token を非待機で確認し、未設定なら公開前状態の誤用を返す
     [[nodiscard]] Result<bool> completion_status() const override
     {
         return m_completion

@@ -5,12 +5,22 @@
 #include <thread>
 #include <vector>
 
-#include <Foundation/Path.h>
+#include <Foundation/Result.h>
 #include <Script/Abi.h>
 #include <ScriptData/ScriptData.h>
 
 namespace cue
 {
+/// @brief 動的な関数 Table の寿命を所有する。ロードした Platform 側が実装する
+class IGameModuleLibrary
+{
+  public:
+    /// @brief Table の借用終了後に Platform のロード参照を解放する
+    virtual ~IGameModuleLibrary() = default;
+    /// @brief Instance の回収に失敗したときは、ロード参照を Process 終了まで維持する
+    virtual void retain_until_process_exit() noexcept = 0;
+};
+
 /// @brief Runtime が Game Module の借用 Table と複写 Metadata を所有する
 /// Owner Thread 上で全操作を直列化する。生成 Instance の破棄完了まで DLL を生存させる
 /// Editor プロセスは利用せず、Metadata 取得も Play / 検査プロセスで行う
@@ -26,10 +36,11 @@ class RuntimeGameModule final
     RuntimeGameModule(CreateToken, std::unique_ptr<State> a_state) noexcept;
     /// @brief Table が不要になった後に DLL を解放する。Instance の停止は ScriptSystem が先に行う
     ~RuntimeGameModule();
-    /// @brief 絶対 Path の Game DLL を安全な検索規則で読み、ABI / 選択構成 / Metadata を検証する
-    /// 構成未指定なら Host と同じ構成を要求する。明示時も選択値との一致を要求し、別構成へ戻らない
-    [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> load(
-        const Path &a_file, std::optional<ScriptConfiguration> a_configuration = std::nullopt);
+    /// @brief ロード済みの入口を ABI 検証に通し、成功時は Table とライブラリを所有する
+    /// 構成未指定なら Host と同じ構成を要求する。失敗時はライブラリを呼出 Thread で解放する
+    [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> from_dynamic(
+        CueScriptGetModuleFunction a_entry, std::unique_ptr<IGameModuleLibrary> a_library,
+        std::optional<ScriptConfiguration> a_configuration = std::nullopt);
     /// @brief 静的 Link した登録入口を同じ ABI 検証へ通す。関数の寿命は Module より長くする
     [[nodiscard]] static Result<std::unique_ptr<RuntimeGameModule>> from_static(CueScriptGetModuleFunction a_entry);
     RuntimeGameModule(const RuntimeGameModule &) = delete;

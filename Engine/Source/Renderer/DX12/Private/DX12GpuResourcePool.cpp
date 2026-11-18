@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -87,16 +88,48 @@ struct DX12GpuResourcePool::State final
                slots[a_handle.index].generation == a_handle.generation;
     }
 
-    /// @brief 完了済みの使用を除き、破棄予約が安全になった Slot を解放する
-    [[nodiscard]] bool collect_slot_locked(std::uint32_t a_index)
+    /// @brief 完了が確認できた GPU 参照だけを外し、未完了と確認失敗の参照を保持する
+    [[nodiscard]] static Result<void> collect_completed_uses_locked(Slot& a_slot)
+    {
+        std::optional<Error> firstError;
+        bool hasException = false;
+        // 走査中に例外を外へ出すと、移動済みの要素が pending に残るため Predicate 内で捕捉する
+        std::erase_if(a_slot.pending, [&](const PendingUse& a_use) noexcept
+        {
+            try
+            {
+                auto status = a_use.completion->completion_status();
+                if (const auto* isComplete = status.try_value())
+                {
+                    return *isComplete;
+                }
+                if (!firstError)
+                {
+                    firstError.emplace(std::move(*status.try_error()));
+                }
+            }
+            catch (...)
+            {
+                hasException = true;
+            }
+            return false;
+        });
+        if (firstError)
+        {
+            return Result<void>::failure(std::move(*firstError));
+        }
+        if (hasException)
+        {
+            return Result<void>::failure({ErrorCategory::PlatformFailure, "GpuResourcePool.completion.exception"});
+        }
+        return Result<void>::success();
+    }
+
+    /// @brief 残る利用がない退役 Slot を回収する。空き Slot 配列の容量は登録時に確保済み
+    [[nodiscard]] bool release_retired_slot_locked(std::uint32_t a_index) noexcept
     {
         Slot& slot = slots[a_index];
-        if (!slot.resource)
-        {
-            return false;
-        }
-        std::erase_if(slot.pending, [](const PendingUse& a_use) { return a_use.completion->is_complete(); });
-        if (!slot.isRetired || slot.activeReaders != 0 || slot.hasActiveWriter || !slot.pending.empty())
+        if (!slot.resource || !slot.isRetired || slot.activeReaders != 0 || slot.hasActiveWriter || !slot.pending.empty())
         {
             return false;
         }
@@ -140,7 +173,18 @@ public:
         {
             slot.hasActiveWriter = false;
         }
-        static_cast<void>(m_state->collect_slot_locked(m_index));
+        try
+        {
+            auto collected = State::collect_completed_uses_locked(slot);
+            if (collected.has_value())
+            {
+                static_cast<void>(m_state->release_retired_slot_locked(m_index));
+            }
+        }
+        catch (...)
+        {
+            // 返却は失敗を返せない。診断の確保にも失敗した場合は Slot を明示回収まで保持する
+        }
     }
 
     /// @brief 借用中の Resource を非所有で返す
@@ -376,7 +420,11 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire(GpuResourceHandle a_handle
         return LeaseResult::failure({ErrorCategory::InvalidArgument, "DX12GpuResourcePool.acquire.handle"});
     }
     State::Slot& slot = m_state->slots[a_handle.index];
-    static_cast<void>(m_state->collect_slot_locked(a_handle.index));
+    auto collected = State::collect_completed_uses_locked(slot);
+    if (!collected.has_value())
+    {
+        return LeaseResult::failure(std::move(*collected.try_error()));
+    }
     if (slot.hasActiveWriter || (a_access == GpuResourceAccess::Write && slot.activeReaders != 0))
     {
         return LeaseResult::failure({ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire.active_conflict"});
@@ -488,7 +536,12 @@ Result<gpuResourceLease> DX12GpuResourcePool::acquire_wait(GpuResourceHandle a_h
         {
             return Result<gpuResourceLease>::failure(*waitResult.try_error());
         }
-        if (!pending->is_complete())
+        auto status = pending->completion_status();
+        if (!status.has_value())
+        {
+            return Result<gpuResourceLease>::failure(std::move(*status.try_error()));
+        }
+        if (!*status.try_value())
         {
             return Result<gpuResourceLease>::failure(
                 {ErrorCategory::InvalidState, "DX12GpuResourcePool.acquire_wait.incomplete"});
@@ -505,12 +558,18 @@ Result<void> DX12GpuResourcePool::retire(GpuResourceHandle a_handle)
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12GpuResourcePool.retire.handle"});
     }
     State::Slot& slot = m_state->slots[a_handle.index];
+    // 完了確認が失敗したときに、退役を拒否した Handle の世代を進めない
+    auto collected = State::collect_completed_uses_locked(slot);
+    if (!collected.has_value())
+    {
+        return collected;
+    }
     slot.isRetired = true;
     if (slot.generation < (std::numeric_limits<std::uint64_t>::max)())
     {
         ++slot.generation;
     }
-    static_cast<void>(m_state->collect_slot_locked(a_handle.index));
+    static_cast<void>(m_state->release_retired_slot_locked(a_handle.index));
     return Result<void>::success();
 }
 
@@ -519,10 +578,23 @@ Result<std::size_t> DX12GpuResourcePool::collect()
 {
     std::lock_guard lock(m_state->mutex);
     std::size_t released = 0;
-    // 退役済みで利用の終わった Slot を回収する
+    std::optional<Error> firstError;
     for (std::size_t index = 0; index < m_state->slots.size(); ++index)
     {
-        released += m_state->collect_slot_locked(static_cast<std::uint32_t>(index)) ? 1 : 0;
+        auto collected = State::collect_completed_uses_locked(m_state->slots[index]);
+        if (!collected.has_value())
+        {
+            if (!firstError)
+            {
+                firstError.emplace(std::move(*collected.try_error()));
+            }
+            continue;
+        }
+        released += m_state->release_retired_slot_locked(static_cast<std::uint32_t>(index)) ? 1 : 0;
+    }
+    if (firstError)
+    {
+        return Result<std::size_t>::failure(std::move(*firstError));
     }
     return Result<std::size_t>::success(released);
 }

@@ -72,16 +72,33 @@ bool is_fence_complete(ID3D12Fence* a_fence, std::uint64_t a_value) noexcept
     return completed != (std::numeric_limits<std::uint64_t>::max)() && completed >= a_value;
 }
 
+/// @brief Fence を非待機で確認し、Device Lost を Native 診断値付きの Error として返す
+Result<bool> fence_status(ID3D12Fence& a_fence, ID3D12Device& a_device, std::uint64_t a_value)
+{
+    const auto completed = a_fence.GetCompletedValue();
+    if (completed == (std::numeric_limits<std::uint64_t>::max)())
+    {
+        return Result<bool>::failure(command_error("DX12CommandCompletion.status.device",
+                                                   a_device.GetDeviceRemovedReason()));
+    }
+    return Result<bool>::success(a_value != 0 && completed >= a_value);
+}
+
 /// @brief Queue の Lease に依存せず、保持した Fence の完了を待つ
 Result<void> wait_for_fence(ID3D12Fence* a_fence, ID3D12Device* a_device, std::uint64_t a_value)
 {
-    if (is_fence_complete(a_fence, a_value))
-    {
-        return Result<void>::success();
-    }
     if (!a_fence || !a_device || a_value == 0)
     {
         return Result<void>::failure({ErrorCategory::Fatal, "DX12CommandCompletion.wait.fence"});
+    }
+    auto status = fence_status(*a_fence, *a_device, a_value);
+    if (!status.has_value())
+    {
+        return Result<void>::failure(std::move(*status.try_error()));
+    }
+    if (*status.try_value())
+    {
+        return Result<void>::success();
     }
     HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!event)
@@ -104,11 +121,14 @@ Result<void> wait_for_fence(ID3D12Fence* a_fence, ID3D12Device* a_device, std::u
         return Result<void>::failure({ErrorCategory::PlatformFailure, "WaitForSingleObject",
                                       static_cast<std::int64_t>(waitError)});
     }
-    if (!is_fence_complete(a_fence, a_value))
+    status = fence_status(*a_fence, *a_device, a_value);
+    if (!status.has_value())
     {
-        return Result<void>::failure(command_error("ID3D12Device.GetDeviceRemovedReason",
-                                                   // Device 喪失を確認し、完了待ちを正常終了と混同しない
-                                                   a_device->GetDeviceRemovedReason()));
+        return Result<void>::failure(std::move(*status.try_error()));
+    }
+    if (!*status.try_value())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12CommandCompletion.wait.incomplete"});
     }
     return Result<void>::success();
 }
@@ -149,22 +169,10 @@ public:
         return m_value;
     }
 
-    /// @brief この Token が保持する Fence の完了だけを確認する
-    [[nodiscard]] bool is_complete() const noexcept override
-    {
-        return is_fence_complete(m_fence.Get(), m_value);
-    }
-
-    /// @brief この Token が保持する Fence の完了を待つ
+    /// @brief Token が保持する Fence の完了状況を非待機で返す
     [[nodiscard]] Result<bool> completion_status() const override
     {
-        // Fence の完了値から Command の GPU 利用終了を確認する
-        const auto completed = m_fence->GetCompletedValue();
-        if (completed == (std::numeric_limits<std::uint64_t>::max)())
-            return Result<bool>::failure(command_error("DX12CommandCompletion.status.device",
-                                                        // Device 喪失を確認し、完了待ちを正常終了と混同しない
-                                                        m_device->GetDeviceRemovedReason()));
-        return Result<bool>::success(m_value != 0 && completed >= m_value);
+        return fence_status(*m_fence.Get(), *m_device.Get(), m_value);
     }
 
     /// @brief この Token が保持する Fence の完了を待つ

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include <EngineInstallation/EngineInstallation.h>
+#include <Foundation/EngineVersionValidation.h>
 #include <Foundation/Utf8.h>
 #include <Foundation/Uuid.h>
 #include <Platform/FileSystem.h>

@@ -15,19 +15,13 @@
 #include <Foundation/Result.h>
 #include <Script/Abi.h>
 #include <Script/Components.h>
+#include <Script/ScriptApi.h>
 
 namespace cue
 {
 class Behaviour;
 class ScriptModule;
 class ScriptTransform;
-
-/// @brief World の更新時間を表す SDK 値。start / stop の時間はゼロ
-struct ScriptUpdateContext final
-{
-    std::chrono::nanoseconds deltaTime{};
-    std::uint64_t tick = 0;
-};
 
 /// @brief Module 境界の Status を SDK 内の所有 Error に変換する
 [[nodiscard]] Result<void> script_result(CueScriptStatus a_status);
@@ -102,12 +96,19 @@ class GameObject final
     friend class ScriptTransform;
     static constexpr std::size_t k_maxCallDepth = 32;
 
+    /// @brief World の時間と更新番号を同期呼出に引き継ぐ。開始・停止はゼロ
+    struct UpdateContext final
+    {
+        std::chrono::nanoseconds deltaTime{};
+        std::uint64_t tick = 0;
+    };
+
     /// @brief Game Module 内の現在の呼出を保持し、入れ子から戻ると前の呼出を復元する
     class CallbackScope final
     {
       public:
         /// @brief 対象 Script に所属 Entity と時間を呼出中だけ公開する
-        CallbackScope(Behaviour &a_script, const GameObject &a_object, ScriptUpdateContext a_update) noexcept;
+        CallbackScope(Behaviour &a_script, const GameObject &a_object, UpdateContext a_update) noexcept;
         /// @brief 例外を含む全経路で外側の呼出を復元する
         ~CallbackScope();
         /// @brief この呼出の最初の暗黙書き込み失敗を保持する
@@ -123,7 +124,7 @@ class GameObject final
         }
 
         const GameObject &object;
-        const ScriptUpdateContext update;
+        const UpdateContext update;
 
       private:
         Behaviour &m_script;
@@ -217,7 +218,8 @@ class GameObject final
 /// @brief 名前で解決した Script を、対象の Callback Context で同期呼出する窓口
 /// Game Module を借用する。取得した Owner Thread の Script Callback 中だけ利用する
 /// 実体の Pointer は保持せず、呼出時に世代と割当の有効性を再検証する
-template <std::derived_from<Behaviour> T> class GameObject::ScriptReference final
+template <std::derived_from<Behaviour> T>
+class GameObject::ScriptReference final : public ScriptApiMethods<T, ScriptReference<T>>
 {
   public:
     /// @brief 呼出の窓口を Callback 外へコピーさせない
@@ -247,6 +249,22 @@ template <std::derived_from<Behaviour> T> class GameObject::ScriptReference fina
         {
             return Output::failure({ErrorCategory::InvalidArgument, "ScriptReference.call.method"});
         }
+        return invoke([&](T &a_script) -> decltype(auto)
+                      { return std::invoke(a_method, a_script, std::forward<Args>(a_args)...); });
+    }
+
+    /// @brief 生成された公開関数を対象の Callback Context で同期実行し、戻り値を Result にまとめる
+    /// 同じ Game Module の Owner Thread 専用。対象の世代・割当・再帰上限を毎回検証する
+    template <typename Callback>
+        requires std::invocable<Callback, T &>
+    [[nodiscard]] auto invoke(Callback &&a_callback) const
+    {
+        using Output = typename CallbackResult<std::invoke_result_t<Callback, T &>>::resultType;
+        const auto *target = m_target.try_value();
+        if (!target)
+        {
+            return Output::failure(*m_target.try_error());
+        }
         // 検索時の EngineApi を持ち越さず、現在の Callback が借用する Table から対象を復元する
         const auto *caller = target->access->callback;
         if (!caller || caller->object.m_entity.world != target->entity.world)
@@ -256,7 +274,7 @@ template <std::derived_from<Behaviour> T> class GameObject::ScriptReference fina
         const GameObject object(caller->object.m_api, target->entity, target->access);
         return object.with_script<T>([&](T &a_script) -> decltype(auto)
         {
-            return std::invoke(a_method, a_script, std::forward<Args>(a_args)...);
+            return std::invoke(std::forward<Callback>(a_callback), a_script);
         }, target->instanceId);
     }
 

@@ -4,34 +4,11 @@
 #include <memory>
 #include <vector>
 
+#include <Foundation/Windows/CommandLine.h>
 #include <Foundation/Windows/UtfConversion.h>
 
 namespace cue::ide_detail
 {
-namespace
-{
-/// @brief CRT と CommandLineToArgvW が同じ一引数を復元できる形へ Quote する
-void append_argument(std::wstring &a_line, std::wstring_view a_value)
-{
-    if (!a_line.empty())
-        a_line += L' ';
-    a_line += L'"';
-    std::size_t slashes = 0;
-    for (const auto character : a_value)
-    {
-        if (character == L'\\')
-        {
-            ++slashes;
-            continue;
-        }
-        a_line.append(character == L'"' ? slashes * 2 + 1 : slashes, L'\\');
-        a_line += character;
-        slashes = 0;
-    }
-    a_line.append(slashes * 2, L'\\');
-    a_line += L'"';
-}
-} // namespace
 Error process_error(const char *a_operation, DWORD a_code)
 {
     return {ErrorCategory::PlatformFailure, a_operation, a_code};
@@ -42,15 +19,9 @@ Result<IdeProcess> start_bridge(const Path &a_executable, std::span<const std::s
     auto directory = utf8_to_utf16(a_executable.parent().utf8());
     if (!executable.has_value() || !directory.has_value())
         return Result<IdeProcess>::failure({ErrorCategory::InvalidArgument, "EditorIde.bridge_path"});
-    std::wstring line;
-    append_argument(line, *executable.try_value());
-    for (const auto &argument : a_arguments)
-    {
-        auto converted = utf8_to_utf16(argument);
-        if (!converted.has_value())
-            return Result<IdeProcess>::failure(*converted.try_error());
-        append_argument(line, *converted.try_value());
-    }
+    auto line = make_windows_command_line(*executable.try_value(), a_arguments);
+    if (const auto *error = line.try_error())
+        return Result<IdeProcess>::failure(*error);
     SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE read = nullptr, write = nullptr;
     if (!CreatePipe(&read, &write, &security, 0))
@@ -86,7 +57,7 @@ Result<IdeProcess> start_bridge(const Path &a_executable, std::span<const std::s
     startup.StartupInfo.hStdInput = input.get();
     startup.lpAttributeList = attributes;
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(executable.try_value()->c_str(), line.data(), nullptr, nullptr, TRUE,
+    if (!CreateProcessW(executable.try_value()->c_str(), line.try_value()->data(), nullptr, nullptr, TRUE,
                         CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
                         directory.try_value()->c_str(), &startup.StartupInfo, &process))
         return Result<IdeProcess>::failure(process_error("EditorIde.create_bridge"));

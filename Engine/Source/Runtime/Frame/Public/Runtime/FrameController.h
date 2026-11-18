@@ -49,6 +49,12 @@ struct FrameControllerDesc final
     bool operator==(const FrameControllerDesc &) const = default;
 };
 
+/// @brief Worker や GPU を変更する前に、共通の CPU Frame 設定を検証する
+[[nodiscard]] Result<void> validate_frame_controller_desc(const FrameControllerDesc &a_desc);
+
+/// @brief 検証済みの容量と Worker 設定から実効 Update 先行数を返す
+[[nodiscard]] std::uint32_t update_lead_frames(const FrameControllerDesc &a_desc) noexcept;
+
 /// @brief 実行 Thread に依存せず、期限の追い込みに使用する実効 Spin 時間を返す
 [[nodiscard]] inline std::chrono::nanoseconds effective_spin_duration(const FrameControllerDesc &a_desc) noexcept
 {

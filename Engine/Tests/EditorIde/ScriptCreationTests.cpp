@@ -207,13 +207,15 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     const auto header = read(files, joined(source, "RotateCube.h"));
     const auto generated = read(files, *created.try_value());
     CHECK(header.find("class RotateCube final : public ::cue::Behaviour") != std::string::npos);
-    CHECK(header.find("[[nodiscard]] ::cue::Result<void> start() override;") != std::string::npos);
-    CHECK(header.find("update() override;") != std::string::npos);
+    CHECK(header.find("CUE_SCRIPT_API(::game::RotateCube)") != std::string::npos);
+    CHECK(header.find("void start() override;") != std::string::npos);
+    CHECK(header.find("void update() override;") != std::string::npos);
+    CHECK(header.find("Result<void>") == std::string::npos);
     CHECK(header.find("CUE_DEFINE_SCRIPT") == std::string::npos);
     CHECK(generated.starts_with("#include \"RotateCube.h\"\n"));
-    CHECK(generated.find("RotateCube::start()\n{\n    return ::cue::Result<void>::success();\n}") !=
-          std::string::npos);
-    CHECK(generated.find("RotateCube::update()") != std::string::npos);
+    CHECK(generated.find("void RotateCube::start()\n{\n}") != std::string::npos);
+    CHECK(generated.find("void RotateCube::update()\n{\n}") != std::string::npos);
+    CHECK(generated.find("Result<void>") == std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT(RotateCube,") != std::string::npos);
     CHECK(generated.find("CUE_DEFINE_SCRIPT_MODULE") == std::string::npos);
     auto resolved = cue::resolve_script_source(files, project, "game.RotateCube");
@@ -226,6 +228,10 @@ int test_creation(cue::tests::TemporaryFiles &a_fixture)
     CHECK(namespaceSource.find("namespace game\n") != std::string::npos);
     CHECK(read(files, joined(source, "cue.h")).find("class cue final : public ::cue::Behaviour") != std::string::npos);
     CHECK(namespaceSource.find("::cue::make_script_registration<::game::cue>") != std::string::npos);
+    auto apiName = cue::create_script_source(probe, project, "CueScriptApi");
+    CHECK(apiName.has_value());
+    CHECK(read(files, joined(source, "CueScriptApi.h")).find("CUE_SCRIPT_API(::game::CueScriptApi)") !=
+          std::string::npos);
     auto before = read(files, map);
     CHECK(!cue::create_script_source(probe, project, "rotatecube").has_value());
     CHECK(write(files, joined(source, "Manual.CPP"), "// user source\n"));

@@ -43,12 +43,12 @@ int main()
 
     // 候補 Preview の生成に失敗しても履歴・選択・正本を進めない
     const auto before = editor_value(app->document().scene().serialize());
-    auto *world = app->preview_world();
+    const auto instance = app->preview_instance();
     script.properties.front().number = 90;
     failWorld = true;
     CUE_EDITOR_SCRIPT_CHECK(!app->set_scripts(objectId, {script}).has_value());
     CUE_EDITOR_SCRIPT_CHECK(before == editor_value(app->document().scene().serialize()) &&
-                            app->document().revision() == revision && app->preview_world() == world &&
+                            app->document().revision() == revision && app->preview_instance() == instance &&
                             app->document().selected_object_id() == objectId);
     failWorld = false;
     CUE_EDITOR_SCRIPT_CHECK(app->set_scripts(objectId, {script}).has_value());

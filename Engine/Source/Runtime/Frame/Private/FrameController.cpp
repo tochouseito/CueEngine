@@ -26,6 +26,31 @@ Result<void> invoke_callback(FrameCallback& a_callback, std::uint64_t a_frame, s
 }
 } // namespace
 
+Result<void> validate_frame_controller_desc(const FrameControllerDesc &a_desc)
+{
+    if (a_desc.maxFramesInFlight == 0 || a_desc.maxFramesInFlight > 8 ||
+        (a_desc.maxUpdateLeadFrames && *a_desc.maxUpdateLeadFrames >= a_desc.maxFramesInFlight) ||
+        (a_desc.waitMode != FrameWaitMode::Sleep && a_desc.waitMode != FrameWaitMode::Hybrid) ||
+        a_desc.spinDuration < std::chrono::nanoseconds::zero() || a_desc.spinDuration > std::chrono::milliseconds(5) ||
+        a_desc.predictionSlack < std::chrono::nanoseconds::zero() ||
+        a_desc.predictionSlack > std::chrono::milliseconds(100) ||
+        (a_desc.syncMode != FrameSyncMode::FixedPeriod && a_desc.syncMode != FrameSyncMode::PresentationReady &&
+         a_desc.syncMode != FrameSyncMode::DisplayPrediction))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.settings"});
+    }
+    return Result<void>::success();
+}
+
+std::uint32_t update_lead_frames(const FrameControllerDesc &a_desc) noexcept
+{
+    if (!a_desc.useWorkerThreads || a_desc.maxFramesInFlight == 0)
+    {
+        return 0;
+    }
+    return a_desc.maxUpdateLeadFrames.value_or(a_desc.maxFramesInFlight - 1);
+}
+
 /// @brief 借用Serviceを保持する
 FrameController::FrameController(FrameControllerDesc a_desc, Clock &a_clock, Waiter &a_waiter,
                                  ThreadFactory &a_threadFactory, SimulationConfig a_simulation, Profiler *a_profiler)
@@ -77,16 +102,14 @@ Result<void> FrameController::start()
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.simulation_config"});
     }
-    if (!m_update || !m_render || m_desc.maxFramesInFlight == 0 || m_desc.maxFramesInFlight > 8 ||
-        (m_desc.maxUpdateLeadFrames && *m_desc.maxUpdateLeadFrames >= m_desc.maxFramesInFlight) ||
-        (m_desc.waitMode != FrameWaitMode::Sleep && m_desc.waitMode != FrameWaitMode::Hybrid) ||
-        m_desc.spinDuration < std::chrono::nanoseconds::zero() || m_desc.spinDuration > std::chrono::milliseconds(5) ||
-        m_desc.predictionSlack < std::chrono::nanoseconds::zero() ||
-        m_desc.predictionSlack > std::chrono::milliseconds(100) ||
-        (m_desc.syncMode != FrameSyncMode::FixedPeriod && m_desc.syncMode != FrameSyncMode::PresentationReady &&
-         m_desc.syncMode != FrameSyncMode::DisplayPrediction))
+    if (!m_update || !m_render)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameController.start"});
+    }
+    auto frameValid = validate_frame_controller_desc(m_desc);
+    if (!frameValid.has_value())
+    {
+        return frameValid;
     }
     // 再開始を許さない一方、開始失敗時の停止要求は毎回初期化する
     {
@@ -95,9 +118,7 @@ Result<void> FrameController::start()
     }
     // 起動だけ lead + 1 件を許可し、以後は Render の周期完了ごとに 1 件を許可する
     // Worker の有無に応じて、Update が先行できる最大数を決める
-    const auto lead = m_desc.useWorkerThreads
-                          ? m_desc.maxUpdateLeadFrames.value_or(m_desc.maxFramesInFlight - 1)
-                          : 0;
+    const auto lead = update_lead_frames(m_desc);
     m_startPermits = m_progress.submittedFrames + lead + 1;
     m_nextUpdateFrame = m_progress.updatedFrames;
     m_nextRenderFrame = m_progress.renderedFrames;

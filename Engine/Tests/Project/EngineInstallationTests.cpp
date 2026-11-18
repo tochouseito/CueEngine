@@ -6,6 +6,7 @@
 #include <utility>
 
 #include <EngineInstallation/EngineVersion.h>
+#include <Foundation/EngineVersionValidation.h>
 
 #include "../Support/FileSystemProbe.h"
 #include "../Support/TemporaryFiles.h"

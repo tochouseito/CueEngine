@@ -32,7 +32,7 @@ int main()
     CUE_DOCUMENT_CHECK(app->document().file()->utf8() == saveFile.utf8());
     const auto savedText = files.entries[saveFile.utf8()].text;
 
-    auto *world = app->preview_world();
+    const auto instance = app->preview_instance();
     math::floatTransform value;
     CUE_DOCUMENT_CHECK(app->begin_transform_edit(cubeId).has_value());
     CUE_DOCUMENT_CHECK(!app->document().can_undo() && !app->document().can_redo());
@@ -41,7 +41,7 @@ int main()
         value.position.x = static_cast<float>(index);
         CUE_DOCUMENT_CHECK(app->preview_transform(value).has_value());
     }
-    CUE_DOCUMENT_CHECK(app->preview_world() == world && app->document().is_dirty());
+    CUE_DOCUMENT_CHECK(app->preview_instance() == instance && app->document().is_dirty());
     CUE_DOCUMENT_CHECK(!app->add_cube().has_value() && !app->save_scene(files, saveFile).has_value());
     CUE_DOCUMENT_CHECK(app->commit_transform_edit().has_value() && app->document().can_undo());
     // 複数 Frame の Draft は一回で戻り、保存済み内容への復帰で Dirty が消える
@@ -98,11 +98,12 @@ int main()
     files.failRead = true;
     CUE_DOCUMENT_CHECK(!app->open_scene(files, saveFile).has_value());
     files.failRead = false;
-    world = app->preview_world();
+    const auto beforeFailedOpen = app->preview_instance();
     failWorld = true;
     CUE_DOCUMENT_CHECK(!app->open_scene(files, saveFile).has_value());
     CUE_DOCUMENT_CHECK(editor_value(app->document().scene().serialize()) == current);
-    CUE_DOCUMENT_CHECK(app->document().file()->utf8() == otherFile.utf8() && world == app->preview_world());
+    CUE_DOCUMENT_CHECK(app->document().file()->utf8() == otherFile.utf8() &&
+                       beforeFailedOpen == app->preview_instance());
     failWorld = false;
     files.entries["/Content/Scenes/bad.cuescene"] = {FileType::Regular, "formatVersion=999\n"};
     CUE_DOCUMENT_CHECK(!app->open_scene(files, editor_value(Path::create("/Content/Scenes/bad.cuescene"))).has_value());

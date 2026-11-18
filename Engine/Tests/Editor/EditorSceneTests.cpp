@@ -2,8 +2,6 @@
 
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12RenderDevice.h>
-#include <Runtime/Components/TransformComponent.h>
-#include <Runtime/World.h>
 
 #include "../Scene/SceneFixtures.h"
 
@@ -24,18 +22,12 @@ int main()
         config.createBackend = [&](cue::IFileSystem *a_files,
                                    cue::Clock &a_clock) -> cue::Result<std::unique_ptr<cue::IBackend>>
         {
-            auto *world = owner->preview_world();
-            const auto instance = owner->preview_instance();
-            if (!world || !instance || !owner->scene())
+            if (!owner->has_preview() || !owner->preview_instance() || !owner->scene())
                 return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
                     {cue::ErrorCategory::InvalidState, "Test.preview_missing"});
-            auto entity = world->find_by_id(*instance, cue::tests::k_cubeId);
-            if (entity.has_value())
-            {
-                auto transform = world->get_component<cue::TransformComponent>(*entity.try_value());
-                sawPreparedWorld = transform.has_value() && !(*transform.try_value())->is_dirty() &&
-                                   (*transform.try_value())->world_matrix().values[3][0] == 1;
-            }
+            auto snapshot = owner->preview_snapshot();
+            auto transform = owner->read_preview_transform(cue::tests::k_cubeId);
+            sawPreparedWorld = snapshot.has_value() && transform.has_value() && transform.try_value()->position.x == 1;
             if (failBackend)
                 return cue::Result<std::unique_ptr<cue::IBackend>>::failure(
                     {cue::ErrorCategory::InvalidState, "Test.backend_failure"});
@@ -51,19 +43,19 @@ int main()
             return 2;
         if (failBackend)
         {
-            if (host.preview_world() || host.preview_instance())
+            if (host.has_preview() || host.preview_instance())
                 return 3;
         }
         else
         {
-            if (!host.preview_world() || !host.preview_instance() || host.initialize().has_value())
+            if (!host.has_preview() || !host.preview_instance() || host.initialize().has_value())
                 return 4;
             for (int index = 0; index < 3; ++index)
                 if (!host.step().has_value())
                     return 5;
         }
         auto stopped = host.shutdown();
-        if (host.preview_world() || host.preview_instance() || host.initialize().has_value())
+        if (host.has_preview() || host.preview_instance() || host.initialize().has_value())
             return 6;
         if (!failBackend && !stopped.has_value())
             return 7;

@@ -7,8 +7,10 @@
 #include <string_view>
 #include <thread>
 
+#include <Foundation/Result.h>
+#include <Math/Transform.h>
+#include <RenderData/RenderScene.h>
 #include <Runtime/WorldHandle.h>
-#include <SceneRender/RenderScene.h>
 #include <ScriptRuntime/ScriptSystem.h>
 
 namespace cue
@@ -49,10 +51,12 @@ class GameSession final
     [[nodiscard]] Result<void> shutdown();
     /// @brief 正常に完了した Simulation 更新回数を返す。FPS や描画 Frame 数とは異なる
     [[nodiscard]] std::uint64_t completed_ticks() const noexcept;
-    /// @brief Owner Thread の実行中だけ実行 World を借用する。構造変更は World の契約に従う
-    [[nodiscard]] World *world() noexcept;
-    /// @brief この Session の SceneInstance を返す。World 停止後は生存しない
-    [[nodiscard]] SceneInstanceHandle instance() const noexcept;
+    /// @brief Owner Thread で実行中の Object の Local Transform を値として取得する
+    [[nodiscard]] Result<math::floatTransform> read_transform(std::string_view a_objectId) const;
+    /// @brief Owner Thread の更新境界で Local Transform を変更する。無効な入力で実行状態を変更しない
+    [[nodiscard]] Result<void> set_transform(std::string_view a_objectId, const math::floatTransform &a_value);
+    /// @brief Owner Thread で Session が次の操作を受け付けられるか返す
+    [[nodiscard]] bool is_running() const noexcept;
 
   private:
     /// @brief Thread・再入・停止・終端失敗を検証する

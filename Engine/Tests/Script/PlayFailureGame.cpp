@@ -1,4 +1,3 @@
-#include <chrono>
 #include <limits>
 #include <stdexcept>
 
@@ -24,21 +23,19 @@ class FailureBehaviour final : public cue::Behaviour
         return cue::Result<void>::success();
     }
     /// @brief Native Crash 相当の終了と無応答を子 Process に限定して再現する
-    [[nodiscard]] cue::Result<void> start(cue::GameObject &) override
+    void start() override
     {
         if (m_mode == 1)
             TerminateProcess(GetCurrentProcess(), 0xc0000005);
         if (m_mode == 2)
             Sleep(INFINITE);
-        return cue::Result<void>::success();
     }
-    /// @brief 通常の Result 失敗も子の異常停止として伝播する
-    [[nodiscard]] cue::Result<void> update(cue::GameObject &a_object,
-                                           const cue::ScriptUpdateContext &a_context) override
+    /// @brief void の入口の例外も子の異常停止として伝播する
+    void update() override
     {
         ++m_ticks;
         if (m_mode == 3)
-            return cue::Result<void>::failure({cue::ErrorCategory::Fatal, "Failure.update"});
+            throw cue::Error{cue::ErrorCategory::Fatal, "Failure.update"};
         if (m_mode == 8)
             throw std::runtime_error("Failure.fixture_exception");
         // Ready と最初の View の後に障害を起こし、実行中の分離・回復を確認する
@@ -48,28 +45,28 @@ class FailureBehaviour final : public cue::Behaviour
             Sleep(INFINITE);
         if (m_mode == 6 || (m_ticks > 20 && m_mode == 7))
         {
-            auto transform = a_object.transform();
-            if (!transform.has_value())
-                return cue::Result<void>::failure(*transform.try_error());
+            auto pose = transform.get();
+            if (!pose.has_value())
+                throw *pose.try_error();
             if (m_mode == 6)
             {
-                auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0},
-                                                            std::chrono::duration<float>(a_context.deltaTime).count());
+                auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0}, delta_time_seconds());
                 if (!delta.has_value())
-                    return cue::Result<void>::failure(*delta.try_error());
-                auto rotation = cue::math::normalize(*delta.try_value() * transform.try_value()->rotation);
+                    throw *delta.try_error();
+                auto rotation = cue::math::normalize(*delta.try_value() * pose.try_value()->rotation);
                 if (!rotation.has_value())
-                    return cue::Result<void>::failure(*rotation.try_error());
-                transform.try_value()->rotation = rotation.take_value();
+                    throw *rotation.try_error();
+                pose.try_value()->rotation = rotation.take_value();
             }
             else
             {
                 const auto huge = (std::numeric_limits<float>::max)() * 0.9f;
-                transform.try_value()->scale = {huge, huge, huge};
+                pose.try_value()->scale = {huge, huge, huge};
             }
-            return a_object.set_transform(*transform.try_value());
+            auto written = transform.set(*pose.try_value());
+            if (!written.has_value())
+                throw *written.try_error();
         }
-        return cue::Result<void>::success();
     }
 
   private:

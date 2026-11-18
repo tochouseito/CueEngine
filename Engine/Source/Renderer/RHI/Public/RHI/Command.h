@@ -49,7 +49,7 @@ using commandLease = std::unique_ptr<ICommandContext, std::function<void(IComman
 
 /// @brief 提出した Queue の完了点を、Queue Lease と独立して保持する
 ///
-/// Token は呼出側が所有し、GPU Resource の解放前に is_complete または wait で完了を確認する
+/// Token は呼出側が所有し、GPU Resource の解放前に completion_status または wait で完了を確認する
 class ICommandCompletion
 {
 public:
@@ -74,14 +74,9 @@ public:
         return 0;
     }
 
-    /// @brief 対応する GPU 作業が正常に完了したか返す
-    [[nodiscard]] virtual bool is_complete() const noexcept = 0;
-
-    /// @brief 未完了と Device Lost を区別する非待機の確認。公開後の Token から呼ぶ
-    [[nodiscard]] virtual Result<bool> completion_status() const
-    {
-        return Result<bool>::success(is_complete());
-    }
+    /// @brief 公開後の Token を非待機で確認する。true は完了、false は進行中、Error は確認失敗を表す
+    /// Device Lost では Error を返す。Error を完了済みとして記録資源の再利用に使わない
+    [[nodiscard]] virtual Result<bool> completion_status() const = 0;
 
     /// @brief 対応する GPU 作業の完了または Device Lost を待つ
     [[nodiscard]] virtual Result<void> wait() = 0;

@@ -146,7 +146,7 @@ int main(int a_count, char **a_arguments)
     for (int index = 0; index < 3; ++index)
         CUE_PLAY_CONFIG_CHECK(host.step().has_value());
     CUE_PLAY_CONFIG_CHECK(observed->manifestReads == startupReads);
-    CUE_PLAY_CONFIG_CHECK(host.preview_world() && host.scene());
+    CUE_PLAY_CONFIG_CHECK(host.has_preview() && host.scene());
     CUE_PLAY_CONFIG_CHECK(host.shutdown().has_value());
     return 0;
 }

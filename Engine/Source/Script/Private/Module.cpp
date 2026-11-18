@@ -259,7 +259,9 @@ struct ScriptModule::State final
             {
                 auto &script = *found->second.behaviour;
                 GameObject::CallbackScope callback(script, object, {});
-                return callback.finish(script.start(object));
+                script.start();
+                // void の入口でも暗黙 Transform 操作の失敗を ABI の Status へ伝える
+                return callback.finish(Result<void>::success());
             });
         }
         catch (...)
@@ -282,12 +284,14 @@ struct ScriptModule::State final
                 found->second.hasFailed)
                 return invalid_status("Script.update.lifecycle");
             GameObject object(*a_api, a_entity, &state.access);
-            const ScriptUpdateContext context{std::chrono::nanoseconds(a_update.deltaNanoseconds), a_update.tick};
+            const GameObject::UpdateContext context{std::chrono::nanoseconds(a_update.deltaNanoseconds), a_update.tick};
             return invoke(found->second, [&]()
             {
                 auto &script = *found->second.behaviour;
                 GameObject::CallbackScope callback(script, object, context);
-                return callback.finish(script.update(object, context));
+                script.update();
+                // 正常復帰だけでは成功とせず、Callback が記録した最初の失敗も回収する
+                return callback.finish(Result<void>::success());
             });
         }
         catch (...)

@@ -13,11 +13,6 @@ class Completion final : public cue::ICommandCompletion
     {
         return cue::QueueType::Graphics;
     }
-    /// @brief Test の完了状態を返す
-    bool is_complete() const noexcept override
-    {
-        return isDone;
-    }
     /// @brief Device Lost を未完了と混同させない
     cue::Result<bool> completion_status() const override
     {

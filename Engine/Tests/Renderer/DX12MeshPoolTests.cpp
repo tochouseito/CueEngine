@@ -83,11 +83,6 @@ class ManualCompletion final : public cue::ICommandCompletion
     {
         return cue::QueueType::Graphics;
     }
-    /// @brief Test が設定した完了状態を返す
-    bool is_complete() const noexcept override
-    {
-        return isDone;
-    }
     /// @brief Device Lost 相当の診断も未完了と区別して伝える
     cue::Result<bool> completion_status() const override
     {

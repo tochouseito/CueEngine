@@ -26,11 +26,6 @@ class ControlledCompletion final : public cue::ICommandCompletion
     {
         return cue::QueueType::Graphics;
     }
-    /// @brief 検証側で切り替えた完了状態を返す
-    [[nodiscard]] bool is_complete() const noexcept override
-    {
-        return isDone;
-    }
     /// @brief 未完了と致命的失敗を待機せず区別する
     [[nodiscard]] cue::Result<bool> completion_status() const override
     {

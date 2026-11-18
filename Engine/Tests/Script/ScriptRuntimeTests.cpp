@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -81,33 +82,40 @@ class Move final : public cue::Behaviour
         return cue::Result<void>::success();
     }
     /// @brief Active 化時の一度だけの開始と部分失敗を検証する
-    cue::Result<void> start(cue::GameObject &a_self) override
+    void start() override
     {
         ++g_counters.started;
         if (delta_time_seconds() != 0.0f)
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Move.start.delta_time"});
+            throw cue::Error{cue::ErrorCategory::InvalidState, "Move.start.delta_time"};
         if (g_counters.shouldFailStart)
-            return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "Move.partial_start"});
-        auto alive = a_self.is_alive();
+            throw cue::Error{cue::ErrorCategory::PlatformFailure, "Move.partial_start"};
+        auto object = self();
+        if (const auto *error = object.try_error())
+            throw *error;
+        auto alive = object.try_value()->is_alive();
         if (!alive.has_value() || !*alive.try_value())
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Move.start.entity"});
+            throw cue::Error{cue::ErrorCategory::InvalidState, "Move.start.entity"};
         if (g_counters.shouldReport)
-            return a_self.report(2, "fixture diagnostic");
-        return cue::Result<void>::success();
+        {
+            auto reported = object.try_value()->report(2, "fixture diagnostic");
+            if (!reported.has_value())
+                throw *reported.try_error();
+        }
     }
     /// @brief ABI 経由の Transform 変更と終端例外を検証する
-    cue::Result<void> update(cue::GameObject &a_self, const cue::ScriptUpdateContext &a_context) override
+    void update() override
     {
         ++g_counters.updated;
         if (g_counters.shouldThrowUpdate)
             throw std::runtime_error("Move.update fixture exception");
-        auto value = a_self.transform();
+        auto value = transform.get();
         if (!value.has_value())
-            return cue::Result<void>::failure(*value.try_error());
-        auto transform = *value.try_value();
-        transform.position.x +=
-            static_cast<float>(m_speed * std::chrono::duration<double>(a_context.deltaTime).count());
-        return a_self.set_transform(transform);
+            throw *value.try_error();
+        value.try_value()->position.x +=
+            static_cast<float>(m_speed * std::chrono::duration<double>(delta_time()).count());
+        auto written = transform.set(*value.try_value());
+        if (!written.has_value())
+            throw *written.try_error();
     }
     /// @brief 削除済み Entity でも停止が一度だけ呼ばれることを数える
     cue::Result<void> stop(cue::GameObject &a_self) override
@@ -399,7 +407,34 @@ int test_failures()
     return 0;
 }
 
-/// @brief Static 登録は交差構成を拒否し、未知の選択構成は DLL を開く前に拒否する
+/// @brief Dynamic 登録でロード参照の所有・解放と Process 終了までの保持を追跡する
+class TestModuleLibrary final : public cue::IGameModuleLibrary
+{
+  public:
+    /// @brief 解放された参照数を呼出側へ記録する
+    explicit TestModuleLibrary(int &a_unloads) noexcept : m_unloads(a_unloads)
+    {
+    }
+
+    /// @brief 保持要求がなければロード参照を解放する
+    ~TestModuleLibrary() override
+    {
+        if (!m_isRetained)
+            ++m_unloads;
+    }
+
+    /// @brief 実 DLL と同じく Process 終了まで参照を保持する
+    void retain_until_process_exit() noexcept override
+    {
+        m_isRetained = true;
+    }
+
+  private:
+    int &m_unloads;
+    bool m_isRetained = false;
+};
+
+/// @brief Static / Dynamic の構成検証と Dynamic のロード参照寿命を確認する
 int test_configurations()
 {
     CUE_RUNTIME_SCRIPT_CHECK(reset_module());
@@ -416,15 +451,26 @@ int test_configurations()
             CUE_RUNTIME_SCRIPT_CHECK(checked.try_error()->operation == "GameModule.abi_mismatch");
     }
     g_configurationOverride.reset();
-    auto missing = cue::Path::create("missing-configuration-fixture.dll");
-    CUE_RUNTIME_SCRIPT_CHECK(missing.has_value());
+    int unloads = 0;
     for (const auto invalid : {0u, 4u})
     {
-        auto rejected =
-            cue::RuntimeGameModule::load(*missing.try_value(), static_cast<cue::ScriptConfiguration>(invalid));
+        auto rejected = cue::RuntimeGameModule::from_dynamic(
+            entry, std::make_unique<TestModuleLibrary>(unloads), static_cast<cue::ScriptConfiguration>(invalid));
         CUE_RUNTIME_SCRIPT_CHECK(!rejected.has_value() &&
                                  rejected.try_error()->operation == "GameModule.configuration");
     }
+    CUE_RUNTIME_SCRIPT_CHECK(unloads == 2);
+    auto missing = cue::RuntimeGameModule::from_dynamic(nullptr, std::make_unique<TestModuleLibrary>(unloads));
+    CUE_RUNTIME_SCRIPT_CHECK(!missing.has_value() && missing.try_error()->operation == "GameModule.entry_missing");
+    CUE_RUNTIME_SCRIPT_CHECK(unloads == 3);
+    for (const bool isRetained : {false, true})
+    {
+        auto loaded = cue::RuntimeGameModule::from_dynamic(entry, std::make_unique<TestModuleLibrary>(unloads));
+        CUE_RUNTIME_SCRIPT_CHECK(loaded.has_value() && unloads == (isRetained ? 4 : 3));
+        if (isRetained)
+            (*loaded.try_value())->retain_until_process_exit();
+    }
+    CUE_RUNTIME_SCRIPT_CHECK(unloads == 4);
     return 0;
 }
 
@@ -433,18 +479,21 @@ unsigned g_received = 0;
 class PulseSource final : public cue::Behaviour
 {
   public:
+    CUE_SCRIPT_API(PulseSource, CUE_SCRIPT_METHOD(configure) CUE_SCRIPT_METHOD(set_value) CUE_SCRIPT_METHOD(read_value)
+                                   CUE_SCRIPT_METHOD(checked_value) CUE_SCRIPT_METHOD(set_speed))
+
     cue::ScriptEvent<unsigned> pulse;
     unsigned value = 1;
 
     /// @brief 設定を別 Script から直接受け取り、購読者へ通知する
-    cue::Result<void> update() override
+    void update() override
     {
         auto delivered = pulse.publish(value);
         if (!delivered.has_value())
         {
-            return delivered;
+            throw *delivered.try_error();
         }
-        return transform.position.z.add(1.0f);
+        transform.position.z += 1.0f;
     }
 
     /// @brief 同期呼出が対象 Entity に切り替わっていることを位置の変更で観測する
@@ -453,25 +502,71 @@ class PulseSource final : public cue::Behaviour
         value = a_value;
         return transform.position.x.add(a_offset);
     }
+
+    /// @brief 省略引数を使う void の公開関数を確認する
+    void set_value(unsigned a_value = 2)
+    {
+        value = a_value;
+    }
+
+    /// @brief 同名の Overload が所有値を消費できることを確認する
+    void set_value(std::unique_ptr<unsigned> a_value)
+    {
+        value = *a_value;
+    }
+
+    /// @brief const 関数の所有値を Result へ包むことを確認する
+    [[nodiscard]] unsigned read_value() const
+    {
+        return value;
+    }
+
+    /// @brief Result の値と失敗をそのまま呼出元へ返す
+    [[nodiscard]] cue::Result<unsigned> checked_value(bool a_shouldFail = false) const
+    {
+        if (a_shouldFail)
+            return cue::Result<unsigned>::failure({cue::ErrorCategory::InvalidArgument, "PulseSource.value"});
+        return cue::Result<unsigned>::success(value);
+    }
+
+    /// @brief 暗黙書き込みの失敗を void 関数からも呼出元へ伝える
+    void set_speed(float a_offset)
+    {
+        using namespace std::chrono_literals;
+        if (delta_time() != 1ms)
+            throw std::runtime_error("PulseSource callback time was not inherited");
+        transform.position.x += a_offset;
+    }
 };
+
+static_assert(std::same_as<decltype(std::declval<cue::GameObject::ScriptReference<PulseSource> &>().set_value()),
+                           cue::Result<void>>);
+static_assert(std::same_as<decltype(std::declval<cue::GameObject::ScriptReference<PulseSource> &>().checked_value()),
+                           cue::Result<unsigned>>);
+static_assert(!std::is_copy_constructible_v<
+              PulseSource::_cueScriptApi<cue::GameObject::ScriptReference<PulseSource>>>);
 
 class PulseReceiver final : public cue::Behaviour
 {
   public:
+    CUE_SCRIPT_API(PulseReceiver)
+
     /// @brief 型付き Component と対象の GameObject を確認し、通知を一度だけ購読する
-    cue::Result<void> update() override
+    void update() override
     {
         if (m_subscribed)
         {
-            return cue::Result<void>::success();
+            return;
         }
         auto missing = find_script_by_name<PulseSource>("Missing");
         auto wrongType = find_script_by_name<PulseSource>("Receiver");
         auto lookupFailure = missing.call(&PulseSource::configure, 2u, 4.0f);
+        auto directFailure = missing.configure(2u, 4.0f);
         if (missing || wrongType || !missing.try_error() || !wrongType.try_error() || lookupFailure.has_value() ||
-            lookupFailure.try_error()->operation != missing.try_error()->operation)
+            lookupFailure.try_error()->operation != missing.try_error()->operation || directFailure.has_value() ||
+            directFailure.try_error()->operation != missing.try_error()->operation)
         {
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.lookup"});
+            throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.lookup"};
         }
         if (auto source = find_script_by_name<PulseSource>("Cube", k_firstScriptId))
         {
@@ -479,23 +574,44 @@ class PulseReceiver final : public cue::Behaviour
             auto rejected = source.call(nullMethod, 2u, 4.0f);
             if (rejected.has_value() || rejected.try_error()->operation != "ScriptReference.call.method")
             {
-                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.null_method"});
+                throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.null_method"};
             }
-            auto configured = source.call(&PulseSource::configure, 2u, 4.0f);
+            auto configured = source.configure(2u, 0.0f);
             if (!configured.has_value())
             {
-                return configured;
+                throw *configured.try_error();
             }
+            auto owned = std::make_unique<unsigned>(3);
+            auto missingOwned = missing.set_value(std::move(owned));
+            if (missingOwned.has_value() || !owned)
+                throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.argument_lifetime"};
+            auto consumed = source.set_value(std::move(owned));
+            auto read = source.read_value();
+            if (!consumed.has_value() || owned || !read.has_value() || *read.try_value() != 3)
+                throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.overload"};
+            auto defaulted = source.set_value();
+            auto checked = source.checked_value();
+            auto rejectedValue = source.checked_value(true);
+            if (!defaulted.has_value() || !checked.has_value() || *checked.try_value() != 2 ||
+                rejectedValue.has_value() || rejectedValue.try_error()->operation != "PulseSource.value")
+                throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.return_value"};
+            auto moved = source.set_speed(4.0f);
+            if (!moved.has_value())
+                throw *moved.try_error();
+            auto invalidWrite = source.set_speed(std::numeric_limits<float>::infinity());
+            if (invalidWrite.has_value() ||
+                invalidWrite.try_error()->operation != "Math.Transform.to_matrix.non_finite")
+                throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.implicit_failure"};
         }
         else
         {
-            return cue::Result<void>::failure(*source.try_error());
+            throw *source.try_error();
         }
         auto cube = find_by_name("Cube");
         if (!cube.has_value() || !get_component<cue::ScriptCamera>().has_value() ||
             !cube.try_value()->get_component<cue::ScriptMeshRenderer>().has_value())
         {
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.components"});
+            throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.components"};
         }
         auto connected = cube.try_value()->with_script<PulseSource>([this](PulseSource &a_source)
         {
@@ -513,15 +629,14 @@ class PulseReceiver final : public cue::Behaviour
         m_subscribed = connected.has_value();
         if (!connected.has_value())
         {
-            return connected;
+            throw *connected.try_error();
         }
         auto value = cube.try_value()->with_script<PulseSource>([](const PulseSource &a_source)
         {
             return a_source.value;
         });
-        return value.has_value() && *value.try_value() == 2
-                   ? cue::Result<void>::success()
-                   : cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "PulseReceiver.value"});
+        if (!value.has_value() || *value.try_value() != 2)
+            throw cue::Error{cue::ErrorCategory::InvalidState, "PulseReceiver.value"};
     }
 
   private:
@@ -591,51 +706,50 @@ class TransformCommands final : public cue::Behaviour
 {
   public:
     /// @brief 新しい署名で省略引数・所有値・演算子を実際の World に適用する
-    cue::Result<void> update() override
+    void update() override
     {
         using namespace std::chrono_literals;
         using cue::ErrorCategory;
-        using cue::Result;
         if (delta_time() != 10ms || std::abs(delta_time_seconds() - 0.01f) > 1e-8f)
         {
-            return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.delta_time"});
+            throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.delta_time"};
         }
         if (m_firstUpdate)
         {
             m_firstUpdate = false;
             if (cue::math::length(transform.position) != 0.0f)
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.initial_length"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.initial_length"};
             }
             if (!transform.translate(1.0f).has_value() || !transform.translate(1.0f, 2.0f).has_value() ||
                 !transform.translate(1.0f, 2.0f, 3.0f).has_value() ||
                 !transform.translate(cue::math::float3{1.0f, 1.0f, 4.0f}).has_value())
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.translate"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.translate"};
             }
             auto position = transform.position.get();
             if (!position.has_value() || position.try_value()->x != 4.0f || position.try_value()->y != 5.0f ||
                 position.try_value()->z != 7.0f)
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.position"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.position"};
             }
             const float distance = cue::math::length(transform.position);
             if (std::abs(distance - std::sqrt(90.0f)) > 1e-5f)
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.length"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.length"};
             }
             auto rejected = transform.translate(8.0f, (std::numeric_limits<float>::infinity)());
             auto value = transform.get();
             if (rejected.has_value() || !value.has_value() || value.try_value()->position.x != 4.0f ||
                 value.try_value()->position.y != 5.0f)
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.partial_translate"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.partial_translate"};
             }
             value.try_value()->scale.y = 3.0f;
             auto written = transform.set(*value.try_value());
             if (!written.has_value())
             {
-                return written;
+                throw *written.try_error();
             }
             transform.scale.x *= 2.0f;
 
@@ -644,11 +758,11 @@ class TransformCommands final : public cue::Behaviour
             auto rotated = transform.rotate.z.add(90.0f);
             if (!rotated.has_value())
             {
-                return rotated;
+                throw *rotated.try_error();
             }
             if (transform.rotate.z.add((std::numeric_limits<float>::infinity)()).has_value())
             {
-                return Result<void>::failure({ErrorCategory::InvalidState, "TransformCommands.invalid_rotation"});
+                throw cue::Error{ErrorCategory::InvalidState, "TransformCommands.invalid_rotation"};
             }
         }
         else
@@ -659,7 +773,6 @@ class TransformCommands final : public cue::Behaviour
             g_sawPartialTransform = position.has_value() && position.try_value()->x == 5.0f &&
                                     position.try_value()->y == 5.0f;
         }
-        return Result<void>::success();
     }
 
   private:

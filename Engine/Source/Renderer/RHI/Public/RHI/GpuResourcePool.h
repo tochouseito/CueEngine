@@ -128,10 +128,12 @@ public:
         return acquire(a_handle, a_access);
     }
 
-    /// @brief Handle を直ちに無効化し、全 Lease と GPU 利用の完了後に実体を破棄する
+    /// @brief 成功時に Handle を無効化し、全 Lease と GPU 利用の完了後に実体を破棄する
+    /// 完了確認に失敗した場合は Handle を維持し、確認できなかった GPU 参照を保持する
     [[nodiscard]] virtual Result<void> retire(GpuResourceHandle a_handle) = 0;
 
-    /// @brief 完了済み GPU 作業と破棄予約を回収し、解放した Resource 数を返す
+    /// @brief 完了済み GPU 作業と破棄予約を非待機で回収し、解放した Resource 数を返す
+    /// 完了確認の Error があっても安全に解放できる Slot を回収し、最初の Error を返す
     [[nodiscard]] virtual Result<std::size_t> collect() = 0;
 
     /// @brief 新規操作を止め、借用がなければ全 GPU 作業の完了後に Resource を破棄する

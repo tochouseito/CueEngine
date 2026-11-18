@@ -20,7 +20,6 @@
 #include <Foundation/ScopedFlag.h>
 #include <Math/Projection.h>
 #include <Platform/Diagnostics.h>
-#include <Runtime/World.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayClient.h>
 
@@ -309,7 +308,7 @@ EditorHost::EditorHost(EditorHostConfig a_config)
                       auto result = m_imgui->initialize_renderer(a_backend, a_gpuFrames);
                       if (!result.has_value())
                           return result;
-                      if (preview_world() || m_enableProjectOpening)
+                      if (has_preview() || m_enableProjectOpening)
                       {
                           auto renderer = create_scene_renderer(a_backend);
                           if (!renderer.has_value())
@@ -421,7 +420,7 @@ MainFrameGraphConfig EditorHost::prepare_graph(MainFrameGraphConfig a_config)
         a_config.displayPassFactory = [this]()
         {
             return std::make_unique<ImGuiPass>(std::make_unique<EditorImGuiRenderer>(m_imgui),
-                                               preview_world() != nullptr || m_enableProjectOpening);
+                                               has_preview() || m_enableProjectOpening);
         };
     }
     return a_config;
@@ -927,11 +926,26 @@ const Scene *EditorHost::scene() const noexcept
                                                : (m_scene ? &*m_scene : nullptr);
 }
 
-World *EditorHost::preview_world() noexcept
+bool EditorHost::has_preview() const noexcept
 {
-    return std::this_thread::get_id() == m_ownerId && m_editing && m_editing->application
-               ? m_editing->application->preview_world()
-               : nullptr;
+    return std::this_thread::get_id() == m_ownerId && m_editing && m_editing->application &&
+           m_editing->application->has_preview();
+}
+Result<SceneRenderSnapshot> EditorHost::preview_snapshot()
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<SceneRenderSnapshot>::failure({ErrorCategory::WrongThread, "EditorHost.preview.owner"});
+    if (!m_editing || !m_editing->application)
+        return Result<SceneRenderSnapshot>::failure({ErrorCategory::InvalidState, "EditorHost.preview.missing"});
+    return m_editing->application->preview_snapshot();
+}
+Result<math::floatTransform> EditorHost::read_preview_transform(std::string_view a_objectId) const
+{
+    if (std::this_thread::get_id() != m_ownerId)
+        return Result<math::floatTransform>::failure({ErrorCategory::WrongThread, "EditorHost.preview.owner"});
+    if (!m_editing || !m_editing->application)
+        return Result<math::floatTransform>::failure({ErrorCategory::InvalidState, "EditorHost.preview.missing"});
+    return m_editing->application->read_preview_transform(a_objectId);
 }
 
 std::optional<SceneInstanceHandle> EditorHost::preview_instance() const noexcept
@@ -1313,13 +1327,10 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             if (const auto *view = play_view_snapshot())
                 frameScene = view->render;
         }
-        else if (auto *world = preview_world())
+        else if (has_preview())
         {
             // Project 選択後だけ World を同期する。未選択 Frame は Camera / Mesh のない所有値を渡す
-            auto updated = m_editing->application->synchronize_preview();
-            if (!updated.has_value())
-                return updated;
-            auto snapshot = extract_render_scene(*world);
+            auto snapshot = preview_snapshot();
             if (!snapshot.has_value())
                 return Result<void>::failure(*snapshot.try_error());
             frameScene = snapshot.take_value();

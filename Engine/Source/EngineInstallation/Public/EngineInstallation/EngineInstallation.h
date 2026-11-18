@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <string>
-#include <string_view>
 
 #include <Foundation/Path.h>
 
@@ -23,10 +22,6 @@ struct EngineInstallation final
     std::string useLeaseId;
     bool isPackaged = false;
 };
-
-/// @brief Project と配布 Descriptor に保存できる最大 128 Byte の SemVer を検証する
-/// 入力は呼出中だけ借用し、Allocation と共有状態を使わず任意 Thread で呼べる
-[[nodiscard]] bool is_valid_engine_version(std::string_view a_version) noexcept;
 
 /// @brief 指定 Root の配布 Descriptor と相対配置を検証し、所有値を返す
 /// FileSystem は呼出中だけ借用する。未知形式、欠損、Link、Root 外参照では部分値を公開しない

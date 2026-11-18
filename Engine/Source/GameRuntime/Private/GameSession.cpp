@@ -3,8 +3,10 @@
 #include <utility>
 
 #include <Foundation/ScopedFlag.h>
+#include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
 #include <Scene/Scene.h>
+#include <SceneRuntime/RenderSceneExtraction.h>
 #include <SceneRuntime/SceneInstantiation.h>
 
 namespace cue
@@ -141,12 +143,37 @@ std::uint64_t GameSession::completed_ticks() const noexcept
 {
     return m_completedTicks;
 }
-World *GameSession::world() noexcept
+Result<math::floatTransform> GameSession::read_transform(std::string_view a_objectId) const
 {
-    return std::this_thread::get_id() == m_owner && !m_isStopped && !m_isBusy && !m_failure ? m_world.get() : nullptr;
+    using TransformResult = Result<math::floatTransform>;
+    auto access = check_running();
+    if (!access.has_value())
+        return TransformResult::failure(*access.try_error());
+    auto entity = m_world->find_by_id(m_instance, a_objectId);
+    if (!entity.has_value())
+        return TransformResult::failure(*entity.try_error());
+    auto transform = m_world->get_component<TransformComponent>(*entity.try_value());
+    if (!transform.has_value())
+        return TransformResult::failure(*transform.try_error());
+    return TransformResult::success((*transform.try_value())->local());
 }
-SceneInstanceHandle GameSession::instance() const noexcept
+
+Result<void> GameSession::set_transform(std::string_view a_objectId, const math::floatTransform &a_value)
 {
-    return m_instance;
+    auto access = check_running();
+    if (!access.has_value())
+        return access;
+    auto entity = m_world->find_by_id(m_instance, a_objectId);
+    if (!entity.has_value())
+        return Result<void>::failure(*entity.try_error());
+    auto transform = m_world->get_component<TransformComponent>(*entity.try_value());
+    if (!transform.has_value())
+        return Result<void>::failure(*transform.try_error());
+    return (*transform.try_value())->set_local(a_value);
+}
+
+bool GameSession::is_running() const noexcept
+{
+    return std::this_thread::get_id() == m_owner && !m_isStopped && !m_isBusy && !m_failure && m_world;
 }
 } // namespace cue

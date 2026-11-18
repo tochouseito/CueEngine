@@ -191,14 +191,18 @@ Result<void> validate_catalog(IFileSystem &a_files, const Project &a_project, st
 std::string make_header(std::string_view a_name)
 {
     const std::string name(a_name);
-    return "#pragma once\n\n#include <Foundation/Result.h>\n#include <Script/Behaviour.h>\n\nnamespace game\n{\n"
+    return "#pragma once\n\n#include <Script/Behaviour.h>\n\nnamespace game\n{\n"
            "/// @brief ゲームの開始時と更新時の処理を実装する Script\nclass " +
            name +
            " final : public ::cue::Behaviour\n{\n  public:\n"
+           "    // 他の Script に公開する関数名を CUE_SCRIPT_METHOD(function_name) で列挙する\n"
+           "    CUE_SCRIPT_API(::game::" +
+           name +
+           ")\n\n"
            "    /// @brief 最初の更新より前に初期化する\n"
-           "    [[nodiscard]] ::cue::Result<void> start() override;\n"
+           "    void start() override;\n"
            "    /// @brief 更新処理を World の Owner Thread で実行する\n"
-           "    [[nodiscard]] ::cue::Result<void> update() override;\n};\n} // namespace game\n";
+           "    void update() override;\n};\n} // namespace game\n";
 }
 
 /// @brief 開始・更新処理と型の登録を cpp に生成し、共通 C ABI 入口は Build 時に生成する
@@ -206,11 +210,11 @@ std::string make_source(std::string_view a_name)
 {
     const std::string name(a_name);
     return "#include \"" + name + ".h\"\n\n#include <Script/ModuleEntry.h>\n\nnamespace game\n{\n"
-           "::cue::Result<void> " +
-           name + "::start()\n{\n    return ::cue::Result<void>::success();\n}\n\n"
-           "::cue::Result<void> " +
+           "void " +
+           name + "::start()\n{\n}\n\n"
+           "void " +
            name +
-           "::update()\n{\n    return ::cue::Result<void>::success();\n}\n} // namespace game\n\n"
+           "::update()\n{\n}\n} // namespace game\n\n"
            "// この cpp の型だけを登録し、接続入口は Build が一つに集約する\n"
            "CUE_DEFINE_SCRIPT(" +
            name + ", ::cue::make_script_registration<::game::" + name + ">({\"game." + name + "\", \"" + name +

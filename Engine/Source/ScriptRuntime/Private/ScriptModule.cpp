@@ -4,13 +4,6 @@
 #include <cstring>
 #include <utility>
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Foundation/Windows/UtfConversion.h>
-#include <windows.h>
-#endif
-
 #include <Foundation/Utf8.h>
 
 namespace cue
@@ -43,18 +36,7 @@ struct RuntimeGameModule::State final
     CueScriptModuleApi api{};
     std::vector<ScriptTypeDescriptor> types;
     std::thread::id owner = std::this_thread::get_id();
-    bool canUnload = true;
-#if defined(_WIN32)
-    HMODULE library = nullptr;
-#endif
-    /// @brief Callback の保持先を解放する。Table を保持した Instance は先に破棄する
-    ~State()
-    {
-#if defined(_WIN32)
-        if (library && canUnload)
-            FreeLibrary(library);
-#endif
-    }
+    std::unique_ptr<IGameModuleLibrary> library;
 };
 
 RuntimeGameModule::RuntimeGameModule(CreateToken, std::unique_ptr<State> a_state) noexcept : m_state(std::move(a_state))
@@ -140,44 +122,22 @@ Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_entry(CueScri
     }
 }
 
-Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::load(const Path &a_file,
-                                                                   std::optional<ScriptConfiguration> a_configuration)
+Result<std::unique_ptr<RuntimeGameModule>> RuntimeGameModule::from_dynamic(
+    CueScriptGetModuleFunction a_entry, std::unique_ptr<IGameModuleLibrary> a_library,
+    std::optional<ScriptConfiguration> a_configuration)
 {
     using ModuleResult = Result<std::unique_ptr<RuntimeGameModule>>;
     if (a_configuration && !is_valid_script_configuration(*a_configuration))
         return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.configuration"});
-#if defined(_WIN32)
-    try
-    {
-        if (!a_file.is_absolute())
-            return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.absolute_path_required"});
-        auto wide = utf8_to_utf16(a_file.utf8());
-        if (!wide.has_value())
-            return ModuleResult::failure(*wide.try_error());
-        // 明示 DLL の親と標準 Directory だけを検索し、CWD から依存 DLL を読み込まない
-        auto owner = std::make_unique<State>();
-        owner->library = LoadLibraryExW(wide.try_value()->c_str(), nullptr,
-                                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!owner->library)
-            return ModuleResult::failure({ErrorCategory::PlatformFailure, "GameModule.LoadLibraryExW", GetLastError()});
-        const auto entry =
-            reinterpret_cast<CueScriptGetModuleFunction>(GetProcAddress(owner->library, "CueScriptGetModule"));
-        // C ABI の POD / 借用 / Module 内破棄を維持して、選択した Game 構成だけを受け入れる
-        auto module =
-            from_entry(entry, a_configuration.value_or(static_cast<ScriptConfiguration>(CUE_SCRIPT_CONFIGURATION)));
-        if (!module.has_value())
-            return module;
-        (*module.try_value())->m_state->library = std::exchange(owner->library, nullptr);
-        return module;
-    }
-    catch (...)
-    {
-        return ModuleResult::failure({ErrorCategory::Fatal, "GameModule.load_exception"});
-    }
-#else
-    (void)a_file;
-    return ModuleResult::failure({ErrorCategory::InvalidState, "GameModule.dynamic_loading_unsupported"});
-#endif
+    if (!a_library)
+        return ModuleResult::failure({ErrorCategory::InvalidArgument, "GameModule.library_missing"});
+
+    // ABI が参照する Metadata と Table が検証を終えるまでライブラリを生存させる
+    const auto expected = a_configuration.value_or(static_cast<ScriptConfiguration>(CUE_SCRIPT_CONFIGURATION));
+    auto module = from_entry(a_entry, expected);
+    if (module.has_value())
+        (*module.try_value())->m_state->library = std::move(a_library);
+    return module;
 }
 
 const std::vector<ScriptTypeDescriptor> &RuntimeGameModule::types() const noexcept
@@ -196,6 +156,7 @@ const CueScriptModuleApi &RuntimeGameModule::api() const noexcept
 }
 void RuntimeGameModule::retain_until_process_exit() noexcept
 {
-    m_state->canUnload = false;
+    if (m_state->library)
+        m_state->library->retain_until_process_exit();
 }
 } // namespace cue

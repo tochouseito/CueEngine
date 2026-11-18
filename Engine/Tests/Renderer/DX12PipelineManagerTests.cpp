@@ -325,7 +325,8 @@ int run_tests()
         return __LINE__;
     }
     auto completion = submitted.take_value();
-    if (completion->is_complete())
+    auto status = completion->completion_status();
+    if (!status.has_value() || *status.try_value())
     {
         return __LINE__;
     }

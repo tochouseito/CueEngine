@@ -5,7 +5,7 @@
 #include <memory>
 
 #include <FrameGraph/FrameGraph.h>
-#include <SceneRender/RenderScene.h>
+#include <RenderData/RenderScene.h>
 
 namespace cue
 {

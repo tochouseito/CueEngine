@@ -14,6 +14,7 @@
 #include <EditorIde/IdeService.h>
 #include <Project/Project.h>
 #include <ProjectBuild/GameBuildService.h>
+#include <RenderData/RenderScene.h>
 #include <Runtime/WorldHandle.h>
 #include <Scene/Scene.h>
 #include <ScriptPlay/PlayClient.h>
@@ -21,7 +22,6 @@
 
 namespace cue
 {
-class World;
 class ISceneRenderer;
 class EditorScriptController;
 /// @brief 未保存 Scene を含む Build の応答。保存済み File の利用は編集内容を破棄しない
@@ -123,9 +123,12 @@ class EditorHost final
     [[nodiscard]] bool has_pending_project_confirmation() const noexcept;
     /// @brief Project 切替の開始可否を Owner Thread へ返す。外部 Process の停止は行わない
     [[nodiscard]] bool can_open_project() const noexcept;
-    /// @brief 編集表示用 World を Owner Thread で借用する。次の Project 切替成功または shutdown で失効する
-    /// Update / Render Worker から直接使わない。Play 用 World は後続で別に生成する
-    [[nodiscard]] World *preview_world() noexcept;
+    /// @brief Owner Thread の停止前だけ編集表示用 Preview の存在を返す
+    [[nodiscard]] bool has_preview() const noexcept;
+    /// @brief Owner Thread で Preview を同期して描画値を複写する。未選択・停止後は拒否する
+    [[nodiscard]] Result<SceneRenderSnapshot> preview_snapshot();
+    /// @brief Owner Thread で編集 Preview の姿勢を複写し、Play の値とは独立して返す
+    [[nodiscard]] Result<math::floatTransform> read_preview_transform(std::string_view a_objectId) const;
     /// @brief 編集 Scene の実体を Owner Thread へ返す。Handle は次の Project 切替・停止までの非所有参照
     [[nodiscard]] std::optional<SceneInstanceHandle> preview_instance() const noexcept;
 

@@ -12,8 +12,6 @@
 #include <imgui_internal.h>
 
 #include <Editor/EditorApplication.h>
-#include <Runtime/Components/TransformComponent.h>
-#include <Runtime/World.h>
 
 namespace
 {
@@ -607,13 +605,10 @@ int main()
     CUE_EDITOR_UI_CHECK(application->document().revision() > revisionBeforeLiveInput);
     const auto draftRotation = application->document().scene().descriptor().objects.back().transform->rotation;
     CUE_EDITOR_UI_CHECK(draftRotation != rotationBefore);
-    auto *preview = application->preview_world();
-    CUE_EDITOR_UI_CHECK(preview && application->preview_instance());
-    auto previewEntity = preview->find_by_id(*application->preview_instance(), *cube.try_value());
-    CUE_EDITOR_UI_CHECK(previewEntity.has_value());
-    auto previewTransform = preview->get_component<cue::TransformComponent>(*previewEntity.try_value());
+    CUE_EDITOR_UI_CHECK(application->has_preview() && application->preview_instance());
+    auto previewTransform = application->read_preview_transform(*cube.try_value());
     CUE_EDITOR_UI_CHECK(previewTransform.has_value());
-    CUE_EDITOR_UI_CHECK((*previewTransform.try_value())->local().rotation == draftRotation);
+    CUE_EDITOR_UI_CHECK(previewTransform.try_value()->rotation == draftRotation);
     io.AddKeyEvent(ImGuiKey_Escape, true);
     CUE_EDITOR_UI_CHECK(advance());
     io.AddKeyEvent(ImGuiKey_Escape, false);
@@ -625,7 +620,8 @@ int main()
     CUE_EDITOR_UI_CHECK(sawCancel && cancelCount == 1 && !sawCommit && !application->document().is_transform_editing());
     CUE_EDITOR_UI_CHECK(application->document().scene().descriptor().objects.back().transform->rotation ==
                         rotationBefore);
-    CUE_EDITOR_UI_CHECK((*previewTransform.try_value())->local().rotation == rotationBefore);
+    auto restoredPreview = application->read_preview_transform(*cube.try_value());
+    CUE_EDITOR_UI_CHECK(restoredPreview.has_value() && restoredPreview.try_value()->rotation == rotationBefore);
 
     // 見えているだけでなく File Menu を実 Mouse 入力で開けることを確認する
     io.AddMousePosEvent(menu->Pos.x + 12, menu->Pos.y + menu->Size.y * 0.5f);

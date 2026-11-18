@@ -283,10 +283,17 @@ int main()
         return 30;
     }
     queuePool.reset();
-    if (!firstCompletion->wait().has_value() || !secondCompletion->wait().has_value() ||
-        !firstCompletion->is_complete() || !secondCompletion->is_complete())
+    for (auto* completion : {firstCompletion.get(), secondCompletion.get()})
     {
-        return 14;
+        if (!completion->wait().has_value())
+        {
+            return 14;
+        }
+        auto status = completion->completion_status();
+        if (!status.has_value() || !*status.try_value())
+        {
+            return 14;
+        }
     }
     D3D12_RANGE readRange{0, sizeof(k_source)};
     if (FAILED(readback->Map(0, &readRange, &mapped)))

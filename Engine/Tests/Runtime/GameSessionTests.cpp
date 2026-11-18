@@ -6,8 +6,6 @@
 #include <stdexcept>
 #include <thread>
 
-#include <Runtime/Components/TransformComponent.h>
-#include <Runtime/World.h>
 #include <Scene/Scene.h>
 #include <Script/Module.h>
 
@@ -41,21 +39,22 @@ class Moving final : public cue::Behaviour
         ++g_destroys;
     }
     /// @brief 一度だけ開始する
-    cue::Result<void> start(cue::GameObject &) override
+    void start() override
     {
         ++g_starts;
-        return cue::Result<void>::success();
     }
     /// @brief 実行例外と所有 Transform 値の読戻しを検証する
-    cue::Result<void> update(cue::GameObject &a_object, const cue::ScriptUpdateContext &a_context) override
+    void update() override
     {
         if (g_shouldThrow)
             throw std::runtime_error("session fixture");
-        auto transform = a_object.transform();
-        if (!transform.has_value())
-            return cue::Result<void>::failure(*transform.try_error());
-        transform.try_value()->position.x += m_speed * std::chrono::duration<float>(a_context.deltaTime).count();
-        return a_object.set_transform(*transform.try_value());
+        auto pose = transform.get();
+        if (!pose.has_value())
+            throw *pose.try_error();
+        pose.try_value()->position.x += m_speed * delta_time_seconds();
+        auto written = transform.set(*pose.try_value());
+        if (!written.has_value())
+            throw *written.try_error();
     }
     /// @brief World の停止と再呼出しの分離を観測する
     cue::Result<void> stop(cue::GameObject &) override
@@ -141,8 +140,18 @@ int main()
     snapshot = session->snapshot();
     CHECK(snapshot.has_value() && snapshot.try_value()->objects.front().world.values[3][0] == 3);
     CHECK(session->completed_ticks() == 2);
+    auto pose = session->read_transform(k_cube);
+    CHECK(pose.has_value() && pose.try_value()->position.x == 3);
+    auto requested = *pose.try_value();
+    requested.position.x = 10;
+    CHECK(!session->set_transform("missing", requested).has_value() && session->is_running());
+    CHECK(session->set_transform(k_cube, requested).has_value());
+    CHECK(pose.try_value()->position.x == 3);
+    auto afterEdit = session->read_transform(k_cube);
+    CHECK(afterEdit.has_value() && afterEdit.try_value()->position.x == 10);
+    CHECK(definition.try_value()->descriptor().objects.front().transform->position.x == 0);
     CHECK(session->shutdown().has_value() && session->shutdown().has_value());
-    CHECK(g_stops == 1 && g_destroys == 1 && !session->world());
+    CHECK(g_stops == 1 && g_destroys == 1 && !session->is_running());
     CHECK(!session->update(std::chrono::seconds(1)).has_value());
     CHECK(!session->snapshot().has_value());
     runtimeModule = cue::RuntimeGameModule::from_static(entry);
@@ -152,7 +161,7 @@ int main()
     session = created.take_value();
     g_shouldThrow = true;
     CHECK(!session->update(std::chrono::seconds(1)).has_value());
-    CHECK(!session->world() && !session->snapshot().has_value());
+    CHECK(!session->is_running() && !session->snapshot().has_value());
     CHECK(!session->shutdown().has_value());
     CHECK(g_stops == 2 && g_destroys == 2);
     return 0;

@@ -10,6 +10,7 @@
 
 #include <Editor/SceneDocument.h>
 #include <Platform/FileSystem.h>
+#include <RenderData/RenderScene.h>
 #include <Runtime/WorldHandle.h>
 
 namespace cue
@@ -57,8 +58,12 @@ class EditorApplication final
     EditorApplication &operator=(const EditorApplication &) = delete;
     /// @brief Owner Thread から不変の編集正本を借用する。停止前だけ利用する
     [[nodiscard]] const SceneDocument &document() const noexcept;
-    /// @brief Owner Thread だけに Preview を借用する。外部の構造変更・System 追加は禁止
-    [[nodiscard]] World *preview_world() noexcept;
+    /// @brief Owner Thread の停止前だけ Preview の存在を返す。World の借用は公開しない
+    [[nodiscard]] bool has_preview() const noexcept;
+    /// @brief Preview を同期し、描画側へ独立した所有値を返す。Owner Thread で直列に呼ぶ
+    [[nodiscard]] Result<SceneRenderSnapshot> preview_snapshot();
+    /// @brief 永続 Object ID の現在の Preview 姿勢を複写する。停止・別 Thread・未存在は拒否する
+    [[nodiscard]] Result<math::floatTransform> read_preview_transform(std::string_view a_objectId) const;
     /// @brief 現在の Preview Instance を Owner Thread へ返す
     [[nodiscard]] std::optional<SceneInstanceHandle> preview_instance() const noexcept;
     /// @brief Camera を持つ未保存 Scene へ切り替える。未保存確認は Host の責務
@@ -93,8 +98,6 @@ class EditorApplication final
     [[nodiscard]] Result<void> undo();
     /// @brief 戻した操作を同じ永続 ID で再適用する
     [[nodiscard]] Result<void> redo();
-    /// @brief Snapshot 抽出前に Preview の Transform Cache を同期する
-    [[nodiscard]] Result<void> synchronize_preview();
     /// @brief Preview を停止する。停止後の変更操作を拒否し、繰返し呼べる
     [[nodiscard]] Result<void> shutdown();
 
@@ -102,6 +105,8 @@ class EditorApplication final
     struct PreparedPreview;
     /// @brief Owner / 停止 / 再入と Revision の前提を検証する
     [[nodiscard]] Result<void> check_access() const;
+    /// @brief Snapshot 抽出前に Preview の Transform Cache を同期する
+    [[nodiscard]] Result<void> synchronize_preview();
     /// @brief 指定 Scene の候補 World を部分公開せずに作る
     [[nodiscard]] Result<PreparedPreview> prepare_preview(const Scene &a_scene);
     /// @brief 完成済み候補を公開し、旧 World を停止・回収する

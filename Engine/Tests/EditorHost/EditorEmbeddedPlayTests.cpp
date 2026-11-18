@@ -9,8 +9,6 @@
 
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12RenderDevice.h>
-#include <Runtime/Components/TransformComponent.h>
-#include <Runtime/World.h>
 
 namespace
 {
@@ -124,10 +122,8 @@ int test_editor(const cue::Path &a_executable, const cue::Path &a_module, double
                                            return host.play_view_snapshot() &&
                                                   host.play_view_snapshot()->render.objects[0].world.values[3][0] == 2;
                                        }));
-        auto entity = host.preview_world()->find_by_id(*host.preview_instance(), k_cubeId);
-        CUE_EMBEDDED_CHECK(entity.has_value());
-        auto transform = host.preview_world()->get_component<cue::TransformComponent>(*entity.try_value());
-        CUE_EMBEDDED_CHECK(transform.has_value() && (*transform.try_value())->local().position.x == 0);
+        auto transform = host.read_preview_transform(k_cubeId);
+        CUE_EMBEDDED_CHECK(transform.has_value() && transform.try_value()->position.x == 0);
         CUE_EMBEDDED_CHECK(host.stop_play().has_value());
         CUE_EMBEDDED_CHECK(!host.play_view_snapshot());
         CUE_EMBEDDED_CHECK(wait_editor(host, [&] { return host.play_state() == cue::PlayState::Stopped; }));
@@ -158,6 +154,15 @@ int test_editor(const cue::Path &a_executable, const cue::Path &a_module, double
                                            return progress.has_value() && progress.try_value()->renderedFrames >
                                                                               before.try_value()->renderedFrames + 2;
                                        }));
+        if (a_mode == 4)
+        {
+            // Native Crash 後も同じ Editor が新しい子を開始でき、停止時に View を回収する
+            CUE_EMBEDDED_CHECK(host.start_play().has_value());
+            CUE_EMBEDDED_CHECK(wait_editor(host, [&] { return host.play_view_snapshot() != nullptr; }));
+            CUE_EMBEDDED_CHECK(host.stop_play().has_value());
+            CUE_EMBEDDED_CHECK(wait_editor(host, [&] { return host.play_state() == cue::PlayState::Stopped; }));
+            CUE_EMBEDDED_CHECK(!host.play_view_snapshot());
+        }
     }
     auto after = host.scene()->serialize();
     CUE_EMBEDDED_CHECK(after.has_value() && *after.try_value() == *original.try_value());

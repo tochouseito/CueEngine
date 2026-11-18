@@ -18,13 +18,11 @@
 #include <Platform/Diagnostics.h>
 #include <Platform/Windows/WindowsFileSystem.h>
 #include <Platform/Windows/WindowsPlatform.h>
-#include <Runtime/Components/TransformComponent.h>
 #include <Runtime/FrameController.h>
-#include <Runtime/World.h>
 #include <Scene/Scene.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayServer.h>
-#include <ScriptRuntime/ScriptModule.h>
+#include <ScriptRuntime/Windows/WindowsGameModule.h>
 #include <WindowsHost/WindowsHost.h>
 
 namespace
@@ -160,37 +158,16 @@ cue::Result<cue::PlayViewSnapshot> capture_view(cue::GameSession &a_session, con
     cue::PlayViewSnapshot view;
     view.tick = a_session.completed_ticks();
     view.render = render.take_value();
-    auto *world = a_session.world();
-    if (!world)
-        return cue::Result<cue::PlayViewSnapshot>::failure({cue::ErrorCategory::InvalidState, "Play.view.world"});
     // 現行の Script API が扱う開始 Scene の Object だけを識別し、削除済み Object は公開しない
     for (const auto &object : a_scene.descriptor().objects)
     {
         if (!object.transform)
             continue;
-        auto entity = world->find_by_id(a_session.instance(), object.objectId);
-        if (!entity.has_value())
-            continue;
-        auto transform = world->get_component<cue::TransformComponent>(*entity.try_value());
+        auto transform = a_session.read_transform(object.objectId);
         if (transform.has_value())
-            view.transforms.push_back({object.objectId, (*transform.try_value())->local()});
+            view.transforms.push_back({object.objectId, transform.take_value()});
     }
     return cue::Result<cue::PlayViewSnapshot>::success(std::move(view));
-}
-
-/// @brief Play の更新境界で姿勢を変更する。拒否できる入力失敗では実行 World を変更しない
-cue::Result<void> set_play_transform(cue::GameSession &a_session, const cue::PlayCommand &a_command)
-{
-    auto *world = a_session.world();
-    if (!world)
-        return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Play.transform.world"});
-    auto entity = world->find_by_id(a_session.instance(), a_command.objectId);
-    if (!entity.has_value())
-        return cue::Result<void>::failure(*entity.try_error());
-    auto transform = world->get_component<cue::TransformComponent>(*entity.try_value());
-    if (!transform.has_value())
-        return cue::Result<void>::failure(*transform.try_error());
-    return (*transform.try_value())->set_local(a_command.transform);
 }
 
 /// @brief 親の開始許可と Debugger 接続を両方満たすまで、Game DLL を読まずに待つ
@@ -250,7 +227,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
         if (!debugScene)
             return 0;
     }
-    auto module = cue::RuntimeGameModule::load(a_options.module, a_options.moduleConfiguration);
+    auto module = cue::load_windows_game_module(a_options.module, a_options.moduleConfiguration);
     if (!module.has_value())
         return fail(a_server, *module.try_error());
     auto described = a_server.send_types((*module.try_value())->types());
@@ -332,7 +309,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
             }
             if (command.kind == cue::PlayCommand::Kind::SetTransform)
             {
-                auto changed = set_play_transform(*session, command);
+                auto changed = session->set_transform(command.objectId, command.transform);
                 cue::PlayTransformAck ack;
                 ack.requestId = command.requestId;
                 ack.objectId = command.objectId;
@@ -360,7 +337,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
             if (!queued.has_value())
                 return queued;
             // Setter 内の異常で部分変更された Session を継続しない
-            if (!applied.has_value() && !session->world())
+            if (!applied.has_value() && !session->is_running())
                 return applied;
         }
         return cue::Result<void>::success();

@@ -4,7 +4,7 @@ sidebar_position: 2
 ---
 
 [CueHub と Engine のインストール](./install.md) が済んだら、空の Project に Cube と C++ Script を追加し、Cube が回るアプリを作ります。
-以下の手順は Engine `0.1.0-preview.9` 以降を対象にしています。
+以下のコード例は、引数なしの `void start()` と `void update()` に対応した Engine SDK を対象にしています。
 
 ## Project を作る
 
@@ -16,29 +16,16 @@ sidebar_position: 2
 
 1. Editor で起動シーン `Main` を開きます。**Edit → Add Cube** で Cube を追加します。
 2. **Edit → New Script...** で名前を `RotateCube` として作成します。`Source/RotateCube.h` にクラス定義、`Source/RotateCube.cpp` に実装と型登録が生成されます。
-3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` に `#include <chrono>`、`#include <Math/Quaternion.h>`、`#include <Math/Scalar.h>` を追加し、`namespace game` 内の `RotateCube::update()` を下記の実装へ置き換えて保存します。
+3. **Script → Open Visual Studio** でゲームのプロジェクトフォルダーを開きます。`Source/RotateCube.cpp` の `namespace game` 内にある `RotateCube::update()` を下記の実装へ置き換えて保存します。
 
 ```cpp
-::cue::Result<void> RotateCube::update()
+void RotateCube::update()
 {
-    auto pose = transform.get();
-    if (!pose.has_value())
-        return ::cue::Result<void>::failure(*pose.try_error());
-
-    const auto seconds = std::chrono::duration<float>(delta_time()).count();
-    auto delta = ::cue::math::rotation_axis_angle(::cue::math::float3{0, 1, 0},
-                                                 ::cue::math::degrees_to_radians(90.0f) * seconds);
-    if (!delta.has_value())
-        return ::cue::Result<void>::failure(*delta.try_error());
-
-    auto rotation = ::cue::math::normalize(*delta.try_value() * pose.try_value()->rotation);
-    if (!rotation.has_value())
-        return ::cue::Result<void>::failure(*rotation.try_error());
-
-    pose.try_value()->rotation = *rotation.try_value();
-    return transform.set(*pose.try_value());
+    transform.rotate.y += 90.0f * delta_time_seconds();
 }
 ```
+
+`start()` と `update()` は引数なしの `void` です。旧 SDK から移行する場合は、ヘッダーと実装の両方を更新し、成功を返す `return` を削除してゲームコードを再ビルドしてください。旧 `GameObject&` が必要な操作は `self()` の結果から行えます。更新引数の `deltaTime` と `tick` は `delta_time()` と `update_tick()` に置き換えられます。取得した `GameObject` はその Callback の間に使ってください。
 
 4. **Script → Build Scripts** を実行し、ビルドが終わるまで待ちます。
 5. Cube を選び、Inspector の **Add Script** で **RotateCube** を選びます。
@@ -55,6 +42,41 @@ Scene View の画像上では、右マウスボタンを押しながら **WASD /
 現在の Preview では、製品ビルドには Project の起動シーンが使われます。この手順では新規 Project の起動シーン `Main` を編集します。
 
 :::
+
+## void update() で操作の失敗を扱う
+
+検索や明示的な操作の多くは `Result` を返します。たとえば回転に失敗したフレームの処理を直ちに中断するなら、`try_error()` で失敗を取り出し、`Error` を投げます。Engine が例外を受け取り、Play に失敗を伝えます。
+
+```cpp
+void RotateCube::update()
+{
+    auto rotated = transform.rotate.y.add(90.0f * delta_time_seconds());
+    if (const auto* error = rotated.try_error())
+    {
+        throw *error;
+    }
+}
+```
+
+一方、シーンに任意のオブジェクトが存在しない場合などは、想定している失敗だけをその場で扱えます。次の例では `OptionalMarker` がなければ今回の更新を見送り、同名オブジェクトが複数あるなどの失敗は Engine に渡します。
+
+```cpp
+void RotateCube::update()
+{
+    auto marker = find_by_name("OptionalMarker");
+    if (const auto* error = marker.try_error())
+    {
+        if (error->operation == "World.find.not_found")
+        {
+            return;
+        }
+        throw *error;
+    }
+    transform.rotate.y += 90.0f * delta_time_seconds();
+}
+```
+
+`+=` での回転が失敗した場合、Engine へ届くのは Callback の終了時です。直後の処理も中断したいときは、最初の例のように `add()` の戻り値を確認します。
 
 ## Windows アプリをビルドする
 

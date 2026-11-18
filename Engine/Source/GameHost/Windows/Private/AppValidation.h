@@ -4,7 +4,7 @@
 #include <optional>
 
 #include <Foundation/Path.h>
-#include <SceneRender/RenderScene.h>
+#include <RenderData/RenderScene.h>
 
 namespace cue
 {

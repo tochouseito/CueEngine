@@ -7,33 +7,13 @@
 #include <memory>
 #include <string_view>
 
+#include <Foundation/Windows/CommandLine.h>
 #include <Foundation/Windows/UtfConversion.h>
 
 namespace cue::detail
 {
 namespace
 {
-/// @brief CommandLineToArgvW / CRT の引用規則で一つの引数を連結する
-void append_argument(std::wstring &a_line, std::wstring_view a_value)
-{
-    if (!a_line.empty())
-        a_line += L' ';
-    a_line += L'"';
-    std::size_t slashes = 0;
-    for (const auto character : a_value)
-    {
-        if (character == L'\\')
-        {
-            ++slashes;
-            continue;
-        }
-        a_line.append(character == L'"' ? slashes * 2 + 1 : slashes, L'\\');
-        a_line += character;
-        slashes = 0;
-    }
-    a_line.append(slashes * 2, L'\\');
-    a_line += L'"';
-}
 
 /// @brief 起動 Shell に VCPKG_ROOT がなくても Preset の展開先を固定する
 Result<std::vector<wchar_t>> environment(const Path &a_vcpkgRoot)
@@ -137,15 +117,9 @@ Result<BuildProcess> start_build_process(const Path &a_executable, std::span<con
     auto variables = environment(a_vcpkgRoot);
     if (!executable.has_value() || !directory.has_value() || !variables.has_value())
         return Result<BuildProcess>::failure({ErrorCategory::InvalidArgument, "GameBuild.process_paths"});
-    std::wstring line;
-    append_argument(line, *executable.try_value());
-    for (const auto &argument : a_arguments)
-    {
-        auto converted = utf8_to_utf16(argument);
-        if (!converted.has_value())
-            return Result<BuildProcess>::failure(*converted.try_error());
-        append_argument(line, *converted.try_value());
-    }
+    auto line = make_windows_command_line(*executable.try_value(), a_arguments);
+    if (const auto *error = line.try_error())
+        return Result<BuildProcess>::failure(*error);
     SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE read = nullptr;
     HANDLE write = nullptr;
@@ -182,7 +156,7 @@ Result<BuildProcess> start_build_process(const Path &a_executable, std::span<con
     startup.StartupInfo.hStdInput = input.get();
     startup.lpAttributeList = attributes;
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(executable.try_value()->c_str(), line.data(), nullptr, nullptr, TRUE,
+    if (!CreateProcessW(executable.try_value()->c_str(), line.try_value()->data(), nullptr, nullptr, TRUE,
                         CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                         variables.try_value()->data(), directory.try_value()->c_str(), &startup.StartupInfo, &process))
         return Result<BuildProcess>::failure(build_process_error("GameBuild.create_process"));
@@ -204,12 +178,13 @@ Result<BuildHandle> start_game_process(const Path &a_executable, const Path &a_d
     auto directory = utf8_to_utf16(a_directory.utf8());
     if (!executable.has_value() || !directory.has_value())
         return Result<BuildHandle>::failure({ErrorCategory::InvalidArgument, "GameBuild.launch_path"});
-    std::wstring line;
-    append_argument(line, *executable.try_value());
+    auto line = make_windows_command_line(*executable.try_value());
+    if (const auto *error = line.try_error())
+        return Result<BuildHandle>::failure(*error);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(executable.try_value()->c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr,
+    if (!CreateProcessW(executable.try_value()->c_str(), line.try_value()->data(), nullptr, nullptr, FALSE, 0, nullptr,
                         directory.try_value()->c_str(), &startup, &process))
         return Result<BuildHandle>::failure(build_process_error("GameBuild.launch"));
     BuildHandle thread(process.hThread);

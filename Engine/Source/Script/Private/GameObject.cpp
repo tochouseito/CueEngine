@@ -59,7 +59,7 @@ GameObject::GameObject(const CueScriptEngineApi &a_api, CueScriptEntity a_entity
 }
 
 GameObject::CallbackScope::CallbackScope(Behaviour &a_script, const GameObject &a_object,
-                                         ScriptUpdateContext a_update) noexcept
+                                         UpdateContext a_update) noexcept
     : object(a_object), update(a_update), m_script(a_script), m_previousScript(a_script.m_callback),
       m_previousModule(a_object.m_access->callback)
 {

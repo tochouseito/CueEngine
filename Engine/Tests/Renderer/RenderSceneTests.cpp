@@ -1,4 +1,4 @@
-#include <SceneRender/RenderScene.h>
+#include <SceneRuntime/RenderSceneExtraction.h>
 
 #include <chrono>
 #include <cstdio>

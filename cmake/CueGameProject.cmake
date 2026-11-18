@@ -339,10 +339,15 @@ endfunction()
 
 # 独立アプリとその配布 Target を追加する。Source / Content へは書き込まない
 function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_applicationName a_title a_startupScene)
-    cue_validate_game_target("${a_applicationName}")
-    if(TARGET "${a_applicationName}" OR TARGET "${a_applicationName}.Package")
-        message(FATAL_ERROR "Cue applicationName collides with an existing target: ${a_applicationName}")
+    # 実行 File 名には数字始まりも許可し、CMake の予約 Target 名とは区別する
+    string(LENGTH "${a_applicationName}" taskNameLength)
+    string(TOLOWER "${a_applicationName}" taskNameLower)
+    if(taskNameLength GREATER 128 OR NOT a_applicationName MATCHES "^[A-Za-z0-9_-]+$"
+       OR taskNameLower MATCHES "^(con|prn|aux|nul|com[1-9]|lpt[1-9])$")
+        message(FATAL_ERROR "Cue applicationName is invalid: ${a_applicationName}")
     endif()
+    # 一つの Build Tree に一つの App を生成し、利用者の名前は成果物にだけ使用する
+    set(taskApplication Cue.GameApp)
     cue_validate_build_path("${a_startupScene}")
     if(IS_ABSOLUTE "${a_startupScene}" OR a_startupScene MATCHES ":" OR NOT a_startupScene MATCHES "\\.cuescene$")
         message(FATAL_ERROR "Cue startupScene must be a relative .cuescene file")
@@ -360,7 +365,7 @@ function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_a
         cue_validate_generated_directory("${a_binary}/App/${taskConfiguration}")
         cue_validate_generated_directory("${_CUE_GAME_OUTPUT}/${taskConfiguration}/App")
     endforeach()
-    cue_add_selected_game_application("${a_applicationName}" "${a_gameTarget}.Static" "${taskRuntime}")
+    cue_add_selected_game_application("${taskApplication}" "${a_gameTarget}.Static" "${taskRuntime}")
     # 表示名に Generator Expression のような文字列があっても、表示用 Data としてそのまま保存する
     set(taskStartupTemplate "${a_binary}/GameStartup.base.cueapp")
     set(taskPackageTemplate "${a_binary}/GamePackage.base.cuepackage")
@@ -376,8 +381,8 @@ function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_a
     file(GENERATE OUTPUT "${a_binary}/AppLists/$<CONFIG>/Runtime.txt" CONTENT "${taskRuntimeList}\n")
     file(GENERATE OUTPUT "${a_binary}/AppLists/$<CONFIG>/Licenses.txt" CONTENT "${taskLicenseList}\n")
     set(taskPackageCommand "${CMAKE_COMMAND}"
-        "-DCUE_APP_SOURCE=$<TARGET_FILE_DIR:${a_applicationName}>"
-        "-DCUE_APP_EXECUTABLE=$<TARGET_FILE:${a_applicationName}>"
+        "-DCUE_APP_SOURCE=${taskRuntime}"
+        "-DCUE_APP_EXECUTABLE=${taskRuntime}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
         "-DCUE_APP_OUTPUT=${taskApp}"
         "-DCUE_APP_CONFIGURATION=$<CONFIG>"
         "-DCUE_APP_PROJECT_ID=${a_projectId}"
@@ -388,16 +393,28 @@ function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_a
         "-DCUE_STARTUP_SCENE=${taskScene}"
         "-DCUE_STARTUP_SCENE_RELATIVE=Content/${taskSceneRelative}"
         "-DCUE_APP_RUNTIME_LIST=${a_binary}/AppLists/$<CONFIG>/Runtime.txt"
-        "-DCUE_APP_LICENSE_LIST=${a_binary}/AppLists/$<CONFIG>/Licenses.txt"
-        -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PublishGameApp.cmake")
-    add_custom_command(TARGET ${a_applicationName} POST_BUILD COMMAND ${taskPackageCommand} VERBATIM)
-    add_custom_target(${a_applicationName}.Package ALL COMMAND ${taskPackageCommand} DEPENDS ${a_applicationName} VERBATIM)
+        "-DCUE_APP_LICENSE_LIST=${a_binary}/AppLists/$<CONFIG>/Licenses.txt")
+    set(taskPublisher "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PublishGameApp.cmake")
+    set(taskInputs "${a_binary}/AppLists/$<CONFIG>/PackageInputs.cpp")
+    # F5 でも App の Build だけで公開を完了する。Link に影響しない素材の変更は小さい生成 Source に伝える
+    add_custom_target(${taskApplication}.PackageInputs
+        COMMAND ${taskPackageCommand} "-DCUE_APP_INPUTS_SOURCE=${taskInputs}" -P "${taskPublisher}"
+        BYPRODUCTS "${taskInputs}"
+        DEPENDS ${taskApplication}.ShaderRuntime
+        VERBATIM)
+    target_sources(${taskApplication} PRIVATE "${taskInputs}")
+    add_dependencies(${taskApplication} ${taskApplication}.PackageInputs)
+    add_custom_command(TARGET ${taskApplication} POST_BUILD COMMAND ${taskPackageCommand} -P "${taskPublisher}" VERBATIM)
     # App が共有 Static を更新した後も、Editor の成果物検証情報を最新に保つ
-    add_custom_target(Cue.GameAppPackage DEPENDS ${a_applicationName}.Package Cue.GameProjectBuild)
-    set_target_properties(${a_applicationName} PROPERTIES
+    add_custom_target(Cue.GameAppPackage DEPENDS ${taskApplication} Cue.GameProjectBuild)
+    set_target_properties(${taskApplication} PROPERTIES
+        OUTPUT_NAME "${a_applicationName}"
+        VS_GLOBAL_DisableFastUpToDateCheck true
         VS_DEBUGGER_COMMAND "${taskApp}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}"
         VS_DEBUGGER_WORKING_DIRECTORY "${taskApp}")
-    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_TARGET "${a_applicationName}")
+    # 生成した Solution では製品 App を F5 の既定にする
+    set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT "${taskApplication}")
+    set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_TARGET "${taskApplication}")
     set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_DIRECTORY "${taskApp}")
     set_property(GLOBAL PROPERTY CUE_CONFIGURED_GAME_APP_EXECUTABLE "${taskApp}/${a_applicationName}${_CUE_GAME_APPLICATION_SUFFIX}")
 endfunction()

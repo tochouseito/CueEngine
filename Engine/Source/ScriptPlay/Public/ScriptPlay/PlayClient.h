@@ -9,7 +9,7 @@
 
 #include <Foundation/Path.h>
 #include <Math/Transform.h>
-#include <SceneRender/RenderScene.h>
+#include <RenderData/RenderScene.h>
 #include <ScriptData/ScriptData.h>
 
 namespace cue

@@ -5,7 +5,7 @@ add_library(Cue.Renderer.FrameGraph STATIC
 )
 
 target_include_directories(Cue.Renderer.FrameGraph PUBLIC Public)
-target_link_libraries(Cue.Renderer.FrameGraph PUBLIC Cue.Foundation Cue.Renderer.RHI)
+target_link_libraries(Cue.Renderer.FrameGraph PUBLIC Cue.Foundation Cue.Renderer.RHI Cue.Profiler)
 target_compile_features(Cue.Renderer.FrameGraph PUBLIC cxx_std_20)
 
 if(MSVC)

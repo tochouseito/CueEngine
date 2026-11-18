@@ -8,9 +8,6 @@ target_compile_definitions(Cue.ScriptRuntime PRIVATE
     $<$<CONFIG:Development>:CUE_SCRIPT_CONFIGURATION=2>
     $<$<CONFIG:Release>:CUE_SCRIPT_CONFIGURATION=3>
 )
-if(WIN32)
-    target_link_libraries(Cue.ScriptRuntime PRIVATE Cue.Foundation.Windows)
-endif()
 if(MSVC)
     target_compile_options(Cue.ScriptRuntime PRIVATE /utf-8 $<$<CONFIG:Development>:/O2> $<$<CONFIG:Development>:/Zi>)
 endif()

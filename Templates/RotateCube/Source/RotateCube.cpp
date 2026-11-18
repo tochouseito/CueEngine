@@ -1,6 +1,5 @@
 #include <cmath>
 
-#include <Math/Quaternion.h>
 #include <Script/ModuleEntry.h>
 
 namespace
@@ -26,24 +25,12 @@ class RotateCubeBehaviour final : public cue::Behaviour
         }
         return cue::Result<void>::failure({cue::ErrorCategory::InvalidArgument, "RotateCube.property"});
     }
-    /// @brief 時間差に比例した回転を Math で計算し、Component Pointer を保持せず書き戻す
-    [[nodiscard]] cue::Result<void> update() override
+    /// @brief 時間差に比例して回転し、暗黙操作の失敗は Module の Callback 境界へ伝える
+    void update() override
     {
         if (!m_isRotating)
-            return cue::Result<void>::success();
-        auto current = transform.get();
-        if (!current.has_value())
-            return cue::Result<void>::failure(*current.try_error());
-        const float seconds = delta_time_seconds();
-        auto delta = cue::math::rotation_axis_angle(cue::math::float3{0, 1, 0},
-                                                    cue::math::degrees_to_radians(m_speedDegrees) * seconds);
-        if (!delta.has_value())
-            return cue::Result<void>::failure(*delta.try_error());
-        auto rotation = cue::math::normalize(*delta.try_value() * current.try_value()->rotation);
-        if (!rotation.has_value())
-            return cue::Result<void>::failure(*rotation.try_error());
-        current.try_value()->rotation = *rotation.try_value();
-        return transform.set(*current.try_value());
+            return;
+        transform.rotate.y += m_speedDegrees * delta_time_seconds();
     }
 
   private:

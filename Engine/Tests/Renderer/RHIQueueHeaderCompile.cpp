@@ -16,8 +16,9 @@ int main()
     static_assert(std::is_abstract_v<cue::ICommandContext>);
     static_assert(std::is_abstract_v<cue::ICommandPool>);
     cue::SharedCommandCompletion pending;
-    if (pending.is_complete() || pending.wait().has_value() || pending.queue_identity() != 0 ||
-        pending.fence_value() != 0)
+    auto status = pending.completion_status();
+    if (status.has_value() || status.try_error()->category != cue::ErrorCategory::InvalidState ||
+        pending.wait().has_value() || pending.queue_identity() != 0 || pending.fence_value() != 0)
     {
         return 1;
     }

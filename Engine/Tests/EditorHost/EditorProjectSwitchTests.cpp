@@ -219,10 +219,10 @@ int test_switching(bool a_useWorkers)
     CHECK(!host.request_open_project(first).has_value());
     CHECK(host.initialize().has_value());
     CHECK(!host.project() && !host.scene() && host.can_open_project());
-    CHECK(!host.preview_world() && !host.preview_instance());
+    CHECK(!host.has_preview() && !host.preview_instance());
     CHECK(!host.run_game().has_value());
     CHECK(step_frames(host));
-    CHECK(!host.project() && !host.scene() && !host.preview_world() && !host.preview_instance());
+    CHECK(!host.project() && !host.scene() && !host.has_preview() && !host.preview_instance());
 
     bool rejected = false;
     std::thread other(

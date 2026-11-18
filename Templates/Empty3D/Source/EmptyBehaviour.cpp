@@ -7,9 +7,8 @@ class EmptyBehaviour final : public cue::Behaviour
 {
   public:
     /// @brief 登録例では World を変更せず、時間入力を利用する処理は派生実装で追加する
-    [[nodiscard]] cue::Result<void> update() override
+    void update() override
     {
-        return cue::Result<void>::success();
     }
 };
 

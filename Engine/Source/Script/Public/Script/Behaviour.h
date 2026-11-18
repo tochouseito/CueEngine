@@ -31,20 +31,15 @@ class Behaviour
     Behaviour &operator=(const Behaviour &) = delete;
     /// @brief Game Module 側で派生 Instance を破棄する
     virtual ~Behaviour() = default;
-    /// @brief 既存の Script の override を保持し、既定では引数なしの入口へ渡す
-    [[nodiscard]] virtual Result<void> start(GameObject &)
+    /// @brief 最初の更新より前に初期化する。失敗後は stop で部分初期化を回収する
+    virtual void start()
     {
-        return start();
     }
-    /// @brief 所属 Entity と時間を基底クラスから取得して更新する。失敗では Session を停止する
-    [[nodiscard]] virtual Result<void> update()
+    /// @brief 所属 Entity と時間を基底クラスから取得して更新する。未実装は Module 境界で失敗にする
+    /// C++ 例外と暗黙 Transform 操作の失敗は Module が回収し、Session へ通知する
+    virtual void update()
     {
-        return Result<void>::failure({ErrorCategory::InvalidState, "Behaviour.update_missing"});
-    }
-    /// @brief 既存の Script の override を保持し、新しい Script は引数なしの入口へ渡す
-    [[nodiscard]] virtual Result<void> update(GameObject &, const ScriptUpdateContext &)
-    {
-        return update();
+        throw Error{ErrorCategory::InvalidState, "Behaviour.update_missing"};
     }
     /// @brief 開始した Instance を一度だけ停止する。部分初期化の回収も担当する
     [[nodiscard]] virtual Result<void> stop(GameObject &)
@@ -56,13 +51,17 @@ class Behaviour
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "Behaviour.property_missing"});
     }
-    /// @brief 最初の更新より前に初期化する。途中失敗も stop で回収できる状態にする
-    [[nodiscard]] virtual Result<void> start()
-    {
-        return Result<void>::success();
-    }
-
   protected:
+    /// @brief 自分の Entity を操作する非所有の窓口を返す。Owner Thread の現在の Callback 内だけで使う
+    /// Callback 外では取得を拒否する。取得に成功しても Entity の生存は is_alive() で確認する
+    [[nodiscard]] Result<GameObject> self() const
+    {
+        if (!m_callback)
+        {
+            return Result<GameObject>::failure({ErrorCategory::InvalidState, "Behaviour.callback_context"});
+        }
+        return Result<GameObject>::success(m_callback->object);
+    }
     /// @brief 現在の Script Callback の時間を返す。更新以外はゼロ
     [[nodiscard]] std::chrono::nanoseconds delta_time() const noexcept
     {
@@ -72,6 +71,11 @@ class Behaviour
     [[nodiscard]] float delta_time_seconds() const noexcept
     {
         return std::chrono::duration<float>(delta_time()).count();
+    }
+    /// @brief 現在の World 更新番号を返す。開始・停止など更新番号のない Callback では 0
+    [[nodiscard]] std::uint64_t update_tick() const noexcept
+    {
+        return m_callback ? m_callback->update.tick : 0;
     }
     /// @brief 自分の Component を Callback 中に所有値として取得する
     template <typename T> [[nodiscard]] Result<T> get_component() const

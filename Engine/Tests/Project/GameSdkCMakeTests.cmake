@@ -42,10 +42,14 @@ if(NOT TARGET Cue.Script OR NOT TARGET SdkGameModule OR NOT TARGET SdkGameModule
     message(FATAL_ERROR "The game API or module is unavailable")
 endif()
 if(CUE_GAME_BUILD_APP)
-    if(NOT TARGET SdkGame OR NOT TARGET Cue.GameHost.Windows)
+    if(NOT TARGET Cue.GameApp OR NOT TARGET Cue.GameAppPackage OR NOT TARGET Cue.GameHost.Windows)
         message(FATAL_ERROR "The independent App target is missing")
     endif()
-elseif(TARGET SdkGame OR TARGET Cue.GameHost.Windows OR TARGET Cue.Renderer.DX12)
+    get_target_property(taskOutputName Cue.GameApp OUTPUT_NAME)
+    if(NOT taskOutputName STREQUAL "SdkGame")
+        message(FATAL_ERROR "The independent App lost its applicationName")
+    endif()
+elseif(TARGET Cue.GameApp OR TARGET Cue.GameHost.Windows OR TARGET Cue.Renderer.DX12)
     message(FATAL_ERROR "Script editing unexpectedly builds the App or graphics runtime")
 endif()
 file(WRITE "${CMAKE_BINARY_DIR}/GameRoot.txt" "${CMAKE_SOURCE_DIR}")
@@ -98,7 +102,7 @@ foreach(taskOutput IN ITEMS Runtime/SdkGameModule.dll Runtime/SdkGameModule.pdb 
 endforeach()
 
 # 対応表への追加で再構成し、単独 cpp と Header を分けた Script の登録が DLL / Static の双方に残ることを確認する
-file(WRITE "${taskGame}/Source/SecondScript.h" [=[
+file(WRITE "${taskGame}/Source/CueScriptApi.h" [=[
 #pragma once
 
 #include <Foundation/Result.h>
@@ -106,29 +110,30 @@ file(WRITE "${taskGame}/Source/SecondScript.h" [=[
 
 namespace game
 {
-class SecondScript final : public ::cue::Behaviour
+class CueScriptApi final : public ::cue::Behaviour
 {
   public:
+    CUE_SCRIPT_API(::game::CueScriptApi)
+
     /// @brief 生成した Script の更新入口を提供する
-    [[nodiscard]] ::cue::Result<void> update() override;
+    void update() override;
 };
 } // namespace game
 ]=])
-file(WRITE "${taskGame}/Source/SecondScript.cpp" [=[
-#include "SecondScript.h"
+file(WRITE "${taskGame}/Source/CueScriptApi.cpp" [=[
+#include "CueScriptApi.h"
 
 #include <Script/ModuleEntry.h>
 
-::cue::Result<void> game::SecondScript::update()
+void game::CueScriptApi::update()
 {
-    return ::cue::Result<void>::success();
 }
 
-CUE_DEFINE_SCRIPT(SecondScript,
-                  ::cue::make_script_registration<::game::SecondScript>({"game.SecondScript", "Second Script", 1, {}}))
+CUE_DEFINE_SCRIPT(CueScriptApi,
+                  ::cue::make_script_registration<::game::CueScriptApi>({"game.CueScriptApi", "CueScriptApi", 1, {}}))
 ]=])
 file(APPEND "${taskGame}/Source/ScriptSources.cueide"
-    "script.game.SecondScript=SecondScript.cpp\nregistration.game.SecondScript=SecondScript\n")
+    "script.game.CueScriptApi=CueScriptApi.cpp\nregistration.game.CueScriptApi=CueScriptApi\n")
 execute_process(COMMAND "${CMAKE_COMMAND}" --build "${taskTree}" --config "${CUE_CONFIGURATION}"
     --target Cue.GameProjectBuild ModuleMetadataProbe RESULT_VARIABLE taskResult OUTPUT_VARIABLE taskOutput ERROR_VARIABLE taskError)
 if(NOT taskResult EQUAL 0)
@@ -147,8 +152,8 @@ foreach(taskMode IN ITEMS static dll)
 endforeach()
 # 不正な対応表を Code として実行せず、生成前に拒否する
 file(READ "${taskGame}/Source/ScriptSources.cueide" taskValidCatalog)
-foreach(taskInvalid IN ITEMS "registration.game.SecondScript=Invalid;Token\n" "unknown=value\n"
-        "registration.game.SecondScript=EmptyBehaviour\n")
+foreach(taskInvalid IN ITEMS "registration.game.CueScriptApi=Invalid;Token\n" "unknown=value\n"
+        "registration.game.CueScriptApi=EmptyBehaviour\n")
     file(WRITE "${taskGame}/Source/ScriptSources.cueide" "${taskValidCatalog}${taskInvalid}")
     execute_process(COMMAND ${taskConfigure} RESULT_VARIABLE taskRejected OUTPUT_QUIET ERROR_QUIET)
     if(taskRejected EQUAL 0)

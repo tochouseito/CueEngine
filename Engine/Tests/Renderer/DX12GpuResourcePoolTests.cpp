@@ -6,6 +6,8 @@
 #include <memory>
 #include <span>
 
+#include <dxgi.h>
+
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12QueuePool.h>
@@ -13,14 +15,34 @@
 
 namespace
 {
-/// @brief 完了前後の破棄予約を再現する制御可能な Completion
+/// @brief ResourcePool が Native 診断値を保持して Device Lost を返すか確認する
+bool is_device_lost(const cue::Error* a_error)
+{
+    return a_error && a_error->category == cue::ErrorCategory::PlatformFailure &&
+           a_error->operation == "ManualCompletion.device_removed" && a_error->nativeCode == DXGI_ERROR_DEVICE_REMOVED;
+}
+
+/// @brief 未完了、完了、Device Lost の状態を切り替える Completion
 class ManualCompletion final : public cue::ICommandCompletion
 {
   public:
+    enum class Status
+    {
+        Pending,
+        Complete,
+        DeviceLost,
+    };
+
     /// @brief GPU 完了を模した状態を切り替える
     void complete() noexcept
     {
-        m_isComplete.store(true);
+        set_status(Status::Complete);
+    }
+
+    /// @brief WARP Device に影響を与えず完了確認の結果を制御する
+    void set_status(Status a_status) noexcept
+    {
+        m_status.store(a_status);
     }
 
     /// @brief Test 用 Completion の Queue 種類を返す
@@ -30,15 +52,26 @@ class ManualCompletion final : public cue::ICommandCompletion
     }
 
     /// @brief 外部から設定した完了状態を返す
-    [[nodiscard]] bool is_complete() const noexcept override
+    [[nodiscard]] cue::Result<bool> completion_status() const override
     {
-        return m_isComplete.load();
+        const auto status = m_status.load();
+        if (status == Status::DeviceLost)
+        {
+            return cue::Result<bool>::failure(
+                {cue::ErrorCategory::PlatformFailure, "ManualCompletion.device_removed", DXGI_ERROR_DEVICE_REMOVED});
+        }
+        return cue::Result<bool>::success(status == Status::Complete);
     }
 
     /// @brief 未完了なら Test の誤った停止順を失敗として返す
     [[nodiscard]] cue::Result<void> wait() override
     {
-        if (!is_complete())
+        auto status = completion_status();
+        if (!status.has_value())
+        {
+            return cue::Result<void>::failure(*status.try_error());
+        }
+        if (!*status.try_value())
         {
             return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "ManualCompletion.wait"});
         }
@@ -46,7 +79,7 @@ class ManualCompletion final : public cue::ICommandCompletion
     }
 
   private:
-    std::atomic<bool> m_isComplete = false;
+    std::atomic<Status> m_status = Status::Pending;
 };
 
 /// @brief 待機の呼出時にだけ GPU 完了を再現し、非待機と安全待機を区別する
@@ -60,9 +93,9 @@ class WaitCompletion final : public cue::ICommandCompletion
     }
 
     /// @brief 待機が実際に完了を確認したか返す
-    [[nodiscard]] bool is_complete() const noexcept override
+    [[nodiscard]] cue::Result<bool> completion_status() const override
     {
-        return waitCount != 0;
+        return cue::Result<bool>::success(waitCount != 0);
     }
 
     /// @brief 未完了状態を一度の待機で正常完了へ変える
@@ -139,9 +172,107 @@ bool verify_wait_acquire(cue::dx12::DX12GpuResourcePool &a_pool)
     }
     return true;
 }
+/// @brief Device Lost を伝播し、正常完了した Slot だけを同じ回収で再利用できることを確認する
+bool verify_failed_completion(cue::dx12::DX12RenderDevice& a_device)
+{
+    auto created = cue::dx12::DX12GpuResourcePool::create(a_device);
+    if (!created.has_value())
+    {
+        return false;
+    }
+    auto pool = created.take_value();
+    auto lost = std::make_shared<ManualCompletion>();
+    auto healthy = std::make_shared<ManualCompletion>();
+    const bool isVerified = [&]()
+    {
+        auto failedBuffer = pool->create_buffer({64});
+        auto healthyBuffer = pool->create_buffer({64});
+        if (!failedBuffer.has_value() || !healthyBuffer.has_value())
+        {
+            return false;
+        }
+
+        const auto failedHandle = failedBuffer.take_value();
+        const auto healthyHandle = healthyBuffer.take_value();
+        auto failedLease = pool->acquire(failedHandle, cue::GpuResourceAccess::Read);
+        auto healthyLease = pool->acquire(healthyHandle, cue::GpuResourceAccess::Read);
+        if (!failedLease.has_value() || !healthyLease.has_value() ||
+            !(*failedLease.try_value())->mark_submitted(lost).has_value() ||
+            !(*healthyLease.try_value())->mark_submitted(healthy).has_value())
+        {
+            return false;
+        }
+
+        // Lease の返却後も失敗した完了点を保持し、借用や退役に元のエラーを返す
+        lost->set_status(ManualCompletion::Status::DeviceLost);
+        failedLease.take_value().reset();
+        healthyLease.take_value().reset();
+        auto available = pool->can_acquire(failedHandle, cue::GpuResourceAccess::Read);
+        auto acquired = pool->acquire(failedHandle, cue::GpuResourceAccess::Read);
+        auto waited = pool->acquire_wait(failedHandle, cue::GpuResourceAccess::Write);
+        auto retired = pool->retire(failedHandle);
+        if (!is_device_lost(available.try_error()) || !is_device_lost(acquired.try_error()) ||
+            !is_device_lost(waited.try_error()) || !is_device_lost(retired.try_error()))
+        {
+            return false;
+        }
+
+        // 未完了は退役を許可する。退役確認に失敗した Handle が有効なままかも調べる
+        lost->set_status(ManualCompletion::Status::Pending);
+        if (!pool->retire(failedHandle).has_value() || !pool->retire(healthyHandle).has_value())
+        {
+            return false;
+        }
+        auto pending = pool->collect();
+        if (!pending.has_value() || *pending.try_value() != 0)
+        {
+            return false;
+        }
+
+        healthy->complete();
+        lost->set_status(ManualCompletion::Status::DeviceLost);
+        auto failed = pool->collect();
+        auto reusedHealthy = pool->create_buffer({64});
+        if (!is_device_lost(failed.try_error()) || !reusedHealthy.has_value() ||
+            reusedHealthy.try_value()->index != healthyHandle.index || lost.use_count() != 2)
+        {
+            return false;
+        }
+
+        // 実 Device の再起動ではなく、Test Token の正常完了を使って回収再試行を確認する
+        lost->complete();
+        auto collected = pool->collect();
+        auto reusedFailed = pool->create_buffer({64});
+        if (!collected.has_value() || *collected.try_value() != 1 || !reusedFailed.has_value() ||
+            reusedFailed.try_value()->index != failedHandle.index ||
+            reusedFailed.try_value()->generation == failedHandle.generation || lost.use_count() != 1)
+        {
+            return false;
+        }
+
+        auto finalLease = pool->acquire(*reusedFailed.try_value(), cue::GpuResourceAccess::Read);
+        if (!finalLease.has_value() || !(*finalLease.try_value())->mark_submitted(lost).has_value())
+        {
+            return false;
+        }
+        lost->set_status(ManualCompletion::Status::DeviceLost);
+        finalLease.take_value().reset();
+        auto stopped = pool->shutdown();
+        if (!is_device_lost(stopped.try_error()) || lost.use_count() != 2)
+        {
+            return false;
+        }
+        lost->complete();
+        return pool->shutdown().has_value() && lost.use_count() == 1;
+    }();
+    // 検証途中で失敗しても Pool の最終破棄を模擬 Token で妨げない
+    lost->complete();
+    healthy->complete();
+    return isVerified;
+}
 } // namespace
 
-/// @brief 世代付き借用、並列読み取り、遅延破棄と WARP での実コピーを検証する
+/// @brief 世代付き借用、Device Lost 時の保持、遅延破棄と WARP での実コピーを検証する
 int main()
 {
     auto deviceResult = cue::dx12::DX12RenderDevice::create(cue::dx12::AdapterSelection::Warp);
@@ -162,6 +293,10 @@ int main()
     if (!verify_wait_acquire(*pool))
     {
         return 50;
+    }
+    if (!verify_failed_completion(*device))
+    {
+        return 51;
     }
 
     auto sharedResult = pool->create_buffer({64, cue::GpuMemoryUsage::Default});

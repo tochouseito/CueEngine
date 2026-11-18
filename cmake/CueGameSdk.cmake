@@ -46,7 +46,7 @@ function(cue_add_standalone_game_project a_file)
 
     if(CUE_GAME_BUILD_APP)
         # 製品用だけに描画と Runtime を追加し、Editor / Tool / Play Host は生成しない
-        foreach(taskModule IN ITEMS Assets ECS Platform Scene Profiler Logging
+        foreach(taskModule IN ITEMS Assets ECS Platform Scene RenderData Profiler Logging
                 Renderer/RHI Renderer/FrameGraph Renderer/Passes Runtime SceneRuntime ScriptRuntime
                 Renderer/SceneRender GameRuntime Renderer/DX12 WindowsHost GameHost/Windows)
             add_subdirectory("${taskSdkRoot}/Engine/Source/${taskModule}" "${PROJECT_BINARY_DIR}/${taskModule}")

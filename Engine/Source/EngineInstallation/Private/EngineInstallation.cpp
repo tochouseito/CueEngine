@@ -16,6 +16,7 @@
 #endif
 
 #include <EngineInstallation/EngineVersion.h>
+#include <Foundation/EngineVersionValidation.h>
 #include <Foundation/Utf8.h>
 #include <Platform/FileSystem.h>
 
@@ -39,42 +40,6 @@ std::string_view trim(std::string_view a_text) noexcept
     const auto first = a_text.find_first_not_of(" \t\r");
     return first == std::string_view::npos ? std::string_view{}
                                            : a_text.substr(first, a_text.find_last_not_of(" \t\r") - first + 1);
-}
-
-/// @brief SemVer の識別子で使える ASCII だけを許可する
-bool identifier_character(char a_value) noexcept
-{
-    return (a_value >= 'a' && a_value <= 'z') || (a_value >= 'A' && a_value <= 'Z') ||
-           (a_value >= '0' && a_value <= '9') || a_value == '-';
-}
-
-/// @brief 数値 Version の先頭 Zero と空要素を拒否する
-bool numeric_identifier(std::string_view a_value) noexcept
-{
-    return !a_value.empty() && (a_value.size() == 1 || a_value.front() != '0') &&
-           std::all_of(a_value.begin(), a_value.end(), [](char a_digit) { return a_digit >= '0' && a_digit <= '9'; });
-}
-
-/// @brief Dot 区切りの識別子を検証し、Pre-release の数値だけ先頭 Zero を拒否する
-bool identifier_list(std::string_view a_text, bool a_isPrerelease) noexcept
-{
-    if (a_text.empty())
-        return false;
-    while (!a_text.empty())
-    {
-        const auto dot = a_text.find('.');
-        const auto part = a_text.substr(0, dot);
-        if (part.empty() || !std::all_of(part.begin(), part.end(), identifier_character))
-            return false;
-        const bool isNumeric =
-            std::all_of(part.begin(), part.end(), [](char a_value) { return a_value >= '0' && a_value <= '9'; });
-        if (a_isPrerelease && isNumeric && !numeric_identifier(part))
-            return false;
-        if (dot == std::string_view::npos)
-            return true;
-        a_text.remove_prefix(dot + 1);
-    }
-    return false;
 }
 
 /// @brief File と全親の種類を確認し、Reparse Point の別名で配布 Root を越えない
@@ -216,29 +181,6 @@ Result<std::optional<Path>> environment_path(const wchar_t *a_name)
 }
 #endif
 } // namespace
-
-bool is_valid_engine_version(std::string_view a_version) noexcept
-{
-    if (a_version.empty() || a_version.size() > 128)
-        return false;
-    const auto plus = a_version.find('+');
-    if (plus != std::string_view::npos && !identifier_list(a_version.substr(plus + 1), false))
-        return false;
-    auto main = a_version.substr(0, plus);
-    const auto dash = main.find('-');
-    if (dash != std::string_view::npos && !identifier_list(main.substr(dash + 1), true))
-        return false;
-    auto core = main.substr(0, dash);
-    for (int index = 0; index < 3; ++index)
-    {
-        const auto dot = core.find('.');
-        if (!numeric_identifier(core.substr(0, dot)) || (index == 2) != (dot == std::string_view::npos))
-            return false;
-        if (dot != std::string_view::npos)
-            core.remove_prefix(dot + 1);
-    }
-    return true;
-}
 
 Result<EngineInstallation> load_engine_installation(IFileSystem &a_files, const Path &a_root)
 {

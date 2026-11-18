@@ -1,5 +1,6 @@
-# UTF 変換だけを Windows 固有の Foundation Target に閉じ込める
+# Windows 固有の文字変換とプロセス引数の規則を Foundation に置く
 add_library(Cue.Foundation.Windows STATIC
+    Private/CommandLine.cpp
     Private/UtfConversion.cpp
 )
 

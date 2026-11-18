@@ -37,19 +37,18 @@ int main()
     const std::string cubeId = cube.take_value();
     CUE_EDITOR_CHECK(app->document().selected_object_id() == cubeId);
     CUE_EDITOR_CHECK(editor_object(*app, cubeId).mesh->assetId == k_cubeMeshId);
-    auto *world = app->preview_world();
     const auto instance = *app->preview_instance();
-    auto entity = world->find_by_id(instance, cubeId);
-    CUE_EDITOR_CHECK(entity.has_value());
-    auto component = world->get_component<TransformComponent>(*entity.try_value());
-    CUE_EDITOR_CHECK(component.has_value());
-    auto *transform = *component.try_value();
+    auto initialTransform = app->read_preview_transform(cubeId);
+    CUE_EDITOR_CHECK(initialTransform.has_value());
     math::floatTransform value;
     value.position = {1, 2, 3};
     // Transform の変更は既存 Entity を維持し、行列 Cache まで同期する
     CUE_EDITOR_CHECK(app->set_transform(cubeId, value).has_value());
-    CUE_EDITOR_CHECK(world == app->preview_world() && instance == *app->preview_instance());
-    CUE_EDITOR_CHECK(transform->local().position == value.position && !transform->is_dirty());
+    CUE_EDITOR_CHECK(app->has_preview() && instance == *app->preview_instance());
+    CUE_EDITOR_CHECK(editor_value(app->read_preview_transform(cubeId)).position == value.position);
+    auto preview = app->preview_snapshot();
+    CUE_EDITOR_CHECK(preview.has_value() && preview.try_value()->objects.front().world.values[3][0] == 1);
+    CUE_EDITOR_CHECK(initialTransform.try_value()->position == math::float3{});
     CUE_EDITOR_CHECK(app->undo().has_value() && editor_object(*app, cubeId).transform->position.x == 0);
     CUE_EDITOR_CHECK(app->redo().has_value() && editor_object(*app, cubeId).transform->position.x == 1);
 
@@ -58,7 +57,7 @@ int main()
     value.position.x = std::numeric_limits<float>::quiet_NaN();
     CUE_EDITOR_CHECK(!app->set_transform(cubeId, value).has_value());
     CUE_EDITOR_CHECK(beforeText == editor_value(app->document().scene().serialize()));
-    CUE_EDITOR_CHECK(beforeRevision == app->document().revision() && world == app->preview_world());
+    CUE_EDITOR_CHECK(beforeRevision == app->document().revision() && instance == *app->preview_instance());
     value.position.x = 1;
     value.rotation = {0, 0, 0, 0};
     CUE_EDITOR_CHECK(!app->set_transform(cubeId, value).has_value());
@@ -73,7 +72,7 @@ int main()
     CUE_EDITOR_CHECK(!app->add_cube().has_value());
     CUE_EDITOR_CHECK(!app->new_scene().has_value());
     CUE_EDITOR_CHECK(previous == editor_value(app->document().scene().serialize()));
-    CUE_EDITOR_CHECK(revision == app->document().revision() && world == app->preview_world());
+    CUE_EDITOR_CHECK(revision == app->document().revision() && instance == *app->preview_instance());
     CUE_EDITOR_CHECK(app->document().selected_object_id() == cubeId);
     failWorld = false;
     CUE_EDITOR_CHECK(app->select_object({}).has_value());
@@ -107,7 +106,7 @@ int main()
     const auto beforeDelete = files.entries[saveFile.utf8()].text;
     const auto cameraId = app->document().scene().descriptor().objects.front().objectId;
     const auto deleteRevision = app->document().revision();
-    auto *deleteWorld = app->preview_world();
+    const auto deleteInstance = app->preview_instance();
     // 最後の有効な Camera や候補 World の生成失敗では削除を確定しない
     auto deletedCamera = app->delete_object(cameraId);
     CUE_EDITOR_CHECK(!deletedCamera.has_value() && deletedCamera.try_error()->operation == "Editor.preview.camera_count");
@@ -115,16 +114,16 @@ int main()
     CUE_EDITOR_CHECK(!app->delete_object(first).has_value());
     failWorld = false;
     CUE_EDITOR_CHECK(!app->delete_object("missing").has_value());
-    CUE_EDITOR_CHECK(app->document().revision() == deleteRevision && app->preview_world() == deleteWorld &&
+    CUE_EDITOR_CHECK(app->document().revision() == deleteRevision && app->preview_instance() == deleteInstance &&
                      app->document().selected_object_id() == second && !app->document().is_dirty());
 
     // 右クリック対象が未選択でも削除し、Undo で元の順序と設定を戻す
     CUE_EDITOR_CHECK(app->delete_object(first).has_value() && app->document().selected_object_id() == second);
     CUE_EDITOR_CHECK(app->document().is_dirty() && app->document().scene().descriptor().objects.size() == 2);
-    CUE_EDITOR_CHECK(!app->preview_world()->find_by_id(*app->preview_instance(), first).has_value());
+    CUE_EDITOR_CHECK(!app->read_preview_transform(first).has_value());
     CUE_EDITOR_CHECK(app->undo().has_value() && !app->document().is_dirty());
     CUE_EDITOR_CHECK(editor_value(app->document().scene().serialize()) == beforeDelete);
-    CUE_EDITOR_CHECK(app->preview_world()->find_by_id(*app->preview_instance(), first).has_value());
+    CUE_EDITOR_CHECK(app->read_preview_transform(first).has_value());
     CUE_EDITOR_CHECK(app->redo().has_value() && app->document().scene().descriptor().objects.size() == 2);
     CUE_EDITOR_CHECK(app->delete_object(second).has_value() && app->document().selected_object_id().empty());
     CUE_EDITOR_CHECK(app->undo().has_value() && app->document().selected_object_id() == second);
@@ -135,12 +134,14 @@ int main()
         {
             auto result = app->add_cube();
             rejected = !result.has_value() && result.try_error()->category == ErrorCategory::WrongThread &&
-                       app->preview_world() == nullptr && !app->preview_instance();
+                       !app->has_preview() && !app->preview_instance() &&
+                       !app->read_preview_transform(first).has_value() && !app->preview_snapshot().has_value();
         });
     worker.join();
     CUE_EDITOR_CHECK(rejected);
     CUE_EDITOR_CHECK(app->shutdown().has_value() && app->shutdown().has_value());
-    CUE_EDITOR_CHECK(app->preview_world() == nullptr && !app->add_cube().has_value());
+    CUE_EDITOR_CHECK(!app->has_preview() && !app->add_cube().has_value() &&
+                     !app->read_preview_transform(first).has_value() && !app->preview_snapshot().has_value());
 
     // 入力サービスの欠損・不正な UUID・描画できない Camera 構成を公開しない
     CUE_EDITOR_CHECK(!EditorApplication::create(std::nullopt).has_value());

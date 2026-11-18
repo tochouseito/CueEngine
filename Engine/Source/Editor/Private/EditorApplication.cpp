@@ -11,6 +11,7 @@
 #include <Foundation/Uuid.h>
 #include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
+#include <SceneRuntime/RenderSceneExtraction.h>
 #include <SceneRuntime/SceneInstantiation.h>
 
 namespace cue
@@ -124,9 +125,32 @@ const SceneDocument &EditorApplication::document() const noexcept
 {
     return *m_document;
 }
-World *EditorApplication::preview_world() noexcept
+bool EditorApplication::has_preview() const noexcept
 {
-    return std::this_thread::get_id() == m_owner && !m_isStopped ? m_world.get() : nullptr;
+    return std::this_thread::get_id() == m_owner && !m_isStopped && !m_isMutating && m_world != nullptr;
+}
+Result<SceneRenderSnapshot> EditorApplication::preview_snapshot()
+{
+    auto synchronized = synchronize_preview();
+    if (!synchronized.has_value())
+        return Result<SceneRenderSnapshot>::failure(*synchronized.try_error());
+    const ScopedFlag mutation(m_isMutating);
+    return extract_render_scene(*m_world);
+}
+Result<math::floatTransform> EditorApplication::read_preview_transform(std::string_view a_objectId) const
+{
+    auto access = check_access();
+    if (!access.has_value())
+        return Result<math::floatTransform>::failure(*access.try_error());
+    if (!m_world || !m_instance)
+        return Result<math::floatTransform>::failure(operation_error("Editor.preview.missing"));
+    auto entity = m_world->find_by_id(*m_instance, a_objectId);
+    if (!entity.has_value())
+        return Result<math::floatTransform>::failure(*entity.try_error());
+    auto transform = m_world->get_component<TransformComponent>(*entity.try_value());
+    if (!transform.has_value())
+        return Result<math::floatTransform>::failure(*transform.try_error());
+    return Result<math::floatTransform>::success((*transform.try_value())->local());
 }
 std::optional<SceneInstanceHandle> EditorApplication::preview_instance() const noexcept
 {

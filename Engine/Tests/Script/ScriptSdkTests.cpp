@@ -89,25 +89,31 @@ class Move final : public cue::Behaviour
         return cue::Result<void>::success();
     }
     /// @brief 大きな世代値と借用値の Transform 往復を確認する
-    cue::Result<void> start(cue::GameObject &a_self) override
+    void start() override
     {
-        auto alive = a_self.is_alive();
+        auto object = self();
+        if (const auto *error = object.try_error())
+            throw *error;
+        auto alive = object.try_value()->is_alive();
         if (!alive.has_value() || !*alive.try_value())
-            return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "Move.entity"});
-        return cue::Result<void>::success();
+            throw cue::Error{cue::ErrorCategory::InvalidState, "Move.entity"};
     }
     /// @brief 速度と DeltaTime で X を進め、負速度では C++ 例外境界を検証する
-    cue::Result<void> update(cue::GameObject &a_self, const cue::ScriptUpdateContext &a_context) override
+    void update() override
     {
         if (m_speed < 0)
             throw std::runtime_error("test update failure");
-        auto result = a_self.transform();
-        if (!result.has_value())
-            return cue::Result<void>::failure(*result.try_error());
-        auto transform = *result.try_value();
-        transform.position.x +=
-            static_cast<float>(m_speed * std::chrono::duration<double>(a_context.deltaTime).count());
-        return a_self.set_transform(transform);
+        // ABI から受け取った更新番号と時間を引数なしの入口から使う
+        if (update_tick() != 1)
+            throw cue::Error{cue::ErrorCategory::InvalidState, "Move.update.tick"};
+        auto pose = transform.get();
+        if (const auto *error = pose.try_error())
+            throw *error;
+        pose.try_value()->position.x +=
+            static_cast<float>(m_speed * std::chrono::duration<double>(delta_time()).count());
+        auto written = transform.set(*pose.try_value());
+        if (const auto *error = written.try_error())
+            throw *error;
     }
     /// @brief 停止が一度だけ実行されたことを通知する
     cue::Result<void> stop(cue::GameObject &a_self) override
@@ -122,23 +128,38 @@ class Move final : public cue::Behaviour
 class FailedStart final : public cue::Behaviour
 {
   public:
-    /// @brief 引数なしでも Transform を参照でき、部分初期化の失敗を返せることを確認する
-    cue::Result<void> start() override
+    /// @brief 引数なしでも Transform を参照でき、部分初期化の失敗を例外境界へ伝えることを確認する
+    void start() override
     {
         auto current = transform.get();
         if (!current.has_value())
-            return cue::Result<void>::failure(*current.try_error());
-        return cue::Result<void>::failure({cue::ErrorCategory::PlatformFailure, "FailedStart.start"});
+            throw *current.try_error();
+        throw cue::Error{cue::ErrorCategory::PlatformFailure, "FailedStart.start"};
     }
     /// @brief 開始に失敗した Instance は更新対象にしない
-    cue::Result<void> update(cue::GameObject &, const cue::ScriptUpdateContext &) override
+    void update() override
     {
-        return cue::Result<void>::success();
     }
     /// @brief 開始失敗でも後始末の入口が呼べることを確認する
     cue::Result<void> stop(cue::GameObject &a_self) override
     {
         return a_self.report(0, "partial cleanup");
+    }
+};
+
+/// @brief void の開始処理が正常復帰しても、暗黙操作の失敗を Module へ伝える
+class ImplicitStart final : public cue::Behaviour
+{
+  public:
+    /// @brief Fixture が拒否する操作の失敗を Callback に記録する
+    void start() override
+    {
+        transform.position.x += 1.0f;
+    }
+    /// @brief 開始に失敗した Instance の更新は Module が拒否する
+    void update() override
+    {
+        throw std::runtime_error("A failed start must not be updated");
     }
 };
 
@@ -208,6 +229,37 @@ int test_module()
     return 0;
 }
 
+/// @brief void の開始失敗と未実装の更新を Status に変換し、失敗後の再実行を拒否する
+int test_void_callbacks()
+{
+    auto created = cue::ScriptModule::create(
+        {cue::make_script_registration<ImplicitStart>({"test.implicit", "Implicit Start", 1, {}}),
+         cue::make_script_registration<cue::Behaviour>({"test.missing", "Missing Update", 1, {}})});
+    CUE_SCRIPT_CHECK(created.has_value());
+    auto module = created.take_value();
+    CueScriptModuleApi api{};
+    CUE_SCRIPT_CHECK(module->get_api(CUE_SCRIPT_ABI_VERSION, api).code == 0);
+    Engine engine;
+    const auto engineApi = engine.api();
+    const CueScriptEntity entity{11, 2, 0x100000001ULL};
+    CueScriptInstance instance = 0;
+    CUE_SCRIPT_CHECK(api.create(api.context, 0, &instance).code == 0);
+    const auto failedStart = api.start(api.context, instance, &engineApi, entity);
+    CUE_SCRIPT_CHECK(failedStart.code == 1 && std::string_view(failedStart.message) == "Fixture.change_unsupported");
+    CUE_SCRIPT_CHECK(api.update(api.context, instance, &engineApi, entity, {1, 1}).code != 0);
+    CUE_SCRIPT_CHECK(api.stop(api.context, instance, &engineApi, entity).code == 0);
+    CUE_SCRIPT_CHECK(api.destroy(api.context, instance).code == 0);
+
+    CUE_SCRIPT_CHECK(api.create(api.context, 1, &instance).code == 0);
+    CUE_SCRIPT_CHECK(api.start(api.context, instance, &engineApi, entity).code == 0);
+    const auto missingUpdate = api.update(api.context, instance, &engineApi, entity, {1, 1});
+    CUE_SCRIPT_CHECK(missingUpdate.code == 1 && std::string_view(missingUpdate.message) == "Behaviour.update_missing");
+    CUE_SCRIPT_CHECK(api.update(api.context, instance, &engineApi, entity, {1, 2}).code != 0);
+    CUE_SCRIPT_CHECK(api.stop(api.context, instance, &engineApi, entity).code == 0);
+    CUE_SCRIPT_CHECK(api.destroy(api.context, instance).code == 0);
+    return 0;
+}
+
 std::uint32_t registrationCalls = 0;
 bool shouldThrowRegistration = true;
 
@@ -269,5 +321,8 @@ int test_module_entry()
 int main()
 {
     const auto result = test_module();
-    return result != 0 ? result : test_module_entry();
+    if (result != 0)
+        return result;
+    const auto callbacks = test_void_callbacks();
+    return callbacks != 0 ? callbacks : test_module_entry();
 }

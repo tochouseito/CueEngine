@@ -47,6 +47,8 @@ Project/Build/<Platform>/<Architecture>/<Configuration>/App/
 Link の直接出力は Project の Intermediate 配下とし、App へ配布物だけをコピーする。
 配布先は旧 `Player` から `App` へ統一する。既存の `Player` Directory は移動・削除せず、次回 Build で `App` を生成する。
 Build Target は `Cue.GameAppPackage`、Script の単独製品指定は `-AppOnly` を使う。
+パッケージの公開は `Cue.GameApp` のリンク後処理に集約する。起動 Scene、Shader、ランタイムの変更は生成した小さな C++ ファイルに伝え、App の再リンクを通して反映する。出力内容が同じ場合は完成マーカーを書き直さない。
+生成 Solution の F5 は配布フォルダの exe を起動する。Visual Studio の Open Folder がリンク出力を直接起動する場合に備え、そのフォルダにも起動設定と Scene を配置する。
 SDK の構成 Option は `CUE_GAME_BUILD_APP`、Editor が管理する製品 Preset は `cue-app` とする。
 ゲーム DLL / Library、Editor / PlayHost、Source は App に含めない。
 Release は PIX を Link せず、PIX DLL とその License も配布しない。

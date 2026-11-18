@@ -1,4 +1,4 @@
-#include <ScriptRuntime/ScriptModule.h>
+#include <ScriptRuntime/Windows/WindowsGameModule.h>
 
 #include <chrono>
 #include <cmath>
@@ -87,7 +87,7 @@ int main(int a_count, char **a_arguments)
     CHECK(a_count == 2);
     auto file = cue::Path::create(a_arguments[1]);
     CHECK(file.has_value());
-    auto dynamic = cue::RuntimeGameModule::load(*file.try_value());
+    auto dynamic = cue::load_windows_game_module(*file.try_value());
     if (!dynamic.has_value())
         std::fprintf(stderr, "%s\n", dynamic.try_error()->operation.c_str());
     CHECK(dynamic.has_value());
@@ -101,12 +101,12 @@ int main(int a_count, char **a_arguments)
     for (const auto configuration :
          {cue::ScriptConfiguration::Debug, cue::ScriptConfiguration::Development, cue::ScriptConfiguration::Release})
     {
-        auto checked = cue::RuntimeGameModule::load(*file.try_value(), configuration);
+        auto checked = cue::load_windows_game_module(*file.try_value(), configuration);
         CHECK(checked.has_value() == (static_cast<std::uint32_t>(configuration) == nativeConfiguration));
         if (!checked.has_value())
             CHECK(checked.try_error()->operation == "GameModule.abi_mismatch");
     }
-    auto unknown = cue::RuntimeGameModule::load(*file.try_value(), static_cast<cue::ScriptConfiguration>(99));
+    auto unknown = cue::load_windows_game_module(*file.try_value(), static_cast<cue::ScriptConfiguration>(99));
     CHECK(!unknown.has_value() && unknown.try_error()->operation == "GameModule.configuration");
     return verify(linked.take_value());
 }
