@@ -53,14 +53,15 @@ void draw_game_configuration(const EditorUiContext &a_context, bool a_isInputEna
                            !a_context.isPlaying && !a_context.isPlayBusy && !a_context.script.isBusy &&
                            !a_context.build.isBuilding && !a_context.build.isApplicationRunning;
     EditorDisabledScope disabled(!canSelect);
-    ImGui::TextUnformatted(a_context.text("Game:", "ゲーム構成"));
-    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Development").x + ImGui::GetFrameHeight() +
                             ImGui::GetStyle().FramePadding.x * 2);
     const auto current = game_build_configuration_name(a_context.script.configuration);
     if (!ImGui::BeginCombo("##GameConfiguration",
                            current.empty() ? a_context.text("Select configuration", "構成を選択") : current.data()))
+    {
+        ImGui::SetItemTooltip("%s", a_context.text("Game configuration for Play", "再生するゲームの構成"));
         return;
+    }
     ConfigurationComboScope combo;
     constexpr std::array configurations{GameBuildConfiguration::Debug, GameBuildConfiguration::Development,
                                         GameBuildConfiguration::Release};
@@ -81,6 +82,93 @@ void draw_game_configuration(const EditorUiContext &a_context, bool a_isInputEna
     }
 }
 } // namespace
+
+void request_script_creation(EditorUiState &a_state, std::vector<EditorAction> &a_actions)
+{
+    finish_transform_input(a_state, a_actions);
+    a_state.scriptName.fill(0);
+    a_state.isScriptCreationRequested = true;
+    a_state.shouldOpenScriptCreationPopup = true;
+    a_state.needsScriptNameFocus = true;
+}
+
+void draw_editor_toolbar(const SceneDocument *a_document, const EditorUiContext &a_context, EditorUiState &a_state,
+                         std::vector<EditorAction> &a_actions, bool a_isInputEnabled)
+{
+    const auto *viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos({viewport->Pos.x, viewport->Pos.y + ImGui::GetFrameHeight()});
+    ImGui::SetNextWindowSize({(std::max)(a_context.displayWidth, 1.0f), editor_toolbar_height()});
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {ImGui::GetStyle().ItemSpacing.x,
+                                                    ImGui::GetStyle().FramePadding.y});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    PanelScope toolbar("EditorToolbar", ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+                                            ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::PopStyleVar(2);
+    if (!toolbar.is_visible())
+        return;
+
+    const bool hasProject = a_document && a_context.isProjectOpen;
+    const bool isCompact = a_context.displayWidth < ImGui::GetFrameHeight() * 28;
+    // 表示言語と幅を変更しても Button の操作 ID が変わらないようにする
+    const auto button = [&](std::string_view a_icon, const char *a_label, const char *a_id,
+                            EditorActionKind a_kind, bool a_isEnabled, const char *a_tooltip = nullptr)
+    {
+        EditorDisabledScope disabled(!a_isInputEnabled || !a_isEnabled);
+        auto label = isCompact ? std::string(a_icon) : editor_icon_label(a_icon, a_label);
+        label += a_id;
+        if (ImGui::Button(label.c_str()))
+        {
+            finish_transform_input(a_state, a_actions);
+            emit_editor_action(a_actions, a_kind);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", a_tooltip ? a_tooltip : a_label);
+    };
+    button(editor_icon::k_save, a_context.text("Save", "保存"), "###ToolbarSave", EditorActionKind::SaveScene,
+           hasProject && !a_context.isPlaying && !a_context.build.isBuilding,
+           a_context.text("Save Scene (Ctrl+S)", "シーンを保存 (Ctrl+S)"));
+
+    ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x * 3);
+    if (a_context.isPlaying)
+        button(editor_icon::k_stop, a_context.text("Stop", "停止"), "###ToolbarPlayback", EditorActionKind::Stop,
+               a_context.canStop);
+    else
+        button(editor_icon::k_play, a_context.text("Play", "再生"), "###ToolbarPlayback", EditorActionKind::Play,
+               hasProject && a_context.canPlay && !a_context.isPlayBusy,
+               a_context.script.isBuildRequired
+                   ? a_context.text("Build Scripts for the selected Game configuration before Play.",
+                                    "再生する前に、選択したゲーム構成のスクリプトをビルドしてください。")
+                   : nullptr);
+    ImGui::SameLine();
+    button(editor_icon::k_debug, a_context.text("Debug Play", "デバッグ再生"), "###ToolbarDebugPlay",
+           EditorActionKind::DebugPlay, hasProject && !a_context.isPlaying && !a_context.isPlayBusy &&
+                                            a_context.script.canDebugPlay);
+    ImGui::SameLine();
+    draw_game_configuration(a_context, a_isInputEnabled, a_state, a_actions);
+
+    if (hasProject && a_context.script.isBuildRequired && !isCompact)
+    {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", a_context.text("Build required", "ビルドが必要です"));
+        ImGui::SetItemTooltip("%s", a_context.text("Build the selected configuration with Script > Build Scripts.",
+                                                    "「スクリプト」→「スクリプトをビルド」で、選択した構成をビルドします。"));
+    }
+
+    // 狭い Window では Scene 名より操作 Button を優先する
+    ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x * 3);
+    auto scene = hasProject ? a_document->scene().descriptor().name
+                            : std::string(a_context.text("No project open", "プロジェクト未選択"));
+    if (hasProject && a_document->is_dirty())
+        scene += " *";
+    if (ImGui::CalcTextSize(scene.c_str()).x <= ImGui::GetContentRegionAvail().x)
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(scene.c_str());
+    }
+}
 
 void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
                      const EditorUiContext &a_context, bool a_isInputEnabled)
@@ -134,13 +222,7 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
                 request(EditorActionKind::AddCube);
             if (ImGui::MenuItem(a_context.text("New Script...", "スクリプトを作成...###New Script..."), nullptr, false,
                                 a_isInputEnabled && can_create_editor_script(a_context)))
-            {
-                finish_transform_input(a_state, a_actions);
-                a_state.scriptName.fill(0);
-                a_state.isScriptCreationRequested = true;
-                a_state.shouldOpenScriptCreationPopup = true;
-                a_state.needsScriptNameFocus = true;
-            }
+                request_script_creation(a_state, a_actions);
         }
         if (ImGui::BeginMenu(a_context.text("View", "表示###View")))
         {
@@ -171,6 +253,24 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
                 a_state.isAssetBrowserVisible = !a_state.isAssetBrowserVisible;
                 if (a_state.isAssetBrowserVisible)
                     request(EditorActionKind::RefreshAssets);
+            }
+            if (ImGui::MenuItem(a_context.text("Log", "ログ###Log"), nullptr, a_state.isLogVisible))
+            {
+                a_state.isLogVisible = !a_state.isLogVisible;
+                a_state.shouldFocusLog = a_state.isLogVisible;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(a_context.text("Reset Layout", "配置を初期化###Reset Layout"), nullptr, false,
+                                a_isInputEnabled && (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable)))
+            {
+                a_state.shouldResetLayout = true;
+                if (!a_state.isAssetBrowserVisible && a_context.hasAssetBrowser)
+                    request(EditorActionKind::RefreshAssets);
+                a_state.isAssetBrowserVisible = true;
+                a_state.isLogVisible = true;
+                a_state.shouldFocusLog = false;
+                a_state.isBuildPanelVisible = false;
+                a_state.shouldFocusBuildPanel = false;
             }
         }
         if (ImGui::BeginMenu(a_context.text("Script", "スクリプト###Script"), a_context.isProjectOpen))
@@ -206,10 +306,16 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
         {
             MenuScope menu;
             if (ImGui::MenuItem(a_context.text("Build Settings...", "ビルド設定...###Build Settings...")))
+            {
                 a_state.isBuildPanelVisible = true;
+                a_state.shouldFocusBuildPanel = true;
+            }
             if (ImGui::MenuItem(a_context.text("Show Build Panel", "ビルドパネルを表示###Show Build Panel"), nullptr,
                                 a_state.isBuildPanelVisible))
+            {
                 a_state.isBuildPanelVisible = !a_state.isBuildPanelVisible;
+                a_state.shouldFocusBuildPanel = a_state.isBuildPanelVisible;
+            }
             ImGui::Separator();
             const auto &build = a_context.build;
             const bool isBusy =
@@ -223,41 +329,6 @@ void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, st
             if (ImGui::MenuItem(a_context.text("Run Game", "ゲームを起動###Run Game"), nullptr, false,
                                 build.canRun && !isBusy))
                 request(EditorActionKind::RunGame);
-        }
-        ImGui::Separator();
-        if (a_context.isPlaying)
-        {
-            if (ImGui::MenuItem(a_context.text("Stop", "停止###Stop"), nullptr, false, a_context.canStop))
-                request(EditorActionKind::Stop);
-        }
-        else if (ImGui::MenuItem(a_context.text("Play", "再生###Play"), nullptr, false,
-                                 a_context.isProjectOpen && a_context.canPlay && !a_context.isPlayBusy))
-            request(EditorActionKind::Play);
-        if (ImGui::MenuItem(a_context.text("Debug Play", "デバッグ再生###Debug Play"), nullptr, false,
-                            a_context.isProjectOpen && a_context.script.canDebugPlay))
-            request(EditorActionKind::DebugPlay);
-        draw_game_configuration(a_context, a_isInputEnabled, a_state, a_actions);
-        if (a_context.isProjectOpen && a_context.script.isBuildRequired)
-        {
-            ImGui::TextDisabled(a_context.text("Build required", "ビルドが必要です"));
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip(
-                    a_context.text("Use Script > Build Scripts to build the selected Game configuration.",
-                                   "「スクリプト」→「スクリプトをビルド」で、選択したゲーム構成をビルドできます。"));
-        }
-        if (a_context.script.isWaitingForDebugger)
-            ImGui::Text(a_context.text("Debugger wait (PID %u)", "デバッガーの接続待ち（PID %u）"),
-                        static_cast<unsigned>(a_context.script.processId));
-        if (a_context.isPlayBusy)
-            ImGui::TextUnformatted(a_context.text("Waiting for Play process...", "再生プロセスを待機中..."));
-        ImGui::Separator();
-        ImGui::TextUnformatted(a_document && a_context.isProjectOpen
-                                   ? a_document->scene().descriptor().name.c_str()
-                                   : a_context.text("No project open", "プロジェクト未選択"));
-        if (a_document && a_context.isProjectOpen && a_document->is_dirty())
-        {
-            ImGui::SameLine(0, 4);
-            ImGui::TextUnformatted("*");
         }
     }
     // Text 入力中の Ctrl+Z 等を Scene の履歴として奪わない

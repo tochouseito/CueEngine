@@ -273,7 +273,16 @@ Result<std::unique_ptr<ImGuiManager>> ImGuiManager::create(Window &a_window, ImG
         // 自動 File I/O を使わず、保存失敗を Result で返せるよう保存先を Manager が所有する
         io.IniFilename = nullptr;
         ImGui::StyleColorsDark();
-        ImGui::GetStyle().FrameRounding = 4.0f;
+        auto &style = ImGui::GetStyle();
+        style.FrameRounding = 4.0f;
+        // 選択行、Dock Tab、Keyboard Focus に同じアクセントを使う
+        style.Colors[ImGuiCol_Header] = {0.14f, 0.31f, 0.30f, 1.0f};
+        style.Colors[ImGuiCol_HeaderHovered] = {0.18f, 0.38f, 0.36f, 1.0f};
+        style.Colors[ImGuiCol_HeaderActive] = {0.22f, 0.45f, 0.42f, 1.0f};
+        style.Colors[ImGuiCol_TabSelected] = {0.14f, 0.29f, 0.28f, 1.0f};
+        style.Colors[ImGuiCol_TabHovered] = {0.18f, 0.38f, 0.36f, 1.0f};
+        style.Colors[ImGuiCol_TabSelectedOverline] = {0.36f, 0.72f, 0.66f, 1.0f};
+        style.Colors[ImGuiCol_NavCursor] = style.Colors[ImGuiCol_TabSelectedOverline];
         auto initializedFonts = initialize_editor_fonts(io, state.fonts, state.config.fontSize, state.config.codeFontSize);
         if (!initializedFonts.has_value())
         {

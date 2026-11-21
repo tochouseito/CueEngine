@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <imgui.h>
@@ -13,11 +14,44 @@
 
 namespace cue
 {
-/// @brief WorkPos の次 Frame 確定を待たず、Menu Bar 分の Client 上端を予約する
+/// @brief 操作 Button と上下の余白に必要な高さを返す
+[[nodiscard]] inline float editor_toolbar_height()
+{
+    const auto &style = ImGui::GetStyle();
+    return (std::max)(style.WindowMinSize.y, ImGui::GetFrameHeight() + style.FramePadding.y * 2);
+}
+
+/// @brief WorkPos の次 Frame 確定を待たず、Menu と Toolbar の高さを予約する
 [[nodiscard]] inline float editor_panel_top()
 {
     const auto *viewport = ImGui::GetMainViewport();
-    return viewport->Pos.y + ImGui::GetFrameHeight();
+    return viewport->Pos.y + ImGui::GetFrameHeight() + editor_toolbar_height();
+}
+
+namespace editor_icon
+{
+// EditorHost が UI Font に合成する Material Symbols Outlined の Code Point
+inline constexpr std::string_view k_save = "\uE161";
+inline constexpr std::string_view k_play = "\uE037";
+inline constexpr std::string_view k_stop = "\uE047";
+inline constexpr std::string_view k_debug = "\uE868";
+inline constexpr std::string_view k_folder = "\uE2C7";
+inline constexpr std::string_view k_file = "\uE24D";
+inline constexpr std::string_view k_script = "\uE86F";
+inline constexpr std::string_view k_scene = "\uE413";
+inline constexpr std::string_view k_camera = "\uE04B";
+inline constexpr std::string_view k_object = "\uE1BD";
+inline constexpr std::string_view k_refresh = "\uE5D5";
+inline constexpr std::string_view k_log = "\uE8EF";
+} // namespace editor_icon
+
+/// @brief Icon と Label を同じ行で表示し、Label の ### ID を維持する
+[[nodiscard]] inline std::string editor_icon_label(std::string_view a_icon, std::string_view a_label)
+{
+    std::string label(a_icon);
+    label += ' ';
+    label += a_label;
+    return label;
 }
 
 /// @brief 保存済みの Docking 配置を引き継ぐため、Hierarchy の表示名と従来の Window ID を分ける
@@ -32,7 +66,10 @@ struct EditorUiState
     // 位置は ImGui に任せ、閲覧先だけを二つの Window で共有する
     Path assetFolder;
     bool isAssetBrowserVisible = true;
-    bool hasPlacedAssetBrowser = false;
+    bool hasInitializedLayout = false;
+    bool shouldResetLayout = false;
+    bool isLogVisible = true;
+    bool shouldFocusLog = false;
     bool hasScriptRemovalPopup = false;
     /// @brief Play 専用の入力 Buffer。Session / 選択の変更で破棄し、Document の編集 Transaction と共有しない
     struct PlayTransformInput
@@ -57,12 +94,26 @@ struct EditorUiState
     bool needsSync = true;
     bool hasInvalidRotationInput = false;
     bool isBuildPanelVisible = false;
+    bool shouldFocusBuildPanel = false;
     bool wasPlaying = false;
     std::array<char, 65> scriptName{};
     bool isScriptCreationRequested = false;
     bool shouldOpenScriptCreationPopup = false;
     bool shouldCloseScriptCreationPopup = false;
     bool needsScriptNameFocus = false;
+};
+
+/// @brief Action の確保失敗でも開いた Popup の Stack を戻す
+class EditorPopupScope final
+{
+  public:
+    /// @brief BeginPopup 成功後に生成する
+    EditorPopupScope() = default;
+    /// @brief 対応する Popup を閉じる
+    ~EditorPopupScope()
+    {
+        ImGui::EndPopup();
+    }
 };
 
 /// @brief Source 作成は Project があり、他の操作や確認が動いていない編集境界だけで要求する
@@ -142,6 +193,11 @@ void finish_transform_input(EditorUiState &a_state, std::vector<EditorAction> &a
 /// @brief File / Edit と Keyboard Shortcut の要求を構築する
 void draw_scene_menu(const SceneDocument *a_document, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
                      const EditorUiContext &a_context, bool a_isInputEnabled);
+/// @brief よく使う操作を一行にまとめ、Menu と同じ編集要求を返す
+void draw_editor_toolbar(const SceneDocument *a_document, const EditorUiContext &a_context, EditorUiState &a_state,
+                         std::vector<EditorAction> &a_actions, bool a_isInputEnabled);
+/// @brief Edit と Asset Browser で共有する Script 名入力を開始する
+void request_script_creation(EditorUiState &a_state, std::vector<EditorAction> &a_actions);
 /// @brief Object 一覧を表示し、選択と行メニューの要求を構築する
 void draw_object_list(const SceneDocument &a_document, const EditorUiContext &a_context, EditorUiState &a_state,
                       std::vector<EditorAction> &a_actions);
@@ -154,7 +210,9 @@ void draw_script_inspector(const SceneObjectDescriptor &a_object, const EditorUi
 /// @brief Host から借用した論理 Texture ID の Image を描画する
 void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction> &a_actions);
 /// @brief 保存状態と回復可能な操作エラーを表示する
-void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context);
+void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context, EditorUiState &a_state);
+/// @brief Host から借用した通知・エラーを全文表示する
+void draw_editor_log(const EditorUiContext &a_context, EditorUiState &a_state);
 /// @brief 対応対象の選択と Build 結果を表示し、Host が実行する所有値の要求を返す
 void draw_build_panel(const EditorUiContext &a_context, EditorUiState &a_state, std::vector<EditorAction> &a_actions);
 /// @brief 独立した Window で Folder とその直下の Asset を表示する

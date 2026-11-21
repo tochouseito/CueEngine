@@ -21,8 +21,27 @@ const EditorAssetFolder *find_folder(std::span<const EditorAssetFolder> a_folder
     return nullptr;
 }
 
+/// @brief 対象ファイルや Folder の場所を他の開発 Tool で使えるようにする
+void draw_copy_path(const EditorUiContext &a_context, const Path &a_path)
+{
+    if (ImGui::MenuItem(a_context.text("Copy Path", "パスをコピー###Copy Path")))
+        ImGui::SetClipboardText(a_path.utf8().c_str());
+}
+
+/// @brief 表示対象の Folder を切り替えるか返す。FileSystem は変更しない
+bool draw_folder_menu(const EditorUiContext &a_context, const EditorAssetFolder &a_folder)
+{
+    if (!ImGui::BeginPopupContextItem())
+        return false;
+    EditorPopupScope popup;
+    const bool shouldOpen = ImGui::MenuItem(a_context.text("Open Folder", "フォルダーを開く###Open Folder"));
+    ImGui::Separator();
+    draw_copy_path(a_context, a_folder.path);
+    return shouldOpen;
+}
+
 /// @brief Folder 選択と展開を分け、右側から移動した選択先の親を展開する
-void draw_folder(const EditorAssetFolder &a_folder, Path &a_selected)
+void draw_folder(const EditorUiContext &a_context, const EditorAssetFolder &a_folder, Path &a_selected)
 {
     const auto &path = a_folder.path.utf8();
     const bool isSelected = a_selected.utf8() == path;
@@ -34,23 +53,24 @@ void draw_folder(const EditorAssetFolder &a_folder, Path &a_selected)
         flags |= ImGuiTreeNodeFlags_Selected;
     if (a_folder.folders.empty())
         flags |= ImGuiTreeNodeFlags_Leaf;
-    const bool isOpen = ImGui::TreeNodeEx(path.c_str(), flags, "%s", a_folder.name.c_str());
+    const bool isOpen = ImGui::TreeNodeEx(path.c_str(), flags, "%s %s", editor_icon::k_folder.data(),
+                                         a_folder.name.c_str());
     const bool isSelectedNow = ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen();
-    if (isOpen)
+    struct TreeScope final
     {
-        struct TreeScope final
+        bool isOpen;
+        /// @brief UI の操作要求を確保できない場合も Tree を閉じる
+        ~TreeScope()
         {
-            /// @brief UI の操作要求を確保できない場合も Tree を閉じる
-            ~TreeScope()
-            {
+            if (isOpen)
                 ImGui::TreePop();
-            }
-        } tree;
-        for (const auto &folder : a_folder.folders)
-            draw_folder(folder, a_selected);
-    }
-    if (isSelectedNow)
+        }
+    } tree{isOpen};
+    if (draw_folder_menu(a_context, a_folder) || isSelectedNow)
         a_selected = a_folder.path;
+    if (isOpen)
+        for (const auto &folder : a_folder.folders)
+            draw_folder(a_context, folder, a_selected);
 }
 
 /// @brief Browser からの操作を借用 Snapshot と切り離して返す
@@ -79,7 +99,11 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
             ImGui::PopID();
         }
     } id;
-    const auto label = a_asset.name + "###Asset";
+    const auto icon = a_asset.kind == EditorAssetKind::Scene    ? editor_icon::k_scene
+                      : a_asset.kind == EditorAssetKind::Script ? editor_icon::k_script
+                                                                : editor_icon::k_file;
+    auto label = editor_icon_label(icon, a_asset.name);
+    label += "###Asset";
     const bool isActivated = ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick);
     if (isActivated && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
@@ -88,26 +112,34 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
         if (a_asset.kind == EditorAssetKind::Script && a_context.script.canEditSource && !a_asset.isMissing)
             request_asset(a_state, a_actions, EditorActionKind::OpenScriptSource, a_asset);
     }
-    if (a_asset.kind == EditorAssetKind::Script && ImGui::BeginPopupContextItem())
+    if (ImGui::BeginPopupContextItem())
     {
-        struct PopupScope final
+        EditorPopupScope popup;
+        if (a_asset.kind == EditorAssetKind::Scene)
         {
-            /// @brief Action の確保失敗でも Popup Stack を戻す
-            ~PopupScope()
-            {
-                ImGui::EndPopup();
-            }
-        } popup;
-        if (ImGui::MenuItem(a_context.text("Open in Visual Studio", "Visual Studio で開く###Open in Visual Studio"),
-                            nullptr, false, a_context.script.canEditSource && !a_asset.isMissing))
-            request_asset(a_state, a_actions, EditorActionKind::OpenScriptSource, a_asset);
-        if (ImGui::MenuItem(a_context.text("Show Uses...", "使用箇所を表示...###Show Uses..."), nullptr, false,
-                            a_context.canManageAssets))
-            request_asset(a_state, a_actions, EditorActionKind::InspectScriptRemoval, a_asset, false);
-        if (ImGui::MenuItem(
-                a_context.text("Delete from Project...", "プロジェクトから削除...###Delete from Project..."), nullptr,
-                false, a_context.canManageAssets))
-            request_asset(a_state, a_actions, EditorActionKind::InspectScriptRemoval, a_asset);
+            if (ImGui::MenuItem(a_context.text("Open Scene", "シーンを開く###Open Scene"), nullptr, false,
+                                a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::OpenAssetScene, a_asset);
+            ImGui::Separator();
+        }
+        else if (a_asset.kind == EditorAssetKind::Script)
+        {
+            if (ImGui::MenuItem(a_context.text("Open in Visual Studio", "Visual Studio で開く###Open in Visual Studio"),
+                                nullptr, false, a_context.script.canEditSource && !a_asset.isMissing))
+                request_asset(a_state, a_actions, EditorActionKind::OpenScriptSource, a_asset);
+            if (ImGui::MenuItem(a_context.text("Show Uses...", "使用箇所を表示...###Show Uses..."), nullptr, false,
+                                a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::InspectScriptRemoval, a_asset, false);
+            ImGui::Separator();
+        }
+        draw_copy_path(a_context, a_asset.path);
+        if (a_asset.kind == EditorAssetKind::Script)
+        {
+            ImGui::Separator();
+            if (ImGui::MenuItem(a_context.text("Delete from Project...", "プロジェクトから削除...###Delete from Project..."),
+                                nullptr, false, a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::InspectScriptRemoval, a_asset);
+        }
     }
     if (a_asset.isMissing)
         ImGui::TextDisabled("%s", a_context.text("Source missing", "ソースファイル欠落"));
@@ -115,6 +147,40 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
         ImGui::TextDisabled("%s", a_context.text("C++ Script", "C++ スクリプト"));
     else if (a_asset.kind == EditorAssetKind::Scene)
         ImGui::TextDisabled("%s", a_context.text("Scene", "シーン"));
+}
+
+/// @brief Folder と Asset を同じ Grid に表示し、背景 Menu と行 Menu を分ける
+void draw_assets(const EditorUiContext &a_context, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
+                 const EditorAssetFolder &a_selected)
+{
+    const int columns = std::clamp(static_cast<int>(ImGui::GetContentRegionAvail().x / 150.0f), 1, 10);
+    if (!ImGui::BeginTable("AssetGrid", columns, ImGuiTableFlags_SizingStretchSame))
+        return;
+    struct TableScope final
+    {
+        /// @brief Path の所有値確保が失敗しても Table Stack を閉じる
+        ~TableScope()
+        {
+            ImGui::EndTable();
+        }
+    } table;
+    for (const auto &folder : a_selected.folders)
+    {
+        ImGui::TableNextColumn();
+        auto label = editor_icon_label(editor_icon::k_folder, folder.name);
+        label += "###AssetFolder";
+        ImGui::PushID(folder.path.utf8().c_str());
+        const bool isActivated = ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick);
+        const bool shouldOpen = draw_folder_menu(a_context, folder);
+        ImGui::PopID();
+        if (shouldOpen || (isActivated && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)))
+            a_state.assetFolder = folder.path;
+    }
+    for (const auto &asset : a_selected.assets)
+    {
+        ImGui::TableNextColumn();
+        draw_asset(a_context, a_state, a_actions, asset);
+    }
 }
 } // namespace
 
@@ -136,62 +202,33 @@ void draw_asset_browser(const EditorUiContext &a_context, EditorUiState &a_state
             a_context.text("Project Folders###EditorProjectFolders", "プロジェクトフォルダー###EditorProjectFolders"));
         if (panel.is_visible())
             for (const auto &folder : a_context.assetFolders)
-                draw_folder(folder, a_state.assetFolder);
+                draw_folder(a_context, folder, a_state.assetFolder);
     }
 
     set_initial_panel(viewport->Pos.x + folderWidth, top, a_context.displayWidth - folderWidth, height);
     PanelScope panel(a_context.text("Assets###EditorAssets", "アセット###EditorAssets"));
     if (!panel.is_visible())
         return;
-    if (ImGui::SmallButton(a_context.text("Refresh", "更新###Refresh")))
+    const auto refresh = editor_icon_label(editor_icon::k_refresh,
+                                           a_context.text("Refresh###RefreshAssets", "更新###RefreshAssets"));
+    if (ImGui::SmallButton(refresh.c_str()))
         emit_editor_action(a_actions, EditorActionKind::RefreshAssets);
-    if (can_create_editor_script(a_context) &&
-        ImGui::BeginPopupContextWindow("AssetActions",
+    if (const auto *selected = find_folder(a_context.assetFolders, a_state.assetFolder))
+    {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(selected->path.utf8().c_str());
+        ImGui::Separator();
+        draw_assets(a_context, a_state, a_actions, *selected);
+    }
+    if (ImGui::BeginPopupContextWindow("AssetActions",
                                        ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
     {
-        if (ImGui::MenuItem(a_context.text("New Script...", "スクリプトを作成...###New Script...")))
-        {
-            finish_transform_input(a_state, a_actions);
-            a_state.scriptName.fill(0);
-            a_state.isScriptCreationRequested = true;
-            a_state.shouldOpenScriptCreationPopup = true;
-            a_state.needsScriptNameFocus = true;
-        }
-        ImGui::EndPopup();
-    }
-
-    const auto *selected = find_folder(a_context.assetFolders, a_state.assetFolder);
-    if (!selected)
-        return;
-    ImGui::SameLine();
-    ImGui::TextUnformatted(selected->path.utf8().c_str());
-    ImGui::Separator();
-
-    const int columns = std::clamp(static_cast<int>(ImGui::GetContentRegionAvail().x / 150.0f), 1, 10);
-    if (!ImGui::BeginTable("AssetGrid", columns, ImGuiTableFlags_SizingStretchSame))
-        return;
-    struct TableScope final
-    {
-        /// @brief Path の所有値確保が失敗しても Table Stack を閉じる
-        ~TableScope()
-        {
-            ImGui::EndTable();
-        }
-    } table;
-    for (const auto &folder : selected->folders)
-    {
-        ImGui::TableNextColumn();
-        ImGui::PushID(folder.path.utf8().c_str());
-        const bool isActivated = ImGui::Selectable(folder.name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick);
-        ImGui::PopID();
-        if (isActivated && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-            a_state.assetFolder = folder.path;
-        ImGui::TextDisabled("%s", a_context.text("Folder", "フォルダー"));
-    }
-    for (const auto &asset : selected->assets)
-    {
-        ImGui::TableNextColumn();
-        draw_asset(a_context, a_state, a_actions, asset);
+        EditorPopupScope popup;
+        if (ImGui::MenuItem(a_context.text("New Script...", "スクリプトを作成...###New Script..."), nullptr, false,
+                            can_create_editor_script(a_context)))
+            request_script_creation(a_state, a_actions);
+        if (ImGui::MenuItem(a_context.text("Refresh", "更新###Refresh")))
+            emit_editor_action(a_actions, EditorActionKind::RefreshAssets);
     }
 }
 

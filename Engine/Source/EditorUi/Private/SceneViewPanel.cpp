@@ -133,7 +133,7 @@ void draw_scene_view(const EditorUiContext &a_context, std::vector<EditorAction>
     navigate_scene_view(a_context, a_actions);
 }
 
-void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context)
+void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &a_context, EditorUiState &a_state)
 {
     const auto *viewport = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeight() + 6;
@@ -144,10 +144,11 @@ void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &
                                                  ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse);
     if (!panel.is_visible())
         return;
-    const bool isBusy = a_context.build.isBuilding || a_context.script.isBusy;
+    const bool isBusy = a_context.build.isBuilding || a_context.script.isBusy || a_context.isPlayBusy;
     auto activity = a_context.build.isBuilding ? a_context.build.statusText : a_context.script.statusText;
     if (isBusy && activity.empty())
-        activity = a_context.text("Working...", "処理中...");
+        activity = a_context.isPlayBusy ? a_context.text("Starting Play...", "再生を開始中...")
+                                        : a_context.text("Working...", "処理中...");
     const bool hasError = !a_context.errorText.empty();
     const auto message = hasError ? a_context.errorText : (isBusy ? activity : a_context.noticeText);
     if (message.empty())
@@ -165,6 +166,16 @@ void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &
         ImGui::SetClipboardText(text.c_str());
     }
     ImGui::SameLine();
+    if (a_context.isProjectOpen)
+    {
+        const auto label = editor_icon_label(editor_icon::k_log, a_context.text("Log###StatusLog", "ログ###StatusLog"));
+        if (ImGui::SmallButton(label.c_str()))
+        {
+            a_state.isLogVisible = true;
+            a_state.shouldFocusLog = true;
+        }
+        ImGui::SameLine();
+    }
     if (isBusy)
     {
         draw_activity_spinner();
@@ -181,5 +192,43 @@ void draw_editor_status(const SceneDocument *a_document, const EditorUiContext &
     ImGui::TextUnformatted(message.data(), message.data() + message.size());
     if (hasError)
         ImGui::PopStyleColor();
+}
+
+void draw_editor_log(const EditorUiContext &a_context, EditorUiState &a_state)
+{
+    if (!a_context.isProjectOpen || !a_state.isLogVisible)
+        return;
+    const auto *viewport = ImGui::GetMainViewport();
+    const float width = (std::max)(a_context.displayWidth, 1.0f);
+    const float left = (std::min)(240.0f, width * 0.25f);
+    const float height = a_context.reservedBottomHeight;
+    const float top = viewport->Pos.y + a_context.displayHeight - ImGui::GetFrameHeight() - 6 - height;
+    set_initial_panel(viewport->Pos.x + left, top, width - left, height);
+    if (a_state.shouldFocusLog)
+    {
+        ImGui::SetNextWindowFocus();
+        a_state.shouldFocusLog = false;
+    }
+    PanelScope panel(a_context.text("Log###EditorLog", "ログ###EditorLog"));
+    if (!panel.is_visible())
+        return;
+
+    // Host の最新メッセージを表示し、下端に収まらない内容も読み返せるようにする
+    const auto show = [](const char *a_label, std::string_view a_value)
+    {
+        if (a_value.empty())
+            return;
+        ImGui::SeparatorText(a_label);
+        ImGui::PushTextWrapPos();
+        ImGui::TextUnformatted(a_value.data(), a_value.data() + a_value.size());
+        ImGui::PopTextWrapPos();
+    };
+    show(a_context.text("Error", "エラー"), a_context.errorText);
+    show(a_context.text("Notice", "通知"), a_context.noticeText);
+    show(a_context.text("Script", "スクリプト"), a_context.script.statusText);
+    show(a_context.text("Build", "ビルド"), a_context.build.statusText);
+    if (a_context.script.isWaitingForDebugger)
+        ImGui::Text(a_context.text("Waiting for debugger (PID %u)", "デバッガーの接続待ち (PID %u)"),
+                    static_cast<unsigned>(a_context.script.processId));
 }
 } // namespace cue

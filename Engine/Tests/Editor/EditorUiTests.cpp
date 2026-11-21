@@ -196,7 +196,7 @@ int test_unselected_editor()
     return 0;
 }
 
-/// @brief 二つの Dock Window と削除確認が独立して操作できることを確認する
+/// @brief 標準 Dock と Toolbar が有効で、削除確認と独立して操作できることを確認する
 int test_asset_browser_ui()
 {
     auto scene = cue::Scene::create({1, "91f62c65-ae16-42c8-a1d8-90f47ffc8beb", "Assets"});
@@ -218,11 +218,15 @@ int test_asset_browser_ui()
     io.Fonts->SetTexID(static_cast<ImTextureID>(1));
 
     auto path = cue::Path::create("C:/Game/Source");
-    CUE_EDITOR_UI_CHECK(path.has_value());
-    const std::vector<cue::EditorAssetFolder> folders{{path.take_value(), "Source"}};
+    auto scenePath = cue::Path::create("C:/Game/Source/Preview.cuescene");
+    CUE_EDITOR_UI_CHECK(path.has_value() && scenePath.has_value());
+    const std::vector<cue::EditorAssetFolder> folders{
+        {path.take_value(), "Source", {}, {{scenePath.take_value(), "Preview.cuescene", cue::EditorAssetKind::Scene}}}};
     cue::EditorUiContext display;
     display.hasAssetBrowser = true;
+    display.canManageAssets = true;
     display.assetFolders = folders;
+    display.canPlay = true;
     CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
     CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
     const auto *left = ImGui::FindWindowByName("Project Folders###EditorProjectFolders");
@@ -230,6 +234,45 @@ int test_asset_browser_ui()
     CUE_EDITOR_UI_CHECK(left && left->Active && right && right->Active);
     CUE_EDITOR_UI_CHECK(left->DockId && right->DockId && left->DockId != right->DockId);
     CUE_EDITOR_UI_CHECK(left->Pos.x < right->Pos.x && left->Pos.y == right->Pos.y);
+    const auto *hierarchy = ImGui::FindWindowByName("Hierarchy###Objects##EditorObjects");
+    const auto *sceneView = ImGui::FindWindowByName("Scene View##EditorSceneView");
+    const auto *inspector = ImGui::FindWindowByName("Inspector##EditorInspector");
+    const auto *log = ImGui::FindWindowByName("Log###EditorLog");
+    const auto *toolbar = ImGui::FindWindowByName("EditorToolbar");
+    CUE_EDITOR_UI_CHECK(hierarchy && sceneView && inspector && log && toolbar && toolbar->Active);
+    CUE_EDITOR_UI_CHECK(hierarchy->DockId && sceneView->DockId && inspector->DockId && log->DockId == right->DockId);
+    CUE_EDITOR_UI_CHECK(hierarchy->Pos.x < sceneView->Pos.x && sceneView->Pos.x < inspector->Pos.x);
+    CUE_EDITOR_UI_CHECK(toolbar->Pos.y + toolbar->Size.y <= hierarchy->Pos.y && sceneView->Pos.y < right->Pos.y);
+
+    ImGui::ActivateItemByID(ImHashStr("ToolbarPlayback", 0, toolbar->ID));
+    auto played = frame(editorUi, document, display);
+    CUE_EDITOR_UI_CHECK(played.has_value() && played.try_value()->size() == 1 &&
+                        played.try_value()->front().kind == cue::EditorActionKind::Play);
+    display.isPlaying = true;
+    display.canStop = true;
+    ImGui::ActivateItemByID(ImHashStr("ToolbarPlayback", 0, toolbar->ID));
+    auto stopped = frame(editorUi, document, display);
+    CUE_EDITOR_UI_CHECK(stopped.has_value() && stopped.try_value()->size() == 1 &&
+                        stopped.try_value()->front().kind == cue::EditorActionKind::Stop);
+    display.isPlaying = false;
+
+    // Scene の行から、背景用の操作ではなく対象 Scene を開く要求を返す
+    const auto *grid = ImGui::TableFindByID(ImHashStr("AssetGrid", 0, right->ID));
+    CUE_EDITOR_UI_CHECK(!right->Hidden);
+    CUE_EDITOR_UI_CHECK(grid);
+    io.AddMousePosEvent(grid->Columns[0].WorkMinX + 8,
+                        grid->RowPosY1 + grid->RowCellPaddingY + ImGui::GetTextLineHeight() * 0.5f);
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(context->OpenPopupStack.Size == 1 && context->OpenPopupStack.back().Window);
+    ImGui::ActivateItemByID(ImHashStr("Open Scene", 0, context->OpenPopupStack.back().Window->ID));
+    auto opened = frame(editorUi, document, display);
+    CUE_EDITOR_UI_CHECK(opened.has_value() && opened.try_value()->size() == 1 &&
+                        opened.try_value()->front().kind == cue::EditorActionKind::OpenAssetScene &&
+                        opened.try_value()->front().assetPath.utf8() == "C:/Game/Source/Preview.cuescene");
 
     const std::vector<std::string> files{"Source/Move.cpp", "Source/Move.h"};
     const std::vector<std::string> uses{"Scenes/Main.cuescene / Cube"};

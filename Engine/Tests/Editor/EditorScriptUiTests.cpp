@@ -45,8 +45,8 @@ int test_game_configuration(cue::EditorUi &a_ui, const cue::SceneDocument &a_doc
     const auto productTarget = display.build.selectedTarget;
     CUE_SCRIPT_UI_CHECK(display.script.configuration == cue::GameBuildConfiguration::Development);
     CUE_SCRIPT_UI_CHECK(frame(a_ui, a_document, display).has_value());
-    auto *menuBar = ImGui::FindWindowByName("##MainMenuBar");
-    CUE_SCRIPT_UI_CHECK(menuBar && menuBar->Active);
+    auto *toolbar = ImGui::FindWindowByName("EditorToolbar");
+    CUE_SCRIPT_UI_CHECK(toolbar && toolbar->Active);
     // 表示 Text はメモリだけへ捕捉し、未 Build の案内が操作要求や File I/O を発生させないことを確認する
     for (const bool isRequired : {false, true})
     {
@@ -61,8 +61,7 @@ int test_game_configuration(cue::EditorUi &a_ui, const cue::SceneDocument &a_doc
         CUE_SCRIPT_UI_CHECK(hasNotice == isRequired);
     }
     display.script.isBuildRequired = false;
-    const auto menuBarSeed = ImHashStr("##MenuBar", 0, menuBar->ID);
-    const auto configurationId = ImHashStr("##GameConfiguration", 0, menuBarSeed);
+    const auto configurationId = ImHashStr("##GameConfiguration", 0, toolbar->ID);
     constexpr std::array configurations{cue::GameBuildConfiguration::Debug, cue::GameBuildConfiguration::Development,
                                         cue::GameBuildConfiguration::Release};
     for (const auto configuration : configurations)

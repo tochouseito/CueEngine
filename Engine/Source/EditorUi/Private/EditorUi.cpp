@@ -16,7 +16,33 @@ namespace cue
 {
 namespace
 {
-/// @brief Menu と Status の間を背景付き Docking 先にし、旧 Engine と同様に空き領域も Editor が描画する
+/// @brief 標準 Panel の配置を一つの DockSpace に作り、非表示の Panel にも初回表示位置を割り当てる
+void build_editor_layout(ImGuiID a_dockId, ImVec2 a_size)
+{
+    ImGui::DockBuilderRemoveNode(a_dockId);
+    ImGui::DockBuilderAddNode(a_dockId, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(a_dockId, a_size);
+
+    auto top = a_dockId;
+    const auto bottom = ImGui::DockBuilderSplitNode(top, ImGuiDir_Down, 0.30f, nullptr, &top);
+    const auto hierarchy = ImGui::DockBuilderSplitNode(top, ImGuiDir_Left, 0.20f, nullptr, &top);
+    const auto inspector = ImGui::DockBuilderSplitNode(top, ImGuiDir_Right, 0.30f, nullptr, &top);
+    ImGuiID assets = 0;
+    const auto folders = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 0.24f, nullptr, &assets);
+    ImGui::DockBuilderDockWindow("Hierarchy###Objects##EditorObjects", hierarchy);
+    ImGui::DockBuilderDockWindow("Scene View##EditorSceneView", top);
+    ImGui::DockBuilderDockWindow("Inspector##EditorInspector", inspector);
+    ImGui::DockBuilderDockWindow("Project Folders###EditorProjectFolders", folders);
+    ImGui::DockBuilderDockWindow("Assets###EditorAssets", assets);
+    ImGui::DockBuilderDockWindow("Log###EditorLog", assets);
+    ImGui::DockBuilderDockWindow("Build##EditorBuild", assets);
+    ImGui::DockBuilderFinish(a_dockId);
+    // 初期配置では作成順に関係なくファイル一覧を最初に表示する
+    if (auto *node = ImGui::DockBuilderGetNode(assets))
+        node->SelectedTabId = ImHashStr("#TAB", 0, ImHashStr("Assets###EditorAssets"));
+}
+
+/// @brief Toolbar と Status の間を背景付き Docking 先にする
 void draw_editor_dockspace(const EditorUiContext &a_context, EditorUiState &a_state)
 {
     if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable))
@@ -39,26 +65,26 @@ void draw_editor_dockspace(const EditorUiContext &a_context, EditorUiState &a_st
     if (!background.is_visible())
         return;
     const auto dockId = ImGui::GetID("EditorDockArea");
-    if (a_context.hasAssetBrowser && a_state.isAssetBrowserVisible && !a_state.hasPlacedAssetBrowser)
+    if (a_state.shouldResetLayout ||
+        (!a_state.hasInitializedLayout && a_context.displayWidth >= 640 && a_context.displayHeight >= 400))
     {
-        a_state.hasPlacedAssetBrowser = true;
         const auto *node = ImGui::DockBuilderGetNode(dockId);
-        // 保存済みの Dock 配置を優先し、空の DockSpace にだけ初期配置を与える
-        if ((!node || (!node->IsSplitNode() && node->Windows.empty())) &&
-            !ImGui::FindWindowSettingsByID(ImHashStr("EditorProjectFolders")) &&
-            !ImGui::FindWindowSettingsByID(ImHashStr("EditorAssets")) && a_context.displayWidth >= 640 &&
-            a_context.displayHeight >= 400)
+        // 過去の Dock やフローティング Panel の配置は、明示的な初期化まで引き継ぐ
+        const bool hasSavedLayout = (node && (node->IsSplitNode() || !node->Windows.empty())) ||
+                                    ImGui::FindWindowSettingsByID(ImHashStr("Scene View##EditorSceneView")) ||
+                                    ImGui::FindWindowSettingsByID(ImHashStr("Assets###EditorAssets"));
+        if (a_state.shouldResetLayout || !hasSavedLayout)
+            build_editor_layout(dockId, ImGui::GetContentRegionAvail());
+        else if (!ImGui::FindWindowSettingsByID(ImHashStr("Log###EditorLog")))
         {
-            if (!node)
-                ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
-            ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetContentRegionAvail());
-            const auto bottom = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Down, 0.30f, nullptr, nullptr);
-            ImGuiID assets = 0;
-            const auto folders = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 0.24f, nullptr, &assets);
-            ImGui::DockBuilderDockWindow("Project Folders###EditorProjectFolders", folders);
-            ImGui::DockBuilderDockWindow("Assets###EditorAssets", assets);
-            ImGui::DockBuilderFinish(dockId);
+            // 旧 Layout の選択中 Tab を維持し、Log を開いたときは Assets と同じ Dock を使う
+            a_state.isLogVisible = false;
+            const auto *assets = ImGui::FindWindowSettingsByID(ImHashStr("Assets###EditorAssets"));
+            if (assets && assets->DockId && ImGui::DockBuilderGetNode(assets->DockId))
+                ImGui::DockBuilderDockWindow("Log###EditorLog", assets->DockId);
         }
+        a_state.hasInitializedLayout = true;
+        a_state.shouldResetLayout = false;
     }
     ImGui::DockSpace(dockId, {0, 0}, ImGuiDockNodeFlags_None);
 }
@@ -342,7 +368,8 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
         }
         std::vector<EditorAction> actions;
         actions.reserve(16);
-        if (context.hasAssetBrowser && m_state->isAssetBrowserVisible)
+        if ((context.hasAssetBrowser && m_state->isAssetBrowserVisible) ||
+            (context.isProjectOpen && m_state->isLogVisible))
             context.reservedBottomHeight = (std::min)(240.0f, context.displayHeight * 0.30f);
         const bool wasScriptCreationRequested = m_state->isScriptCreationRequested;
         // Modal の初回 Frame も無効化し、Popup がまだ開く前の背景入力を処理しない
@@ -368,7 +395,6 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
                 auto inspector = draw_transform_inspector(*a_document, context, *m_state, actions);
                 if (!inspector.has_value())
                     return Result<std::vector<EditorAction>>::failure(*inspector.try_error());
-                draw_build_panel(context, *m_state, actions);
                 draw_scene_view(context, actions);
             }
             else
@@ -377,7 +403,11 @@ Result<std::vector<EditorAction>> EditorUi::draw(const SceneDocument *a_document
                 draw_scene_view(context, actions);
             }
             draw_asset_browser(context, *m_state, actions);
-            draw_editor_status(a_document, context);
+            draw_editor_log(context, *m_state);
+            if (a_document && context.isProjectOpen)
+                draw_build_panel(context, *m_state, actions);
+            draw_editor_status(a_document, context, *m_state);
+            draw_editor_toolbar(a_document, context, *m_state, actions, !isInputBlocked);
             // Panel より後に Menu を構築し、旧 Layout から移行する Frame でも入力領域を確保する
             draw_scene_menu(a_document, *m_state, actions, context, !isInputBlocked);
         }

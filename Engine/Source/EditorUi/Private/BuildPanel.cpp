@@ -139,6 +139,11 @@ void draw_build_panel(const EditorUiContext &a_context, EditorUiState &a_state, 
     const float left = (std::min)(240.0f, width * 0.22f);
     const float right = (std::min)(300.0f, width * 0.27f);
     set_initial_panel(viewport->Pos.x + left, editor_panel_top() + 40, (std::max)(width - left - right, 320.0f), 430);
+    if (a_state.shouldFocusBuildPanel)
+    {
+        ImGui::SetNextWindowFocus();
+        a_state.shouldFocusBuildPanel = false;
+    }
     PanelScope panel(a_context.text("Build##EditorBuild", "ビルド###Build##EditorBuild"));
     if (!panel.is_visible())
         return;
