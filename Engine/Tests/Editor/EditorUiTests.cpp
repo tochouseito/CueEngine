@@ -219,9 +219,11 @@ int test_asset_browser_ui()
 
     auto path = cue::Path::create("C:/Game/Source");
     auto scenePath = cue::Path::create("C:/Game/Source/Preview.cuescene");
-    CUE_EDITOR_UI_CHECK(path.has_value() && scenePath.has_value());
-    const std::vector<cue::EditorAssetFolder> folders{
-        {path.take_value(), "Source", {}, {{scenePath.take_value(), "Preview.cuescene", cue::EditorAssetKind::Scene}}}};
+    auto imagePath = cue::Path::create("C:/Game/Source/写真.png");
+    CUE_EDITOR_UI_CHECK(path.has_value() && scenePath.has_value() && imagePath.has_value());
+    const std::vector<cue::EditorAssetFolder> folders{{path.take_value(), "Source", {},
+        {{scenePath.take_value(), "Preview.cuescene", cue::EditorAssetKind::Scene},
+         {imagePath.take_value(), "写真.png", cue::EditorAssetKind::File}}}};
     cue::EditorUiContext display;
     display.hasAssetBrowser = true;
     display.canManageAssets = true;
@@ -273,6 +275,31 @@ int test_asset_browser_ui()
     CUE_EDITOR_UI_CHECK(opened.has_value() && opened.try_value()->size() == 1 &&
                         opened.try_value()->front().kind == cue::EditorActionKind::OpenAssetScene &&
                         opened.try_value()->front().assetPath.utf8() == "C:/Game/Source/Preview.cuescene");
+
+    // 表示切替と文字入力を実際の Widget へ渡し、検索条件が両モードに適用されることを確認する
+    ImGui::ActivateItemByID(ImHashStr("AssetListMode", 0, right->ID));
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    const auto listId = ImHashStr("AssetList", 0, right->ID);
+    const auto *list = ImGui::TableFindByID(listId);
+    CUE_EDITOR_UI_CHECK(list && list->ColumnsCount == 2 && list->CurrentRow == 2);
+    ImGui::ActivateItemByID(ImHashStr("##AssetSearch", 0, right->ID));
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(io.WantTextInput || context->ActiveId == ImHashStr("##AssetSearch", 0, right->ID));
+    io.AddInputCharactersUTF8("pREV");
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(ImGui::TableFindByID(listId)->CurrentRow == 1);
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiKey_A, true);
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    io.AddKeyEvent(ImGuiKey_A, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    io.AddInputCharactersUTF8("写真");
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    CUE_EDITOR_UI_CHECK(ImGui::TableFindByID(listId)->CurrentRow == 1);
+    ImGui::ActivateItemByID(ImHashStr("AssetGridMode", 0, right->ID));
+    CUE_EDITOR_UI_CHECK(frame(editorUi, document, display).has_value());
+    grid = ImGui::TableFindByID(ImHashStr("AssetGrid", 0, right->ID));
+    CUE_EDITOR_UI_CHECK(grid && grid->LastFrameActive == context->FrameCount && grid->CurrentRow == 0);
 
     const std::vector<std::string> files{"Source/Move.cpp", "Source/Move.h"};
     const std::vector<std::string> uses{"Scenes/Main.cuescene / Cube"};

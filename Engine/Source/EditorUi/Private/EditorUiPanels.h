@@ -63,8 +63,11 @@ inline constexpr std::string_view k_log = "\uE8EF";
 /// @brief Scene の正本から独立した入力 Buffer。Panel 構築中だけ Main Thread で使う
 struct EditorUiState
 {
-    // 位置は ImGui に任せ、閲覧先だけを二つの Window で共有する
+    // Window の位置は ImGui に任せ、閲覧先とファイル選択は Path で保持する
     Path assetFolder;
+    Path selectedAsset;
+    std::array<char, 256> assetSearch{};
+    bool isAssetListVisible = false;
     bool isAssetBrowserVisible = true;
     bool hasInitializedLayout = false;
     bool shouldResetLayout = false;
