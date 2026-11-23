@@ -572,7 +572,7 @@ Result<GpuTextureFormat> DX12PipelineManager::bind_graphics(DX12GpuCommandContex
         return Result<GpuTextureFormat>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_graphics"});
     }
     // Command の GPU 利用終了まで Pipeline Record を保持する
-    auto retained = a_command.retain_pipeline(record);
+    auto retained = a_command.retain(record);
     if (!retained.has_value())
     {
         return Result<GpuTextureFormat>::failure(*retained.try_error());
@@ -597,7 +597,7 @@ Result<void> DX12PipelineManager::bind_compute(DX12GpuCommandContext &a_command,
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bind_compute"});
     }
     // Compute Pipeline も提出完了まで Command に所有を預ける
-    auto retained = a_command.retain_pipeline(record);
+    auto retained = a_command.retain(record);
     if (!retained.has_value())
     {
         return retained;
@@ -623,24 +623,40 @@ Result<void> DX12PipelineManager::validate_texture_binding(PipelineStateHandle a
     }
     return Result<void>::success();
 }
-/// @brief 未対応の Root Binding や未設定の Table を使って GPU 実行しない
+/// @brief 型と個数が一致した Root Parameter だけを Binding に使う
+Result<ShaderVisibility> DX12PipelineManager::validate_root_parameter(PipelineStateHandle a_handle,
+                                                                      std::uint32_t a_rootParameter,
+                                                                      RootParameterType a_type,
+                                                                      std::size_t a_count) const
+{
+    auto record = find_record(m_state->pipelines, a_handle, m_state->id);
+    if (!record || a_rootParameter >= record->root->desc.parameters.size())
+    {
+        return Result<ShaderVisibility>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.index"});
+    }
+    const auto &parameter = record->root->desc.parameters[a_rootParameter];
+    if (parameter.type != a_type || parameter.count != a_count)
+    {
+        return Result<ShaderVisibility>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.root.binding"});
+    }
+    return Result<ShaderVisibility>::success(parameter.visibility);
+}
+
+/// @brief 設定を確認できた Root Parameter だけを使って GPU 実行する
 Result<void> DX12PipelineManager::validate_bindings(PipelineStateHandle a_handle,
-                                                    std::span<const std::uint32_t> a_boundParameters) const
+                                                    std::uint64_t a_boundParameters) const
 {
     auto record = find_record(m_state->pipelines, a_handle, m_state->id);
     if (!record)
     {
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12PipelineManager.bindings.handle"});
     }
-    // Draw / Dispatch 前に必須の Root Parameter が設定済みか確認する
-    for (std::size_t index = 0; index < record->root->desc.parameters.size(); ++index)
+    const auto count = record->root->desc.parameters.size();
+    const auto required = count == 64 ? (std::numeric_limits<std::uint64_t>::max)()
+                                      : (std::uint64_t{1} << count) - 1u;
+    if ((a_boundParameters & required) != required)
     {
-        const auto &parameter = record->root->desc.parameters[index];
-        if (parameter.type != RootParameterType::SrvTable || parameter.count != 1 ||
-            std::find(a_boundParameters.begin(), a_boundParameters.end(), index) == a_boundParameters.end())
-        {
-            return Result<void>::failure({ErrorCategory::InvalidState, "DX12PipelineManager.bindings.unbound"});
-        }
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12PipelineManager.bindings.unbound"});
     }
     return Result<void>::success();
 }

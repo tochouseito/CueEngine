@@ -32,8 +32,9 @@ namespace
 /// @brief 配布 File の欠落を Repository への Fallback で隠さず、起動前に拒否する
 Result<void> validate_resources(IFileSystem &a_files, const Path &a_directory)
 {
-    constexpr std::array<const char *, 4> required{"dxcompiler.dll", "dxil.dll",
+    constexpr std::array<const char *, 5> required{"dxcompiler.dll", "dxil.dll",
                                                    "EngineResources/Shader/Hlsl/StaticMesh.hlsl",
+                                                   "EngineResources/Shader/Hlsl/IndirectStaticMesh.hlsl",
                                                    "EngineResources/Shader/Hlsl/FullscreenTriangle.hlsl"};
     for (const auto *name : required)
     {
@@ -119,11 +120,7 @@ Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_start
     };
     config.graph.configure = [&](FrameGraph &a_graph, FrameGraphResourceHandle)
     {
-        auto pass = renderer->create_pass();
-        if (!pass.has_value())
-            return Result<void>::failure(*pass.try_error());
-        auto registered = a_graph.add_pass(pass.take_value());
-        return registered.has_value() ? Result<void>::success() : Result<void>::failure(*registered.try_error());
+        return renderer->add_passes(a_graph);
     };
     config.callbacks.simulationUpdate = [&](const SimulationStep &a_step, std::stop_token)
     { return a_session.update(std::chrono::duration_cast<std::chrono::nanoseconds>(a_step.deltaTime)); };

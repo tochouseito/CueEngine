@@ -51,6 +51,24 @@ Result<void> FrameGraphContext::set_render_targets(FrameGraphResourceHandle, Fra
     return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_render_targets.unsupported"});
 }
 
+/// @brief 非対応の Backend では Buffer SRV を記録しない
+Result<void> FrameGraphContext::bind_buffer_srv(FrameGraphResourceHandle, std::uint32_t)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.bind_buffer_srv.unsupported"});
+}
+
+/// @brief 非対応の Backend では Buffer UAV を記録しない
+Result<void> FrameGraphContext::bind_buffer_uav(FrameGraphResourceHandle, std::uint32_t)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.bind_buffer_uav.unsupported"});
+}
+
+/// @brief 非対応の Backend では Root Constants を記録しない
+Result<void> FrameGraphContext::set_root_constants(std::uint32_t, std::span<const std::uint32_t>)
+{
+    return Result<void>::failure({ErrorCategory::InvalidState, "FrameGraphContext.set_root_constants.unsupported"});
+}
+
 /// @brief 非対応の Backend では Command を変更せず失敗する
 Result<void> FrameGraphContext::set_graphics_pipeline(PipelineStateHandle)
 {

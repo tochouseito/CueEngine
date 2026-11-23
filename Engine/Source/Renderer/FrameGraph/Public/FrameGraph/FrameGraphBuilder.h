@@ -62,6 +62,7 @@ enum class FrameGraphResourceState
     PixelShaderRead,
     NonPixelShaderRead,
     UnorderedAccess,
+    IndirectArgument,
     RenderTarget,
     DepthRead,
     DepthWrite,

@@ -29,8 +29,8 @@ class ISceneRenderer
     /// Callback は同じ Thread で Graph を実行する。再入・並行 render_frame は禁止する
     [[nodiscard]] virtual Result<void> render_frame(std::uint64_t a_frame,
                                                     const std::function<Result<void>()> &a_record) = 0;
-    /// @brief FinalColor と Depth を使用する新しい MeshPass を Graph ごとに生成する
-    [[nodiscard]] virtual Result<std::unique_ptr<FrameGraphPass>> create_pass() = 0;
+    /// @brief FinalColor へ描画する Pass 群を未構築 Graph に登録する。失敗した Graph は破棄する
+    [[nodiscard]] virtual Result<void> add_passes(FrameGraph &a_graph) = 0;
     /// @brief Frame 排出後の再構成で未消費 Snapshot を破棄する
     [[nodiscard]] virtual Result<void> discard_pending() = 0;
     /// @brief Graph 破棄後に Snapshot を回収して MeshHandle を退役する。繰返し呼べる
@@ -41,7 +41,7 @@ class ISceneRenderer
     ISceneRenderer() = default;
 };
 
-/// @brief Backend に対応する Scene 描画実装を生成し、組み込み Cube の初回転送完了まで待つ
+/// @brief Backend に対応する Scene 描画実装を生成し、組み込み Cube と既定 Material の転送完了まで待つ
 /// 呼出中 Backend を直列利用し、返された Renderer と全 MeshPass を Backend より先に停止する
 [[nodiscard]] Result<std::unique_ptr<ISceneRenderer>> create_scene_renderer(IBackend &a_backend);
 } // namespace cue

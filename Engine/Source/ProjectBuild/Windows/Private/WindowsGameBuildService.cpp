@@ -498,6 +498,7 @@ Result<void> WindowsGameBuildService::validate_app()
     if (!executable.has_value())
         return executable;
     for (const auto *name : {"dxcompiler.dll", "dxil.dll", "EngineResources/Shader/Hlsl/StaticMesh.hlsl",
+                             "EngineResources/Shader/Hlsl/IndirectStaticMesh.hlsl",
                              "EngineResources/Shader/Hlsl/FullscreenTriangle.hlsl"})
     {
         auto required = m_status.outputDirectory.join(name);

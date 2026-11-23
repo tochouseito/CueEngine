@@ -288,25 +288,25 @@ ID3D12GraphicsCommandList* DX12GpuCommandContext::command_list() const noexcept
 }
 
 /// @brief Native Binding 前に寿命を確保し、確保失敗時は List を変更しない
-Result<void> DX12GpuCommandContext::retain_pipeline(std::shared_ptr<const void> a_pipeline)
+Result<void> DX12GpuCommandContext::retain(std::shared_ptr<const void> a_reference)
 {
-    if (m_state != CommandState::Recording || !a_pipeline)
+    if (m_state != CommandState::Recording || !a_reference)
     {
-        return Result<void>::failure({ErrorCategory::InvalidState, "DX12GpuCommandContext.retain_pipeline"});
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12GpuCommandContext.retain"});
     }
-    if (std::find(m_pipelineReferences.begin(), m_pipelineReferences.end(), a_pipeline) != m_pipelineReferences.end())
+    if (std::find(m_references.begin(), m_references.end(), a_reference) != m_references.end())
     {
         return Result<void>::success();
     }
     try
     {
-        m_pipelineReferences.push_back(std::move(a_pipeline));
+        m_references.push_back(std::move(a_reference));
         return Result<void>::success();
     }
     catch (const std::bad_alloc &)
     {
         return Result<void>::failure(
-            {ErrorCategory::PlatformFailure, "DX12GpuCommandContext.retain_pipeline.allocation"});
+            {ErrorCategory::PlatformFailure, "DX12GpuCommandContext.retain.allocation"});
     }
 }
 
@@ -330,7 +330,7 @@ Result<void> DX12GpuCommandContext::reset_for_recording()
         return Result<void>::failure(command_error("ID3D12GraphicsCommandList.Reset", listResult));
     }
     // Pool が未提出または Fence 完了を確認し、List の Reset も成功した後だけ旧 Pipeline を返す
-    m_pipelineReferences.clear();
+    m_references.clear();
     m_fenceValue = 0;
     m_submissionFence.Reset();
     m_isFatalFailure = false;

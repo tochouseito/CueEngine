@@ -40,11 +40,13 @@ struct Capture final
     ID3D12Device *device = nullptr;
     std::unique_ptr<cue::dx12::DX12GpuResource> readback;
     std::unique_ptr<cue::dx12::DX12GpuResource> depthReadback;
+    std::unique_ptr<cue::dx12::DX12GpuResource> countReadback;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT depthFootprint{};
     std::uint64_t byteSize = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    bool readsCommandCount = false;
 
     /// @brief 現在の FinalColor に対応する RowPitch と Readback Buffer を用意する
     cue::Result<void> prepare(std::uint32_t a_width, std::uint32_t a_height)
@@ -71,6 +73,11 @@ struct Capture final
         if (!depthBuffer.has_value())
             return cue::Result<void>::failure(*depthBuffer.try_error());
         depthReadback = depthBuffer.take_value();
+        auto countBuffer = cue::dx12::DX12GpuResource::create_buffer(
+            *device, {sizeof(std::uint32_t), cue::GpuMemoryUsage::Readback}, L"CueEngine Scene Renderer Test Count");
+        if (!countBuffer.has_value())
+            return cue::Result<void>::failure(*countBuffer.try_error());
+        countReadback = countBuffer.take_value();
         width = a_width;
         height = a_height;
         return cue::Result<void>::success();
@@ -107,6 +114,15 @@ struct Capture final
         std::memcpy(&value, bytes.data(), sizeof(value));
         return cue::Result<float>::success(value);
     }
+
+    /// @brief GPU が最初の Page に生成した間接コマンド数を取得する
+    cue::Result<std::uint32_t> command_count() const
+    {
+        std::uint32_t count = 0;
+        auto result = countReadback->read(0, std::as_writable_bytes(std::span{&count, 1u}));
+        return result.has_value() ? cue::Result<std::uint32_t>::success(count)
+                                  : cue::Result<std::uint32_t>::failure(*result.try_error());
+    }
 };
 
 /// @brief MeshPass の後に FinalColor を読み戻す。Barrier は FrameGraph の宣言から生成する
@@ -138,6 +154,10 @@ class CapturePass final : public cue::FrameGraphPass
         if (!depth.has_value())
             return cue::Result<void>::failure(*depth.try_error());
         m_depth = depth.take_value();
+        auto counts = a_builder.get_buffer("Scene.IndirectCounts");
+        if (!counts.has_value())
+            return cue::Result<void>::failure(*counts.try_error());
+        m_counts = counts.take_value();
         auto descriptor = a_builder.texture_desc(m_color);
         if (!descriptor.has_value())
             return cue::Result<void>::failure(*descriptor.try_error());
@@ -147,9 +167,12 @@ class CapturePass final : public cue::FrameGraphPass
     cue::Result<void> describe_resources(cue::FrameGraphBuilder &a_builder) override
     {
         auto color = a_builder.use(m_color, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource);
-        return color.has_value()
-                   ? a_builder.use(m_depth, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource)
-                   : std::move(color);
+        if (!color.has_value())
+            return color;
+        auto depth = a_builder.use(m_depth, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource);
+        return depth.has_value()
+                   ? a_builder.use(m_counts, cue::FrameGraphAccess::Read, cue::FrameGraphResourceState::CopySource)
+                   : std::move(depth);
     }
     /// @brief 宣言済み FinalColor から Readback Buffer へ Native Copy を記録する
     cue::Result<void> execute(cue::FrameGraphContext &a_context) override
@@ -169,6 +192,14 @@ class CapturePass final : public cue::FrameGraphPass
         destination.pResource = m_capture.depthReadback->resource();
         destination.PlacedFootprint = m_capture.depthFootprint;
         native->command_list().CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        if (m_capture.readsCommandCount)
+        {
+            auto *counts = native->resource(m_counts);
+            if (!counts)
+                return cue::Result<void>::failure({cue::ErrorCategory::InvalidState, "SceneTest.capture_counts"});
+            native->command_list().CopyBufferRegion(m_capture.countReadback->resource(), 0, counts, 0,
+                                                    sizeof(std::uint32_t));
+        }
         return cue::Result<void>::success();
     }
 
@@ -176,6 +207,7 @@ class CapturePass final : public cue::FrameGraphPass
     Capture &m_capture;
     cue::FrameGraphResourceHandle m_color;
     cue::FrameGraphResourceHandle m_depth;
+    cue::FrameGraphResourceHandle m_counts;
 };
 
 /// @brief 非同期 Validation も提出 Fence 完了後に調べ、Error を見落とさない
@@ -227,10 +259,7 @@ bool verify_scene_renderer()
     config.clearColor = {0.02f, 0.03f, 0.04f, 1.0f};
     config.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle) -> cue::Result<void>
     {
-        auto pass = renderer->create_pass();
-        if (!pass.has_value())
-            return cue::Result<void>::failure(*pass.try_error());
-        auto added = a_graph.add_pass(pass.take_value());
+        auto added = renderer->add_passes(a_graph);
         if (!added.has_value())
             return cue::Result<void>::failure(*added.try_error());
         auto copied = a_graph.add_pass(std::make_unique<CapturePass>(capture));
@@ -302,7 +331,7 @@ bool verify_scene_renderer()
     auto red = capture.center();
     CHECK(red.has_value() && (*red.try_value())[0] > 180 && (*red.try_value())[2] < 80);
 
-    // 先頭を画面外へ置き、2 番目の Indirect Record が別 Transform を参照することを確認する
+    // 先頭を画面外へ置き、後続の Instance が自身の Transform を参照することを確認する
     auto secondVisible = base;
     secondVisible.objects[0].world = cue::math::translation_matrix(cue::math::float3{10, 0, 0});
     secondVisible.objects.push_back(base.objects[0]);
@@ -310,8 +339,33 @@ bool verify_scene_renderer()
     auto secondBlue = capture.center();
     CHECK(secondBlue.has_value() && (*secondBlue.try_value())[2] > 180);
 
+    // 同じ Mesh・Material・深度区分を使う 2 個の Instance が、別々の Transform で描画されることを確認する
+    auto batched = base;
+    batched.objects[0].world = cue::math::translation_matrix(cue::math::float3{-1, 0, 0});
+    batched.objects.push_back(
+        {cue::math::translation_matrix(cue::math::float3{1, 0, 0}), std::string(cue::k_cubeMeshId)});
+    capture.readsCommandCount = true;
+    CHECK(draw(5, std::move(batched)));
+    capture.readsCommandCount = false;
+    const auto commandCount = capture.command_count();
+    CHECK(commandCount.has_value() && *commandCount.try_value() == 1);
+    const auto leftInstance = capture.pixel(12, 32);
+    const auto rightInstance = capture.pixel(52, 32);
+    const auto betweenInstances = capture.center();
+    CHECK(leftInstance.has_value() && (*leftInstance.try_value())[2] > 180 && (*leftInstance.try_value())[0] < 80);
+    CHECK(rightInstance.has_value() && (*rightInstance.try_value())[2] > 180 && (*rightInstance.try_value())[0] < 80);
+    CHECK(betweenInstances.has_value() && *betweenInstances.try_value() == *background.try_value());
+
+    // 同じ GPU 枠を空 Frame に再利用し、以前の間接引数が実行されないことを確認する
+    CHECK(draw(6, base));
+    CHECK(draw(7, {}));
+    const auto emptyLeft = capture.pixel(12, 32);
+    const auto emptyRight = capture.pixel(52, 32);
+    CHECK(emptyLeft.has_value() && emptyRight.has_value() && *emptyLeft.try_value() == *background.try_value() &&
+          *emptyRight.try_value() == *background.try_value());
+
     CHECK(graph->resize(*backend->get_resource_context(), 96, 48).has_value());
-    CHECK(capture.width == 96 && capture.height == 48 && draw(5, base));
+    CHECK(capture.width == 96 && capture.height == 48 && draw(8, base));
     auto resized = capture.center();
     CHECK(resized.has_value() && (*resized.try_value())[2] > 180 && (*resized.try_value())[0] < 80);
     auto outside = capture.pixel(60, 24);
@@ -322,6 +376,7 @@ bool verify_scene_renderer()
     graph.reset();
     capture.readback.reset();
     capture.depthReadback.reset();
+    capture.countReadback.reset();
     CHECK(renderer->shutdown().has_value());
     renderer.reset();
     CHECK(backend->shutdown().has_value());

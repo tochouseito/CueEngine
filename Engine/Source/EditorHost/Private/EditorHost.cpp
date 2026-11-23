@@ -406,11 +406,7 @@ MainFrameGraphConfig EditorHost::prepare_graph(MainFrameGraphConfig a_config)
         }
         if (!m_sceneRenderer)
             return Result<void>::success();
-        auto pass = m_sceneRenderer->create_pass();
-        if (!pass.has_value())
-            return Result<void>::failure(*pass.try_error());
-        auto added = a_graph.add_pass(pass.take_value());
-        return added.has_value() ? Result<void>::success() : Result<void>::failure(*added.try_error());
+        return m_sceneRenderer->add_passes(a_graph);
     };
     // 表示 Pass が未指定のときだけ Editor の ImGuiPass を注入する
     if (!a_config.displayPass && !a_config.displayPassFactory)

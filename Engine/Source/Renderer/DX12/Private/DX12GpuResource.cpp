@@ -59,7 +59,8 @@ DX12GpuResource::DX12GpuResource(CreateToken) noexcept
 Result<D3D12_RESOURCE_DESC> DX12GpuResource::buffer_desc(GpuBufferDesc a_desc)
 {
     if (a_desc.byteSize == 0 || (a_desc.memory != GpuMemoryUsage::Default && a_desc.memory != GpuMemoryUsage::Upload &&
-                                 a_desc.memory != GpuMemoryUsage::Readback))
+                                 a_desc.memory != GpuMemoryUsage::Readback) ||
+        (a_desc.isUnorderedAccess && a_desc.memory != GpuMemoryUsage::Default))
     {
         return Result<D3D12_RESOURCE_DESC>::failure({ErrorCategory::InvalidArgument, "DX12GpuResource.buffer_desc"});
     }
@@ -71,6 +72,7 @@ Result<D3D12_RESOURCE_DESC> DX12GpuResource::buffer_desc(GpuBufferDesc a_desc)
     desc.MipLevels = 1;
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = a_desc.isUnorderedAccess ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
     return Result<D3D12_RESOURCE_DESC>::success(desc);
 }
 

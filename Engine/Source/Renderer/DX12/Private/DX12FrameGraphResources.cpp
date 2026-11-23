@@ -25,7 +25,7 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
                                                                                  const FrameGraphPlan &a_plan)
 {
     using GraphResult = Result<std::unique_ptr<DX12FrameGraphResources>>;
-    // RenderTarget は明示された Texture だけに許可し、未対応の DS／UAV を拒否する
+    // Transient の各用途は Native Resource の生成時に許可されている必要がある
     for (const auto &pass : a_plan.passes())
     {
         for (const auto &use : pass.uses)
@@ -40,7 +40,8 @@ Result<std::unique_ptr<DX12FrameGraphResources>> DX12FrameGraphResources::create
                 ((use.state == FrameGraphResourceState::DepthRead ||
                   use.state == FrameGraphResourceState::DepthWrite) &&
                  (resource.kind != GpuResourceKind::Texture2D || !resource.textureDesc.isDepthStencil)) ||
-                use.state == FrameGraphResourceState::UnorderedAccess)
+                (use.state == FrameGraphResourceState::UnorderedAccess &&
+                 (resource.kind != GpuResourceKind::Buffer || !resource.bufferDesc.isUnorderedAccess)))
             {
                 return GraphResult::failure(
                     {ErrorCategory::InvalidArgument, "DX12FrameGraphResources.create.unsupported_state"});

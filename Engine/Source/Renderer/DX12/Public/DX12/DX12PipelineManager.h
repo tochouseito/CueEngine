@@ -1,8 +1,9 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <span>
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -63,9 +64,14 @@ class DX12PipelineManager final : public IPipelineManager
     /// @brief 単一 Texture の Binding 先が SRV Table か検証する
     [[nodiscard]] Result<void> validate_texture_binding(PipelineStateHandle a_handle,
                                                         std::uint32_t a_rootParameter) const;
+    /// @brief Root Parameter の種類と要素数の完全一致を確認し、Shader の可視範囲を返す
+    [[nodiscard]] Result<ShaderVisibility> validate_root_parameter(PipelineStateHandle a_handle,
+                                                                   std::uint32_t a_rootParameter,
+                                                                   RootParameterType a_type,
+                                                                   std::size_t a_count = 1) const;
     /// @brief Draw または Dispatch に必要な Root Parameter が全て設定されているか検証する
     [[nodiscard]] Result<void> validate_bindings(PipelineStateHandle a_handle,
-                                                 std::span<const std::uint32_t> a_boundParameters) const;
+                                                 std::uint64_t a_boundParameters) const;
     /// @brief Context と同じ Device の生成基盤か確認する
     [[nodiscard]] ID3D12Device *device() const noexcept;
 

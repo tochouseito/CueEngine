@@ -27,6 +27,61 @@ void transition(ID3D12GraphicsCommandList& a_list, ID3D12Resource& a_resource,
     a_list.ResourceBarrier(1, &barrier);
 }
 
+/// @brief 一時 Buffer の UAV 書き込みを間接引数読み取りへ渡せることを確認する
+bool validate_indirect_buffer(cue::dx12::DX12RenderDevice& a_device)
+{
+    using cue::FrameGraphAccess;
+    using cue::FrameGraphResourceState;
+    using cue::GpuMemoryUsage;
+    auto builderResult = cue::FrameGraphBuilder::create();
+    if (!builderResult.has_value())
+    {
+        return false;
+    }
+    auto builder = builderResult.take_value();
+    auto buffer = builder->create_transient_buffer({64, GpuMemoryUsage::Default, true});
+    auto texture = builder->create_transient_texture2d({4, 4});
+    auto plain = builder->create_transient_buffer({64});
+    auto generate = builder->add_pass("GenerateIndirect");
+    auto draw = builder->add_pass("DrawIndirect");
+    if (!buffer.has_value() || !texture.has_value() || !plain.has_value() || !generate.has_value() ||
+        !draw.has_value())
+    {
+        return false;
+    }
+    const auto handle = buffer.take_value();
+    if (builder->use(*generate.try_value(), *plain.try_value(), FrameGraphAccess::Write,
+                     FrameGraphResourceState::UnorderedAccess).has_value() ||
+        builder->use(*draw.try_value(), *texture.try_value(), FrameGraphAccess::Read,
+                     FrameGraphResourceState::IndirectArgument).has_value() ||
+        !builder->use(*generate.try_value(), handle, FrameGraphAccess::Write,
+                      FrameGraphResourceState::UnorderedAccess).has_value() ||
+        !builder->use(*draw.try_value(), handle, FrameGraphAccess::Read,
+                      FrameGraphResourceState::IndirectArgument).has_value())
+    {
+        return false;
+    }
+    auto plan = builder->build();
+    if (!plan.has_value())
+    {
+        return false;
+    }
+    const auto& barriers = plan.try_value()->passes()[1].barriersBefore;
+    if (barriers.size() != 1 || barriers[0].kind != cue::FrameGraphBarrierKind::Transition ||
+        barriers[0].before != FrameGraphResourceState::UnorderedAccess ||
+        barriers[0].after != FrameGraphResourceState::IndirectArgument)
+    {
+        return false;
+    }
+    auto resources = cue::dx12::DX12FrameGraphResources::create(a_device, *plan.try_value());
+    if (!resources.has_value())
+    {
+        return false;
+    }
+    const auto* output = (*resources.try_value())->resource(handle);
+    return output && (output->resource()->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+}
+
 /// @brief WARP で Alias の同一 Offset、Activation 順、GPU Copy と Fence 回収を検証する
 int main()
 {
@@ -97,6 +152,10 @@ int main()
     if (SUCCEEDED(device->device()->QueryInterface(IID_PPV_ARGS(&infoQueue))))
     {
         infoQueue->ClearStoredMessages();
+    }
+    if (!validate_indirect_buffer(*device))
+    {
+        return 25;
     }
     auto unsupportedBuilderResult = cue::FrameGraphBuilder::create();
     if (!unsupportedBuilderResult.has_value())

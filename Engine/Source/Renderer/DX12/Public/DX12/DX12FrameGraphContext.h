@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
-#include <vector>
+#include <span>
 
 #include <d3d12.h>
 
@@ -14,6 +14,7 @@
 namespace cue::dx12
 {
 class DX12FrameGraphFrames;
+class DX12GpuResource;
 class DX12PipelineManager;
 
 /// @brief Pass 記録中だけ使う Frame 情報と非所有の依存参照
@@ -58,6 +59,16 @@ class DX12FrameGraphContext final : public FrameGraphContext
     [[nodiscard]] Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
                                               std::uint32_t a_rootParameter) override;
 
+    /// @brief Pass の Read 宣言と Root 定義を検証し、Buffer SRV を設定する
+    [[nodiscard]] Result<void> bind_buffer_srv(FrameGraphResourceHandle a_source,
+                                               std::uint32_t a_rootParameter) override;
+    /// @brief Pass の UnorderedAccess 宣言と Root 定義を検証し、Buffer UAV を設定する
+    [[nodiscard]] Result<void> bind_buffer_uav(FrameGraphResourceHandle a_buffer,
+                                               std::uint32_t a_rootParameter) override;
+    /// @brief 32 Bit 定数の個数を検証して Root Parameter 全体を設定する
+    [[nodiscard]] Result<void> set_root_constants(std::uint32_t a_rootParameter,
+                                                   std::span<const std::uint32_t> a_values) override;
+
     /// @brief Root と PSO を設定して Command の寿命保持を開始する
     [[nodiscard]] Result<void> set_graphics_pipeline(PipelineStateHandle a_pipeline) override;
     /// @brief Compute Root と PSO を設定する
@@ -75,6 +86,12 @@ class DX12FrameGraphContext final : public FrameGraphContext
     [[nodiscard]] Result<void> copy_texture2d(FrameGraphResourceHandle a_source,
                                               FrameGraphResourceHandle a_destination) override;
 
+    /// @brief CPU が同期済みの Upload Buffer から宣言済み CopyDestination の先頭へ転送する
+    /// 呼出側は GPU 完了まで転送元を保持する。転送元は固定の GenericRead 状態で使用する
+    [[nodiscard]] Result<void> copy_upload_buffer(const DX12GpuResource &a_source,
+                                                  FrameGraphResourceHandle a_destination, std::uint64_t a_byteSize,
+                                                  std::uint64_t a_sourceOffset = 0);
+
     /// @brief Backend 固有 Pass が必要な場合だけ Native List を借用する
     [[nodiscard]] ID3D12GraphicsCommandList &command_list() const noexcept;
 
@@ -91,10 +108,17 @@ class DX12FrameGraphContext final : public FrameGraphContext
     /// @brief Backend 固有 Pass が必要な場合だけ Native Resource を借用する
     [[nodiscard]] ID3D12Resource *resource(FrameGraphResourceHandle a_handle) const noexcept;
 
+    /// @brief Pass が IndirectArgument の Read と宣言した Buffer を記録中だけ借用する
+    [[nodiscard]] ID3D12Resource *indirect_buffer(FrameGraphResourceHandle a_handle) const noexcept;
+
   private:
     /// @brief 実行中 Pass の宣言と要求された Resource 使用が一致するか判定する
     [[nodiscard]] bool allows(FrameGraphResourceHandle a_handle, FrameGraphAccess a_access,
                               FrameGraphResourceState a_state) const noexcept;
+    /// @brief Shader の可視範囲を使って適合する Read State が宣言されているか確認する
+    [[nodiscard]] bool allows_buffer_srv(FrameGraphResourceHandle a_handle, ShaderVisibility a_visibility) const noexcept;
+    /// @brief 追跡中の Pipeline と記録中の Native List を Binding に使えるか確認する
+    [[nodiscard]] bool can_bind() const noexcept;
 
     DX12GpuCommandContext *m_command = nullptr;
     const DX12FrameGraphPassContext *m_resources = nullptr;
@@ -106,7 +130,8 @@ class DX12FrameGraphContext final : public FrameGraphContext
     std::optional<GpuTextureFormat> m_pipelineFormat;
     std::optional<GpuTextureFormat> m_targetFormat;
     std::optional<GpuTextureFormat> m_depthFormat;
-    std::vector<std::uint32_t> m_boundParameters;
+    // Root Signature は最大 64 Parameter に制限され、記録時に Allocation せず追跡できる
+    std::uint64_t m_boundParameters = 0;
     bool m_isComputeBound = false;
     bool m_hasViewport = false;
     bool m_isSrvHeapBound = false;

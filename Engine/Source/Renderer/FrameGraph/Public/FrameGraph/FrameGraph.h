@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <Foundation/Result.h>
@@ -58,6 +59,16 @@ class FrameGraphContext
     /// Root Signature と Pipeline は呼出 Pass が先に設定する
     [[nodiscard]] virtual Result<void> bind_texture2d(FrameGraphResourceHandle a_source,
                                                       std::uint32_t a_rootParameter) = 0;
+
+    /// @brief 宣言済み Buffer の SRV を設定済み Graphics／Compute Pipeline の Root に設定する
+    [[nodiscard]] virtual Result<void> bind_buffer_srv(FrameGraphResourceHandle a_source,
+                                                        std::uint32_t a_rootParameter);
+    /// @brief UnorderedAccess と宣言した Buffer の UAV を設定済み Pipeline の Root に設定する
+    [[nodiscard]] virtual Result<void> bind_buffer_uav(FrameGraphResourceHandle a_buffer,
+                                                        std::uint32_t a_rootParameter);
+    /// @brief 設定済み Pipeline の Root Parameter に宣言どおりの 32 Bit 定数を設定する
+    [[nodiscard]] virtual Result<void> set_root_constants(std::uint32_t a_rootParameter,
+                                                          std::span<const std::uint32_t> a_values);
 
     /// @brief Build で生成した Graphics Pipeline と対応 Root を設定する
     [[nodiscard]] virtual Result<void> set_graphics_pipeline(PipelineStateHandle a_pipeline);

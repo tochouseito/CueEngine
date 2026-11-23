@@ -48,6 +48,9 @@ bool native_state(FrameGraphResourceState a_state, D3D12_RESOURCE_STATES &a_nati
     case FrameGraphResourceState::UnorderedAccess:
         a_native = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         return true;
+    case FrameGraphResourceState::IndirectArgument:
+        a_native = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        return true;
     case FrameGraphResourceState::RenderTarget:
         a_native = D3D12_RESOURCE_STATE_RENDER_TARGET;
         return true;
@@ -100,6 +103,10 @@ bool supports_state(const D3D12_RESOURCE_DESC &a_desc, FrameGraphResourceState a
     {
         return (a_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
     }
+    if (a_state == FrameGraphResourceState::IndirectArgument)
+    {
+        return a_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+    }
     return true;
 }
 
@@ -114,7 +121,8 @@ bool matches_resource(const FrameGraphResourcePlan &a_planned, ID3D12Resource &a
     }
     if (a_planned.kind == GpuResourceKind::Buffer)
     {
-        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || desc.Width < a_planned.bufferDesc.byteSize)
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || desc.Width < a_planned.bufferDesc.byteSize ||
+            (a_planned.bufferDesc.isUnorderedAccess && !supports_state(desc, FrameGraphResourceState::UnorderedAccess)))
         {
             return false;
         }

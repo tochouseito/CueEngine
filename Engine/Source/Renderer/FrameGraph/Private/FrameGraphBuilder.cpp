@@ -64,6 +64,7 @@ bool is_valid_boundary_state(FrameGraphResourceState a_state, GpuResourceKind a_
     case FrameGraphResourceState::UnorderedAccess:
         return true;
     case FrameGraphResourceState::GenericRead:
+    case FrameGraphResourceState::IndirectArgument:
         return a_kind == GpuResourceKind::Buffer;
     case FrameGraphResourceState::RenderTarget:
     case FrameGraphResourceState::DepthRead:
@@ -85,6 +86,7 @@ bool is_valid_use_state(FrameGraphResourceState a_state, FrameGraphAccess a_acce
     case FrameGraphResourceState::PixelShaderRead:
     case FrameGraphResourceState::NonPixelShaderRead:
     case FrameGraphResourceState::DepthRead:
+    case FrameGraphResourceState::IndirectArgument:
         return a_access == FrameGraphAccess::Read;
     case FrameGraphResourceState::CopyDestination:
     case FrameGraphResourceState::RenderTarget:
@@ -475,6 +477,7 @@ Result<FrameGraphResourceHandle> FrameGraphBuilder::import_buffer(std::string a_
     if (a_desc.byteSize == 0 ||
         (a_desc.memory != GpuMemoryUsage::Default && a_desc.memory != GpuMemoryUsage::Upload &&
          a_desc.memory != GpuMemoryUsage::Readback) ||
+        (a_desc.isUnorderedAccess && a_desc.memory != GpuMemoryUsage::Default) ||
         !is_valid_boundary_state(a_initial, GpuResourceKind::Buffer, a_desc.memory) ||
         !is_valid_boundary_state(a_final, GpuResourceKind::Buffer, a_desc.memory))
     {
@@ -643,6 +646,11 @@ Result<void> FrameGraphBuilder::use(FrameGraphPassHandle a_pass, FrameGraphResou
         return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.handle"});
     }
     const auto &resource = m_resources[a_resource.index];
+    if (a_state == FrameGraphResourceState::UnorderedAccess && !resource.isImported &&
+        (resource.kind != GpuResourceKind::Buffer || !resource.bufferDesc.isUnorderedAccess))
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "FrameGraphBuilder.use.unordered_access"});
+    }
     if (resource.kind == GpuResourceKind::Texture2D &&
         (((a_state == FrameGraphResourceState::DepthRead || a_state == FrameGraphResourceState::DepthWrite) &&
           !resource.textureDesc.isDepthStencil) ||

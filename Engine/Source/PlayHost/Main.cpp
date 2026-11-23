@@ -423,12 +423,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
         };
         config.graph.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle)
         {
-            auto pass = renderer->create_pass();
-            if (!pass.has_value())
-                return cue::Result<void>::failure(*pass.try_error());
-            auto registered = a_graph.add_pass(pass.take_value());
-            return registered.has_value() ? cue::Result<void>::success()
-                                          : cue::Result<void>::failure(*registered.try_error());
+            return renderer->add_passes(a_graph);
         };
         config.callbacks.simulationUpdate = [&](const cue::SimulationStep &a_step, std::stop_token)
         {

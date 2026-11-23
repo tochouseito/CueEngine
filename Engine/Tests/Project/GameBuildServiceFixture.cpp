@@ -94,6 +94,7 @@ void package(const std::filesystem::path &a_project, std::string_view a_config, 
     if (a_mode != "missing-marker")
         write(output / L"GamePackage.cuepackage", identity);
     for (const auto *name : {L"dxcompiler.dll", L"dxil.dll", L"EngineResources/Shader/Hlsl/StaticMesh.hlsl",
+                             L"EngineResources/Shader/Hlsl/IndirectStaticMesh.hlsl",
                              L"EngineResources/Shader/Hlsl/FullscreenTriangle.hlsl"})
         write(output / name, "Fixture resource");
     if (a_mode == "large-log")

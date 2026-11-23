@@ -53,12 +53,12 @@ public:
     /// 呼出側は Reset、Close、ExecuteCommandLists を直接呼ばない
     [[nodiscard]] ID3D12GraphicsCommandList* command_list() const noexcept;
 
+    /// @brief Native 記録が参照する所有値を Reset または GPU 完了後の破棄まで保持する
+    [[nodiscard]] Result<void> retain(std::shared_ptr<const void> a_reference);
+
 private:
     friend class DX12CommandPool;
     friend class DX12PipelineManager;
-
-    /// @brief 記録中の PSO と Root を Reset または GPU 完了後の破棄まで保持する
-    [[nodiscard]] Result<void> retain_pipeline(std::shared_ptr<const void> a_pipeline);
 
     /// @brief GPU 完了確認後または未提出のときだけ Allocator と List を再記録可能にする
     [[nodiscard]] Result<void> reset_for_recording();
@@ -69,8 +69,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
     // この Command の最終提出を覆う Fence の所有参照
     Microsoft::WRL::ComPtr<ID3D12Fence> m_submissionFence;
-    // GPU 完了まで保持する PSO と Root Signature の共有参照
-    std::vector<std::shared_ptr<const void>> m_pipelineReferences;
+    // GPU 完了まで保持する PSO、Root Signature、転送資源の共有参照
+    std::vector<std::shared_ptr<const void>> m_references;
     CommandState m_state = CommandState::Recording;
     // Close や Device の致命的失敗を保持して再利用を禁止する
     bool m_isFatalFailure = false;

@@ -18,6 +18,8 @@ int main()
         cue::EditorHostConfig config;
         config.window.title = "CueEngine Scene Integration Test";
         config.window.clientSize = {320, 180};
+        // Scene の寿命検証からユーザーの Editor レイアウト保存を外す
+        config.imgui.settingsFile.clear();
         config.initialScene = scene.take_value();
         config.createBackend = [&](cue::IFileSystem *a_files,
                                    cue::Clock &a_clock) -> cue::Result<std::unique_ptr<cue::IBackend>>

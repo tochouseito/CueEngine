@@ -37,6 +37,8 @@ struct GpuBufferDesc final
     std::uint64_t byteSize = 0;
     // CPU アクセスと GPU 利用に応じた Heap の用途
     GpuMemoryUsage memory = GpuMemoryUsage::Default;
+    // Default Heap の Buffer を Shader から書き込めるように生成する
+    bool isUnorderedAccess = false;
 };
 
 /// @brief Default Heap に置く二次元 Texture の形状を指定する

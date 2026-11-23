@@ -3,11 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <new>
 
 #include <DX12/DX12CommandPool.h>
 #include <DX12/DX12FrameGraphFrames.h>
-
+#include <DX12/DX12GpuResource.h>
 #include <DX12/DX12PipelineManager.h>
 
 namespace cue::dx12
@@ -166,17 +165,6 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
     {
         return Result<void>::failure(*srvResult.try_error());
     }
-    if (std::find(m_boundParameters.begin(), m_boundParameters.end(), a_rootParameter) == m_boundParameters.end())
-    {
-        try
-        {
-            m_boundParameters.push_back(a_rootParameter);
-        }
-        catch (const std::bad_alloc &)
-        {
-            return Result<void>::failure({ErrorCategory::PlatformFailure, "DX12FrameGraphContext.binding.allocation"});
-        }
-    }
     if (!m_isSrvHeapBound)
     {
         ID3D12DescriptorHeap *heaps[] = {m_frames->srv_heap()};
@@ -184,6 +172,126 @@ Result<void> DX12FrameGraphContext::bind_texture2d(FrameGraphResourceHandle a_so
         m_isSrvHeapBound = true;
     }
     command_list().SetGraphicsRootDescriptorTable(a_rootParameter, *srvResult.try_value());
+    m_boundParameters |= std::uint64_t{1} << a_rootParameter;
+    return Result<void>::success();
+}
+
+/// @brief Compute と Vertex では Non-Pixel、Pixel では Pixel の Read State が必要になる
+bool DX12FrameGraphContext::allows_buffer_srv(FrameGraphResourceHandle a_handle,
+                                               ShaderVisibility a_visibility) const noexcept
+{
+    if (allows(a_handle, FrameGraphAccess::Read, FrameGraphResourceState::ShaderRead) ||
+        allows(a_handle, FrameGraphAccess::Read, FrameGraphResourceState::GenericRead))
+    {
+        return true;
+    }
+    if (m_isComputeBound || a_visibility == ShaderVisibility::Vertex)
+    {
+        return allows(a_handle, FrameGraphAccess::Read, FrameGraphResourceState::NonPixelShaderRead);
+    }
+    return a_visibility == ShaderVisibility::Pixel &&
+           allows(a_handle, FrameGraphAccess::Read, FrameGraphResourceState::PixelShaderRead);
+}
+
+/// @brief Pipeline が無効化済み、または記録を終えた List への Binding を拒否する
+bool DX12FrameGraphContext::can_bind() const noexcept
+{
+    return m_pipeline.is_valid() && m_command->state() == CommandState::Recording && m_command->command_list();
+}
+
+/// @brief Shader Visibility と一致する状態の Buffer だけを Root SRV として参照する
+Result<void> DX12FrameGraphContext::bind_buffer_srv(FrameGraphResourceHandle a_source, std::uint32_t a_rootParameter)
+{
+    if (!can_bind())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.bind_buffer_srv.pipeline"});
+    }
+    auto root = m_pipelines->validate_root_parameter(m_pipeline, a_rootParameter, RootParameterType::ShaderResource);
+    if (!root.has_value())
+    {
+        return Result<void>::failure(*root.try_error());
+    }
+    auto *buffer = resource(a_source);
+    if (!allows_buffer_srv(a_source, *root.try_value()) || !buffer ||
+        buffer->GetDesc().Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.bind_buffer_srv"});
+    }
+    const auto address = buffer->GetGPUVirtualAddress();
+    if (m_isComputeBound)
+    {
+        command_list().SetComputeRootShaderResourceView(a_rootParameter, address);
+    }
+    else
+    {
+        command_list().SetGraphicsRootShaderResourceView(a_rootParameter, address);
+    }
+    m_boundParameters |= std::uint64_t{1} << a_rootParameter;
+    return Result<void>::success();
+}
+
+/// @brief Pass に宣言された State と Native Buffer の UAV 対応を照合する
+Result<void> DX12FrameGraphContext::bind_buffer_uav(FrameGraphResourceHandle a_buffer, std::uint32_t a_rootParameter)
+{
+    if (!can_bind())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.bind_buffer_uav.pipeline"});
+    }
+    auto root = m_pipelines->validate_root_parameter(m_pipeline, a_rootParameter, RootParameterType::UnorderedAccess);
+    if (!root.has_value())
+    {
+        return Result<void>::failure(*root.try_error());
+    }
+    auto *buffer = resource(a_buffer);
+    if ((!allows(a_buffer, FrameGraphAccess::Read, FrameGraphResourceState::UnorderedAccess) &&
+         !allows(a_buffer, FrameGraphAccess::Write, FrameGraphResourceState::UnorderedAccess)) ||
+        !buffer)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.bind_buffer_uav"});
+    }
+    const auto desc = buffer->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.bind_buffer_uav.resource"});
+    }
+    const auto address = buffer->GetGPUVirtualAddress();
+    if (m_isComputeBound)
+    {
+        command_list().SetComputeRootUnorderedAccessView(a_rootParameter, address);
+    }
+    else
+    {
+        command_list().SetGraphicsRootUnorderedAccessView(a_rootParameter, address);
+    }
+    m_boundParameters |= std::uint64_t{1} << a_rootParameter;
+    return Result<void>::success();
+}
+
+/// @brief 宣言された個数をまとめて設定し、未初期化の Root Constants を残さない
+Result<void> DX12FrameGraphContext::set_root_constants(std::uint32_t a_rootParameter,
+                                                       std::span<const std::uint32_t> a_values)
+{
+    if (!can_bind())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.set_root_constants.pipeline"});
+    }
+    auto root = m_pipelines->validate_root_parameter(m_pipeline, a_rootParameter, RootParameterType::Constants,
+                                                     a_values.size());
+    if (!root.has_value())
+    {
+        return Result<void>::failure(*root.try_error());
+    }
+    const auto count = static_cast<UINT>(a_values.size());
+    if (m_isComputeBound)
+    {
+        command_list().SetComputeRoot32BitConstants(a_rootParameter, count, a_values.data(), 0);
+    }
+    else
+    {
+        command_list().SetGraphicsRoot32BitConstants(a_rootParameter, count, a_values.data(), 0);
+    }
+    m_boundParameters |= std::uint64_t{1} << a_rootParameter;
     return Result<void>::success();
 }
 
@@ -200,7 +308,7 @@ Result<void> DX12FrameGraphContext::set_graphics_pipeline(PipelineStateHandle a_
     m_pipelineFormat = result.take_value();
     m_targetFormat.reset();
     m_depthFormat.reset();
-    m_boundParameters.clear();
+    m_boundParameters = 0;
     m_isComputeBound = false;
     return Result<void>::success();
 }
@@ -218,7 +326,7 @@ Result<void> DX12FrameGraphContext::set_compute_pipeline(PipelineStateHandle a_p
     m_pipelineFormat.reset();
     m_targetFormat.reset();
     m_depthFormat.reset();
-    m_boundParameters.clear();
+    m_boundParameters = 0;
     m_isComputeBound = true;
     return Result<void>::success();
 }
@@ -273,7 +381,7 @@ Result<void> DX12FrameGraphContext::dispatch(std::uint32_t a_x, std::uint32_t a_
         return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.dispatch"});
     }
     // Dispatch の前提となる Compute Pipeline と Binding を確認する
-    auto validation = m_pipelines->validate_bindings(m_pipeline, {});
+    auto validation = m_pipelines->validate_bindings(m_pipeline, m_boundParameters);
     if (!validation.has_value())
     {
         return validation;
@@ -313,6 +421,30 @@ Result<void> DX12FrameGraphContext::copy_texture2d(FrameGraphResourceHandle a_so
     return Result<void>::success();
 }
 
+/// @brief Graph の CopyDestination 宣言を使い、外部 Upload の固定状態から転送する
+Result<void> DX12FrameGraphContext::copy_upload_buffer(const DX12GpuResource &a_source,
+                                                       FrameGraphResourceHandle a_destination,
+                                                       std::uint64_t a_byteSize, std::uint64_t a_sourceOffset)
+{
+    auto *destination = resource(a_destination);
+    if (!allows(a_destination, FrameGraphAccess::Write, FrameGraphResourceState::CopyDestination) || !destination ||
+        !a_source.resource() || a_source.memory_usage() != GpuMemoryUsage::Upload ||
+        a_source.kind() != GpuResourceKind::Buffer || destination == a_source.resource() ||
+        m_command->state() != CommandState::Recording || !m_command->command_list())
+    {
+        return Result<void>::failure({ErrorCategory::InvalidState, "DX12FrameGraphContext.copy_upload_buffer"});
+    }
+    const auto &planned = m_plan->resources()[a_destination.index];
+    if (planned.kind != GpuResourceKind::Buffer || planned.bufferDesc.memory == GpuMemoryUsage::Upload ||
+        a_byteSize == 0 || a_byteSize > planned.bufferDesc.byteSize || a_sourceOffset > a_source.buffer_size() ||
+        a_byteSize > a_source.buffer_size() - a_sourceOffset)
+    {
+        return Result<void>::failure({ErrorCategory::InvalidArgument, "DX12FrameGraphContext.copy_upload_buffer.range"});
+    }
+    command_list().CopyBufferRegion(destination, 0, a_source.resource(), a_sourceOffset, a_byteSize);
+    return Result<void>::success();
+}
+
 /// @brief 記録中の List を返す
 ID3D12GraphicsCommandList &DX12FrameGraphContext::command_list() const noexcept
 {
@@ -336,7 +468,7 @@ Result<void> DX12FrameGraphContext::record_external_graphics(
         m_pipelineFormat.reset();
         m_targetFormat.reset();
         m_depthFormat.reset();
-        m_boundParameters.clear();
+        m_boundParameters = 0;
         m_isComputeBound = false;
         m_hasViewport = false;
         m_isSrvHeapBound = false;
@@ -372,5 +504,16 @@ Result<void> DX12FrameGraphContext::validate_external_graphics(GpuTextureFormat 
 ID3D12Resource *DX12FrameGraphContext::resource(FrameGraphResourceHandle a_handle) const noexcept
 {
     return m_resources->resource(a_handle);
+}
+
+/// @brief Graph が IndirectArgument へ遷移した Buffer だけを描画側へ貸す
+ID3D12Resource *DX12FrameGraphContext::indirect_buffer(FrameGraphResourceHandle a_handle) const noexcept
+{
+    if (!allows(a_handle, FrameGraphAccess::Read, FrameGraphResourceState::IndirectArgument))
+    {
+        return nullptr;
+    }
+    auto *buffer = resource(a_handle);
+    return buffer && buffer->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? buffer : nullptr;
 }
 } // namespace cue::dx12
