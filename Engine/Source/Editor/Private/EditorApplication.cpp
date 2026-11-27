@@ -618,6 +618,51 @@ Result<void> EditorApplication::set_transform(std::string_view a_objectId, const
     }
 }
 
+Result<void> EditorApplication::set_material(std::string_view a_objectId, std::string_view a_assetId)
+{
+    auto access = check_access();
+    if (!access.has_value())
+        return access;
+    if (m_document->m_edit)
+        return Result<void>::failure(operation_error("Editor.set_material.editing"));
+    const ScopedFlag mutation(m_isMutating);
+    try
+    {
+        auto descriptor = m_document->m_scene.descriptor();
+        const auto index = find_object(descriptor, a_objectId);
+        if (index == descriptor.objects.size() || !descriptor.objects[index].mesh)
+            return Result<void>::failure({ErrorCategory::InvalidArgument, "Editor.set_material.object"});
+        auto &material = descriptor.objects[index].material;
+        if (a_assetId == (material ? std::string_view(material->assetId) : std::string_view{}))
+            return Result<void>::success();
+
+        SceneDocument::Command command;
+        command.kind = SceneDocument::CommandKind::Material;
+        command.object.objectId = a_objectId;
+        command.materialBefore = material;
+        if (!a_assetId.empty())
+            command.materialAfter = SceneMaterialDescriptor{std::string(a_assetId)};
+        command.formatBefore = descriptor.formatVersion;
+        command.selectedBefore = m_document->m_selected;
+        command.selectedAfter = m_document->m_selected;
+        material = command.materialAfter;
+        auto applied = apply_scene_structure(std::move(descriptor));
+        if (!applied.has_value())
+            return applied;
+        command.formatAfter = m_document->m_scene.descriptor().formatVersion;
+        m_document->append_command(std::move(command));
+        return Result<void>::success();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "Editor.set_material.allocation"});
+    }
+    catch (...)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "Editor.set_material.callback"});
+    }
+}
+
 Result<void> EditorApplication::set_scripts(std::string_view a_objectId, std::vector<ScriptDescriptor> a_scripts)
 {
     auto access = check_access();
@@ -800,13 +845,16 @@ Result<void> EditorApplication::apply_history(bool a_isRedo)
     else
     {
         auto descriptor = m_document->m_scene.descriptor();
-        if (command.kind == SceneDocument::CommandKind::Scripts)
+        if (command.kind == SceneDocument::CommandKind::Scripts || command.kind == SceneDocument::CommandKind::Material)
         {
             const auto object = find_object(descriptor, command.object.objectId);
             if (object == descriptor.objects.size())
                 return Result<void>::failure(operation_error("Editor.history.object_missing"));
-            descriptor.objects[object].scripts = a_isRedo ? command.scriptsAfter : command.scriptsBefore;
-            // v1 から初めて Script を追加した操作の Undo では保存基準の形式まで戻す
+            if (command.kind == SceneDocument::CommandKind::Scripts)
+                descriptor.objects[object].scripts = a_isRedo ? command.scriptsAfter : command.scriptsBefore;
+            else
+                descriptor.objects[object].material = a_isRedo ? command.materialAfter : command.materialBefore;
+            // 最初の Script / Material 追加を Undo する場合は保存基準の形式まで戻す
             descriptor.formatVersion = a_isRedo ? command.formatAfter : command.formatBefore;
         }
         else if (command.kind == SceneDocument::CommandKind::DeleteObject ? !a_isRedo : a_isRedo)

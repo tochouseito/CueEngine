@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -23,6 +24,7 @@
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayServer.h>
 #include <ScriptRuntime/Windows/WindowsGameModule.h>
+#include <WindowsHost/SceneMaterials.h>
 #include <WindowsHost/WindowsHost.h>
 
 namespace
@@ -38,6 +40,7 @@ struct Options final
     bool isEmbedded = false;
     bool isDebug = false;
     std::optional<cue::ScriptConfiguration> moduleConfiguration;
+    std::optional<cue::Path> contentRoot;
 };
 
 /// @brief OS の Command Line 分割を利用し、未知引数・欠損値・重複を拒否する
@@ -116,6 +119,13 @@ cue::Result<Options> read_options()
             else
                 return cue::Result<Options>::failure(
                     {cue::ErrorCategory::InvalidArgument, "Play.module_configuration"});
+        }
+        else if (key == "--content-root" && !options.contentRoot)
+        {
+            auto root = cue::Path::create(text);
+            if (!root.has_value() || !root.try_value()->is_absolute())
+                return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.content_root"});
+            options.contentRoot = root.take_value();
         }
         else
             return cue::Result<Options>::failure({cue::ErrorCategory::InvalidArgument, "Play.argument"});
@@ -402,6 +412,14 @@ int run(const Options &a_options, cue::PlayServer &a_server)
     {
         // 最初の実装は Main と Update を同じ Owner に固定する。Render は所有 Snapshot だけ読む
         std::unique_ptr<cue::ISceneRenderer> renderer;
+        std::vector<cue::SceneMaterialDesc> materials;
+        if (a_options.contentRoot)
+        {
+            auto loaded = cue::load_project_materials(**installationFiles.try_value(), *a_options.contentRoot);
+            if (!loaded.has_value())
+                return fail(a_server, *loaded.try_error());
+            materials = loaded.take_value();
+        }
         cue::WindowsHostConfig config;
         config.window = {"CueEngine Play", {1280, 720}};
         config.frame = {1, false, 60};
@@ -419,7 +437,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
             if (!created.has_value())
                 return cue::Result<void>::failure(*created.try_error());
             renderer = created.take_value();
-            return cue::Result<void>::success();
+            return renderer->set_materials(materials);
         };
         config.graph.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle)
         {

@@ -25,7 +25,7 @@ void message(std::vector<std::uint8_t> &a_bytes, std::uint32_t a_kind, std::uint
              std::uint64_t a_request = 0, bool a_isValid = true)
 {
     append(a_bytes, a_isValid ? 0x4355504c : 0, 4);
-    append(a_bytes, 2, 4);
+    append(a_bytes, 3, 4);
     append(a_bytes, a_kind, 4);
     append(a_bytes, a_length, 4);
     append(a_bytes, a_session, 8);
@@ -172,7 +172,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             real(payload, module.find(L"nan") != std::wstring::npos ? std::numeric_limits<float>::quiet_NaN() : 1.0f);
             real(payload, 0.1f);
             real(payload, 1000.0f);
-            append(payload, module.find(L"count") != std::wstring::npos ? 4097 : 0, 4);
+            const bool badMaterial = module.find(L"material") != std::wstring::npos;
+            append(payload, module.find(L"count") != std::wstring::npos ? 4097 : badMaterial ? 1 : 0, 4);
+            if (badMaterial)
+            {
+                for (unsigned row = 0; row < 4; ++row)
+                    for (unsigned column = 0; column < 4; ++column)
+                        real(payload, row == column ? 1.0f : 0.0f);
+                text(payload, "cue://engine/mesh/cube");
+                text(payload, "invalid-material-id");
+            }
             append(payload, 0, 4);
             message(bytes, 106, static_cast<std::uint32_t>(payload.size()), session,
                     module.find(L"request") != std::wstring::npos ? request + 1 : request);

@@ -69,6 +69,8 @@ enum class EditorActionKind
     InspectScriptRemoval,
     ConfirmScriptRemoval,
     CancelScriptRemoval,
+    ImportTexture,
+    SetMaterial,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求
@@ -87,6 +89,8 @@ struct EditorAction final
     std::string scriptName;
     EditorLanguage language = EditorLanguage::English;
     Path assetPath;
+    // 空は既定 Material へ戻す
+    std::string materialAssetId;
 };
 
 /// @brief Build の表示用 Snapshot。View / Span は draw の間だけ Host から借用する
@@ -162,6 +166,7 @@ struct EditorUiContext final
     bool canManageAssets = false;
     float reservedBottomHeight = 0;
     std::span<const EditorAssetFolder> assetFolders;
+    std::span<const EditorMaterialChoice> materials;
     const EditorScriptRemovalView *scriptRemoval = nullptr;
 
     /// @brief 表示言語だけを切り替える。ImGui の ID 付き Label には共通の ID を指定する

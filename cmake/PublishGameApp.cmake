@@ -94,6 +94,31 @@ if(NOT taskShaderFiles)
 endif()
 set(taskCopiedFiles "${CUE_APP_EXECUTABLE_NAME}" "${CUE_STARTUP_SCENE_RELATIVE}"
     ${taskRuntimeFiles} ${taskLicenseFiles} ${taskShaderFiles})
+
+# Cook 済み Pack を Link 入力に含め、画像や Material だけを編集した Build でも公開する
+set(taskRelativeAssets "Content/Assets.cuepak")
+set(taskStagedAssets "${taskSource}/${taskRelativeAssets}")
+set(taskHasAssets FALSE)
+if(DEFINED CUE_APP_CONTENT_ROOT)
+    cue_app_validate_path("${CUE_APP_CONTENT_ROOT}")
+    file(GLOB_RECURSE taskAssetFiles LIST_DIRECTORIES FALSE "${CUE_APP_CONTENT_ROOT}/*.cuemeta"
+        "${CUE_APP_CONTENT_ROOT}/*.cuemat")
+    file(STRINGS "${CUE_STARTUP_SCENE}" taskReferencedMaterials REGEX "^[ \t]*material\\.assetId[ \t]*="
+        ENCODING UTF-8)
+    if(taskAssetFiles OR taskReferencedMaterials)
+        set(taskHasAssets TRUE)
+        cue_app_validate_path("${taskStagedAssets}")
+        if(DEFINED CUE_APP_INPUTS_SOURCE)
+            cue_app_validate_path("${CUE_APP_COOK_CACHE}")
+            find_program(taskPowerShell NAMES pwsh REQUIRED)
+            execute_process(COMMAND "${taskPowerShell}" -NoProfile -NonInteractive -File
+                "${CMAKE_CURRENT_LIST_DIR}/CookGameAssets.ps1" -ContentRoot "${CUE_APP_CONTENT_ROOT}"
+                -OutputFile "${taskStagedAssets}" -StartupScene "${CUE_STARTUP_SCENE}" -ToolCache "${CUE_APP_COOK_CACHE}"
+                COMMAND_ERROR_IS_FATAL ANY)
+        endif()
+        list(APPEND taskCopiedFiles "${taskRelativeAssets}")
+    endif()
+endif()
 set(taskNewOwned ${taskCopiedFiles} GameStartup.cueapp GamePackage.cuepackage)
 list(REMOVE_DUPLICATES taskNewOwned)
 set(taskOldOwned)
@@ -165,6 +190,13 @@ set(taskDebugScene "${taskSource}/${CUE_STARTUP_SCENE_RELATIVE}")
 foreach(taskDebugFile IN ITEMS "${taskDebugMarker}" "${taskDebugStartup}" "${taskDebugScene}")
     cue_app_validate_path("${taskDebugFile}")
 endforeach()
+if(NOT taskHasAssets AND EXISTS "${taskStagedAssets}")
+    cue_app_validate_path("${taskStagedAssets}")
+    if(IS_DIRECTORY "${taskStagedAssets}")
+        message(FATAL_ERROR "Cue staged asset pack was replaced by a directory")
+    endif()
+    file(REMOVE "${taskStagedAssets}")
+endif()
 
 # MSBuild が Link を省略して POST_BUILD だけ実行しても、同じ完成物を再公開しない
 set(taskIsCurrent FALSE)

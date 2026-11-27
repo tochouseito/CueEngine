@@ -1,10 +1,12 @@
 #include <GameHost/Windows/WindowsGame.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -21,6 +23,7 @@
 #include <Scene/Scene.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptRuntime/ScriptModule.h>
+#include <WindowsHost/SceneMaterials.h>
 #include <WindowsHost/WindowsHost.h>
 
 #include "AppValidation.h"
@@ -84,7 +87,8 @@ void report_script(std::uint32_t a_severity, std::string_view a_message)
 
 /// @brief Platform Host の Frame 制御へ実行 Session と所有 Render Snapshot を接続する
 Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_startup,
-                        const AppValidationOptions &a_options, AppValidationMetrics &a_metrics)
+                        std::span<const SceneMaterialDesc> a_materials, const AppValidationOptions &a_options,
+                        AppValidationMetrics &a_metrics)
 {
     std::unique_ptr<ISceneRenderer> renderer;
     WindowsHostConfig config;
@@ -116,7 +120,7 @@ Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_start
         if (!created.has_value())
             return Result<void>::failure(*created.try_error());
         renderer = created.take_value();
-        return Result<void>::success();
+        return renderer->set_materials(a_materials);
     };
     config.graph.configure = [&](FrameGraph &a_graph, FrameGraphResourceHandle)
     {
@@ -212,6 +216,18 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             auto scene = Scene::load(**files.try_value(), *sceneFile.try_value());
             if (!scene.has_value())
                 return Result<void>::failure(*scene.try_error());
+            const auto &objects = scene.try_value()->descriptor().objects;
+            const bool needsPack = std::ranges::any_of(objects, [](const auto &a_object) { return a_object.material.has_value(); });
+            auto materials = load_product_materials(**files.try_value(), *directory.try_value(), needsPack);
+            if (!materials.has_value())
+                return Result<void>::failure(*materials.try_error());
+            for (const auto &object : objects)
+            {
+                if (object.material && std::ranges::none_of(*materials.try_value(), [&](const auto &a_material)
+                    { return a_material.assetId == object.material->assetId; }))
+                    return Result<void>::failure({ErrorCategory::InvalidArgument,
+                                                  "GameApp.material_missing:" + object.material->assetId});
+            }
             auto module = RuntimeGameModule::from_static(a_entry);
             if (!module.has_value())
                 return Result<void>::failure(*module.try_error());
@@ -226,7 +242,8 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             observe_app_snapshot(metrics, *initial.try_value());
             auto played = options.try_value()->isValidateOnly
                               ? Result<void>::success()
-                              : run_frames(*session, *startup.try_value(), *options.try_value(), metrics);
+                              : run_frames(*session, *startup.try_value(), *materials.try_value(),
+                                           *options.try_value(), metrics);
             metrics.completedSimulationTicks = session->completed_ticks();
             auto stopped = session->shutdown();
             metrics.hasNormalShutdown = played.has_value() && stopped.has_value();

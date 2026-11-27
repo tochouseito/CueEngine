@@ -6,7 +6,7 @@ struct TransformRecord
 struct Candidate
 {
     uint transformIndex;
-    uint meshIndex;
+    uint groupIndex;
     uint materialId;
 };
 
@@ -19,8 +19,8 @@ struct MeshRange
 
 struct Page
 {
-    uint firstMesh;
-    uint meshCount;
+    uint firstGroup;
+    uint groupCount;
     uint firstCommand;
 };
 
@@ -45,7 +45,7 @@ struct IndirectDraw
 cbuffer FrameCounts : register(b0)
 {
     uint candidateCount;
-    uint meshCount;
+    uint groupCount;
     uint pageCount;
 };
 
@@ -60,7 +60,6 @@ RWStructuredBuffer<IndirectDraw> commands : register(u2);
 RWByteAddressBuffer commandCounts : register(u3);
 
 static const uint k_depthBinCount = 8;
-static const uint k_materialCount = 1;
 
 // 不透明描画の順序付けに使う。画面外やカメラ後方の候補もバッチへ入れる
 uint batch_index(Candidate candidate)
@@ -68,14 +67,14 @@ uint batch_index(Candidate candidate)
     const float4 center = transforms[candidate.transformIndex].worldViewProjection[3];
     const float depth = center.w > 0.0f ? saturate(center.z / center.w) : 0.0f;
     const uint depthBin = min((uint)(depth * k_depthBinCount), k_depthBinCount - 1);
-    return (candidate.meshIndex * k_materialCount + candidate.materialId) * k_depthBinCount + depthBin;
+    return candidate.groupIndex * k_depthBinCount + depthBin;
 }
 
 // 直前の GPU 枠の結果が現在のバッチに残らないよう、使用範囲を初期化する
 [numthreads(64, 1, 1)]
 void reset_batches(uint3 threadId : SV_DispatchThreadID)
 {
-    if (threadId.x < meshCount * k_materialCount * k_depthBinCount)
+    if (threadId.x < groupCount * k_depthBinCount)
     {
         batches[threadId.x] = (Batch)0;
     }
@@ -103,8 +102,8 @@ void prefix_batches(uint3 threadId : SV_DispatchThreadID)
     uint nextInstance = page.firstCommand;
     for (uint depthBin = 0; depthBin < k_depthBinCount; ++depthBin)
     {
-        const uint end = (page.firstMesh + page.meshCount) * k_materialCount * k_depthBinCount;
-        for (uint batch = page.firstMesh * k_materialCount * k_depthBinCount + depthBin;
+        const uint end = (page.firstGroup + page.groupCount) * k_depthBinCount;
+        for (uint batch = page.firstGroup * k_depthBinCount + depthBin;
              batch < end; batch += k_depthBinCount)
         {
             batches[batch].instanceStart = nextInstance;
@@ -138,14 +137,14 @@ void emit_commands(uint3 threadId : SV_DispatchThreadID)
     uint count = 0;
     for (uint depthBin = 0; depthBin < k_depthBinCount; ++depthBin)
     {
-        const uint end = (page.firstMesh + page.meshCount) * k_materialCount * k_depthBinCount;
-        for (uint index = page.firstMesh * k_materialCount * k_depthBinCount + depthBin;
+        const uint end = (page.firstGroup + page.groupCount) * k_depthBinCount;
+        for (uint index = page.firstGroup * k_depthBinCount + depthBin;
              index < end; index += k_depthBinCount)
         {
             const Batch batch = filledBatches[index];
             if (batch.count > 0)
             {
-                const MeshRange mesh = meshes[index / (k_depthBinCount * k_materialCount)];
+                const MeshRange mesh = meshes[index / k_depthBinCount];
                 IndirectDraw draw;
                 draw.instanceStart = batch.instanceStart;
                 draw.indexCount = mesh.indexCount;

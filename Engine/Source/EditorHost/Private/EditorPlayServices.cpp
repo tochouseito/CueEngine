@@ -50,6 +50,8 @@ Result<PlayClientConfig> resolve_editor_play_config(IFileSystem &a_files, const 
         return Result<PlayClientConfig>::failure(
             {ErrorCategory::InvalidArgument, "EditorHost.play.partial_configuration"});
     PlayClientConfig config;
+    if (a_project)
+        config.contentRoot = a_project->content_directory();
     switch (a_configuration)
     {
     case GameBuildConfiguration::Debug:

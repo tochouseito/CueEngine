@@ -13,6 +13,15 @@
 Engine / Editor Package と DXC を含む実行物に、対応する License / Notice を同梱する。
 本体・SDK・Debug CRT の配布条件は [Windows 再配布監査](../Docs/Research/Hub-Windows-Redistribution-Audit.md) を参照。
 
+## DirectXTex texconv
+
+- 出自: https://github.com/microsoft/DirectXTex/releases/tag/may2026
+- Version: `may2026` の Windows x64 `texconv.exe`
+- SHA-256: `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`
+- License: [MIT](Licenses/DirectXTex-MIT.txt)
+
+Windows 向け Texture Cook の初回に公式 Binary を取得し、Hash を照合して Intermediate の Tool Cache へ保存する。製品 App へは Cook 済み DDS を収録した Asset Pack を配置する。
+
 ## WinPixEventRuntime
 
 - 出自: https://github.com/microsoft/PixEvents

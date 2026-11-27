@@ -40,6 +40,8 @@ struct PlayClientConfig final
     bool isEmbedded = false;
     // 未指定では PlayHost と同じ構成を使う。Editor は選択した Game 構成を明示する
     std::optional<ScriptConfiguration> moduleConfiguration;
+    // Window を持つ PlayHost が使う制作時 Content の位置
+    std::optional<Path> contentRoot;
 };
 
 /// @brief 実行中の Object の Local Transform。永続 ID だけを使い Runtime Handle を共有しない

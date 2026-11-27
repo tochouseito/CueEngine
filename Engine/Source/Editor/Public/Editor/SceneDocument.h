@@ -58,7 +58,8 @@ class SceneDocument final
         AddCube,
         DeleteObject,
         Transform,
-        Scripts
+        Scripts,
+        Material,
     };
     struct Command final
     {
@@ -69,6 +70,8 @@ class SceneDocument final
         math::floatTransform after;
         std::vector<ScriptDescriptor> scriptsBefore;
         std::vector<ScriptDescriptor> scriptsAfter;
+        std::optional<SceneMaterialDescriptor> materialBefore;
+        std::optional<SceneMaterialDescriptor> materialAfter;
         std::uint32_t formatBefore = 1;
         std::uint32_t formatAfter = 1;
         std::string selectedBefore;

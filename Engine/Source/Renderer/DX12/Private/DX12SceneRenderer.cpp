@@ -1,5 +1,7 @@
 #include <SceneRender/SceneRenderer.h>
 
+#include "DX12SceneMaterials.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -14,14 +16,12 @@
 
 #include <Assets/BuiltinMesh.h>
 #include <DX12/DX12Backend.h>
-#include <DX12/DX12CommandPool.h>
 #include <DX12/DX12FrameGraphContext.h>
 #include <DX12/DX12GpuResource.h>
 #include <DX12/DX12PipelineManager.h>
 #include <DX12/DX12RenderDevice.h>
 #include <Math/Projection.h>
 #include <Platform/Diagnostics.h>
-#include <RHI/GpuResourcePool.h>
 #include <RHI/MeshPool.h>
 
 namespace cue
@@ -31,18 +31,15 @@ namespace
 constexpr std::uint32_t k_maxDraws = 4096;
 constexpr std::size_t k_maxFrames = 64;
 constexpr std::uint32_t k_depthBins = 8;
-constexpr std::uint32_t k_materialCount = 1;
 constexpr std::uint32_t k_computeGroupSize = 64;
 
 using matrixRecord = std::array<float, 16>;
-constexpr std::array<float, 4> k_defaultMaterial = {1.0f, 1.0f, 1.0f, 1.0f};
-constexpr GpuBufferDesc k_materialDesc{sizeof(k_defaultMaterial)};
 
 // HLSL と Command Signature が共有する Buffer Record
 struct Candidate final
 {
     std::uint32_t transformIndex;
-    std::uint32_t meshIndex;
+    std::uint32_t groupIndex;
     std::uint32_t materialId;
 };
 struct MeshRange final
@@ -53,8 +50,8 @@ struct MeshRange final
 };
 struct Page final
 {
-    std::uint32_t firstMesh;
-    std::uint32_t meshCount;
+    std::uint32_t firstGroup;
+    std::uint32_t groupCount;
     std::uint32_t firstCommand;
 };
 struct Batch final
@@ -73,14 +70,21 @@ static_assert(sizeof(IndirectDraw) == 24 && offsetof(IndirectDraw, arguments) ==
 
 struct SceneRendererState final
 {
+    /// @brief 公開時点の Material 世代を Scene の値と一緒に固定する
+    struct PublishedFrame final
+    {
+        SceneRenderSnapshot snapshot;
+        std::shared_ptr<const dx12::SceneMaterialSet> materials;
+    };
+
     std::mutex mutex;
     IMeshPool *meshes = nullptr;
-    IGpuResourcePool *buffers = nullptr;
+    dx12::DX12Backend *backend = nullptr;
     const dx12::DX12ResourceContext *resources = nullptr;
     std::map<std::string, MeshHandle, std::less<>> meshAssets;
-    GpuResourceHandle material;
-    std::map<std::uint64_t, SceneRenderSnapshot> pending;
-    std::optional<SceneRenderSnapshot> active;
+    std::shared_ptr<const dx12::SceneMaterialSet> materials;
+    std::map<std::uint64_t, PublishedFrame> pending;
+    std::optional<PublishedFrame> active;
     std::optional<std::uint64_t> lastPublished;
     bool isStopped = false;
     bool isRendering = false;
@@ -109,7 +113,7 @@ constexpr std::array<BufferSpec, BufferCount> k_buffers = {{
     {"Scene.Candidates", {k_maxDraws * sizeof(Candidate)}},
     {"Scene.MeshRanges", {k_maxDraws * sizeof(MeshRange)}},
     {"Scene.Pages", {k_maxDraws * sizeof(Page)}},
-    {"Scene.Batches", {k_maxDraws * k_materialCount * k_depthBins * sizeof(Batch), GpuMemoryUsage::Default, true}},
+    {"Scene.Batches", {k_maxDraws * k_depthBins * sizeof(Batch), GpuMemoryUsage::Default, true}},
     {"Scene.Instances", {k_maxDraws * sizeof(std::uint32_t), GpuMemoryUsage::Default, true}},
     {"Scene.IndirectArguments", {k_maxDraws * sizeof(IndirectDraw), GpuMemoryUsage::Default, true}},
     {"Scene.IndirectCounts", {k_maxDraws * sizeof(std::uint32_t), GpuMemoryUsage::Default, true}},
@@ -129,7 +133,9 @@ struct MeshFrame final
     std::unique_ptr<dx12::DX12GpuResource> upload;
     std::vector<meshLease> meshes;
     std::vector<DrawPage> pages;
+    std::shared_ptr<const dx12::SceneMaterialSet> materials;
     std::uint32_t candidateCount = 0;
+    std::uint32_t groupCount = 0;
 };
 
 /// @brief 描画 Pass 群が同じ Graph の資源と記録中の GPU 枠を参照する
@@ -214,26 +220,36 @@ class MeshUploadPass final : public FrameGraphPass
         // Graph が同じ GPU 枠の Fence を待った後なので、前回の Page を返せる
         frame.meshes.clear();
         frame.pages.clear();
+        frame.materials.reset();
         frame.candidateCount = 0;
+        frame.groupCount = 0;
         const auto &scene = *m_graph->scene;
-        const auto &snapshot = scene.active;
-        if (!snapshot || snapshot->objects.empty())
+        if (!scene.active || scene.active->snapshot.objects.empty())
             return Result<void>::success();
-        if (!snapshot->camera)
+        const auto &snapshot = scene.active->snapshot;
+        frame.materials = scene.active->materials;
+        if (!snapshot.camera || !frame.materials)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "Scene.Upload.camera"});
-        const auto projection = math::perspective_rh_zo(snapshot->camera->verticalFovRadians,
+        const auto projection = math::perspective_rh_zo(snapshot.camera->verticalFovRadians,
                                                         float(a_context.width()) / float(a_context.height()),
-                                                        snapshot->camera->nearClip, snapshot->camera->farClip);
+                                                        snapshot.camera->nearClip, snapshot.camera->farClip);
         if (!projection.has_value())
             return Result<void>::failure(*projection.try_error());
 
         std::map<std::string_view, std::optional<std::uint32_t>> resolved;
-        std::vector<std::uint32_t> candidateCounts;
+        // Mesh と Material の存在する組だけを密に並べ、最大数の積で Batch を確保しない
+        struct DrawGroup final
+        {
+            std::uint32_t meshLeaseIndex;
+            std::uint32_t candidateCount = 0;
+        };
+        std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> groupIndices;
+        std::vector<DrawGroup> groups;
         std::vector<Candidate> candidates;
         std::vector<matrixRecord> transforms;
-        candidates.reserve(snapshot->objects.size());
-        transforms.reserve(snapshot->objects.size());
-        for (const auto &object : snapshot->objects)
+        candidates.reserve(snapshot.objects.size());
+        transforms.reserve(snapshot.objects.size());
+        for (const auto &object : snapshot.objects)
         {
             auto [entry, inserted] = resolved.try_emplace(object.meshId);
             if (inserted)
@@ -249,47 +265,56 @@ class MeshUploadPass final : public FrameGraphPass
                 {
                     entry->second = static_cast<std::uint32_t>(frame.meshes.size());
                     frame.meshes.push_back(std::move(lease));
-                    candidateCounts.push_back(0);
                 }
             }
             if (!entry->second)
                 continue;
             const auto meshIndex = *entry->second;
-            const auto wvp = object.world * snapshot->camera->view * *projection.try_value();
+            const auto materialId = object.materialId ? frame.materials->ids.at(*object.materialId) : 0u;
+            const auto [group, newGroup] = groupIndices.try_emplace(
+                std::pair{meshIndex, materialId}, static_cast<std::uint32_t>(groups.size()));
+            if (newGroup)
+                groups.push_back({meshIndex});
+            ++groups[group->second].candidateCount;
+            const auto wvp = object.world * snapshot.camera->view * *projection.try_value();
             if (!math::is_finite(wvp))
                 return Result<void>::failure({ErrorCategory::InvalidArgument, "Scene.Upload.transform"});
             matrixRecord packed{};
             for (std::size_t row = 0; row < 4; ++row)
                 for (std::size_t column = 0; column < 4; ++column)
                     packed[row * 4 + column] = wvp.values[row][column];
-            candidates.push_back({static_cast<std::uint32_t>(transforms.size()), meshIndex, 0});
+            candidates.push_back({static_cast<std::uint32_t>(transforms.size()), group->second, materialId});
             transforms.push_back(packed);
-            ++candidateCounts[meshIndex];
         }
         if (candidates.empty())
             return Result<void>::success();
 
-        std::vector<std::uint32_t> sortedMeshes(frame.meshes.size());
-        std::iota(sortedMeshes.begin(), sortedMeshes.end(), 0u);
-        // CPU は VB/IB の Bind 単位を決める。Page 内の描画バッチは Compute で生成する
+        std::vector<std::uint32_t> sortedGroups(groups.size());
+        std::iota(sortedGroups.begin(), sortedGroups.end(), 0u);
+        // CPU は VB/IB の Bind 単位を決める。Page 内の深度バッチは Compute で生成する
         std::stable_sort(
-            sortedMeshes.begin(), sortedMeshes.end(), [&](std::uint32_t a_left, std::uint32_t a_right)
-            { return frame.meshes[a_left]->draw_range().pageId < frame.meshes[a_right]->draw_range().pageId; });
+            sortedGroups.begin(), sortedGroups.end(), [&](std::uint32_t a_left, std::uint32_t a_right)
+            {
+                return frame.meshes[groups[a_left].meshLeaseIndex]->draw_range().pageId <
+                       frame.meshes[groups[a_right].meshLeaseIndex]->draw_range().pageId;
+            });
 
-        std::vector<std::uint32_t> remap(sortedMeshes.size());
+        std::vector<std::uint32_t> remap(groups.size());
         std::vector<MeshRange> meshRanges;
         std::vector<Page> pages;
         std::uint32_t commandOffset = 0;
-        for (const auto index : sortedMeshes)
+        for (const auto index : sortedGroups)
         {
-            const auto &range = frame.meshes[index]->draw_range();
+            const auto &group = groups[index];
+            const auto &range = frame.meshes[group.meshLeaseIndex]->draw_range();
             if (frame.pages.empty() ||
                 frame.meshes[frame.pages.back().meshLeaseIndex]->draw_range().pageId != range.pageId)
-                frame.pages.push_back({{static_cast<std::uint32_t>(meshRanges.size()), 0, commandOffset}, 0, index});
+                frame.pages.push_back(
+                    {{static_cast<std::uint32_t>(meshRanges.size()), 0, commandOffset}, 0, group.meshLeaseIndex});
             auto &page = frame.pages.back();
-            ++page.gpu.meshCount;
-            page.maxCommands += candidateCounts[index];
-            commandOffset += candidateCounts[index];
+            ++page.gpu.groupCount;
+            page.maxCommands += group.candidateCount;
+            commandOffset += group.candidateCount;
             remap[index] = static_cast<std::uint32_t>(meshRanges.size());
             meshRanges.push_back({range.indexCount, range.firstIndex, range.baseVertex});
         }
@@ -297,7 +322,7 @@ class MeshUploadPass final : public FrameGraphPass
         for (const auto &page : frame.pages)
             pages.push_back(page.gpu);
         for (auto &candidate : candidates)
-            candidate.meshIndex = remap[candidate.meshIndex];
+            candidate.groupIndex = remap[candidate.groupIndex];
 
         const std::array payloads = {std::as_bytes(std::span<const matrixRecord>{transforms}),
                                      std::as_bytes(std::span<const Candidate>{candidates}),
@@ -328,6 +353,7 @@ class MeshUploadPass final : public FrameGraphPass
             offset += payload.size();
         }
         frame.candidateCount = static_cast<std::uint32_t>(candidates.size());
+        frame.groupCount = static_cast<std::uint32_t>(groups.size());
         return Result<void>::success();
     }
 
@@ -451,9 +477,8 @@ class MeshComputePass final : public FrameGraphPass
         auto pipeline = a_context.set_compute_pipeline(m_pipeline);
         if (!pipeline.has_value())
             return pipeline;
-        const auto meshCount = static_cast<std::uint32_t>(frame.meshes.size());
         const auto pageCount = static_cast<std::uint32_t>(frame.pages.size());
-        const std::array counts = {frame.candidateCount, meshCount, pageCount};
+        const std::array counts = {frame.candidateCount, frame.groupCount, pageCount};
         auto constants = a_context.set_root_constants(0, counts);
         if (!constants.has_value())
             return constants;
@@ -469,7 +494,7 @@ class MeshComputePass final : public FrameGraphPass
         }
         std::uint32_t workCount = frame.candidateCount;
         if (m_stage.work == Work::Batch)
-            workCount = meshCount * k_materialCount * k_depthBins;
+            workCount = frame.groupCount * k_depthBins;
         else if (m_stage.work == Work::Page)
             workCount = pageCount;
         return a_context.dispatch((workCount + k_computeGroupSize - 1) / k_computeGroupSize, 1, 1);
@@ -521,13 +546,6 @@ class MeshPass final : public FrameGraphPass
             return Result<void>::failure(*depth.try_error());
         m_depth = depth.take_value();
         const auto &scene = *m_graph->scene;
-        // 不変 Buffer は COMMON から暗黙に Read へ昇格し、複数の GPU 枠で Read Lease を共有する
-        auto material = a_builder.import_pool_buffer("Scene.Materials", *scene.buffers, scene.material, k_materialDesc,
-                                                     FrameGraphResourceState::PixelShaderRead,
-                                                     FrameGraphResourceState::PixelShaderRead);
-        if (!material.has_value())
-            return Result<void>::failure(*material.try_error());
-        m_material = material.take_value();
 
         RootSignatureDesc root;
         root.name = "MeshPass.Root";
@@ -535,7 +553,9 @@ class MeshPass final : public FrameGraphPass
                            {RootParameterType::ShaderResource, ShaderVisibility::Vertex, 0},
                            {RootParameterType::ShaderResource, ShaderVisibility::Vertex, 1},
                            {RootParameterType::ShaderResource, ShaderVisibility::Vertex, 2},
-                           {RootParameterType::ShaderResource, ShaderVisibility::Pixel, 3}};
+                           {RootParameterType::ShaderResource, ShaderVisibility::Pixel, 3},
+                           {RootParameterType::SrvTable, ShaderVisibility::Pixel, 4, 0, dx12::k_sceneTextureCount}};
+        root.samplers = {{0, 0, ShaderVisibility::Pixel, SamplerFilter::Linear, SamplerAddressMode::Clamp}};
         auto rootResult = a_builder.create_root_signature(std::move(root));
         if (!rootResult.has_value())
             return Result<void>::failure(*rootResult.try_error());
@@ -558,7 +578,8 @@ class MeshPass final : public FrameGraphPass
         pipeline.cullMode = CullMode::Back;
         pipeline.isFrontCounterClockwise = true;
         pipeline.inputElements = {{"POSITION", 0, 0, 0, VertexElementFormat::Float3},
-                                  {"NORMAL", 0, 1, 0, VertexElementFormat::Float3}};
+                                  {"NORMAL", 0, 1, 0, VertexElementFormat::Float3},
+                                  {"TEXCOORD", 0, 2, 0, VertexElementFormat::Float2}};
         auto created = a_builder.create_graphics_pipeline(std::move(pipeline));
         if (!created.has_value())
             return Result<void>::failure(*created.try_error());
@@ -576,7 +597,6 @@ class MeshPass final : public FrameGraphPass
         const std::array uses = {
             FrameGraphUse{m_color, FrameGraphAccess::Write, FrameGraphResourceState::RenderTarget},
             FrameGraphUse{m_depth, FrameGraphAccess::Write, FrameGraphResourceState::DepthWrite},
-            FrameGraphUse{m_material, FrameGraphAccess::Read, FrameGraphResourceState::PixelShaderRead},
             FrameGraphUse{m_graph->buffers[Transforms], FrameGraphAccess::Read,
                           FrameGraphResourceState::NonPixelShaderRead},
             FrameGraphUse{m_graph->buffers[Candidates], FrameGraphAccess::Read,
@@ -617,7 +637,7 @@ class MeshPass final : public FrameGraphPass
         if (!viewport.has_value())
             return viewport;
         const std::array srvs = {m_graph->buffers[Transforms], m_graph->buffers[Candidates],
-                                 m_graph->buffers[Instances], m_material};
+                                 m_graph->buffers[Instances]};
         for (std::uint32_t index = 0; index < srvs.size(); ++index)
         {
             auto bound = a_context.bind_buffer_srv(srvs[index], index + 1);
@@ -632,12 +652,18 @@ class MeshPass final : public FrameGraphPass
             m_format,
             [&](ID3D12GraphicsCommandList &a_list)
             {
+                // Copy の完了後に公開した不変資源を Frame が保持し、COMMON は読取時に昇格する
+                const auto &materials = *frame.materials;
+                ID3D12DescriptorHeap *heaps[] = {materials.heap.Get()};
+                a_list.SetDescriptorHeaps(1, heaps);
+                a_list.SetGraphicsRootShaderResourceView(4, materials.records->resource()->GetGPUVirtualAddress());
+                a_list.SetGraphicsRootDescriptorTable(5, materials.heap->GetGPUDescriptorHandleForHeapStart());
                 a_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 for (std::size_t index = 0; index < frame.pages.size(); ++index)
                 {
                     const auto &page = frame.pages[index];
                     const auto &draw = frame.meshes[page.meshLeaseIndex]->draw_range();
-                    std::array<D3D12_VERTEX_BUFFER_VIEW, 2> vertices{};
+                    std::array<D3D12_VERTEX_BUFFER_VIEW, 3> vertices{};
                     for (std::size_t stream = 0; stream < vertices.size(); ++stream)
                     {
                         auto *buffer = dynamic_cast<dx12::DX12GpuResource *>(draw.vertices[stream].resource);
@@ -666,80 +692,10 @@ class MeshPass final : public FrameGraphPass
     std::shared_ptr<MeshGraph> m_graph;
     FrameGraphResourceHandle m_color;
     FrameGraphResourceHandle m_depth;
-    FrameGraphResourceHandle m_material;
     PipelineStateHandle m_pipeline;
     GpuTextureFormat m_format = GpuTextureFormat::Rgba8Unorm;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_signature;
 };
-
-/// @brief 初回だけ転送する Material の両 Buffer を Copy Command と同じ寿命にする
-struct MaterialUpload final
-{
-    std::unique_ptr<dx12::DX12GpuResource> staging;
-    Microsoft::WRL::ComPtr<ID3D12Resource> destination;
-};
-
-/// @brief Renderer 内部の既定 Material を Default Heap へ転送してから公開する
-Result<void> initialize_material(SceneRendererState &a_scene, dx12::DX12Backend &a_backend)
-{
-    auto created = a_scene.buffers->create_buffer(k_materialDesc);
-    if (!created.has_value())
-        return Result<void>::failure(*created.try_error());
-    a_scene.material = created.take_value();
-    auto borrowed = a_scene.buffers->acquire(a_scene.material, GpuResourceAccess::Write);
-    if (!borrowed.has_value())
-        return Result<void>::failure(*borrowed.try_error());
-    auto buffer = borrowed.take_value();
-    auto *destination = dynamic_cast<dx12::DX12GpuResource *>(buffer->resource());
-    if (!destination)
-        return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.material_backend"});
-
-    auto upload = std::make_shared<MaterialUpload>();
-    upload->destination = destination->resource();
-    auto staging = dx12::DX12GpuResource::create_buffer(*a_scene.resources->device.device(),
-                                                        {k_materialDesc.byteSize, GpuMemoryUsage::Upload},
-                                                        L"CueEngine Default Material Upload");
-    if (!staging.has_value())
-        return Result<void>::failure(*staging.try_error());
-    upload->staging = staging.take_value();
-    auto written = upload->staging->write(0, std::as_bytes(std::span{k_defaultMaterial}));
-    if (!written.has_value())
-        return written;
-
-    auto queueResult = a_backend.get_queue_pool()->acquire(QueueType::Copy);
-    if (!queueResult.has_value())
-        return Result<void>::failure(*queueResult.try_error());
-    auto queue = queueResult.take_value();
-    auto &commands = *a_backend.get_command_pool();
-    auto commandResult = commands.acquire(QueueType::Copy);
-    if (!commandResult.has_value())
-        return Result<void>::failure(*commandResult.try_error());
-    auto command = commandResult.take_value();
-    auto *native = dynamic_cast<dx12::DX12GpuCommandContext *>(command.get());
-    if (!native)
-        return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.material_command"});
-    auto retained = native->retain(upload);
-    if (!retained.has_value())
-        return retained;
-
-    // Copy Queue から Graphics Queue へ引き渡す状態を COMMON に揃える
-    auto &list = *native->command_list();
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition = {destination->resource(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COMMON,
-                          D3D12_RESOURCE_STATE_COPY_DEST};
-    list.ResourceBarrier(1, &barrier);
-    list.CopyBufferRegion(destination->resource(), 0, upload->staging->resource(), 0, k_materialDesc.byteSize);
-    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-    list.ResourceBarrier(1, &barrier);
-    auto closed = command->close();
-    if (!closed.has_value())
-        return closed;
-    auto submitted = commands.submit(*queue, *command);
-    if (!submitted.has_value())
-        return Result<void>::failure(*submitted.try_error());
-    return (*submitted.try_value())->wait();
-}
 
 class SceneRenderer final : public ISceneRenderer
 {
@@ -755,20 +711,44 @@ class SceneRenderer final : public ISceneRenderer
         if (!result.has_value())
             report_log_error("SceneRenderer.shutdown", *result.try_error(), LogLevel::Error);
     }
+    /// @brief Copy Fence 完了済みの世代を、これから公開する Frame にだけ使用する
+    Result<void> set_materials(std::span<const SceneMaterialDesc> a_materials) override
+    {
+        {
+            const std::lock_guard lock(m_state->mutex);
+            if (m_state->isStopped)
+                return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_materials"});
+            if (a_materials.empty() && m_state->materials && m_state->materials->ids.empty())
+                return Result<void>::success();
+        }
+        auto created = dx12::create_scene_materials(*m_state->backend, a_materials);
+        if (!created.has_value())
+            return Result<void>::failure(*created.try_error());
+        const std::lock_guard lock(m_state->mutex);
+        if (m_state->isStopped)
+            return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_materials"});
+        m_state->materials = created.take_value();
+        return Result<void>::success();
+    }
     /// @brief 非消費 Frame の容量と値を検証して公開する
     Result<void> publish_frame(std::uint64_t a_frame, SceneRenderSnapshot a_snapshot) override
     {
         const std::lock_guard lock(m_state->mutex);
-        if (m_state->isStopped || m_state->pending.size() >= k_maxFrames ||
+        if (m_state->isStopped || !m_state->materials || m_state->pending.size() >= k_maxFrames ||
             (m_state->lastPublished && a_frame <= *m_state->lastPublished) || a_snapshot.objects.size() > k_maxDraws ||
             (!a_snapshot.objects.empty() && !a_snapshot.camera))
             return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.publish_frame"});
-        for (const auto &object : a_snapshot.objects)
-            if (!math::is_finite(object.world) || !m_state->meshAssets.contains(object.meshId))
-                return Result<void>::failure({ErrorCategory::InvalidArgument, "SceneRenderer.object"});
         try
         {
-            m_state->pending.emplace(a_frame, std::move(a_snapshot));
+            for (const auto &object : a_snapshot.objects)
+            {
+                if (!math::is_finite(object.world) || !m_state->meshAssets.contains(object.meshId))
+                    return Result<void>::failure({ErrorCategory::InvalidArgument, "SceneRenderer.object"});
+                if (object.materialId && !m_state->materials->ids.contains(*object.materialId))
+                    return Result<void>::failure(
+                        {ErrorCategory::InvalidArgument, "SceneRenderer.material_id:" + *object.materialId});
+            }
+            m_state->pending.emplace(a_frame, SceneRendererState::PublishedFrame{std::move(a_snapshot), m_state->materials});
             m_state->lastPublished = a_frame;
             return Result<void>::success();
         }
@@ -859,15 +839,9 @@ class SceneRenderer final : public ISceneRenderer
             }
             m_state->meshAssets.erase(first);
         }
-        if (m_state->material.is_valid())
-        {
-            auto retired = m_state->buffers->retire(m_state->material);
-            if (!retired.has_value())
-                return retired;
-            m_state->material = {};
-        }
         m_state->isStopped = true;
         m_state->pending.clear();
+        m_state->materials.reset();
         auto collected = m_state->meshes->collect();
         return collected.has_value() ? Result<void>::success() : Result<void>::failure(*collected.try_error());
     }
@@ -881,7 +855,7 @@ Result<std::unique_ptr<ISceneRenderer>> create_scene_renderer(IBackend &a_backen
 {
     using RendererResult = Result<std::unique_ptr<ISceneRenderer>>;
     auto *native = dynamic_cast<dx12::DX12Backend *>(&a_backend);
-    if (!native || !native->get_resource_context() || !native->get_mesh_pool() || !native->get_resource_pool() ||
+    if (!native || !native->get_resource_context() || !native->get_mesh_pool() ||
         !native->get_queue_pool() || !native->get_command_pool())
         return RendererResult::failure({ErrorCategory::InvalidArgument, "SceneRenderer.backend"});
     try
@@ -889,7 +863,7 @@ Result<std::unique_ptr<ISceneRenderer>> create_scene_renderer(IBackend &a_backen
         auto state = std::make_shared<SceneRendererState>();
         state->resources = native->get_resource_context();
         state->meshes = native->get_mesh_pool();
-        state->buffers = native->get_resource_pool();
+        state->backend = native;
         auto renderer = std::make_unique<SceneRenderer>(state);
         // 失敗や例外でも Renderer の停止処理が登録済み資源を回収する
         auto &handle = state->meshAssets[std::string(k_cubeMeshId)];
@@ -903,7 +877,7 @@ Result<std::unique_ptr<ISceneRenderer>> create_scene_renderer(IBackend &a_backen
         auto ready = state->meshes->wait_ready(handle);
         if (!ready.has_value())
             return RendererResult::failure(*ready.try_error());
-        auto material = initialize_material(*state, *native);
+        auto material = renderer->set_materials({});
         if (!material.has_value())
             return RendererResult::failure(*material.try_error());
         return RendererResult::success(std::move(renderer));

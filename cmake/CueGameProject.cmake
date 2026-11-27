@@ -392,6 +392,8 @@ function(cue_add_game_app a_root a_content a_binary a_projectId a_gameTarget a_a
         "-DCUE_PACKAGE_TEMPLATE=${taskPackageTemplate}"
         "-DCUE_STARTUP_SCENE=${taskScene}"
         "-DCUE_STARTUP_SCENE_RELATIVE=Content/${taskSceneRelative}"
+        "-DCUE_APP_CONTENT_ROOT=${a_content}"
+        "-DCUE_APP_COOK_CACHE=${a_binary}/Tools"
         "-DCUE_APP_RUNTIME_LIST=${a_binary}/AppLists/$<CONFIG>/Runtime.txt"
         "-DCUE_APP_LICENSE_LIST=${a_binary}/AppLists/$<CONFIG>/Licenses.txt")
     set(taskPublisher "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PublishGameApp.cmake")

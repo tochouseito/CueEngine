@@ -1,6 +1,7 @@
 #include <SceneRender/SceneRenderer.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -269,9 +270,8 @@ bool verify_scene_renderer()
                                                              *backend->get_swap_chain(), std::move(config));
     CHECK(graphResult.has_value());
     auto graph = graphResult.take_value();
-    auto draw = [&](std::uint64_t a_frame, cue::SceneRenderSnapshot a_snapshot) -> bool
+    auto record = [&](std::uint64_t a_frame) -> bool
     {
-        CHECK(renderer->publish_frame(a_frame, std::move(a_snapshot)).has_value());
         auto result = renderer->render_frame(
             a_frame,
             [&]() -> cue::Result<void>
@@ -290,6 +290,11 @@ bool verify_scene_renderer()
         auto completion = graph->submitted_completion();
         CHECK(completion && completion->wait().has_value());
         return true;
+    };
+    auto draw = [&](std::uint64_t a_frame, cue::SceneRenderSnapshot a_snapshot) -> bool
+    {
+        CHECK(renderer->publish_frame(a_frame, std::move(a_snapshot)).has_value());
+        return record(a_frame);
     };
     cue::math::floatTransform cameraTransform;
     cameraTransform.position.z = 3;
@@ -364,8 +369,57 @@ bool verify_scene_renderer()
     CHECK(emptyLeft.has_value() && emptyRight.has_value() && *emptyLeft.try_value() == *background.try_value() &&
           *emptyRight.try_value() == *background.try_value());
 
+    // オブジェクトの Material が異なると、同じ Mesh / Page でも別コマンドになる
+    const std::array colorMaterials = {cue::SceneMaterialDesc{"material-red", {1, 0, 0, 1}},
+                                       cue::SceneMaterialDesc{"material-green", {0, 1, 0, 1}}};
+    CHECK(renderer->set_materials(colorMaterials).has_value());
+    auto differentMaterials = base;
+    differentMaterials.objects[0].materialId = colorMaterials[0].assetId;
+    differentMaterials.objects[0].world = cue::math::translation_matrix(cue::math::float3{-1, 0, 0});
+    differentMaterials.objects.push_back({cue::math::translation_matrix(cue::math::float3{1, 0, 0}),
+                                          std::string(cue::k_cubeMeshId), colorMaterials[1].assetId});
+    capture.readsCommandCount = true;
+    CHECK(draw(8, std::move(differentMaterials)));
+    capture.readsCommandCount = false;
+    const auto separateCount = capture.command_count();
+    const auto redMaterial = capture.pixel(12, 32);
+    const auto greenMaterial = capture.pixel(52, 32);
+    CHECK(separateCount.has_value() && *separateCount.try_value() == 2 && redMaterial.has_value() &&
+          (*redMaterial.try_value())[0] > 250 && (*redMaterial.try_value())[1] == 0 && greenMaterial.has_value() &&
+          (*greenMaterial.try_value())[0] == 0 && (*greenMaterial.try_value())[1] > 250);
+
+    // 異なる四隅と中間の sRGB 値を使い、向きと SRV の色空間を実画素で確認する
+    const std::array<unsigned char, 16> image{192, 0, 0, 255, 0, 128, 0, 255, 0, 0, 64, 255, 255, 255, 0, 255};
+    auto texture = std::make_shared<cue::SceneTextureRgba8>();
+    texture->width = 2;
+    texture->height = 2;
+    const auto bytes = std::as_bytes(std::span{image});
+    texture->pixels.assign(bytes.begin(), bytes.end());
+    const std::array texturedMaterials = {cue::SceneMaterialDesc{"material-uv", {1, 1, 1, 1}, texture}};
+    CHECK(renderer->set_materials(texturedMaterials).has_value());
+    auto textured = base;
+    textured.objects[0].materialId = texturedMaterials[0].assetId;
+    CHECK(renderer->publish_frame(9, textured).has_value());
+    // プロジェクト切替後も公開済み Frame の旧 Material と Descriptor を維持する
+    CHECK(renderer->set_materials({}).has_value());
+    CHECK(!renderer->publish_frame(10, textured).has_value());
+    CHECK(record(9));
+    const auto matches = [&](std::uint32_t a_x, std::uint32_t a_y, std::size_t a_expected)
+    {
+        const auto pixel = capture.pixel(a_x, a_y);
+        if (!pixel.has_value())
+            return false;
+        for (std::size_t index = 0; index < 4; ++index)
+        {
+            if (std::abs(int((*pixel.try_value())[index]) - image[a_expected * 4 + index]) > 2)
+                return false;
+        }
+        return true;
+    };
+    CHECK(matches(24, 24, 0) && matches(40, 24, 1) && matches(24, 40, 2) && matches(40, 40, 3));
+
     CHECK(graph->resize(*backend->get_resource_context(), 96, 48).has_value());
-    CHECK(capture.width == 96 && capture.height == 48 && draw(8, base));
+    CHECK(capture.width == 96 && capture.height == 48 && draw(10, base));
     auto resized = capture.center();
     CHECK(resized.has_value() && (*resized.try_value())[2] > 180 && (*resized.try_value())[0] < 80);
     auto outside = capture.pixel(60, 24);

@@ -81,6 +81,9 @@ class EditorApplication final
     [[nodiscard]] Result<void> select_object(std::string_view a_objectId);
     /// @brief 一回の Transform 操作として確定する。失敗時は Data と履歴を維持する
     [[nodiscard]] Result<void> set_transform(std::string_view a_objectId, const math::floatTransform &a_transform);
+    /// @brief Mesh Object の Material を一回の Undo 操作として確定する。空文字列で割り当てを解除する
+    /// Scene の検証と Preview 準備の失敗時は正本・履歴を維持する
+    [[nodiscard]] Result<void> set_material(std::string_view a_objectId, std::string_view a_assetId);
     /// @brief Script の割当・設定を一回の Undo 操作で置き換える。未解決型も保存し、Preview では実行しない
     /// 候補の検証・Preview 生成失敗では正本・履歴を維持する。Transform Draft 中は拒否する
     [[nodiscard]] Result<void> set_scripts(std::string_view a_objectId, std::vector<ScriptDescriptor> a_scripts);

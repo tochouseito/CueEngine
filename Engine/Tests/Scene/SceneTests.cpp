@@ -60,7 +60,7 @@ int test_invalid_data()
 {
     using cue::tests::scene_replaced;
     for (const auto &text :
-         {std::string{}, scene_replaced("formatVersion=1", "formatVersion=3"),
+         {std::string{}, scene_replaced("formatVersion=1", "formatVersion=4"),
           scene_replaced("sceneId=8d94c2b1-9b6a-435c-ade7-c01f473c3951", "sceneId=bad"),
           scene_replaced("name=Cube", "name="), scene_replaced("active=true", "active=yes"),
           scene_replaced("transform.position=1,2,3", "transform.position=1,2"),

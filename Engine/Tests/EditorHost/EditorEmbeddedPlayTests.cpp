@@ -176,6 +176,7 @@ int test_protocol(const cue::Path &a_fixture)
     for (const auto &[name, expected] :
          {std::pair{"bad-view-nan.dll", "Play.view_protocol"},
           std::pair{"bad-view-count.dll", "Play.view_protocol"},
+          std::pair{"bad-view-material.dll", "Play.view_protocol"},
           std::pair{"bad-view-request.dll", "Play.message_protocol"},
           std::pair{"bad-transform-ack.dll", "Play.transform_ack_protocol"}})
     {

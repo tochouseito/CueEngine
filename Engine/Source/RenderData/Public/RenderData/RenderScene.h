@@ -18,11 +18,12 @@ struct RenderCameraData final
     float farClip = 1000.0f;
 };
 
-/// @brief World の Component を参照せず、行列と永続 Mesh ID を独立して保持する
+/// @brief World の Component を参照せず、行列と永続 Mesh / Material ID を独立して保持する
 struct RenderObjectData final
 {
     math::float4x4 world;
     std::string meshId;
+    std::optional<std::string> materialId;
 };
 
 /// @brief 更新側から描画側へ Move する所有値。Entity / Component / Window の Pointer は持たない

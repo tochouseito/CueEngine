@@ -197,6 +197,13 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
                 request_asset(a_state, a_actions, EditorActionKind::InspectScriptRemoval, a_asset, false);
             ImGui::Separator();
         }
+        else if (a_asset.kind == EditorAssetKind::Texture)
+        {
+            if (ImGui::MenuItem(a_context.text("Import Texture", "テクスチャをインポート###Import Texture"),
+                                nullptr, false, a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::ImportTexture, a_asset);
+            ImGui::Separator();
+        }
         draw_copy_path(a_context, a_asset.path);
         if (a_asset.kind == EditorAssetKind::Script)
         {
@@ -210,9 +217,24 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
     {
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        const auto *type = a_asset.kind == EditorAssetKind::Scene     ? a_context.text("Scene", "シーン")
-                           : a_asset.kind == EditorAssetKind::Script ? a_context.text("C++ Script", "C++ スクリプト")
-                                                                      : a_context.text("File", "ファイル");
+        const auto *type = a_context.text("File", "ファイル");
+        switch (a_asset.kind)
+        {
+        case EditorAssetKind::Scene:
+            type = a_context.text("Scene", "シーン");
+            break;
+        case EditorAssetKind::Script:
+            type = a_context.text("C++ Script", "C++ スクリプト");
+            break;
+        case EditorAssetKind::Texture:
+            type = a_context.text("Texture", "テクスチャ");
+            break;
+        case EditorAssetKind::Material:
+            type = a_context.text("Material", "マテリアル");
+            break;
+        case EditorAssetKind::File:
+            break;
+        }
         ImGui::TextDisabled("%s", status ? status : type);
     }
 }

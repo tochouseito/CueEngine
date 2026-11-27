@@ -15,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <Assets/AssetCatalog.h>
 #include <Assets/BuiltinMesh.h>
 #include <Foundation/Uuid.h>
 #include <Foundation/Windows/UtfConversion.h>
@@ -26,7 +27,7 @@ namespace cue
 namespace
 {
 constexpr std::uint32_t k_magic = 0x4355504c;
-constexpr std::uint32_t k_version = 2;
+constexpr std::uint32_t k_version = 3;
 constexpr std::size_t k_headerBytes = 32;
 constexpr std::size_t k_maxMessageBytes = 5 * 1024 * 1024;
 constexpr std::size_t k_maxQueueBytes = 8 * 1024 * 1024;
@@ -495,7 +496,8 @@ bool is_valid_view(const PlayViewSnapshot &a_snapshot)
             return false;
     }
     for (const auto &object : a_snapshot.render.objects)
-        if (!is_valid_affine(object.world) || object.meshId != k_cubeMeshId)
+        if (!is_valid_affine(object.world) || object.meshId != k_cubeMeshId ||
+            (object.materialId && !is_valid_asset_id(*object.materialId)))
             return false;
     std::unordered_set<std::string> ids;
     for (const auto &object : a_snapshot.transforms)
@@ -526,7 +528,13 @@ Result<PlayViewSnapshot> read_view(Reader &a_reader)
     if (objects > Scene::k_maxObjects)
         a_reader.valid = false;
     for (std::uint32_t index = 0; index < objects && a_reader.valid; ++index)
-        snapshot.render.objects.push_back({a_reader.matrix(), a_reader.text(256)});
+    {
+        RenderObjectData object{a_reader.matrix(), a_reader.text(256)};
+        auto material = a_reader.text(36);
+        if (!material.empty())
+            object.materialId.emplace(std::move(material));
+        snapshot.render.objects.push_back(std::move(object));
+    }
     const auto transforms = a_reader.u32();
     if (transforms > Scene::k_maxObjects)
         a_reader.valid = false;
@@ -587,7 +595,8 @@ PlayClient::PlayClient(ConstructionKey, PlayClientConfig a_config) : m_state(std
 
 Result<std::unique_ptr<PlayClient>> PlayClient::create(PlayClientConfig a_config)
 {
-    if (!a_config.executable.is_absolute() || !a_config.module.is_absolute())
+    if (!a_config.executable.is_absolute() || !a_config.module.is_absolute() ||
+        (a_config.contentRoot && !a_config.contentRoot->is_absolute()))
         return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.absolute_paths"});
     if (a_config.isEmbedded && !a_config.isHeadless)
         return Result<std::unique_ptr<PlayClient>>::failure({ErrorCategory::InvalidArgument, "Play.embedded_headless"});
@@ -683,6 +692,13 @@ Result<void> PlayClient::launch(bool a_describe, bool a_isDebug)
         command += L" --headless";
     if (state.config.isEmbedded)
         command += L" --embedded";
+    if (state.config.contentRoot && !state.config.isHeadless && !a_describe)
+    {
+        auto root = utf8_to_utf16(state.config.contentRoot->utf8());
+        if (!root.has_value())
+            return Result<void>::failure(*root.try_error());
+        command += L" --content-root " + quote(*root.try_value());
+    }
     if (state.config.moduleConfiguration)
     {
         // 制限された列挙値だけを CLI へ変換し、外部文字列を Command Line へ挿入しない
@@ -1367,6 +1383,7 @@ Result<void> PlayServer::send_view(std::uint64_t a_requestId, const PlayViewSnap
         {
             payload.matrix(object.world);
             payload.text(object.meshId);
+            payload.text(object.materialId ? std::string_view(*object.materialId) : std::string_view{});
         }
         payload.u32(static_cast<std::uint32_t>(a_snapshot.transforms.size()));
         for (const auto &object : a_snapshot.transforms)

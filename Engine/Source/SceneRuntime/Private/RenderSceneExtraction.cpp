@@ -5,6 +5,7 @@
 
 #include <Math/Projection.h>
 #include <Runtime/Components/CameraComponent.h>
+#include <Runtime/Components/MaterialComponent.h>
 #include <Runtime/Components/MeshRendererComponent.h>
 #include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
@@ -51,7 +52,7 @@ Result<SceneRenderSnapshot> extract_render_scene(World &a_world)
         if (!cameras.has_value())
             return Result<SceneRenderSnapshot>::failure(*cameras.try_error());
         auto meshes = a_world.for_each<TransformComponent, MeshRendererComponent>(
-            [&](EntityHandle, TransformComponent &a_transform, MeshRendererComponent &a_mesh) -> Result<void>
+            [&](EntityHandle a_entity, TransformComponent &a_transform, MeshRendererComponent &a_mesh) -> Result<void>
             {
                 if (a_transform.is_dirty())
                     hasDirtyTransform = true;
@@ -59,7 +60,17 @@ Result<SceneRenderSnapshot> extract_render_scene(World &a_world)
                 {
                     try
                     {
-                        snapshot.objects.push_back({a_transform.world_matrix(), std::string(a_mesh.mesh_id())});
+                        auto material = a_world.find_component<MaterialComponent>(a_entity);
+                        if (!material.has_value())
+                            validationError = *material.try_error();
+                        else
+                        {
+                            RenderObjectData object{a_transform.world_matrix(), std::string(a_mesh.mesh_id())};
+                            if (const auto *component = *material.try_value();
+                                component && component->is_active() && !component->material_id().empty())
+                                object.materialId.emplace(component->material_id());
+                            snapshot.objects.push_back(std::move(object));
+                        }
                     }
                     catch (const std::bad_alloc &)
                     {

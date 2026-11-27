@@ -53,6 +53,7 @@ add_library(Cue.Renderer.DX12 STATIC
     Private/DX12GpuResourcePool.cpp
     Private/DX12MainFrameGraph.cpp
     Private/DX12MeshPool.cpp
+    Private/DX12SceneMaterials.cpp
     Private/DX12SceneRenderer.cpp
     Private/DX12PlacedResourceAllocator.cpp
     Private/DX12RenderDevice.cpp

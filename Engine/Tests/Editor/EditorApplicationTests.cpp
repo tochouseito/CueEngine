@@ -100,10 +100,28 @@ int main()
     script.instanceId = "3ce1feb2-e711-4ca3-9698-2b32e0d9637c";
     script.typeId = "test.Move";
     CUE_EDITOR_CHECK(app->set_scripts(first, {script}).has_value());
+    constexpr std::string_view firstMaterial = "7a8a6b31-5959-41d5-854a-63af0ecd8ad7";
+    constexpr std::string_view secondMaterial = "69e22ae3-653c-4fa3-a6ea-d177f1397628";
+    // Material の初回割り当ては Scene の Version を進め、Undo で元に戻す
+    CUE_EDITOR_CHECK(!app->set_material(first, "missing-id").has_value());
+    CUE_EDITOR_CHECK(app->set_material(first, firstMaterial).has_value());
+    CUE_EDITOR_CHECK(app->document().scene().descriptor().formatVersion == 3);
+    CUE_EDITOR_CHECK(app->undo().has_value() && app->document().scene().descriptor().formatVersion == 2 &&
+                     !editor_object(*app, first).material);
+    CUE_EDITOR_CHECK(app->redo().has_value() && app->set_material(second, secondMaterial).has_value());
+    auto materialPreview = app->preview_snapshot();
+    CUE_EDITOR_CHECK(materialPreview.has_value() && materialPreview.try_value()->objects.size() == 2 &&
+                     materialPreview.try_value()->objects[0].materialId == firstMaterial &&
+                     materialPreview.try_value()->objects[1].materialId == secondMaterial);
     EditorMemoryFiles files;
     const auto saveFile = editor_value(Path::create("/Content/Scenes/Remove.cuescene"));
     CUE_EDITOR_CHECK(app->save_scene(files, saveFile).has_value());
     const auto beforeDelete = files.entries[saveFile.utf8()].text;
+    auto reopened = Scene::load(files, saveFile);
+    CUE_EDITOR_CHECK(reopened.has_value() && reopened.try_value()->descriptor().objects[1].material &&
+                     reopened.try_value()->descriptor().objects[1].material->assetId == firstMaterial &&
+                     reopened.try_value()->descriptor().objects[2].material &&
+                     reopened.try_value()->descriptor().objects[2].material->assetId == secondMaterial);
     const auto cameraId = app->document().scene().descriptor().objects.front().objectId;
     const auto deleteRevision = app->document().revision();
     const auto deleteInstance = app->preview_instance();

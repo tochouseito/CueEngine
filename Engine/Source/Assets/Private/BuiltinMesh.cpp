@@ -34,7 +34,8 @@ Result<MeshData> create_cube_mesh()
             {
                 descriptor.positions.push_back(face.normal * 0.5f + face.u * (uv.x - 0.5f) + face.v * (uv.y - 0.5f));
                 descriptor.normals.push_back(face.normal);
-                descriptor.uv0.push_back(uv);
+                // 画像の先頭行を面の上側に置くため、面のローカル上方向と V を反転する
+                descriptor.uv0.push_back({uv.x, 1.0f - uv.y});
             }
             for (const std::uint16_t index : {0, 1, 2, 0, 2, 3})
                 indices.push_back(static_cast<std::uint16_t>(base + index));

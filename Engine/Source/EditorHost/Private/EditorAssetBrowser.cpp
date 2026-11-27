@@ -61,6 +61,13 @@ bool same_path(const Path &a_left, const Path &a_right)
     return std::ranges::equal(a_left.utf8(), a_right.utf8(), {}, fold, fold);
 }
 
+/// @brief Catalog と同様に、拡張子の ASCII 大文字小文字を区別しない
+bool has_asset_extension(std::string_view a_extension, std::string_view a_expected)
+{
+    return std::ranges::equal(a_extension, a_expected, [](char a_left, char a_right)
+    { return (a_left >= 'A' && a_left <= 'Z' ? a_left + ('a' - 'A') : a_left) == a_right; });
+}
+
 /// @brief 既存の命名規約で一組になっている Script Header の Path を返す
 Result<Path> script_header(const Path &a_source)
 {
@@ -79,7 +86,7 @@ bool is_script_file(const Path &a_path, const ScriptSourceEntry &a_entry)
 /// @brief 走査を Project 内に限定し、Link と深過ぎる Directory で無制限に再帰しない
 Result<EditorAssetFolder> scan_folder(IFileSystem &a_files, const Path &a_path,
                                       std::span<const ScriptSourceEntry> a_scripts, std::size_t a_depth,
-                                      std::size_t &a_remaining)
+                                      std::size_t &a_remaining, bool a_isContent)
 {
     using FolderResult = Result<EditorAssetFolder>;
     if (a_depth == k_maxDepth)
@@ -102,7 +109,7 @@ Result<EditorAssetFolder> scan_folder(IFileSystem &a_files, const Path &a_path,
             continue;
         if ((**info.try_value()).type == FileType::Directory)
         {
-            auto child = scan_folder(a_files, path, a_scripts, a_depth + 1, a_remaining);
+            auto child = scan_folder(a_files, path, a_scripts, a_depth + 1, a_remaining, a_isContent);
             if (!child.has_value())
                 return FolderResult::failure(*child.try_error());
             folder.folders.push_back(child.take_value());
@@ -110,7 +117,14 @@ Result<EditorAssetFolder> scan_folder(IFileSystem &a_files, const Path &a_path,
         else if (path.filename() != "ScriptSources.cueide" && path.filename() != "CMakeLists.txt" &&
                  !std::ranges::any_of(a_scripts, [&](const auto &a_script) { return is_script_file(path, a_script); }))
         {
-            const auto kind = path.extension() == ".cuescene" ? EditorAssetKind::Scene : EditorAssetKind::File;
+            const auto extension = path.extension();
+            if (a_isContent && has_asset_extension(extension, ".cuemeta"))
+                continue;
+            auto kind = extension == ".cuescene" ? EditorAssetKind::Scene : EditorAssetKind::File;
+            if (a_isContent && has_asset_extension(extension, ".png"))
+                kind = EditorAssetKind::Texture;
+            else if (a_isContent && has_asset_extension(extension, ".cuemat"))
+                kind = EditorAssetKind::Material;
             folder.assets.push_back({path, path.filename(), kind});
         }
     }
@@ -367,7 +381,7 @@ Result<std::vector<EditorAssetFolder>> scan_editor_assets(IFileSystem &a_files, 
                 continue;
             const auto entries =
                 root == &source ? std::span<const ScriptSourceEntry>(scripts) : std::span<const ScriptSourceEntry>{};
-            auto folder = scan_folder(a_files, *root, entries, 0, budget);
+            auto folder = scan_folder(a_files, *root, entries, 0, budget, root != &source);
             if (!folder.has_value())
                 return ScanResult::failure(*folder.try_error());
             folders.push_back(folder.take_value());

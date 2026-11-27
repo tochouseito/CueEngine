@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include <Assets/AssetCatalog.h>
 #include <Foundation/Utf8.h>
 #include <Foundation/Uuid.h>
 #include <Math/Projection.h>
@@ -19,7 +20,7 @@ namespace cue
 namespace
 {
 constexpr std::array<std::string_view, 3> k_sceneKeys{"formatVersion", "sceneId", "name"};
-constexpr std::array<std::string_view, 10> k_objectKeys{"name",
+constexpr std::array<std::string_view, 11> k_objectKeys{"name",
                                                         "active",
                                                         "transform.position",
                                                         "transform.rotation",
@@ -28,7 +29,8 @@ constexpr std::array<std::string_view, 10> k_objectKeys{"name",
                                                         "camera.fovYRadians",
                                                         "camera.near",
                                                         "camera.far",
-                                                        "mesh.assetId"};
+                                                        "mesh.assetId",
+                                                        "material.assetId"};
 
 /// @brief 一つの Script の必須項目を追跡し、不完全・重複項目を既定値で補完しない
 struct ParsedScript final
@@ -203,6 +205,8 @@ Result<void> finish_object(SceneDescriptor &a_scene, std::string_view a_id,
     }
     if (!a_values[9].empty())
         object.mesh = SceneMeshDescriptor{std::string(a_values[9])};
+    if (!a_values[10].empty())
+        object.material = SceneMaterialDescriptor{std::string(a_values[10])};
     for (const auto &script : a_scripts)
     {
         if (script.fields != 7)
@@ -247,7 +251,7 @@ Result<Scene> Scene::create(SceneDescriptor a_descriptor)
 {
     try
     {
-        if ((a_descriptor.formatVersion != 1 && a_descriptor.formatVersion != 2) ||
+        if ((a_descriptor.formatVersion < 1 || a_descriptor.formatVersion > 3) ||
             !is_valid_uuid_text(a_descriptor.sceneId) || !valid_name(a_descriptor.name) ||
             a_descriptor.objects.size() > k_maxObjects)
             return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.descriptor"});
@@ -277,6 +281,12 @@ Result<Scene> Scene::create(SceneDescriptor a_descriptor)
             }
             if (object.mesh && object.mesh->assetId != k_cubeMeshId)
                 return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.mesh_asset"});
+            if (object.material)
+            {
+                if (!object.mesh || !is_valid_asset_id(object.material->assetId))
+                    return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.material_asset"});
+                a_descriptor.formatVersion = 3;
+            }
             if (object.scripts.size() > k_maxScriptsPerObject)
                 return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.script_limit"});
             std::unordered_set<std::string_view> scriptIds;
@@ -289,7 +299,7 @@ Result<Scene> Scene::create(SceneDescriptor a_descriptor)
                     return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.script_identity"});
             }
             // 新しい項目を旧 Reader が無視することを避け、Script を持つ形式を明示する
-            if (!object.scripts.empty())
+            if (!object.scripts.empty() && a_descriptor.formatVersion == 1)
                 a_descriptor.formatVersion = 2;
         }
         return Result<Scene>::success(Scene(std::move(a_descriptor)));
@@ -361,9 +371,12 @@ Result<Scene> Scene::parse(std::string_view a_text)
             if (header[index].empty())
                 return Result<Scene>::failure(
                     {ErrorCategory::InvalidArgument, "Scene.missing:" + std::string(k_sceneKeys[index])});
-        if ((header[0] != "1" && header[0] != "2") || (header[0] == "1" && hasScripts))
+        const bool hasMaterials = std::ranges::any_of(descriptor.objects, [](const SceneObjectDescriptor &a_object)
+                                                       { return a_object.material.has_value(); });
+        if ((header[0] != "1" && header[0] != "2" && header[0] != "3") || (header[0] == "1" && hasScripts) ||
+            (header[0] != "3" && hasMaterials))
             return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.formatVersion"});
-        descriptor.formatVersion = header[0] == "1" ? 1 : 2;
+        descriptor.formatVersion = static_cast<std::uint32_t>(header[0].front() - '0');
         descriptor.sceneId = header[1];
         descriptor.name = header[2];
         return create(std::move(descriptor));
@@ -422,6 +435,8 @@ Result<std::string> Scene::serialize() const
             }
             if (object.mesh)
                 text += "mesh.assetId=" + object.mesh->assetId + '\n';
+            if (object.material)
+                text += "material.assetId=" + object.material->assetId + '\n';
             for (const auto &script : object.scripts)
             {
                 const std::string prefix = "script." + script.instanceId + '.';

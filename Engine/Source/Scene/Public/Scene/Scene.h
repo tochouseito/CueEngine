@@ -30,6 +30,12 @@ struct SceneMeshDescriptor final
     std::string assetId{k_cubeMeshId};
 };
 
+/// @brief 保存用 Material の永続参照。描画テーブルの一時番号は含めない
+struct SceneMaterialDescriptor final
+{
+    std::string assetId;
+};
+
 /// @brief Scene 内で永続 ID を持つ保存用 Object。Runtime Handle や GPU 所有値を含めない
 struct SceneObjectDescriptor final
 {
@@ -40,9 +46,10 @@ struct SceneObjectDescriptor final
     std::optional<SceneCameraDescriptor> camera;
     std::optional<SceneMeshDescriptor> mesh;
     std::vector<ScriptDescriptor> scripts;
+    std::optional<SceneMaterialDescriptor> material;
 };
 
-/// @brief .cuescene v1 / v2 の所有データ。Script を追加した v1 は create で v2 へ昇格する
+/// @brief .cuescene の所有データ。Script があれば v2 以上、Material を含める場合は v3 にする
 struct SceneDescriptor final
 {
     std::uint32_t formatVersion = 1;
@@ -61,7 +68,7 @@ class Scene final
 
     /// @brief 全 ID・名前・既知 Component を検証して所有値を受け取る。失敗では部分 Scene を公開しない
     [[nodiscard]] static Result<Scene> create(SceneDescriptor a_descriptor);
-    /// @brief UTF-8 の .cuescene v1 / v2 を解釈し、入力から独立した所有値を返す
+    /// @brief UTF-8 の .cuescene v1〜v3 を解釈し、入力から独立した所有値を返す
     [[nodiscard]] static Result<Scene> parse(std::string_view a_text);
     /// @brief .cuescene を抽象 FileSystem から上限付きで読む。CWD を変えず、FileSystem は呼出中だけ借用する
     [[nodiscard]] static Result<Scene> load(IFileSystem &a_files, const Path &a_file);

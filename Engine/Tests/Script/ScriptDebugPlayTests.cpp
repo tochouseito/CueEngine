@@ -139,7 +139,7 @@ int test_untrusted_continue()
         for (const unsigned kind : {1u, 4u})
         {
             append(bytes, 0x4355504c, 4);
-            append(bytes, 2, 4);
+            append(bytes, 3, 4);
             append(bytes, kind, 4);
             append(bytes, kind == 1 ? 4 : 0, 4);
             append(bytes, wrongSession && kind == 4 ? 732 : 731, 8);

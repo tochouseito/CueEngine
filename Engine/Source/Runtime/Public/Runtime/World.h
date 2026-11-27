@@ -106,6 +106,14 @@ class World final
     /// @brief Handle と型を検証し Component を借用する。Multi 型では先頭要素を返す
     template <ecs::ComponentType T> [[nodiscard]] Result<T *> get_component(EntityHandle a_entity)
     {
+        auto result = find_component<T>(a_entity);
+        if (result.has_value() && !*result.try_value())
+            return Result<T *>::failure({ErrorCategory::InvalidArgument, "World.component_missing"});
+        return result;
+    }
+    /// @brief 同じ Owner Thread で任意 Component を調べる。実体がない場合は成功の nullptr を返す
+    template <ecs::ComponentType T> [[nodiscard]] Result<T *> find_component(EntityHandle a_entity)
+    {
         auto access = check_access();
         if (!access.has_value())
             return Result<T *>::failure(*access.try_error());
@@ -116,8 +124,6 @@ class World final
             if (ecs::ComponentID<T>() >= 256)
                 return Result<T *>::failure({ErrorCategory::InvalidArgument, "World.component_type_capacity"});
             auto *component = m_ecs->get_component<T>(m_entities[a_entity.index].entity);
-            if (!component)
-                return Result<T *>::failure({ErrorCategory::InvalidArgument, "World.component_missing"});
             return Result<T *>::success(component);
         }
         catch (...)

@@ -14,6 +14,8 @@ enum class EditorAssetKind
     File,
     Scene,
     Script,
+    Texture,
+    Material,
 };
 
 /// @brief Asset の表示に必要な所有値。Script の Path は代表の cpp を指す
@@ -33,6 +35,13 @@ struct EditorAssetFolder final
     std::string name;
     std::vector<EditorAssetFolder> folders;
     std::vector<EditorAsset> assets;
+};
+
+/// @brief Inspector が選択肢に使う Material の永続 ID と表示名
+struct EditorMaterialChoice final
+{
+    std::string assetId;
+    std::string name;
 };
 
 /// @brief Host が検証した削除対象と影響範囲を Frame 中だけ借用する

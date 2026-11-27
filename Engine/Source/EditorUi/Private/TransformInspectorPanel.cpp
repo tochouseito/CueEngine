@@ -200,6 +200,51 @@ void draw_play_transform(const SceneObjectDescriptor &a_object, const EditorUiCo
     ImGui::TextDisabled(
         a_context.text("Escape restores the value before this edit.", "Esc キーで編集前の値に戻します。"));
 }
+/// @brief Scene の Material 参照を表示し、停止中は Project 内の登録済み Material へ変更する
+void draw_material_inspector(const SceneObjectDescriptor &a_object, const EditorUiContext &a_context,
+                             std::vector<EditorAction> &a_actions, bool a_isTransformEditing)
+{
+    if (!a_object.mesh)
+        return;
+    const std::string_view id = a_object.material ? std::string_view(a_object.material->assetId) : std::string_view{};
+    const auto found = std::ranges::find(a_context.materials, id, &EditorMaterialChoice::assetId);
+    const char *defaultLabel = a_context.text("Default", "既定");
+    const char *label = id.empty() ? defaultLabel
+                         : found != a_context.materials.end() ? found->name.c_str()
+                         : a_context.text("Missing Material", "マテリアルが見つかりません");
+    const auto *field = a_context.text("Material", "マテリアル###Material");
+    if (a_context.isPlaying)
+    {
+        ImGui::Text("%s: %s", a_context.text("Material", "マテリアル"), label);
+        return;
+    }
+    const EditorDisabledScope disabled(!a_context.canManageAssets || a_isTransformEditing);
+    if (!ImGui::BeginCombo(field, label))
+        return;
+    struct ComboScope final
+    {
+        /// @brief 操作要求の確保に失敗しても Combo Popup を閉じる
+        ~ComboScope() { ImGui::EndCombo(); }
+    } combo;
+    const auto select = [&](std::string_view a_id)
+    {
+        EditorAction action;
+        action.kind = EditorActionKind::SetMaterial;
+        action.objectId = a_object.objectId;
+        action.materialAssetId = a_id;
+        a_actions.push_back(std::move(action));
+    };
+    if (ImGui::Selectable(defaultLabel, id.empty()) && !id.empty())
+        select({});
+    for (const auto &choice : a_context.materials)
+    {
+        ImGui::PushID(choice.assetId.c_str());
+        const bool selected = ImGui::Selectable(choice.name.c_str(), choice.assetId == id);
+        ImGui::PopID();
+        if (selected && choice.assetId != id)
+            select(choice.assetId);
+    }
+}
 } // namespace
 
 Result<void> draw_transform_inspector(const SceneDocument &a_document, const EditorUiContext &a_context,
@@ -258,6 +303,7 @@ Result<void> draw_transform_inspector(const SceneDocument &a_document, const Edi
     if (a_context.isPlaying)
     {
         draw_play_transform(*object, a_context, a_state, a_actions);
+        draw_material_inspector(*object, a_context, a_actions, false);
         draw_script_inspector(*object, a_context, a_actions);
         return Result<void>::success();
     }
@@ -293,6 +339,7 @@ Result<void> draw_transform_inspector(const SceneDocument &a_document, const Edi
     {
         ImGui::Separator();
         ImGui::TextUnformatted(a_context.text("Mesh: Cube", "メッシュ（キューブ）"));
+        draw_material_inspector(*object, a_context, a_actions, a_document.is_transform_editing());
     }
     if (object->camera)
     {

@@ -11,6 +11,7 @@
 
 #include <imgui.h>
 
+#include <Assets/AssetCatalog.h>
 #include <Editor/EditorApplication.h>
 #include <EditorHost/ImGuiPass.h>
 #include <EditorHost/PerformanceSettingsEditing.h>
@@ -22,6 +23,7 @@
 #include <Platform/Diagnostics.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayClient.h>
+#include <WindowsHost/SceneMaterials.h>
 
 #include "EditorAssetBrowser.h"
 #include "EditorGameSettings.h"
@@ -234,6 +236,7 @@ struct EditorHost::EditingState final
     bool isDiagnosticsVisible = false;
     std::optional<PendingChange> pendingChange;
     std::vector<EditorAssetFolder> assetFolders;
+    std::vector<EditorMaterialChoice> materials;
     std::optional<EditorScriptRemoval> scriptRemoval;
     bool isScriptUsagePreview = false;
     bool needsAssetRefresh = true;
@@ -265,6 +268,7 @@ struct EditorHost::PreparedProject final
     std::unique_ptr<Project> project;
     std::unique_ptr<EditorApplication> application;
     std::unique_ptr<EditorScriptController> scripts;
+    std::vector<SceneMaterialDesc> renderMaterials;
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     std::string settingsError;
     std::optional<std::string> gitHead;
@@ -619,6 +623,10 @@ Result<void> EditorHost::prepare_project_change(const Path &a_projectFile, bool 
             }
         }
         auto prepared = std::make_unique<PreparedProject>();
+        auto materials = load_project_materials(files, project.try_value()->content_directory());
+        if (!materials.has_value())
+            return Result<void>::failure(*materials.try_error());
+        prepared->renderMaterials = materials.take_value();
         prepared->isGitReload = a_isGitReload;
         if (gitHead.has_value())
             prepared->gitHead = gitHead.take_value();
@@ -769,6 +777,15 @@ Result<void> EditorHost::apply_project_change()
             return reset;
         }
     }
+    if (m_sceneRenderer)
+    {
+        auto applied = m_sceneRenderer->set_materials(m_pendingProject->renderMaterials);
+        if (!applied.has_value())
+        {
+            m_pendingProject.reset();
+            return applied;
+        }
+    }
     // GPU は独立 Snapshot を使用する。Project / World を参照する Controller だけを先に回収する
     auto &editing = *m_editing;
     editing.scripts.reset();
@@ -789,6 +806,7 @@ Result<void> EditorHost::apply_project_change()
     editing.isGameBuildRequired = true;
     editing.scriptRemoval.reset();
     editing.assetFolders.clear();
+    editing.materials.clear();
     editing.needsAssetRefresh = true;
     auto settingsError = std::move(m_pendingProject->settingsError);
     m_pendingProject.reset();
@@ -1205,6 +1223,7 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
             context.hasAssetBrowser = m_project && context.isProjectOpen;
             context.canManageAssets = context.hasAssetBrowser && context.canOpenProject;
             context.assetFolders = m_editing->assetFolders;
+            context.materials = m_editing->materials;
             const auto *removal = m_editing->scriptRemoval ? &*m_editing->scriptRemoval : nullptr;
             EditorScriptRemovalView removalView;
             if (removal)
@@ -1353,6 +1372,19 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
                 if (!stopped.has_value())
                     m_editing->error += ": " + stopped.try_error()->operation;
                 frameScene = {};
+            }
+        }
+        // 欠落した制作時の参照を表示しながら、残りの Scene と Inspector の操作を維持する
+        if (m_editing)
+        {
+            for (auto &object : frameScene.objects)
+            {
+                if (object.materialId && std::ranges::none_of(m_editing->materials, [&](const auto &a_material)
+                    { return a_material.assetId == *object.materialId; }))
+                {
+                    m_editing->error = "EditorAssets.material_missing:" + *object.materialId;
+                    object.materialId.reset();
+                }
             }
         }
         auto published = m_sceneRenderer->publish_frame(a_frame, std::move(frameScene));
@@ -1764,11 +1796,38 @@ bool EditorHost::can_select_game_configuration() const noexcept
 Result<void> EditorHost::refresh_editor_assets()
 {
     m_editing->needsAssetRefresh = false;
-    auto assets = scan_editor_assets(*m_windows.file_system(), *m_project);
+    auto &files = *m_windows.file_system();
+    auto assets = scan_editor_assets(files, *m_project);
     if (!assets.has_value())
         return Result<void>::failure(*assets.try_error());
-    m_editing->assetFolders = assets.take_value();
-    return Result<void>::success();
+    auto catalog = AssetCatalog::load(files, m_project->content_directory());
+    if (!catalog.has_value())
+    {
+        // 参照が未解決の間も Browser で PNG を選択し、メタデータを登録できるようにする
+        m_editing->assetFolders = assets.take_value();
+        return Result<void>::failure(*catalog.try_error());
+    }
+    try
+    {
+        std::vector<EditorMaterialChoice> materials;
+        materials.reserve(catalog.try_value()->materials().size());
+        for (const auto &material : catalog.try_value()->materials())
+            materials.push_back({material.assetId, material.source.stem()});
+        std::ranges::sort(materials, {}, &EditorMaterialChoice::name);
+        if (m_sceneRenderer)
+        {
+            auto updated = set_project_materials(*m_sceneRenderer, files, *catalog.try_value());
+            if (!updated.has_value())
+                return updated;
+        }
+        m_editing->assetFolders = assets.take_value();
+        m_editing->materials = std::move(materials);
+        return Result<void>::success();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "EditorAssets.material_choices"});
+    }
 }
 
 Result<void> EditorHost::confirm_script_removal()
@@ -2116,6 +2175,29 @@ Result<void> EditorHost::apply_editor_actions()
             case EditorActionKind::RefreshAssets:
                 editing.needsAssetRefresh = true;
                 return Result<void>::success();
+            case EditorActionKind::ImportTexture:
+            {
+                if (!m_project || !can_open_project())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.import_busy"});
+                auto id = create_editor_object_id();
+                if (!id.has_value())
+                    return Result<void>::failure(*id.try_error());
+                auto imported = import_texture(*m_windows.file_system(), m_project->content_directory(),
+                                               action.assetPath, *id.try_value());
+                if (!imported.has_value())
+                    return Result<void>::failure(*imported.try_error());
+                editing.needsAssetRefresh = true;
+                editing.notice = editor_text(editing.language, "Texture registered.", "テクスチャを登録しました。");
+                return Result<void>::success();
+            }
+            case EditorActionKind::SetMaterial:
+                if (!m_project || !can_open_project())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.material_busy"});
+                if (!action.materialAssetId.empty() &&
+                    std::ranges::find(editing.materials, action.materialAssetId, &EditorMaterialChoice::assetId) ==
+                        editing.materials.end())
+                    return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorAssets.material_missing"});
+                return app->set_material(action.objectId, action.materialAssetId);
             case EditorActionKind::InspectScriptRemoval:
             {
                 if (!can_select_game_configuration())

@@ -1,6 +1,7 @@
 #include <SceneRuntime/SceneInstantiation.h>
 
 #include <Runtime/Components/CameraComponent.h>
+#include <Runtime/Components/MaterialComponent.h>
 #include <Runtime/Components/MeshRendererComponent.h>
 #include <Runtime/Components/TransformComponent.h>
 #include <Runtime/World.h>
@@ -57,15 +58,18 @@ Result<SceneInstanceHandle> instantiate_scene(const Scene &a_scene, World &a_wor
         bool needsTransform = false;
         bool needsCamera = false;
         bool needsMesh = false;
+        bool needsMaterial = false;
         for (const auto &object : descriptor.objects)
         {
             needsTransform = needsTransform || object.transform.has_value();
             needsCamera = needsCamera || object.camera.has_value();
             needsMesh = needsMesh || object.mesh.has_value();
+            needsMaterial = needsMaterial || object.material.has_value();
         }
         if ((needsTransform && ecs::ComponentID<TransformComponent>() >= 256) ||
             (needsCamera && ecs::ComponentID<CameraComponent>() >= 256) ||
-            (needsMesh && ecs::ComponentID<MeshRendererComponent>() >= 256))
+            (needsMesh && ecs::ComponentID<MeshRendererComponent>() >= 256) ||
+            (needsMaterial && ecs::ComponentID<MaterialComponent>() >= 256))
             return Result<SceneInstanceHandle>::failure(
                 {ErrorCategory::InvalidArgument, "SceneInstantiation.component_capacity"});
         auto instance = a_world.create_scene_instance(descriptor.sceneId);
@@ -103,6 +107,15 @@ Result<SceneInstanceHandle> instantiate_scene(const Scene &a_scene, World &a_wor
                 if (!component.has_value())
                     return Result<SceneInstanceHandle>::failure(*component.try_error());
                 auto assigned = (*component.try_value())->set_mesh_id(object.mesh->assetId);
+                if (!assigned.has_value())
+                    return Result<SceneInstanceHandle>::failure(*assigned.try_error());
+            }
+            if (object.material)
+            {
+                auto component = a_world.add_component<MaterialComponent>(*entity.try_value());
+                if (!component.has_value())
+                    return Result<SceneInstanceHandle>::failure(*component.try_error());
+                auto assigned = (*component.try_value())->set_material_id(object.material->assetId);
                 if (!assigned.has_value())
                     return Result<SceneInstanceHandle>::failure(*assigned.try_error());
             }
