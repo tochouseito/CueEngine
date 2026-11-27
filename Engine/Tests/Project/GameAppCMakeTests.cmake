@@ -48,8 +48,25 @@ file(WRITE "${taskGame}/Source/CMakeLists.txt" "cue_add_game_module(OtherGame SO
 file(WRITE "${taskGame}/Source/Game.cpp" "extern \"C\" __declspec(dllexport) int game_value() { return 42; }\n")
 set(taskScene "${taskGame}/Content/Scenes/Start.cuescene")
 set(taskMaterialId "5fef8aed-48d1-46a0-8972-c3fcb1839300")
-set(taskSceneMaterial "material.assetId=${taskMaterialId}\n")
-file(WRITE "${taskScene}" "Fixture scene original\n${taskSceneMaterial}")
+set(taskModelId "f149fddd-d27b-4fd4-9ebe-48a220f7ff40")
+set(taskSceneAssets "mesh.assetId=${taskModelId}\nmesh.assetId=cue://engine/mesh/cube\n")
+file(WRITE "${taskScene}" "Fixture scene original\n${taskSceneAssets}")
+set(taskModel "${taskGame}/Content/Models/Triangle.cuemodel")
+file(MAKE_DIRECTORY "${taskGame}/Content/Models")
+# 頂点属性と UUID の Layout が Cook の索引にそのまま渡るよう最小の三角形を作る
+file(WRITE "${taskRoot}/WriteModel.ps1" [=[
+param([string]$Path, [string]$ModelId, [string]$MaterialId)
+$writer = [IO.BinaryWriter]::new([IO.File]::Create($Path))
+try {
+    $writer.Write([Text.Encoding]::ASCII.GetBytes('CUEMODL1' + $ModelId + $MaterialId))
+    foreach ($value in 3, 3, 0, 2) { $writer.Write([uint32]$value) }
+    foreach ($value in 0, 0, 0, 1, 0, 0, 0, 1, 0) { $writer.Write([float]$value) }
+    foreach ($value in 0, 1, 2) { $writer.Write([uint16]$value) }
+} finally { $writer.Dispose() }
+]=])
+find_program(taskPowerShell NAMES pwsh REQUIRED)
+execute_process(COMMAND "${taskPowerShell}" -NoProfile -NonInteractive -File "${taskRoot}/WriteModel.ps1"
+    -Path "${taskModel}" -ModelId "${taskModelId}" -MaterialId "${taskMaterialId}" COMMAND_ERROR_IS_FATAL ANY)
 set(taskMaterial "${taskGame}/Content/Materials/Tint.cuemat")
 set(taskMaterialBase "version=1\nassetId=${taskMaterialId}\ntype=Material\nbaseColor=")
 file(WRITE "${taskMaterial}" "${taskMaterialBase}0.8,0.1,0.2,1\n")
@@ -92,12 +109,13 @@ foreach(taskFile IN ITEMS 123Game.exe GameStartup.cueapp GamePackage.cuepackage 
         message(FATAL_ERROR "Game App package file is missing: ${taskFile}")
     endif()
 endforeach()
-if(EXISTS "${taskApp}/Content/Materials/Tint.cuemat")
-    message(FATAL_ERROR "The authored Material leaked outside the cooked pack")
+if(EXISTS "${taskApp}/Content/Materials/Tint.cuemat" OR EXISTS "${taskApp}/Content/Models/Triangle.cuemodel")
+    message(FATAL_ERROR "An authored Material or Model leaked outside the cooked pack")
 endif()
 file(READ "${taskApp}/Content/Assets.cuepak" taskAssetCount OFFSET 8 LIMIT 4 HEX)
-if(NOT taskAssetCount STREQUAL "01000000")
-    message(FATAL_ERROR "Only the startup Scene's Material should be in the product pack")
+file(READ "${taskApp}/Content/Assets.cuepak" taskModelType OFFSET 108 LIMIT 4 HEX)
+if(NOT taskAssetCount STREQUAL "02000000" OR NOT taskModelType STREQUAL "03000000")
+    message(FATAL_ERROR "Only the startup Scene's Model and its Material should be in the product pack")
 endif()
 file(SHA256 "${taskApp}/Content/Assets.cuepak" taskOldPack)
 foreach(taskFile IN ITEMS WinPixEventRuntime.dll WinPixEventRuntime-MIT.txt WinPixEventRuntime-ThirdPartyNotices.txt)
@@ -143,7 +161,7 @@ foreach(taskKind IN ITEMS Scene Shader Material)
     else()
         set(taskExpected "${taskKind} only change\n")
         if(taskKind STREQUAL "Scene")
-            string(APPEND taskExpected "${taskSceneMaterial}")
+            string(APPEND taskExpected "${taskSceneAssets}")
         endif()
         file(WRITE "${taskInput}" "${taskExpected}")
     endif()
@@ -193,7 +211,7 @@ file(SHA256 "${taskArtifacts}/Libraries/OtherGameStatic.lib" taskPreviousStaticH
 file(WRITE "${taskGame}/Source/Game.cpp"
     "extern \"C\" __declspec(dllexport) int game_value() { volatile int value = 41; return value + 1; }\n")
 # Scene だけの変更も専用 Package Target で回収する
-file(WRITE "${taskScene}" "Fixture scene changed\n${taskSceneMaterial}")
+file(WRITE "${taskScene}" "Fixture scene changed\n${taskSceneAssets}")
 file(WRITE "${taskApp}/LegacyGame.dll" "Old owned game DLL\n")
 file(APPEND "${taskApp}/.cue-app-files" "LegacyGame.dll\n")
 # 旧版が配布した PIX も、所有リストに載る File だけを Release から回収する
@@ -223,7 +241,7 @@ if(taskCurrentStaticHash STREQUAL taskPreviousStaticHash
     message(FATAL_ERROR "App build did not republish matching game artifact hashes")
 endif()
 file(READ "${taskApp}/Content/Scenes/Start.cuescene" taskCopied)
-if(NOT taskCopied STREQUAL "Fixture scene changed\n${taskSceneMaterial}")
+if(NOT taskCopied STREQUAL "Fixture scene changed\n${taskSceneAssets}")
     message(FATAL_ERROR "Game App repackaging ignored a changed scene")
 endif()
 if(EXISTS "${taskApp}/LegacyGame.dll" OR NOT EXISTS "${taskApp}/UserNote.txt")

@@ -11,7 +11,7 @@
 namespace cue
 {
 /// @brief CPU Asset Identity だけを所有し、描画先の MeshHandle / GPU Resource は所有しない
-/// Owner Thread で利用する。現段階は組み込み Cube のみ対応し、未知 ID を黙って置き換えない
+/// Owner Thread で利用する。Project の ID 解決は描画側が行う
 class MeshRendererComponent final : public ecs::IComponentTag
 {
   public:
@@ -21,7 +21,7 @@ class MeshRendererComponent final : public ecs::IComponentTag
     /// @brief 対応する ID を検証して所有する。失敗時は旧参照を保持する
     [[nodiscard]] Result<void> set_mesh_id(std::string_view a_assetId)
     {
-        if (a_assetId != k_cubeMeshId)
+        if (!is_valid_mesh_asset_id(a_assetId))
             return Result<void>::failure({ErrorCategory::InvalidArgument, "MeshRendererComponent.asset"});
         try
         {

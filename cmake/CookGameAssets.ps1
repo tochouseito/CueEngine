@@ -50,6 +50,47 @@ function Read-CueAssetFields([IO.FileInfo]$File, [string[]]$Required, [string[]]
     return ,$fields
 }
 
+# 変換済み Model を再解析せず、Header から ID と Payload の境界だけを検証する
+function Read-CueModel([IO.FileInfo]$File)
+{
+    if ($File.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or $File.Length -lt 96 -or
+        $File.Length -gt (64 * 1024 * 1024))
+    {
+        throw "Invalid cooked Model file: $($File.FullName)"
+    }
+    $reader = [IO.BinaryReader]::new($File.OpenRead())
+    try
+    {
+        $magic = [Text.Encoding]::ASCII.GetString($reader.ReadBytes(8))
+        $id = [Text.Encoding]::ASCII.GetString($reader.ReadBytes(36))
+        $materialId = [Text.Encoding]::ASCII.GetString($reader.ReadBytes(36))
+        if ($materialId -ceq [string]::new([char]0, 36)) { $materialId = $null }
+        $vertices = $reader.ReadUInt32()
+        $indices = $reader.ReadUInt32()
+        $attributes = $reader.ReadUInt32()
+        $indexWidth = $reader.ReadUInt32()
+        $vertexWidth = 12
+        if ($attributes -band 1) { $vertexWidth += 12 }
+        if ($attributes -band 2) { $vertexWidth += 8 }
+        [long]$size = 96L + [long]$vertices * $vertexWidth + [long]$indices * $indexWidth
+        if ($magic -cne 'CUEMODL1' -or $id -cnotmatch $idPattern -or
+            $id -ceq '00000000-0000-0000-0000-000000000000' -or
+            ($materialId -and ($materialId -cnotmatch $idPattern -or $materialId -ceq $id -or
+                $materialId -ceq '00000000-0000-0000-0000-000000000000')) -or
+            $vertices -eq 0 -or $indices -eq 0 -or $indices % 3 -ne 0 -or $attributes -gt 3 -or
+            $indexWidth -notin @(2, 4) -or $size -ne $reader.BaseStream.Length)
+        {
+            throw "Invalid cooked Model header: $($File.FullName)"
+        }
+        $reader.BaseStream.Position = 0
+        return @{
+            Kind = [uint32]3; AssetId = $id; MaterialId = $materialId; Cooked = $File; Size = [uint64]$size
+            Header = [Convert]::ToHexString($reader.ReadBytes(96))
+        }
+    }
+    finally { $reader.Dispose() }
+}
+
 # Tool を利用する Windows x64 Build でだけ、公式 Release と固定 Hash を検証して取得する
 function Get-CueTexconv()
 {
@@ -102,6 +143,7 @@ while ($directories.Count -ne 0)
                 throw "Texture source or color space is invalid: $($entry.FullName)"
             }
             $asset = @{ Kind = [uint32]1; Source = $source; ColorSpace = $fields['colorSpace'] }
+            $id = $fields['assetId']
         }
         elseif ($entry.Extension -ieq '.cuemat')
         {
@@ -130,23 +172,47 @@ while ($directories.Count -ne 0)
             $text = "version=1`nassetId=$($fields['assetId'])`ntype=Material`nbaseColor=$($canonical -join ',')`n"
             if ($textureId) { $text += "baseColorTexture=$textureId`n" }
             $asset = @{ Kind = [uint32]2; Material = $utf8.GetBytes($text); TextureId = $textureId }
+            $id = $fields['assetId']
+        }
+        elseif ($entry.Extension -ieq '.cuemodel')
+        {
+            $asset = Read-CueModel $entry
+            $id = $asset.AssetId
         }
         else { continue }
-        if ($assets.ContainsKey($fields['assetId']))
+        if ($assets.ContainsKey($id))
         {
-            throw "Duplicate Asset ID: $($fields['assetId'])"
+            throw "Duplicate Asset ID: $id"
         }
-        $assets.Add($fields['assetId'], $asset)
+        $assets.Add($id, $asset)
         if ($assets.Count -gt 65536) { throw 'Too many assets for a single Cue asset pack' }
     }
 }
-# 最初は製品の起動 Scene が参照する Material と、その Base Color Texture を収録する
+# 起動 Scene の Model、既定・明示の Material、その Base Color Texture を収録する
 $selected = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+$referencedMaterials = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($line in [IO.File]::ReadLines($StartupScene, $utf8))
 {
     $separator = $line.IndexOf('=')
-    if ($separator -lt 1 -or $line.Substring(0, $separator).Trim($whitespace) -cne 'material.assetId') { continue }
-    $materialId = $line.Substring($separator + 1).Trim($whitespace)
+    if ($separator -lt 1) { continue }
+    $key = $line.Substring(0, $separator).Trim($whitespace)
+    $id = $line.Substring($separator + 1).Trim($whitespace)
+    if ($key -ceq 'material.assetId')
+    {
+        [void]$referencedMaterials.Add($id)
+    }
+    elseif ($key -ceq 'mesh.assetId' -and $id -cne 'cue://engine/mesh/cube')
+    {
+        if (-not $assets.ContainsKey($id) -or $assets[$id].Kind -ne 3)
+        {
+            throw "Startup Scene Model is missing or has the wrong type: $id"
+        }
+        [void]$selected.Add($id)
+        if ($assets[$id].MaterialId) { [void]$referencedMaterials.Add($assets[$id].MaterialId) }
+    }
+}
+foreach ($materialId in $referencedMaterials)
+{
     if (-not $assets.ContainsKey($materialId) -or $assets[$materialId].Kind -ne 2)
     {
         throw "Startup Scene Material is missing or has the wrong type: $materialId"
@@ -181,6 +247,7 @@ try
             $asset.Size = [uint64]$asset.Material.Length
             continue
         }
+        if ($asset.Kind -eq 3) { continue }
         if (-not $textureTool)
         {
             $textureTool = Get-CueTexconv
@@ -218,7 +285,7 @@ try
         $writer = [IO.BinaryWriter]::new($stream, $utf8, $true)
         try
         {
-            # AssetPack.cpp と共通の契約。索引を Little Endian で書き、Data は DDS のまま連結する
+            # AssetPack.cpp と共通の契約。索引を Little Endian で書き、変換済み Data を連結する
             $writer.Write([Text.Encoding]::ASCII.GetBytes('CUEPACK1'))
             $writer.Write([uint32]$selected.Count)
             $writer.Write([uint32]0)
@@ -237,7 +304,23 @@ try
                 $asset = $assets[$id]
                 if ($asset.Kind -eq 2) { $writer.Write($asset.Material); continue }
                 $inputStream = $asset.Cooked.OpenRead()
-                try { $inputStream.CopyTo($stream) }
+                try
+                {
+                    if ($inputStream.Length -ne $asset.Size) { throw "Cooked Payload changed: $($asset.Cooked.FullName)" }
+                    if ($asset.Kind -eq 3)
+                    {
+                        # Resolve した ID と Material の参照が変われば旧 Pack の公開を保つ
+                        $modelReader = [IO.BinaryReader]::new($inputStream, $utf8, $true)
+                        try { $modelHeader = $modelReader.ReadBytes(96) }
+                        finally { $modelReader.Dispose() }
+                        if ([Convert]::ToHexString($modelHeader) -cne $asset.Header)
+                        {
+                            throw "Cooked Model changed: $($asset.Cooked.FullName)"
+                        }
+                        $writer.Write($modelHeader)
+                    }
+                    $inputStream.CopyTo($stream)
+                }
                 finally { $inputStream.Dispose() }
             }
             $writer.Flush()

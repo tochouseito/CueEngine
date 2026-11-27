@@ -6,13 +6,13 @@
 #include <cstdio>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <utility>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <Assets/BuiltinMesh.h>
 #include <DX12/DX12Backend.h>
 #include <DX12/DX12RenderDevice.h>
 #include <Foundation/Windows/UtfConversion.h>
@@ -23,7 +23,7 @@
 #include <Scene/Scene.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptRuntime/ScriptModule.h>
-#include <WindowsHost/SceneMaterials.h>
+#include <WindowsHost/SceneAssets.h>
 #include <WindowsHost/WindowsHost.h>
 
 #include "AppValidation.h"
@@ -87,7 +87,7 @@ void report_script(std::uint32_t a_severity, std::string_view a_message)
 
 /// @brief Platform Host の Frame 制御へ実行 Session と所有 Render Snapshot を接続する
 Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_startup,
-                        std::span<const SceneMaterialDesc> a_materials, const AppValidationOptions &a_options,
+                        const SceneAssets &a_assets, const AppValidationOptions &a_options,
                         AppValidationMetrics &a_metrics)
 {
     std::unique_ptr<ISceneRenderer> renderer;
@@ -120,7 +120,7 @@ Result<void> run_frames(GameSession &a_session, const GameStartupConfig &a_start
         if (!created.has_value())
             return Result<void>::failure(*created.try_error());
         renderer = created.take_value();
-        return renderer->set_materials(a_materials);
+        return renderer->set_assets(a_assets.meshes, a_assets.materials);
     };
     config.graph.configure = [&](FrameGraph &a_graph, FrameGraphResourceHandle)
     {
@@ -217,13 +217,19 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             if (!scene.has_value())
                 return Result<void>::failure(*scene.try_error());
             const auto &objects = scene.try_value()->descriptor().objects;
-            const bool needsPack = std::ranges::any_of(objects, [](const auto &a_object) { return a_object.material.has_value(); });
-            auto materials = load_product_materials(**files.try_value(), *directory.try_value(), needsPack);
-            if (!materials.has_value())
-                return Result<void>::failure(*materials.try_error());
+            const bool needsPack = std::ranges::any_of(objects, [](const auto &a_object)
+            { return a_object.material.has_value() || (a_object.mesh && a_object.mesh->assetId != k_cubeMeshId); });
+            auto assets = load_product_assets(**files.try_value(), *directory.try_value(), needsPack);
+            if (!assets.has_value())
+                return Result<void>::failure(*assets.try_error());
             for (const auto &object : objects)
             {
-                if (object.material && std::ranges::none_of(*materials.try_value(), [&](const auto &a_material)
+                if (object.mesh && object.mesh->assetId != k_cubeMeshId &&
+                    std::ranges::find(assets.try_value()->meshes, object.mesh->assetId, &SceneMeshDesc::assetId) ==
+                        assets.try_value()->meshes.end())
+                    return Result<void>::failure({ErrorCategory::InvalidArgument,
+                                                  "GameApp.model_missing:" + object.mesh->assetId});
+                if (object.material && std::ranges::none_of(assets.try_value()->materials, [&](const auto &a_material)
                     { return a_material.assetId == object.material->assetId; }))
                     return Result<void>::failure({ErrorCategory::InvalidArgument,
                                                   "GameApp.material_missing:" + object.material->assetId});
@@ -242,7 +248,7 @@ int run_windows_game(CueScriptGetModuleFunction a_entry, const WindowsGameBuildI
             observe_app_snapshot(metrics, *initial.try_value());
             auto played = options.try_value()->isValidateOnly
                               ? Result<void>::success()
-                              : run_frames(*session, *startup.try_value(), *materials.try_value(),
+                              : run_frames(*session, *startup.try_value(), *assets.try_value(),
                                            *options.try_value(), metrics);
             metrics.completedSimulationTicks = session->completed_ticks();
             auto stopped = session->shutdown();

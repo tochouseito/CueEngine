@@ -77,6 +77,7 @@ if(WIN32)
     )
     # Editor の実行入口を追加し、Windows の表示・Frame 基盤を再利用する
     set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT Release)
+    add_subdirectory(ModelImport)
     add_subdirectory(EditorUi)
     add_subdirectory(EditorHost)
 

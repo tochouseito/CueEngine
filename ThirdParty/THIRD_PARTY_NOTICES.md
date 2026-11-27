@@ -76,6 +76,15 @@ OFL Font は元の License と Copyright を添付し、Font 単体で販売し�
 Material Symbols は Apache-2.0 の全文と上記帰属表示を含める。TTF を変換・改変する場合はその旨を明記する。
 Editor の Binary 配置と Source-backed SDK の両方に Font / License を同梱する。
 
+## Assimp
+
+- 出自: https://github.com/assimp/assimp/releases/tag/v6.0.4
+- Version: `6.0.4`。vcpkg Overlay Port が公式 Source Archive の SHA-512 を検証する
+- License: [BSD 3-Clause](Licenses/Assimp-BSD-3-Clause.txt)
+- 同梱ライブラリ: [Assimp bundled library notices](Licenses/Assimp-ThirdParty-Notices.txt)
+
+Wavefront OBJ Importer を有効にし、Editor のモデル取り込みに静的リンクする。配布する Editor は上記 License と Notice を同梱する。製品 App は Cook 済みモデルを読み込む。
+
 ## vcpkg
 
 - 出自: https://github.com/microsoft/vcpkg

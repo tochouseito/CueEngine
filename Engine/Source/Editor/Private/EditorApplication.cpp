@@ -416,11 +416,17 @@ Result<FileSaveOutcome> EditorApplication::save_scene(IFileSystem &a_files, cons
 
 Result<std::string> EditorApplication::add_cube()
 {
+    return add_mesh_object("Cube", k_cubeMeshId);
+}
+
+Result<std::string> EditorApplication::add_mesh_object(std::string_view a_name, std::string_view a_meshId,
+                                                       std::string_view a_materialId)
+{
     auto access = check_access();
     if (!access.has_value())
         return Result<std::string>::failure(*access.try_error());
     if (m_document->m_edit)
-        return Result<std::string>::failure(operation_error("Editor.add_cube.editing"));
+        return Result<std::string>::failure(operation_error("Editor.add_mesh_object.editing"));
     const ScopedFlag mutation(m_isMutating);
     try
     {
@@ -429,22 +435,24 @@ Result<std::string> EditorApplication::add_cube()
             return id;
         auto descriptor = m_document->m_scene.descriptor();
         if (find_object(descriptor, *id.try_value()) != descriptor.objects.size())
-            return Result<std::string>::failure({ErrorCategory::InvalidArgument, "Editor.add_cube.duplicate_id"});
+            return Result<std::string>::failure({ErrorCategory::InvalidArgument, "Editor.add_mesh_object.duplicate_id"});
         SceneObjectDescriptor object;
         object.objectId = *id.try_value();
-        constexpr char k_cubeName[] = "Cube";
-        object.name = k_cubeName;
+        object.name = a_name;
         // 連番付きの候補が使用済みでも、次の候補は常に元の名前から組み立てる
         for (std::size_t suffix = 1; std::any_of(descriptor.objects.begin(), descriptor.objects.end(),
                                                  [&](const auto &a_object) { return a_object.name == object.name; });
              ++suffix)
-            object.name = std::string(k_cubeName) + '(' + std::to_string(suffix) + ')';
+            object.name = std::string(a_name) + '(' + std::to_string(suffix) + ')';
         object.transform.emplace();
-        object.mesh.emplace();
+        object.mesh.emplace(SceneMeshDescriptor{std::string(a_meshId)});
+        if (!a_materialId.empty())
+            object.material.emplace(SceneMaterialDescriptor{std::string(a_materialId)});
         SceneDocument::Command command;
-        command.kind = SceneDocument::CommandKind::AddCube;
+        command.kind = SceneDocument::CommandKind::AddObject;
         command.object = object;
         command.objectIndex = descriptor.objects.size();
+        command.formatBefore = descriptor.formatVersion;
         command.selectedBefore = m_document->m_selected;
         command.selectedAfter = object.objectId;
         std::string selected = object.objectId;
@@ -452,17 +460,18 @@ Result<std::string> EditorApplication::add_cube()
         auto applied = apply_scene_structure(std::move(descriptor));
         if (!applied.has_value())
             return Result<std::string>::failure(*applied.try_error());
+        command.formatAfter = m_document->m_scene.descriptor().formatVersion;
         m_document->m_selected.swap(selected);
         m_document->append_command(std::move(command));
         return id;
     }
     catch (const std::bad_alloc &)
     {
-        return Result<std::string>::failure({ErrorCategory::PlatformFailure, "Editor.add_cube.allocation"});
+        return Result<std::string>::failure({ErrorCategory::PlatformFailure, "Editor.add_mesh_object.allocation"});
     }
     catch (...)
     {
-        return Result<std::string>::failure({ErrorCategory::PlatformFailure, "Editor.add_cube.callback"});
+        return Result<std::string>::failure({ErrorCategory::PlatformFailure, "Editor.add_mesh_object.callback"});
     }
 }
 
@@ -870,6 +879,9 @@ Result<void> EditorApplication::apply_history(bool a_isRedo)
                 return Result<void>::failure(operation_error("Editor.history.object_missing"));
             descriptor.objects.erase(descriptor.objects.begin() + object);
         }
+        // Material 付きの最初の Object を取り消した場合も元の Scene 形式に戻す
+        if (command.kind == SceneDocument::CommandKind::AddObject)
+            descriptor.formatVersion = a_isRedo ? command.formatAfter : command.formatBefore;
         auto applied = apply_scene_structure(std::move(descriptor));
         if (!applied.has_value())
             return applied;

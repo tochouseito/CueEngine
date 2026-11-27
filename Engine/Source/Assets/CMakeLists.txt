@@ -3,6 +3,7 @@ add_library(Cue.Assets STATIC
     Private/AssetCatalog.cpp
     Private/AssetPack.cpp
     Private/MeshData.cpp
+    Private/ModelAsset.cpp
     Private/BuiltinMesh.cpp
 )
 target_include_directories(Cue.Assets PUBLIC Public)

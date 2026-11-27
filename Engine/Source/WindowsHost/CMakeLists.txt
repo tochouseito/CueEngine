@@ -3,8 +3,8 @@ add_library(Cue.WindowsHost STATIC
     Private/WindowsHost.cpp
     Private/StoragePaths.cpp
     Private/PerformanceSettings.cpp
-    Private/ProjectSceneMaterials.cpp
-    Private/ProductSceneMaterials.cpp
+    Private/ProjectSceneAssets.cpp
+    Private/ProductSceneAssets.cpp
 )
 
 target_include_directories(Cue.WindowsHost PUBLIC

@@ -10,6 +10,8 @@
 #include <Foundation/Utf8.h>
 #include <Platform/FileSystem.h>
 
+#include "ModelAssetFormat.h"
+
 namespace cue
 {
 namespace
@@ -162,6 +164,7 @@ struct CatalogEntries final
 {
     std::vector<TextureAsset> textures;
     std::vector<MaterialAsset> materials;
+    std::vector<ModelAsset> models;
 };
 
 /// @brief ID 順の索引を参照し、一時文字列を確保せず検索する
@@ -232,6 +235,16 @@ Result<CatalogEntries> scan_catalog(IFileSystem &a_files, const Path &a_root)
                 pending.push_back(path);
                 continue;
             }
+            if (has_extension(path, ".cuemodel"))
+            {
+                auto model = detail::read_model_header(a_files, path);
+                if (!model.has_value())
+                {
+                    return Result<CatalogEntries>::failure(*model.try_error());
+                }
+                values.models.push_back(model.take_value());
+                continue;
+            }
             const bool isMeta = has_extension(path, k_metaExtension);
             if (!isMeta && !has_extension(path, ".cuemat"))
             {
@@ -263,9 +276,11 @@ Result<CatalogEntries> scan_catalog(IFileSystem &a_files, const Path &a_root)
             }
         }
     }
-    if (!sort_unique_ids(values.textures) || !sort_unique_ids(values.materials) ||
+    if (!sort_unique_ids(values.textures) || !sort_unique_ids(values.materials) || !sort_unique_ids(values.models) ||
         std::ranges::any_of(values.materials, [&](const MaterialAsset &a_material)
-        { return find_asset(values.textures, a_material.assetId) != nullptr; }))
+        { return find_asset(values.textures, a_material.assetId) != nullptr; }) ||
+        std::ranges::any_of(values.models, [&](const ModelAsset &a_model)
+        { return find_asset(values.textures, a_model.assetId) || find_asset(values.materials, a_model.assetId); }))
     {
         return Result<CatalogEntries>::failure({ErrorCategory::InvalidArgument, "AssetCatalog.duplicate_id"});
     }
@@ -372,6 +387,7 @@ Result<AssetCatalog> AssetCatalog::load(IFileSystem &a_files, const Path &a_cont
         AssetCatalog catalog;
         catalog.m_textures = std::move(entries.try_value()->textures);
         catalog.m_materials = std::move(entries.try_value()->materials);
+        catalog.m_models = std::move(entries.try_value()->models);
         for (const auto &material : catalog.m_materials)
         {
             if (material.baseColorTexture)
@@ -380,6 +396,17 @@ Result<AssetCatalog> AssetCatalog::load(IFileSystem &a_files, const Path &a_cont
                 if (!texture.has_value())
                 {
                     return Result<AssetCatalog>::failure(*texture.try_error());
+                }
+            }
+        }
+        for (const auto &model : catalog.m_models)
+        {
+            if (model.materialAssetId)
+            {
+                const auto material = catalog.material(*model.materialAssetId);
+                if (!material.has_value())
+                {
+                    return Result<AssetCatalog>::failure(*material.try_error());
                 }
             }
         }
@@ -404,7 +431,8 @@ Result<const TextureAsset *> AssetCatalog::texture(std::string_view a_assetId) c
     }
     return Result<const TextureAsset *>::failure(
         {ErrorCategory::InvalidArgument,
-         find_asset(m_materials, a_assetId) ? "AssetCatalog.type_mismatch" : "AssetCatalog.missing_texture"});
+         find_asset(m_materials, a_assetId) || find_asset(m_models, a_assetId) ? "AssetCatalog.type_mismatch"
+                                                                               : "AssetCatalog.missing_texture"});
 }
 
 /// @brief Material の ID を照会し、関連する別型の登録があれば型不一致とする
@@ -420,7 +448,25 @@ Result<const MaterialAsset *> AssetCatalog::material(std::string_view a_assetId)
     }
     return Result<const MaterialAsset *>::failure(
         {ErrorCategory::InvalidArgument,
-         find_asset(m_textures, a_assetId) ? "AssetCatalog.type_mismatch" : "AssetCatalog.missing_material"});
+         find_asset(m_textures, a_assetId) || find_asset(m_models, a_assetId) ? "AssetCatalog.type_mismatch"
+                                                                               : "AssetCatalog.missing_material"});
+}
+
+/// @brief Model の ID を照会し、関連する別型の登録があれば型不一致とする
+Result<const ModelAsset *> AssetCatalog::model(std::string_view a_assetId) const
+{
+    if (!is_valid_asset_id(a_assetId))
+    {
+        return Result<const ModelAsset *>::failure({ErrorCategory::InvalidArgument, "AssetCatalog.invalid_id"});
+    }
+    if (const auto *asset = find_asset(m_models, a_assetId))
+    {
+        return Result<const ModelAsset *>::success(asset);
+    }
+    return Result<const ModelAsset *>::failure(
+        {ErrorCategory::InvalidArgument,
+         find_asset(m_textures, a_assetId) || find_asset(m_materials, a_assetId) ? "AssetCatalog.type_mismatch"
+                                                                                  : "AssetCatalog.missing_model"});
 }
 
 /// @brief 索引で検証済みの Texture を ID 順に公開する
@@ -433,6 +479,12 @@ std::span<const TextureAsset> AssetCatalog::textures() const noexcept
 std::span<const MaterialAsset> AssetCatalog::materials() const noexcept
 {
     return m_materials;
+}
+
+/// @brief 索引で検証済みの Model を ID 順に公開する
+std::span<const ModelAsset> AssetCatalog::models() const noexcept
+{
+    return m_models;
 }
 
 /// @brief PNG の境界と重複 ID を検証してから新規サイドカーを公開する
@@ -492,7 +544,8 @@ Result<TextureAsset> import_texture(IFileSystem &a_files, const Path &a_contentR
         {
             return Result<TextureAsset>::success(*existing);
         }
-        if (find_asset(textures, a_assetId) || find_asset(entries.try_value()->materials, a_assetId))
+        if (find_asset(textures, a_assetId) || find_asset(entries.try_value()->materials, a_assetId) ||
+            find_asset(entries.try_value()->models, a_assetId))
         {
             return Result<TextureAsset>::failure({ErrorCategory::InvalidArgument, "AssetCatalog.duplicate_id"});
         }

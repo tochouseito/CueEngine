@@ -125,6 +125,10 @@ Result<EditorAssetFolder> scan_folder(IFileSystem &a_files, const Path &a_path,
                 kind = EditorAssetKind::Texture;
             else if (a_isContent && has_asset_extension(extension, ".cuemat"))
                 kind = EditorAssetKind::Material;
+            else if (a_isContent && has_asset_extension(extension, ".obj"))
+                kind = EditorAssetKind::ModelSource;
+            else if (a_isContent && has_asset_extension(extension, ".cuemodel"))
+                kind = EditorAssetKind::Model;
             folder.assets.push_back({path, path.filename(), kind});
         }
     }

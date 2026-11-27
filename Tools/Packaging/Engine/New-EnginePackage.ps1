@@ -80,7 +80,7 @@ try
     {
         [IO.File]::Copy((Join-Path $engineRoot $name), (Join-Path $payload $name), $false)
     }
-    foreach ($name in @('Engine/Source', 'Engine/Shader', 'cmake', 'Templates', 'Tools/VisualStudioBridge', 'ThirdParty/Fonts'))
+    foreach ($name in @('Engine/Source', 'Engine/Shader', 'cmake', 'Templates', 'Tools/VisualStudioBridge', 'ThirdParty/Fonts', 'ThirdParty/Ports'))
     {
         Copy-CuePackageTree (Join-Path $engineRoot $name) (Join-Path $payload $name)
     }
@@ -90,17 +90,29 @@ try
     Copy-CuePackageTree (Join-Path $engineRoot 'ThirdParty/Licenses') (Join-Path $payload 'Licenses')
     [IO.File]::Copy((Join-Path $engineRoot 'ThirdParty/THIRD_PARTY_NOTICES.md'), (Join-Path $payload 'Licenses/THIRD_PARTY_NOTICES.md'), $false)
     [IO.File]::Copy((Join-Path $engineRoot 'LICENSE.txt'), (Join-Path $payload 'Licenses/CueEngine-MIT.txt'), $false)
-    foreach ($name in @('WinPixEventRuntime.cmake', 'DirectXShaderCompiler.cmake', 'vcpkg.json'))
+    foreach ($name in @('WinPixEventRuntime.cmake', 'DirectXShaderCompiler.cmake', 'vcpkg.json', 'vcpkg-configuration.json'))
     {
         [IO.File]::Copy((Join-Path $engineRoot "ThirdParty/$name"), (Join-Path $payload "ThirdParty/$name"), $false)
     }
 
-    # Toolchain は利用者のものを検出する。SDK 内には imgui の再配置可能な成果物だけを入れる
-    foreach ($name in @('include', 'lib', 'debug/lib', 'share/imgui'))
+    # 既存 SDK で使える ImGui の File だけを vcpkg の所有リストから選ぶ
+    # Assimp は配布 Editor に静的リンクし、Game SDK に Library や Header を持ち込まない
+    $dependencies = Join-Path $engineRoot 'ThirdParty/vcpkg_installed'
+    $imguiLists = @(Get-ChildItem -LiteralPath (Join-Path $dependencies 'vcpkg/info') -Filter 'imgui_*_x64-windows.list' -File)
+    if ($imguiLists.Count -ne 1) { throw 'Installed ImGui file list is missing or ambiguous' }
+    $imguiFiles = @([IO.File]::ReadAllLines((Assert-CuePlainPath $imguiLists[0].FullName)) |
+        Where-Object { $_ -and -not $_.EndsWith('/') })
+    if ($imguiFiles.Count -eq 0) { throw 'Installed ImGui file list is empty' }
+    foreach ($name in $imguiFiles)
     {
-        $dependencySource = Join-Path $engineRoot "ThirdParty/vcpkg_installed/x64-windows/$name"
-        $dependencyTarget = Join-Path $payload "ThirdParty/vcpkg_installed/x64-windows/$name"
-        Copy-CuePackageTree $dependencySource $dependencyTarget
+        if ($name -cnotmatch '^x64-windows/(include|lib|debug/lib|share/imgui)/(?!\.\.?$)[a-zA-Z0-9_.-]+$')
+        {
+            throw "Unexpected file in the ImGui SDK list: $name"
+        }
+        $dependencySource = Assert-CuePlainPath (Join-Path $dependencies $name)
+        $dependencyTarget = Assert-CuePlainPath (Join-Path $payload "ThirdParty/vcpkg_installed/$name")
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dependencyTarget)) | Out-Null
+        [IO.File]::Copy($dependencySource, $dependencyTarget, $false)
     }
     $packageDirectory = Join-Path $payload 'ThirdParty/Packages'
     [IO.Directory]::CreateDirectory($packageDirectory) | Out-Null

@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include <Assets/ModelAsset.h>
 #include <Foundation/Path.h>
 #include <Foundation/Result.h>
 #include <Foundation/Uuid.h>
@@ -18,7 +19,8 @@ class IFileSystem;
 enum class AssetKind
 {
     Texture,
-    Material
+    Material,
+    Model
 };
 
 enum class TextureColorSpace
@@ -53,12 +55,12 @@ struct MaterialAsset final
 /// @brief UTF-8 の Material v1 を検証して所有値に変換する。Texture の参照整合は索引で検証する
 [[nodiscard]] Result<MaterialAsset> parse_material_asset(std::string_view a_text, Path a_source = {});
 
-/// @brief Content 内の Texture／Material を同じ永続 ID 空間で管理する読み取り専用索引
+/// @brief Content 内の Texture／Material／Model を同じ永続 ID 空間で管理する読み取り専用索引
 /// 参照・Span は索引の破棄、Move、代入まで借用する。公開後の読み取りは並行実行できる
 class AssetCatalog final
 {
   public:
-    /// @brief 絶対 Content Root を走査し、ID の重複と全 Material の参照を検証する
+    /// @brief 絶対 Content Root を走査し、ID の重複と Material・Model の参照を検証する
     /// 外部 Link をたどらず、FileSystem は呼出中だけ借用する。失敗時に部分索引を公開しない
     [[nodiscard]] static Result<AssetCatalog> load(IFileSystem &a_files, const Path &a_contentRoot);
 
@@ -66,10 +68,14 @@ class AssetCatalog final
     [[nodiscard]] Result<const TextureAsset *> texture(std::string_view a_assetId) const;
     /// @brief 種類を照合して Material を借用する。無効 ID・欠落・型違いを区別する
     [[nodiscard]] Result<const MaterialAsset *> material(std::string_view a_assetId) const;
+    /// @brief 種類を照合して Model を借用する。無効 ID・欠落・型違いを区別する
+    [[nodiscard]] Result<const ModelAsset *> model(std::string_view a_assetId) const;
     /// @brief ID 順の Texture 一覧を借用する
     [[nodiscard]] std::span<const TextureAsset> textures() const noexcept;
     /// @brief ID 順の Material 一覧を借用する
     [[nodiscard]] std::span<const MaterialAsset> materials() const noexcept;
+    /// @brief ID 順の Model 一覧を借用する
+    [[nodiscard]] std::span<const ModelAsset> models() const noexcept;
 
   private:
     /// @brief 検証が完了するまで空の索引を外部へ公開しない
@@ -77,6 +83,7 @@ class AssetCatalog final
 
     std::vector<TextureAsset> m_textures;
     std::vector<MaterialAsset> m_materials;
+    std::vector<ModelAsset> m_models;
 };
 
 /// @brief Content 内の既存 PNG を登録する。再 Import では既存 ID と色空間を再利用する

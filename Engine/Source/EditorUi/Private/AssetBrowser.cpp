@@ -166,9 +166,11 @@ bool draw_asset_item(EditorUiState &a_state, const Path &a_path, std::string_vie
 void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::vector<EditorAction> &a_actions,
                 const EditorAsset &a_asset)
 {
-    const auto icon = a_asset.kind == EditorAssetKind::Scene     ? editor_icon::k_scene
+    const bool isModel = a_asset.kind == EditorAssetKind::Model || a_asset.kind == EditorAssetKind::ModelSource;
+    const auto icon = a_asset.kind == EditorAssetKind::Scene    ? editor_icon::k_scene
                       : a_asset.kind == EditorAssetKind::Script ? editor_icon::k_script
-                                                                 : editor_icon::k_file;
+                      : isModel                                 ? editor_icon::k_object
+                                                                : editor_icon::k_file;
     const char *status = a_asset.isMissing ? a_context.text("Source missing", "ソースファイル欠落") : nullptr;
     if (draw_asset_item(a_state, a_asset.path, a_asset.name, icon, status))
     {
@@ -204,6 +206,20 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
                 request_asset(a_state, a_actions, EditorActionKind::ImportTexture, a_asset);
             ImGui::Separator();
         }
+        else if (a_asset.kind == EditorAssetKind::ModelSource)
+        {
+            if (ImGui::MenuItem(a_context.text("Import Model", "モデルをインポート###Import Model"),
+                                nullptr, false, a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::ImportModel, a_asset);
+            ImGui::Separator();
+        }
+        else if (a_asset.kind == EditorAssetKind::Model)
+        {
+            if (ImGui::MenuItem(a_context.text("Add to Scene", "シーンに追加###Add to Scene"),
+                                nullptr, false, a_context.canManageAssets))
+                request_asset(a_state, a_actions, EditorActionKind::AddAssetModel, a_asset);
+            ImGui::Separator();
+        }
         draw_copy_path(a_context, a_asset.path);
         if (a_asset.kind == EditorAssetKind::Script)
         {
@@ -231,6 +247,12 @@ void draw_asset(const EditorUiContext &a_context, EditorUiState &a_state, std::v
             break;
         case EditorAssetKind::Material:
             type = a_context.text("Material", "マテリアル");
+            break;
+        case EditorAssetKind::ModelSource:
+            type = a_context.text("OBJ Source", "OBJ ソース");
+            break;
+        case EditorAssetKind::Model:
+            type = a_context.text("Model", "モデル");
             break;
         case EditorAssetKind::File:
             break;

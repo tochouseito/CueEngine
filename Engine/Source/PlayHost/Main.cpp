@@ -24,7 +24,7 @@
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayServer.h>
 #include <ScriptRuntime/Windows/WindowsGameModule.h>
-#include <WindowsHost/SceneMaterials.h>
+#include <WindowsHost/SceneAssets.h>
 #include <WindowsHost/WindowsHost.h>
 
 namespace
@@ -412,13 +412,13 @@ int run(const Options &a_options, cue::PlayServer &a_server)
     {
         // 最初の実装は Main と Update を同じ Owner に固定する。Render は所有 Snapshot だけ読む
         std::unique_ptr<cue::ISceneRenderer> renderer;
-        std::vector<cue::SceneMaterialDesc> materials;
+        cue::SceneAssets assets;
         if (a_options.contentRoot)
         {
-            auto loaded = cue::load_project_materials(**installationFiles.try_value(), *a_options.contentRoot);
+            auto loaded = cue::load_project_assets(**installationFiles.try_value(), *a_options.contentRoot);
             if (!loaded.has_value())
                 return fail(a_server, *loaded.try_error());
-            materials = loaded.take_value();
+            assets = loaded.take_value();
         }
         cue::WindowsHostConfig config;
         config.window = {"CueEngine Play", {1280, 720}};
@@ -437,7 +437,7 @@ int run(const Options &a_options, cue::PlayServer &a_server)
             if (!created.has_value())
                 return cue::Result<void>::failure(*created.try_error());
             renderer = created.take_value();
-            return renderer->set_materials(materials);
+            return renderer->set_assets(assets.meshes, assets.materials);
         };
         config.graph.configure = [&](cue::FrameGraph &a_graph, cue::FrameGraphResourceHandle)
         {

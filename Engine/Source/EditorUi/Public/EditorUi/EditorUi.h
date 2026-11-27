@@ -71,6 +71,8 @@ enum class EditorActionKind
     CancelScriptRemoval,
     ImportTexture,
     SetMaterial,
+    ImportModel,
+    AddAssetModel,
 };
 
 /// @brief UI の借用が終わった後に適用できる所有値の操作要求

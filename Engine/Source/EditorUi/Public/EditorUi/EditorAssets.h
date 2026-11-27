@@ -16,6 +16,8 @@ enum class EditorAssetKind
     Script,
     Texture,
     Material,
+    ModelSource,
+    Model,
 };
 
 /// @brief Asset の表示に必要な所有値。Script の Path は代表の cpp を指す

@@ -75,6 +75,9 @@ class EditorApplication final
     [[nodiscard]] Result<FileSaveOutcome> save_scene(IFileSystem &a_files, const Path &a_file);
     /// @brief UUID を発行して Cube を追加・選択し、作成した ID を返す
     [[nodiscard]] Result<std::string> add_cube();
+    /// @brief 登録済み Mesh と既定 Material を持つ Object を一回の Undo 操作で追加する
+    [[nodiscard]] Result<std::string> add_mesh_object(std::string_view a_name, std::string_view a_meshId,
+                                                     std::string_view a_materialId = {});
     /// @brief 永続 ID の Object を一回の Undo 操作で削除する。候補の失敗では正本と履歴を維持する
     [[nodiscard]] Result<void> delete_object(std::string_view a_objectId);
     /// @brief 永続 Object ID で選択する。空文字列は選択解除

@@ -55,7 +55,7 @@ class SceneDocument final
     friend class EditorApplication;
     enum class CommandKind
     {
-        AddCube,
+        AddObject,
         DeleteObject,
         Transform,
         Scripts,

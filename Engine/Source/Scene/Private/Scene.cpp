@@ -279,7 +279,7 @@ Result<Scene> Scene::create(SceneDescriptor a_descriptor)
                 if (!view.has_value())
                     return Result<Scene>::failure(*view.try_error());
             }
-            if (object.mesh && object.mesh->assetId != k_cubeMeshId)
+            if (object.mesh && !is_valid_mesh_asset_id(object.mesh->assetId))
                 return Result<Scene>::failure({ErrorCategory::InvalidArgument, "Scene.mesh_asset"});
             if (object.material)
             {

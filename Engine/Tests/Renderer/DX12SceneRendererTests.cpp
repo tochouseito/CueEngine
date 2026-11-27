@@ -425,6 +425,26 @@ bool verify_scene_renderer()
     auto outside = capture.pixel(60, 24);
     CHECK(outside.has_value() && (*outside.try_value())[0] < 15 && (*outside.try_value())[1] < 15 &&
           (*outside.try_value())[2] < 15);
+
+    // Project UUID の Mesh を組み込みの描画経路で使う。失敗時に Mesh と Material を片方だけ交換しない
+    auto geometry = cue::create_cube_mesh();
+    CHECK(geometry.has_value());
+    const std::array models = {cue::SceneMeshDesc{"d7fc8f3b-e293-4fc6-8659-84b1fa05efe7",
+                                                std::make_shared<const cue::MeshData>(geometry.take_value())}};
+    CHECK(renderer->set_assets(models, colorMaterials).has_value());
+    const std::array invalidMaterials = {cue::SceneMaterialDesc{}};
+    CHECK(!renderer->set_assets({}, invalidMaterials).has_value());
+    auto imported = base;
+    imported.objects[0].meshId = models[0].assetId;
+    imported.objects[0].materialId = colorMaterials[0].assetId;
+    CHECK(renderer->publish_frame(11, imported).has_value());
+    // 未記録 Frame は旧 Mesh を借用でき、新しい Frame は退役した ID を拒否する
+    CHECK(renderer->set_assets({}, {}).has_value());
+    CHECK(!renderer->publish_frame(12, imported).has_value());
+    CHECK(record(11));
+    const auto importedPixel = capture.center();
+    CHECK(importedPixel.has_value() && (*importedPixel.try_value())[0] > 250 && (*importedPixel.try_value())[1] == 0);
+    CHECK(draw(12, base));
     CHECK(verify_debug_messages(*device->device()));
     CHECK(graph->shutdown().has_value());
     graph.reset();

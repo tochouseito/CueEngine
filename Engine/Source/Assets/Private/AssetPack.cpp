@@ -5,7 +5,10 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <optional>
 #include <utility>
+
+#include "ModelAssetFormat.h"
 
 namespace cue
 {
@@ -20,6 +23,27 @@ constexpr std::uint32_t k_maxDimension = 16384;
 constexpr std::uint64_t k_maxDdsSize = k_ddsHeaderSize + std::uint64_t{k_maxDimension} * k_maxDimension * 4;
 constexpr std::uint32_t k_maxEntries = 65536;
 constexpr std::uint64_t k_maxMaterialSize = 4096;
+
+/// @brief Pack Writer の型番号を読み、型ごとの読み込み容量を検証する
+std::optional<AssetKind> read_asset_kind(std::uint32_t a_kind, std::uint64_t a_size) noexcept
+{
+    switch (a_kind)
+    {
+    case 1:
+        if (a_size > k_ddsHeaderSize && a_size <= k_maxDdsSize)
+            return AssetKind::Texture;
+        break;
+    case 2:
+        if (a_size != 0 && a_size <= k_maxMaterialSize)
+            return AssetKind::Material;
+        break;
+    case 3:
+        if (a_size > detail::k_modelHeaderSize && a_size <= detail::k_maxModelSize)
+            return AssetKind::Model;
+        break;
+    }
+    return std::nullopt;
+}
 
 /// @brief ファイルの Little Endian 整数を Native のアラインメントに依存せず復元する
 template <class T>
@@ -125,16 +149,14 @@ Result<AssetPack> AssetPack::open(IFileSystem &a_files, const Path &a_file)
         {
             const auto record = std::span<const std::byte>{index}.subspan(row * k_entrySize, k_entrySize);
             const std::string_view assetId(reinterpret_cast<const char *>(record.data()), k_assetIdSize);
-            const auto kind = read_number<std::uint32_t>(record, 36);
             const auto offset = read_number<std::uint64_t>(record, 40);
             const auto size = read_number<std::uint64_t>(record, 48);
+            const auto kind = read_asset_kind(read_number<std::uint32_t>(record, 36), size);
             // Pack Writer は ID 順に格納する。重複・範囲の重なり・未知の型・不正な容量を拒否する
             if (!is_valid_asset_id(assetId) || (!pack.m_index.empty() && pack.m_index.back().assetId >= assetId) ||
-                (kind != 1 && kind != 2) || offset != nextOffset || size > fileSize - nextOffset ||
-                (kind == 1 ? (size <= k_ddsHeaderSize || size > k_maxDdsSize) : (size == 0 || size > k_maxMaterialSize)))
+                !kind || offset != nextOffset || size > fileSize - nextOffset)
                 return PackResult::failure({ErrorCategory::InvalidArgument, "AssetPack.entry"});
-            pack.m_index.push_back({std::string(assetId), kind == 1 ? AssetKind::Texture : AssetKind::Material, offset,
-                                    size});
+            pack.m_index.push_back({std::string(assetId), *kind, offset, size});
             nextOffset += size;
         }
         if (nextOffset != fileSize)
@@ -142,6 +164,26 @@ Result<AssetPack> AssetPack::open(IFileSystem &a_files, const Path &a_file)
 
         for (const auto &entry : pack.m_index)
         {
+            if (entry.kind == AssetKind::Model)
+            {
+                std::array<std::byte, detail::k_modelHeaderSize> modelHeader{};
+                auto read = read_extent(*pack.m_file, entry.offset, modelHeader);
+                if (!read.has_value())
+                    return PackResult::failure(*read.try_error());
+                auto model = detail::decode_model_header(modelHeader, entry.size);
+                if (!model.has_value())
+                    return PackResult::failure(*model.try_error());
+                if (model.try_value()->assetId != entry.assetId)
+                    return PackResult::failure({ErrorCategory::InvalidArgument, "AssetPack.model_id"});
+                if (const auto &materialId = model.try_value()->materialAssetId)
+                {
+                    const auto *material = pack.find(*materialId);
+                    if (!material || material->kind != AssetKind::Material)
+                        return PackResult::failure({ErrorCategory::InvalidArgument, "AssetPack.model_material"});
+                }
+                pack.m_models.push_back(model.take_value());
+                continue;
+            }
             if (entry.kind != AssetKind::Material)
                 continue;
             std::string text(static_cast<std::size_t>(entry.size), '\0');
@@ -174,6 +216,11 @@ std::span<const MaterialAsset> AssetPack::materials() const noexcept
     return m_materials;
 }
 
+std::span<const ModelAsset> AssetPack::models() const noexcept
+{
+    return m_models;
+}
+
 const AssetPack::Entry *AssetPack::find(std::string_view a_assetId) const noexcept
 {
     const auto found = std::ranges::lower_bound(m_index, a_assetId, {}, &Entry::assetId);
@@ -195,6 +242,29 @@ Result<TexturePixels> AssetPack::read_texture(std::string_view a_assetId) const
     catch (const std::bad_alloc &)
     {
         return PixelsResult::failure({ErrorCategory::PlatformFailure, "AssetPack.texture_allocation"});
+    }
+}
+
+Result<ModelData> AssetPack::read_model(std::string_view a_assetId) const
+{
+    using R = Result<ModelData>;
+    const auto *found = find(a_assetId);
+    if (!found || found->kind != AssetKind::Model || !m_file)
+        return R::failure({ErrorCategory::InvalidArgument, "AssetPack.model_id"});
+    try
+    {
+        std::vector<std::byte> encoded(static_cast<std::size_t>(found->size));
+        const auto read = read_extent(*m_file, found->offset, encoded);
+        if (!read.has_value())
+            return R::failure(*read.try_error());
+        auto model = decode_model_asset(encoded);
+        if (model.has_value() && model.try_value()->asset.assetId != a_assetId)
+            return R::failure({ErrorCategory::InvalidArgument, "AssetPack.model_id"});
+        return model;
+    }
+    catch (const std::bad_alloc &)
+    {
+        return R::failure({ErrorCategory::PlatformFailure, "AssetPack.model_allocation"});
     }
 }
 } // namespace cue

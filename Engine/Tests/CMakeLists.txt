@@ -44,6 +44,13 @@ if(WIN32)
     add_test(NAME Cue.Assets.Catalog COMMAND CueAssetCatalogTests)
 endif()
 
+if(TARGET Cue.ModelImport)
+    add_executable(CueObjImporterTests Assets/ObjImporterTests.cpp)
+    target_link_libraries(CueObjImporterTests PRIVATE Cue.ModelImport Cue.Assets
+        Cue.Platform.Windows Cue.Foundation.Windows)
+    add_test(NAME Cue.Assets.ObjImporter COMMAND CueObjImporterTests)
+endif()
+
 # Scene 定義は Runtime 非依存、実体化は別の接続 Target で検証する
 add_executable(CueSceneTests Scene/SceneTests.cpp)
 target_link_libraries(CueSceneTests PRIVATE Cue.Scene)

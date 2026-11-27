@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <Runtime/Components/CameraComponent.h>
@@ -73,6 +74,28 @@ bool verify_components()
     CHECK(camera.has_value() && mesh.has_value());
     CHECK((*camera.try_value())->projection().nearClip == object.camera->nearClip &&
           (*mesh.try_value())->mesh_id() == cue::k_cubeMeshId);
+    CHECK(world->shutdown().has_value());
+
+    // 同じ Mesh Key で Project の UUID を保存し、World でも ID を解決せず保持する
+    constexpr std::string_view modelId = "d7fc8f3b-e293-4fc6-8659-84b1fa05efe7";
+    std::string modelScene(text);
+    modelScene.replace(modelScene.find(cue::k_cubeMeshId), cue::k_cubeMeshId.size(), modelId);
+    auto imported = cue::Scene::parse(modelScene);
+    CHECK(imported.has_value());
+    auto persisted = imported.try_value()->serialize();
+    CHECK(persisted.has_value());
+    auto reloaded = cue::Scene::parse(*persisted.try_value());
+    CHECK(reloaded.has_value() && reloaded.try_value()->descriptor().objects[0].mesh &&
+          reloaded.try_value()->descriptor().objects[0].mesh->assetId == modelId);
+    auto importedWorld = cue::World::create();
+    CHECK(importedWorld.has_value());
+    world = importedWorld.take_value();
+    auto modelInstance = cue::instantiate_scene(*reloaded.try_value(), *world);
+    CHECK(modelInstance.has_value() && world->initialize().has_value());
+    auto model = world->find_by_id(*modelInstance.try_value(), cue::tests::k_cubeId);
+    CHECK(model.has_value());
+    auto modelMesh = world->get_component<cue::MeshRendererComponent>(*model.try_value());
+    CHECK(modelMesh.has_value() && (*modelMesh.try_value())->mesh_id() == modelId);
     CHECK(world->shutdown().has_value());
     return true;
 }

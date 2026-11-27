@@ -68,12 +68,97 @@ struct IndirectDraw final
 static_assert(sizeof(Candidate) == 12 && sizeof(MeshRange) == 12 && sizeof(Page) == 12 && sizeof(Batch) == 12);
 static_assert(sizeof(IndirectDraw) == 24 && offsetof(IndirectDraw, arguments) == 4);
 
+/// @brief Project Mesh の Pool Handle を複数の公開世代で共有する
+/// Backend が Pool を所有し、記録済み GPU Frame の Lease は退役後も転送・描画完了まで有効
+struct RegisteredMesh final
+{
+    /// @brief 同じ Geometry を再登録した場合の比較に CPU 正本を保持する
+    RegisteredMesh(IMeshPool &a_pool, std::shared_ptr<const MeshData> a_source)
+        : pool(a_pool), source(std::move(a_source))
+    {
+    }
+
+    /// @brief 最後の公開世代が参照を返した時点で、新規 Lease の取得を止める
+    ~RegisteredMesh()
+    {
+        if (handle.is_valid())
+        {
+            auto retired = pool.retire(handle);
+            if (!retired.has_value())
+                report_log_error("SceneRenderer.retire_mesh", *retired.try_error(), LogLevel::Error);
+        }
+    }
+
+    IMeshPool &pool;
+    std::shared_ptr<const MeshData> source;
+    MeshHandle handle;
+};
+
+using sceneMeshSet = std::map<std::string, std::shared_ptr<const RegisteredMesh>, std::less<>>;
+
+/// @brief Asset を読み直しても同じ値なら、現在の GPU Upload と Page を再利用できる
+bool is_same_geometry(const MeshData &a_left, const MeshData &a_right)
+{
+    return &a_left == &a_right ||
+           (a_left.index_format() == a_right.index_format() &&
+            std::ranges::equal(a_left.positions(), a_right.positions()) &&
+            std::ranges::equal(a_left.normals(), a_right.normals()) &&
+            std::ranges::equal(a_left.uv0(), a_right.uv0()) &&
+            std::ranges::equal(a_left.indices16(), a_right.indices16()) &&
+            std::ranges::equal(a_left.indices32(), a_right.indices32()));
+}
+
+/// @brief 全 Project Mesh を検証し、Copy Fence 完了済みの次世代を部分公開せずに作る
+Result<std::shared_ptr<const sceneMeshSet>>
+prepare_meshes(IMeshPool &a_pool, const sceneMeshSet &a_current, std::span<const SceneMeshDesc> a_meshes)
+{
+    using MeshSetResult = Result<std::shared_ptr<const sceneMeshSet>>;
+    try
+    {
+        auto next = std::make_shared<sceneMeshSet>();
+        for (const auto &asset : a_meshes)
+        {
+            // 組み込み Cube は Project Mesh と独立して保持する。描画は全頂点 Stream を必要とする
+            if (!is_valid_uuid_text(asset.assetId) || !asset.mesh || asset.mesh->positions().empty() ||
+                asset.mesh->normals().empty() || asset.mesh->uv0().empty() || asset.mesh->index_count() == 0 ||
+                !next->try_emplace(asset.assetId).second)
+                return MeshSetResult::failure(
+                    {ErrorCategory::InvalidArgument, "SceneRenderer.mesh_definition:" + asset.assetId});
+        }
+        for (const auto &asset : a_meshes)
+        {
+            auto &registration = next->at(asset.assetId);
+            const auto previous = a_current.find(asset.assetId);
+            if (previous != a_current.end() && is_same_geometry(*previous->second->source, *asset.mesh))
+            {
+                registration = previous->second;
+                continue;
+            }
+            auto uploaded = std::make_shared<RegisteredMesh>(a_pool, asset.mesh);
+            auto handle = a_pool.upload(*asset.mesh);
+            if (!handle.has_value())
+                return MeshSetResult::failure(*handle.try_error());
+            uploaded->handle = handle.take_value();
+            auto ready = a_pool.wait_ready(uploaded->handle);
+            if (!ready.has_value())
+                return MeshSetResult::failure(*ready.try_error());
+            registration = std::move(uploaded);
+        }
+        return MeshSetResult::success(std::move(next));
+    }
+    catch (const std::bad_alloc &)
+    {
+        return MeshSetResult::failure({ErrorCategory::PlatformFailure, "SceneRenderer.mesh_allocation"});
+    }
+}
+
 struct SceneRendererState final
 {
-    /// @brief 公開時点の Material 世代を Scene の値と一緒に固定する
+    /// @brief 公開時点の Mesh と Material の世代を Scene の値と一緒に固定する
     struct PublishedFrame final
     {
         SceneRenderSnapshot snapshot;
+        std::shared_ptr<const sceneMeshSet> meshAssets;
         std::shared_ptr<const dx12::SceneMaterialSet> materials;
     };
 
@@ -81,7 +166,8 @@ struct SceneRendererState final
     IMeshPool *meshes = nullptr;
     dx12::DX12Backend *backend = nullptr;
     const dx12::DX12ResourceContext *resources = nullptr;
-    std::map<std::string, MeshHandle, std::less<>> meshAssets;
+    MeshHandle cube;
+    std::shared_ptr<const sceneMeshSet> meshAssets;
     std::shared_ptr<const dx12::SceneMaterialSet> materials;
     std::map<std::uint64_t, PublishedFrame> pending;
     std::optional<PublishedFrame> active;
@@ -227,6 +313,7 @@ class MeshUploadPass final : public FrameGraphPass
         if (!scene.active || scene.active->snapshot.objects.empty())
             return Result<void>::success();
         const auto &snapshot = scene.active->snapshot;
+        const auto &meshAssets = *scene.active->meshAssets;
         frame.materials = scene.active->materials;
         if (!snapshot.camera || !frame.materials)
             return Result<void>::failure({ErrorCategory::InvalidArgument, "Scene.Upload.camera"});
@@ -254,10 +341,15 @@ class MeshUploadPass final : public FrameGraphPass
             auto [entry, inserted] = resolved.try_emplace(object.meshId);
             if (inserted)
             {
-                const auto asset = scene.meshAssets.find(object.meshId);
-                if (asset == scene.meshAssets.end())
-                    return Result<void>::failure({ErrorCategory::InvalidArgument, "Scene.Upload.mesh_id"});
-                auto acquired = acquire_ready(*scene.meshes, asset->second);
+                auto handle = scene.cube;
+                if (object.meshId != k_cubeMeshId)
+                {
+                    const auto asset = meshAssets.find(object.meshId);
+                    if (asset == meshAssets.end())
+                        return Result<void>::failure({ErrorCategory::InvalidArgument, "Scene.Upload.mesh_id"});
+                    handle = asset->second->handle;
+                }
+                auto acquired = acquire_ready(*scene.meshes, handle);
                 if (!acquired.has_value())
                     return Result<void>::failure(*acquired.try_error());
                 auto lease = acquired.take_value();
@@ -714,27 +806,24 @@ class SceneRenderer final : public ISceneRenderer
     /// @brief Copy Fence 完了済みの世代を、これから公開する Frame にだけ使用する
     Result<void> set_materials(std::span<const SceneMaterialDesc> a_materials) override
     {
-        {
-            const std::lock_guard lock(m_state->mutex);
-            if (m_state->isStopped)
-                return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_materials"});
-            if (a_materials.empty() && m_state->materials && m_state->materials->ids.empty())
-                return Result<void>::success();
-        }
-        auto created = dx12::create_scene_materials(*m_state->backend, a_materials);
-        if (!created.has_value())
-            return Result<void>::failure(*created.try_error());
-        const std::lock_guard lock(m_state->mutex);
-        if (m_state->isStopped)
-            return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_materials"});
-        m_state->materials = created.take_value();
-        return Result<void>::success();
+        return replace_assets(std::nullopt, a_materials);
+    }
+    /// @brief Material を保持して Project Mesh の世代だけ置き換える
+    Result<void> set_meshes(std::span<const SceneMeshDesc> a_meshes) override
+    {
+        return replace_assets(a_meshes, std::nullopt);
+    }
+    /// @brief Mesh と Material を一つの公開境界で置き換える
+    Result<void> set_assets(std::span<const SceneMeshDesc> a_meshes,
+                            std::span<const SceneMaterialDesc> a_materials) override
+    {
+        return replace_assets(a_meshes, a_materials);
     }
     /// @brief 非消費 Frame の容量と値を検証して公開する
     Result<void> publish_frame(std::uint64_t a_frame, SceneRenderSnapshot a_snapshot) override
     {
         const std::lock_guard lock(m_state->mutex);
-        if (m_state->isStopped || !m_state->materials || m_state->pending.size() >= k_maxFrames ||
+        if (m_state->isStopped || !m_state->materials || !m_state->meshAssets || m_state->pending.size() >= k_maxFrames ||
             (m_state->lastPublished && a_frame <= *m_state->lastPublished) || a_snapshot.objects.size() > k_maxDraws ||
             (!a_snapshot.objects.empty() && !a_snapshot.camera))
             return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.publish_frame"});
@@ -742,13 +831,17 @@ class SceneRenderer final : public ISceneRenderer
         {
             for (const auto &object : a_snapshot.objects)
             {
-                if (!math::is_finite(object.world) || !m_state->meshAssets.contains(object.meshId))
+                if (!math::is_finite(object.world))
                     return Result<void>::failure({ErrorCategory::InvalidArgument, "SceneRenderer.object"});
+                if (object.meshId != k_cubeMeshId && !m_state->meshAssets->contains(object.meshId))
+                    return Result<void>::failure(
+                        {ErrorCategory::InvalidArgument, "SceneRenderer.mesh_id:" + object.meshId});
                 if (object.materialId && !m_state->materials->ids.contains(*object.materialId))
                     return Result<void>::failure(
                         {ErrorCategory::InvalidArgument, "SceneRenderer.material_id:" + *object.materialId});
             }
-            m_state->pending.emplace(a_frame, SceneRendererState::PublishedFrame{std::move(a_snapshot), m_state->materials});
+            m_state->pending.emplace(
+                a_frame, SceneRendererState::PublishedFrame{std::move(a_snapshot), m_state->meshAssets, m_state->materials});
             m_state->lastPublished = a_frame;
             return Result<void>::success();
         }
@@ -828,25 +921,57 @@ class SceneRenderer final : public ISceneRenderer
             return Result<void>::success();
         if (m_state->isRendering)
             return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.shutdown_rendering"});
-        while (!m_state->meshAssets.empty())
+        if (m_state->cube.is_valid())
         {
-            auto first = m_state->meshAssets.begin();
-            if (first->second.is_valid())
-            {
-                auto retired = m_state->meshes->retire(first->second);
-                if (!retired.has_value())
-                    return retired;
-            }
-            m_state->meshAssets.erase(first);
+            auto retired = m_state->meshes->retire(m_state->cube);
+            if (!retired.has_value())
+                return retired;
+            m_state->cube = {};
         }
         m_state->isStopped = true;
         m_state->pending.clear();
+        m_state->meshAssets.reset();
         m_state->materials.reset();
         auto collected = m_state->meshes->collect();
         return collected.has_value() ? Result<void>::success() : Result<void>::failure(*collected.try_error());
     }
 
   private:
+    /// @brief Owner の準備中も Render は前の世代を借用できる。成功後にだけ一括公開する
+    Result<void> replace_assets(std::optional<std::span<const SceneMeshDesc>> a_meshes,
+                                std::optional<std::span<const SceneMaterialDesc>> a_materials)
+    {
+        std::shared_ptr<const sceneMeshSet> meshes;
+        std::shared_ptr<const dx12::SceneMaterialSet> materials;
+        {
+            const std::lock_guard lock(m_state->mutex);
+            if (m_state->isStopped)
+                return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_assets"});
+            meshes = m_state->meshAssets;
+            materials = m_state->materials;
+        }
+        if (a_meshes && (!a_meshes->empty() || !meshes->empty()))
+        {
+            auto created = prepare_meshes(*m_state->meshes, *meshes, *a_meshes);
+            if (!created.has_value())
+                return Result<void>::failure(*created.try_error());
+            meshes = created.take_value();
+        }
+        if (a_materials && (!a_materials->empty() || !materials || !materials->ids.empty()))
+        {
+            auto created = dx12::create_scene_materials(*m_state->backend, *a_materials);
+            if (!created.has_value())
+                return Result<void>::failure(*created.try_error());
+            materials = created.take_value();
+        }
+        const std::lock_guard lock(m_state->mutex);
+        if (m_state->isStopped)
+            return Result<void>::failure({ErrorCategory::InvalidState, "SceneRenderer.set_assets"});
+        m_state->meshAssets = std::move(meshes);
+        m_state->materials = std::move(materials);
+        return Result<void>::success();
+    }
+
     std::shared_ptr<SceneRendererState> m_state;
 };
 } // namespace
@@ -864,17 +989,17 @@ Result<std::unique_ptr<ISceneRenderer>> create_scene_renderer(IBackend &a_backen
         state->resources = native->get_resource_context();
         state->meshes = native->get_mesh_pool();
         state->backend = native;
+        state->meshAssets = std::make_shared<const sceneMeshSet>();
         auto renderer = std::make_unique<SceneRenderer>(state);
         // 失敗や例外でも Renderer の停止処理が登録済み資源を回収する
-        auto &handle = state->meshAssets[std::string(k_cubeMeshId)];
         auto cube = create_cube_mesh();
         if (!cube.has_value())
             return RendererResult::failure(*cube.try_error());
         auto uploaded = state->meshes->upload(*cube.try_value());
         if (!uploaded.has_value())
             return RendererResult::failure(*uploaded.try_error());
-        handle = uploaded.take_value();
-        auto ready = state->meshes->wait_ready(handle);
+        state->cube = uploaded.take_value();
+        auto ready = state->meshes->wait_ready(state->cube);
         if (!ready.has_value())
             return RendererResult::failure(*ready.try_error());
         auto material = renderer->set_materials({});

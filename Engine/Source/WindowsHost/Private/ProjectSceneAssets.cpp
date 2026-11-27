@@ -1,4 +1,4 @@
-#include <WindowsHost/SceneMaterials.h>
+#include <WindowsHost/SceneAssets.h>
 
 #include <cstdint>
 #include <string>
@@ -12,7 +12,7 @@
 #include <Assets/AssetCatalog.h>
 #include <Platform/FileSystem.h>
 
-#include "SceneMaterialValues.h"
+#include "SceneAssetValues.h"
 
 namespace cue
 {
@@ -118,19 +118,23 @@ Result<std::vector<SceneMaterialDesc>> decode_materials(IFileSystem &a_files, co
 }
 } // namespace
 
-Result<std::vector<SceneMaterialDesc>> load_project_materials(IFileSystem &a_files, const Path &a_contentRoot)
+Result<SceneAssets> load_project_assets(IFileSystem &a_files, const Path &a_contentRoot)
 {
     auto catalog = AssetCatalog::load(a_files, a_contentRoot);
     if (!catalog.has_value())
-        return Result<std::vector<SceneMaterialDesc>>::failure(*catalog.try_error());
-    return decode_materials(a_files, *catalog.try_value());
+        return Result<SceneAssets>::failure(*catalog.try_error());
+    return load_project_assets(a_files, *catalog.try_value());
 }
 
-Result<void> set_project_materials(ISceneRenderer &a_renderer, IFileSystem &a_files, const AssetCatalog &a_catalog)
+Result<SceneAssets> load_project_assets(IFileSystem &a_files, const AssetCatalog &a_catalog)
 {
+    auto meshes = detail::collect_scene_meshes(a_catalog.models(), [&](const ModelAsset &a_model)
+                                               { return read_model_asset(a_files, a_model.source); });
+    if (!meshes.has_value())
+        return Result<SceneAssets>::failure(*meshes.try_error());
     auto materials = decode_materials(a_files, a_catalog);
     if (!materials.has_value())
-        return Result<void>::failure(*materials.try_error());
-    return a_renderer.set_materials(*materials.try_value());
+        return Result<SceneAssets>::failure(*materials.try_error());
+    return Result<SceneAssets>::success({meshes.take_value(), materials.take_value()});
 }
 } // namespace cue

@@ -15,6 +15,14 @@
 namespace cue
 {
 class IBackend;
+class MeshData;
+
+/// @brief Project の永続 Mesh ID と、その ID に登録する不変の CPU Geometry
+struct SceneMeshDesc final
+{
+    std::string assetId;
+    std::shared_ptr<const MeshData> mesh;
+};
 
 /// @brief Texture Loader が所有する、行 Padding を持たない一枚の RGBA8 Pixel データ
 struct SceneTextureRgba8 final
@@ -48,6 +56,13 @@ class ISceneRenderer
     /// @brief Owner Thread で描画定義の世代を置き換える。空なら既定 Material だけに戻す
     /// 転送完了まで待ち、失敗時と公開済み Frame は旧世代を保持する。shutdown との並行呼出しは禁止
     [[nodiscard]] virtual Result<void> set_materials(std::span<const SceneMaterialDesc> a_materials) = 0;
+    /// @brief Owner Thread で Project Mesh を置き換える。空なら組み込み Cube だけに戻す
+    /// 転送完了まで待ち、失敗時と公開済み Frame は旧世代を保持する
+    [[nodiscard]] virtual Result<void> set_meshes(std::span<const SceneMeshDesc> a_meshes) = 0;
+    /// @brief Owner Thread で Project Mesh と Material を同じ世代として公開する
+    /// set_meshes / set_materials と同じ寿命契約を持ち、いずれかの転送に失敗すると旧世代を維持する
+    [[nodiscard]] virtual Result<void> set_assets(std::span<const SceneMeshDesc> a_meshes,
+                                                 std::span<const SceneMaterialDesc> a_materials) = 0;
     /// @brief Main から採用 Frame の描画値を一度だけ渡す。最大 64 未消費 Frame を保持する
     [[nodiscard]] virtual Result<void> publish_frame(std::uint64_t a_frame, SceneRenderSnapshot a_snapshot) = 0;
     /// @brief 同じ Frame の Snapshot を選択し、記録 Callback 復帰後は取消・失敗でも回収する

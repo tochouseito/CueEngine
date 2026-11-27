@@ -32,6 +32,21 @@ int main()
     const auto &camera = app->document().scene().descriptor().objects.front();
     CUE_EDITOR_CHECK(camera.camera && camera.transform && camera.transform->position.z == 3);
 
+    // Model の配置を取り消すと既定 Material と、それを加える前の保存形式も復元する
+    constexpr std::string_view axisModel = "8f0d23e4-554f-447c-995e-e24fa1ea16da";
+    constexpr std::string_view axisMaterial = "cbe1144b-8b60-4d33-89d0-f6824619480f";
+    const auto axis = editor_value(app->add_mesh_object("Axis", axisModel, axisMaterial));
+    auto axisPreview = app->preview_snapshot();
+    CUE_EDITOR_CHECK(axisPreview.has_value() && axisPreview.try_value()->objects.size() == 1 &&
+                     axisPreview.try_value()->objects[0].meshId == axisModel &&
+                     axisPreview.try_value()->objects[0].materialId == axisMaterial);
+    CUE_EDITOR_CHECK(app->document().scene().descriptor().formatVersion == 3);
+    CUE_EDITOR_CHECK(app->undo().has_value() && app->document().scene().descriptor().formatVersion == 1 &&
+                     app->document().scene().descriptor().objects.size() == 1);
+    CUE_EDITOR_CHECK(app->redo().has_value() && editor_object(*app, axis).material->assetId == axisMaterial &&
+                     app->document().selected_object_id() == axis);
+    CUE_EDITOR_CHECK(app->undo().has_value());
+
     auto cube = app->add_cube();
     CUE_EDITOR_CHECK(cube.has_value());
     const std::string cubeId = cube.take_value();

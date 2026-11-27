@@ -95,17 +95,20 @@ endif()
 set(taskCopiedFiles "${CUE_APP_EXECUTABLE_NAME}" "${CUE_STARTUP_SCENE_RELATIVE}"
     ${taskRuntimeFiles} ${taskLicenseFiles} ${taskShaderFiles})
 
-# Cook 済み Pack を Link 入力に含め、画像や Material だけを編集した Build でも公開する
+# Cook 済み Pack を Link 入力に含め、画像・Material・Model を編集した Build でも公開する
 set(taskRelativeAssets "Content/Assets.cuepak")
 set(taskStagedAssets "${taskSource}/${taskRelativeAssets}")
 set(taskHasAssets FALSE)
 if(DEFINED CUE_APP_CONTENT_ROOT)
     cue_app_validate_path("${CUE_APP_CONTENT_ROOT}")
     file(GLOB_RECURSE taskAssetFiles LIST_DIRECTORIES FALSE "${CUE_APP_CONTENT_ROOT}/*.cuemeta"
-        "${CUE_APP_CONTENT_ROOT}/*.cuemat")
+        "${CUE_APP_CONTENT_ROOT}/*.cuemat" "${CUE_APP_CONTENT_ROOT}/*.cuemodel")
     file(STRINGS "${CUE_STARTUP_SCENE}" taskReferencedMaterials REGEX "^[ \t]*material\\.assetId[ \t]*="
         ENCODING UTF-8)
-    if(taskAssetFiles OR taskReferencedMaterials)
+    file(STRINGS "${CUE_STARTUP_SCENE}" taskReferencedModels REGEX "^[ \t]*mesh\\.assetId[ \t]*="
+        ENCODING UTF-8)
+    list(FILTER taskReferencedModels EXCLUDE REGEX "=[ \t]*cue://engine/mesh/cube[ \t]*$")
+    if(taskAssetFiles OR taskReferencedMaterials OR taskReferencedModels)
         set(taskHasAssets TRUE)
         cue_app_validate_path("${taskStagedAssets}")
         if(DEFINED CUE_APP_INPUTS_SOURCE)

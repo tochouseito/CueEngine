@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <Assets/AssetCatalog.h>
+#include <Assets/BuiltinMesh.h>
 #include <Editor/EditorApplication.h>
 #include <EditorHost/ImGuiPass.h>
 #include <EditorHost/PerformanceSettingsEditing.h>
@@ -20,10 +21,11 @@
 #include <EngineInstallation/EngineVersion.h>
 #include <Foundation/ScopedFlag.h>
 #include <Math/Projection.h>
+#include <ModelImport/ObjImporter.h>
 #include <Platform/Diagnostics.h>
 #include <SceneRender/SceneRenderer.h>
 #include <ScriptPlay/PlayClient.h>
-#include <WindowsHost/SceneMaterials.h>
+#include <WindowsHost/SceneAssets.h>
 
 #include "EditorAssetBrowser.h"
 #include "EditorGameSettings.h"
@@ -237,6 +239,7 @@ struct EditorHost::EditingState final
     std::optional<PendingChange> pendingChange;
     std::vector<EditorAssetFolder> assetFolders;
     std::vector<EditorMaterialChoice> materials;
+    std::vector<ModelAsset> models;
     std::optional<EditorScriptRemoval> scriptRemoval;
     bool isScriptUsagePreview = false;
     bool needsAssetRefresh = true;
@@ -268,7 +271,7 @@ struct EditorHost::PreparedProject final
     std::unique_ptr<Project> project;
     std::unique_ptr<EditorApplication> application;
     std::unique_ptr<EditorScriptController> scripts;
-    std::vector<SceneMaterialDesc> renderMaterials;
+    SceneAssets renderAssets;
     GameBuildConfiguration gameConfiguration = GameBuildConfiguration::Development;
     std::string settingsError;
     std::optional<std::string> gitHead;
@@ -623,10 +626,10 @@ Result<void> EditorHost::prepare_project_change(const Path &a_projectFile, bool 
             }
         }
         auto prepared = std::make_unique<PreparedProject>();
-        auto materials = load_project_materials(files, project.try_value()->content_directory());
-        if (!materials.has_value())
-            return Result<void>::failure(*materials.try_error());
-        prepared->renderMaterials = materials.take_value();
+        auto assets = load_project_assets(files, project.try_value()->content_directory());
+        if (!assets.has_value())
+            return Result<void>::failure(*assets.try_error());
+        prepared->renderAssets = assets.take_value();
         prepared->isGitReload = a_isGitReload;
         if (gitHead.has_value())
             prepared->gitHead = gitHead.take_value();
@@ -779,7 +782,8 @@ Result<void> EditorHost::apply_project_change()
     }
     if (m_sceneRenderer)
     {
-        auto applied = m_sceneRenderer->set_materials(m_pendingProject->renderMaterials);
+        const auto &assets = m_pendingProject->renderAssets;
+        auto applied = m_sceneRenderer->set_assets(assets.meshes, assets.materials);
         if (!applied.has_value())
         {
             m_pendingProject.reset();
@@ -807,6 +811,7 @@ Result<void> EditorHost::apply_project_change()
     editing.scriptRemoval.reset();
     editing.assetFolders.clear();
     editing.materials.clear();
+    editing.models.clear();
     editing.needsAssetRefresh = true;
     auto settingsError = std::move(m_pendingProject->settingsError);
     m_pendingProject.reset();
@@ -1377,6 +1382,15 @@ Result<void> EditorHost::build_ui(std::uint64_t a_frame, std::stop_token a_stopT
         // 欠落した制作時の参照を表示しながら、残りの Scene と Inspector の操作を維持する
         if (m_editing)
         {
+            std::erase_if(frameScene.objects, [&](const RenderObjectData &a_object)
+            {
+                if (a_object.meshId == k_cubeMeshId ||
+                    std::ranges::find(m_editing->models, a_object.meshId, &ModelAsset::assetId) !=
+                        m_editing->models.end())
+                    return false;
+                m_editing->error = "EditorAssets.model_missing:" + a_object.meshId;
+                return true;
+            });
             for (auto &object : frameScene.objects)
             {
                 if (object.materialId && std::ranges::none_of(m_editing->materials, [&](const auto &a_material)
@@ -1800,13 +1814,11 @@ Result<void> EditorHost::refresh_editor_assets()
     auto assets = scan_editor_assets(files, *m_project);
     if (!assets.has_value())
         return Result<void>::failure(*assets.try_error());
+    // 登録に失敗した場合も Assets から入力ファイルを確認できるようにする
+    m_editing->assetFolders = assets.take_value();
     auto catalog = AssetCatalog::load(files, m_project->content_directory());
     if (!catalog.has_value())
-    {
-        // 参照が未解決の間も Browser で PNG を選択し、メタデータを登録できるようにする
-        m_editing->assetFolders = assets.take_value();
         return Result<void>::failure(*catalog.try_error());
-    }
     try
     {
         std::vector<EditorMaterialChoice> materials;
@@ -1814,19 +1826,24 @@ Result<void> EditorHost::refresh_editor_assets()
         for (const auto &material : catalog.try_value()->materials())
             materials.push_back({material.assetId, material.source.stem()});
         std::ranges::sort(materials, {}, &EditorMaterialChoice::name);
+        const auto modelEntries = catalog.try_value()->models();
+        std::vector<ModelAsset> models(modelEntries.begin(), modelEntries.end());
         if (m_sceneRenderer)
         {
-            auto updated = set_project_materials(*m_sceneRenderer, files, *catalog.try_value());
+            auto decoded = load_project_assets(files, *catalog.try_value());
+            if (!decoded.has_value())
+                return Result<void>::failure(*decoded.try_error());
+            auto updated = m_sceneRenderer->set_assets(decoded.try_value()->meshes, decoded.try_value()->materials);
             if (!updated.has_value())
                 return updated;
         }
-        m_editing->assetFolders = assets.take_value();
         m_editing->materials = std::move(materials);
+        m_editing->models = std::move(models);
         return Result<void>::success();
     }
     catch (const std::bad_alloc &)
     {
-        return Result<void>::failure({ErrorCategory::PlatformFailure, "EditorAssets.material_choices"});
+        return Result<void>::failure({ErrorCategory::PlatformFailure, "EditorAssets.choices"});
     }
 }
 
@@ -2189,6 +2206,30 @@ Result<void> EditorHost::apply_editor_actions()
                 editing.needsAssetRefresh = true;
                 editing.notice = editor_text(editing.language, "Texture registered.", "テクスチャを登録しました。");
                 return Result<void>::success();
+            }
+            case EditorActionKind::ImportModel:
+            {
+                if (!m_project || !can_open_project())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.import_busy"});
+                auto imported = import_obj_model(*m_windows.file_system(), m_project->content_directory(),
+                                                 action.assetPath, create_editor_object_id);
+                if (!imported.has_value())
+                    return Result<void>::failure(*imported.try_error());
+                editing.needsAssetRefresh = true;
+                editing.notice = editor_text(editing.language, "Model imported.", "モデルをインポートしました。");
+                return Result<void>::success();
+            }
+            case EditorActionKind::AddAssetModel:
+            {
+                if (!m_project || !can_open_project())
+                    return Result<void>::failure({ErrorCategory::InvalidState, "EditorAssets.add_model_busy"});
+                const auto model = std::ranges::find_if(editing.models, [&](const ModelAsset &a_model)
+                    { return a_model.source.utf8() == action.assetPath.utf8(); });
+                if (model == editing.models.end())
+                    return Result<void>::failure({ErrorCategory::InvalidArgument, "EditorAssets.model_missing"});
+                const std::string_view material = model->materialAssetId ? *model->materialAssetId : std::string_view{};
+                auto added = app->add_mesh_object(model->source.stem(), model->assetId, material);
+                return added.has_value() ? Result<void>::success() : Result<void>::failure(*added.try_error());
             }
             case EditorActionKind::SetMaterial:
                 if (!m_project || !can_open_project())

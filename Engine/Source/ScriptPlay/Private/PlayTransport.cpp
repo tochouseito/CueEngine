@@ -496,7 +496,7 @@ bool is_valid_view(const PlayViewSnapshot &a_snapshot)
             return false;
     }
     for (const auto &object : a_snapshot.render.objects)
-        if (!is_valid_affine(object.world) || object.meshId != k_cubeMeshId ||
+        if (!is_valid_affine(object.world) || !is_valid_mesh_asset_id(object.meshId) ||
             (object.materialId && !is_valid_asset_id(*object.materialId)))
             return false;
     std::unordered_set<std::string> ids;
